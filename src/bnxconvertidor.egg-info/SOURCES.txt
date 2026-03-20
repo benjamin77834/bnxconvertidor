@@ -1,0 +1,8 @@
+README.md
+setup.py
+src/bnxconvertidor.egg-info/PKG-INFO
+src/bnxconvertidor.egg-info/SOURCES.txt
+src/bnxconvertidor.egg-info/dependency_links.txt
+src/bnxconvertidor.egg-info/entry_points.txt
+src/bnxconvertidor.egg-info/requires.txt
+src/bnxconvertidor.egg-info/top_level.txt
