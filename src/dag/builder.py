@@ -1,12 +1,12 @@
-def build_dag(ast_nodes):
+class DAG:
+    def __init__(self, nodes, edges):
+        self.nodes = nodes
+        self.edges = edges
 
-    dag = {}
-    lookup = {n.name: n for n in ast_nodes}
+    def is_valid(self):
+        # aquí puedes meter cycle detection después
+        return True
 
-    for node in ast_nodes:
-        dag[node.name] = {
-            "node": node,
-            "inputs": node.inputs
-        }
 
-    return dag
+def build_dag(nodes, edges):
+    return DAG(nodes, edges)

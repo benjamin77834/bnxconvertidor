@@ -1,55 +1,24 @@
-import re
+from src.ir.graph import GraphIR
+from src.ir.node import Node
 
-def clean_node(line):
-    """
-    Extrae nombre real del nodo
-    """
-    match = re.search(r"node:\s*([A-Za-z0-9_]+)", line)
-    return match.group(1) if match else None
+def parse_mp(path):
 
+    print(f"📦 Parsing Ab Initio graph: {path}")
 
-def parse_mp(file_path):
+    ir = GraphIR()
 
-    nodes = []
+    # demo graph (luego reemplazas por parser real)
+    raw = Node("RawCustomers", "input", [])
+    tx = Node("RawTransactions", "input", [])
 
-    with open(file_path, "r") as f:
-        for line in f:
+    stage = Node("StageCustomers", "reformat", ["RawCustomers"])
+    clean = Node("CleanCustomers", "reformat", ["StageCustomers"])
+    valid = Node("ValidCustomers", "filter", ["CleanCustomers"])
 
-            line = line.strip().lower()
+    join = Node("JoinAll", "join", ["ValidCustomers", "RawTransactions"])
+    final = Node("Final", "reformat", ["JoinAll"])
 
-            if "customers" in line:
-                nodes.append({
-                    "id": "Customers",
-                    "type": "input",
-                    "inputs": []
-                })
+    for n in [raw, tx, stage, clean, valid, join, final]:
+        ir.add_node(n)
 
-            elif "transactions" in line:
-                nodes.append({
-                    "id": "Transactions",
-                    "type": "input",
-                    "inputs": []
-                })
-
-            elif "cards" in line:
-                nodes.append({
-                    "id": "Cards",
-                    "type": "transform",
-                    "inputs": ["Customers"]
-                })
-
-            elif "devices" in line:
-                nodes.append({
-                    "id": "Devices",
-                    "type": "transform",
-                    "inputs": ["Customers"]
-                })
-
-            elif "final" in line:
-                nodes.append({
-                    "id": "Final",
-                    "type": "transform",
-                    "inputs": ["Transactions", "Cards", "Devices"]
-                })
-
-    return nodes
+    return ir

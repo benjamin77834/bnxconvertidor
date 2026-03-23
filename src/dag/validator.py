@@ -1,25 +1,21 @@
-def validate_dag(dag):
+def validate_dag(nodes, edges):
 
-    errors = []
+    print("🧪 VALIDATING DAG")
 
-    all_nodes = set(dag.keys())
+    if isinstance(nodes, dict):
+        node_ids = set(nodes.keys())
+    else:
+        node_ids = set(n["id"] for n in nodes)
 
-    for name, data in dag.items():
+    for src, dst in edges:
 
-        for inp in data["inputs"]:
+        src = str(src).strip()
+        dst = str(dst).strip()
 
-            if inp not in all_nodes:
-                errors.append(f"❌ Missing dependency: {inp} -> {name}")
+        if src not in node_ids:
+            raise Exception(f"❌ missing node: {src}")
 
-    # Detect orphan outputs
-    for name, data in dag.items():
-        if data["node"].type == "output" and not data["inputs"]:
-            errors.append(f"❌ Output node {name} has no input")
+        if dst not in node_ids:
+            raise Exception(f"❌ missing node: {dst}")
 
-    if errors:
-        print("\n🚨 DAG VALIDATION FAILED")
-        for e in errors:
-            print(e)
-        raise Exception("Invalid DAG")
-
-    print("✔ DAG VALIDATION PASSED")
+    print("✔ DAG VALID")

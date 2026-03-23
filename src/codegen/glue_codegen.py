@@ -1,38 +1,78 @@
-def generate_glue(dag, output_path):
+from src.transforms.registry import TRANSFORMS
 
-    lines = []
-    lines.append("from pyspark.sql import SparkSession\n")
-    lines.append("spark = SparkSession.builder.appName('BNX').getOrCreate()\n\n")
 
-    nodes = dag
+def generate_glue(ir, output_path):
 
-    for name, data in nodes.items():
+    print("⚙️ CODEGEN START")
 
-        node = data["node"]
+    code = []
+
+    code.append("from pyspark.sql import SparkSession")
+    code.append("from pyspark.sql.functions import *")
+    code.append("")
+    code.append("spark = SparkSession.builder.appName('BNX_V8').getOrCreate()")
+    code.append("")
+
+    # -------------------------
+    # INPUT NODES
+    # -------------------------
+    for node in ir.nodes.values():
 
         if node.type == "input":
-            path = node.props.get("path")
-            lines.append(f"{name} = spark.read.parquet('{path}')\n")
+            code.append(
+                f"{node.id} = spark.read.parquet('{node.id}.parquet')"
+            )
 
-        elif node.type == "join":
+    code.append("")
 
-            if len(node.inputs) < 2:
-                continue
+    resolved = {}
 
-            left, right = node.inputs[:2]
-            key = node.props.get("keys", "id")
+    # -------------------------
+    # BUILD EXECUTION (DAG ORDER SIMPLE)
+    # -------------------------
+    ordered_nodes = list(ir.nodes.values())
 
-            lines.append(f"{name} = {left}.join({right}, '{key}')\n")
+    for node in ordered_nodes:
 
-        elif node.type == "output":
+        # resolve inputs
+        inputs = [resolved[i] for i in node.inputs if i in resolved]
 
-            inp = node.inputs[0] if node.inputs else None
-            path = node.props.get("path", "s3://output")
+        # get transform function
+        fn = TRANSFORMS.get(node.type)
 
-            if inp:
-                lines.append(f"{inp}.write.mode('overwrite').parquet('{path}')\n")
+        # -------------------------
+        # IF TRANSFORM EXISTS
+        # -------------------------
+        if fn:
+
+            try:
+                resolved[node.id] = fn(node, inputs)
+            except Exception as e:
+                resolved[node.id] = f"None  # ERROR: {str(e)}"
+
+        # -------------------------
+        # FALLBACK
+        # -------------------------
+        else:
+
+            if node.type == "input":
+                resolved[node.id] = node.id
+
+            elif len(node.inputs) == 1:
+                resolved[node.id] = f"{node.inputs[0]}  # passthrough"
+
+            else:
+                resolved[node.id] = "None  # unsupported transform"
+
+    # -------------------------
+    # EMIT CODE
+    # -------------------------
+    for k, v in resolved.items():
+        code.append(f"{k} = {v}")
+
+    code.append("\n# BNX V8 PIPELINE COMPLETE")
 
     with open(output_path, "w") as f:
-        f.writelines(lines)
+        f.write("\n".join(code))
 
-    print(f"🔥 Glue job generated: {output_path}")
+    return "\n".join(code)

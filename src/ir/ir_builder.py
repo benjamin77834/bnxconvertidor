@@ -1,48 +1,61 @@
-class IRNode:
-
-    def __init__(self, node_id, node_type, attrs=None):
-        self.id = node_id
-        self.type = node_type
-        self.attrs = attrs or {}
-
-    def __repr__(self):
-        return f"IRNode(id={self.id}, type={self.type})"
+from collections import defaultdict
 
 
-def build_ir(mp_graph):
+class IRBuilder:
+    """
+    BNX IR Builder - DAG → Expression Compiler
+    """
 
-    nodes = mp_graph.get("nodes", [])
-    edges = mp_graph.get("edges", [])
+    def __init__(self, dag):
+        self.dag = dag
+        self.nodes = {n["id"]: n for n in dag["nodes"]}
+        self.edges = dag["edges"]
 
-    print("\n🧠 IR BUILDER START")
+        self.graph = defaultdict(list)
 
-    ir_nodes = {}
+        for e in self.edges:
+            if isinstance(e, (tuple, list)) and len(e) == 2:
+                src, dst = e
+                self.graph[dst].append(src)
 
-    # -----------------------------
-    # BUILD NODES
-    # -----------------------------
-    for n in nodes:
-        node = IRNode(n["id"], n["type"])
-        ir_nodes[n["id"]] = node
+        self.expr_cache = {}
 
-    # -----------------------------
-    # BUILD GRAPH
-    # -----------------------------
-    graph = {}
+    def build_expr(self, node_id):
 
-    for e in edges:
-        src = e["from"]
-        dst = e["to"]
+        if node_id in self.expr_cache:
+            return self.expr_cache[node_id]
 
-        if src not in graph:
-            graph[src] = []
+        parents = self.graph.get(node_id, [])
 
-        graph[src].append(dst)
+        # INPUT NODE
+        if len(parents) == 0:
+            self.expr_cache[node_id] = node_id
+            return node_id
 
-    print(f"✔ IR nodes: {len(ir_nodes)}")
-    print(f"✔ IR edges: {len(edges)}")
+        # SINGLE PARENT
+        if len(parents) == 1:
+            expr = self.build_expr(parents[0])
+            self.expr_cache[node_id] = expr
+            return expr
 
-    return {
-        "nodes": ir_nodes,
-        "graph": graph
-    }
+        # MULTI PARENT (JOIN)
+        base = self.build_expr(parents[0])
+
+        for p in parents[1:]:
+            base = f"{base}.join({self.build_expr(p)}, 'inner')"
+
+        self.expr_cache[node_id] = base
+        return base
+
+    def build(self):
+
+        ir = {}
+
+        for node_id in self.nodes:
+            ir[node_id] = {
+                "id": node_id,
+                "type": self.nodes[node_id]["type"],
+                "expr": self.build_expr(node_id)
+            }
+
+        return ir

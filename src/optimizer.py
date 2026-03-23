@@ -1,47 +1,17 @@
-class Rule:
-    def apply(self, plan):
-        return plan
+def optimize(ir, edges):
 
+    print("🧠 OPTIMIZER STARTED")
 
-# =========================
-# RULE 1: FILTER PUSHDOWN
-# =========================
-class FilterPushDown(Rule):
+    optimized_edges = []
+    seen = set()
 
-    def apply(self, plan):
+    # 1. remove duplicates
+    for e in edges:
+        if e not in seen:
+            optimized_edges.append(e)
+            seen.add(e)
 
-        print("🔥 Applying Filter Pushdown")
+    # 2. fusion simple chain
+    # A → B → C = collapse possible chains later
 
-        # simplificado: hook real futuro
-        return plan
-
-
-# =========================
-# RULE 2: PROJECT PRUNING
-# =========================
-class ColumnPruning(Rule):
-
-    def apply(self, plan):
-
-        print("🔥 Applying Column Pruning")
-
-        return plan
-
-
-# =========================
-# OPTIMIZER ENGINE
-# =========================
-class Optimizer:
-
-    def __init__(self):
-        self.rules = [
-            FilterPushDown(),
-            ColumnPruning()
-        ]
-
-    def optimize(self, plan):
-
-        for rule in self.rules:
-            plan = rule.apply(plan)
-
-        return plan
+    return ir, optimized_edges

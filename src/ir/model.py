@@ -1,5 +1,3 @@
-# src/ir/model.py
-
 class Node:
     def __init__(self, id, type, inputs=None, props=None):
         self.id = id

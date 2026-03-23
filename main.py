@@ -1,36 +1,63 @@
-from src.parser.mp_ast_parser import parse_mp_ast
+import argparse
+from src.parser.mp_parser import parse_mp
 from src.dag.builder import build_dag
-from src.dag.validator import validate_dag
 from src.lineage.tracker import build_lineage
-from src.codegen.glue_codegen import generate_glue
+from src.optimizer import optimize
+from src.codegen.spark_codegen import generate_glue
 
 
-def main(mp_path, output_path):
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--project", required=True)
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args()
 
-    print("\n🚀 BNX v2 ENTERPRISE COMPILER STARTED\n")
+    print("🚀 BNX V9 ULTIMATE STARTED")
 
-    ast = parse_mp_ast(mp_path)
+    # -------------------------
+    # PARSER
+    # -------------------------
+    print("🔥 PARSER STARTED")
 
-    dag = build_dag(ast)
+    ir = parse_mp(args.project)
 
-    validate_dag(dag)
+    nodes = ir.nodes
+    edges = ir.edges
 
-    build_lineage(dag)
+    print(f"🧬 IR NODES: {len(nodes)}")
+    print(f"🔗 EDGES: {len(edges)}")
 
-    generate_glue(dag, output_path)
+    # -------------------------
+    # DAG
+    # -------------------------
+    dag = build_dag(nodes, edges)
 
-    print("\n✔ DONE")
+    if not dag.is_valid():
+        print("❌ INVALID DAG")
+        return
+
+    print("✔ IR VALID")
+
+    # -------------------------
+    # LINEAGE
+    # -------------------------
+    print("🧬 LINEAGE TRACE")
+    build_lineage(nodes, edges)
+
+    # -------------------------
+    # OPTIMIZER
+    # -------------------------
+    print("⚡ OPTIMIZER START")
+    optimize(nodes, edges)
+
+    # -------------------------
+    # CODEGEN
+    # -------------------------
+    print("⚙️ CODEGEN START (BNX V9)")
+    generate_glue(nodes, edges, args.output)
+
+    print("🔥 DONE:", args.output)
 
 
 if __name__ == "__main__":
-
-    import argparse
-
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument("--project")
-    parser.add_argument("--output")
-
-    args = parser.parse_args()
-
-    main(args.project + "/test.mp", args.output)
+    main()

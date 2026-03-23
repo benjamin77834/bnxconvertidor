@@ -1,19 +1,17 @@
-def build_ir(mp_graph, xfr, dml):
+class IRBuilder:
 
-    print("\n🧠 Building IR layer...")
+    def __init__(self, dag):
+        self.dag = dag
 
-    ir = []
+    def build(self):
 
-    for node in mp_graph:
+        ir = {}
 
-        ir_node = {
-            "id": node.get("id"),
-            "type": node.get("type", "unknown"),
-            "inputs": node.get("inputs", [])
-        }
+        for n in self.dag["nodes"]:
+            ir[n["id"]] = {
+                "id": n["id"],
+                "type": n["type"],
+                "expr": n["id"]  # base simple expression
+            }
 
-        print(f"🧩 IR node: {ir_node}")
-
-        ir.append(ir_node)
-
-    return ir
+        return ir

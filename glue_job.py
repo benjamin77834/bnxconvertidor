@@ -1,7 +1,12 @@
 from pyspark.sql import SparkSession
-spark = SparkSession.builder.appName('BNX').getOrCreate()
+from pyspark.sql.functions import *
 
-Customers = spark.read.parquet('customers.parquet')
-Transactions = spark.read.parquet('transactions.parquet')
-Join = Customers.join(Transactions, 'id')
-Join.write.mode('overwrite').parquet('s3://output/final/')
+spark = SparkSession.builder.appName('BNX_V9').getOrCreate()
+
+RawCustomers = spark.read.parquet('RawCustomers.parquet')
+RawTransactions = spark.read.parquet('RawTransactions.parquet')
+CleanCustomers = spark.read.parquet('RawCustomers.parquet').select('*')
+JoinAll = spark.read.parquet('RawCustomers.parquet').select('*').join(spark.read.parquet('RawTransactions.parquet'), 'id', 'inner')
+Final = spark.read.parquet('RawCustomers.parquet').select('*').join(spark.read.parquet('RawTransactions.parquet'), 'id', 'inner').select('*')
+
+# BNX V9 PIPELINE COMPLETE

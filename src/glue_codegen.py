@@ -1,60 +1,54 @@
-def generate_glue(dag, order):
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import *
+
+
+def generate_glue(ir, order):
+
+    print("\n⚙️ GENERATING GLUE CODE")
 
     code = []
 
     code.append("from pyspark.sql import SparkSession")
-    code.append("from pyspark.sql import functions as F\n")
-    code.append('spark = SparkSession.builder.appName("ENTERPRISE_GLUE").getOrCreate()\n')
-
-    dfs = {}
+    code.append("from pyspark.sql.functions import *\n")
+    code.append("spark = SparkSession.builder.appName('BNX').getOrCreate()\n")
 
     for node_id in order:
 
-        node = dag.nodes[node_id]
-        ntype = node.type
+        node = ir[node_id]   # ✅ DICT MODE
 
-        # =====================
-        # INPUT
-        # =====================
-        if ntype == "input":
+        t = node.get("type")
+        inputs = node.get("inputs", [])
 
-            df = node_id.lower()
+        if t == "input":
+            path = node.get("path") or f"s3://data/{node_id}"
+            code.append(f"{node_id} = spark.read.parquet('{path}')\n")
 
-            code.append(
-                f'{df} = spark.read.parquet("s3://input/{df}")'
-            )
+        elif t == "filter":
+            src = inputs[0] if inputs else "df"
+            expr = node.get("expr") or "1=1"
+            code.append(f"{node_id} = {src}.filter(\"{expr}\")\n")
 
-            dfs[node_id] = df
+        elif t == "join":
+            l = inputs[0] if len(inputs) > 0 else "df"
+            r = inputs[1] if len(inputs) > 1 else "df"
+            keys = node.get("keys") or "id"
+            code.append(f"{node_id} = {l}.join({r}, '{keys}')\n")
 
-        # =====================
-        # JOIN (ENTERPRISE READY)
-        # =====================
-        elif ntype == "join":
+        elif t == "aggregate":
+            src = inputs[0] if inputs else "df"
+            gb = node.get("group_by") or "id"
+            code.append(f"{node_id} = {src}.groupBy('{gb}').agg(count('*'))\n")
 
-            parents = list(dfs.values())
+        elif t == "transform":
+            src = inputs[0] if inputs else "df"
+            code.append(f"{node_id} = {src}.withColumn('flag', lit(1))\n")
 
-            left = parents[0]
-            right = parents[1]
+        elif t == "output":
+            src = inputs[0] if inputs else "df"
+            path = node.get("path") or "output/"
+            code.append(f"{src}.write.mode('overwrite').parquet('{path}')\n")
 
-            keys = node.attrs.get("keys", ["id"])
-
-            df = node_id.lower()
-
-            code.append(
-                f'{df} = {left}.join({right}, {keys})'
-            )
-
-            dfs[node_id] = df
-
-        # =====================
-        # OUTPUT
-        # =====================
-        elif ntype == "output":
-
-            last = list(dfs.values())[-1]
-
-            code.append(
-                f'{last}.write.mode("overwrite").parquet("s3://output/final")'
-            )
+        else:
+            code.append(f"# UNKNOWN NODE {node_id}\n")
 
     return "\n".join(code)
