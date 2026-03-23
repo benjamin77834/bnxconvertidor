@@ -1,0 +1,7 @@
+CleanCustomers:
+    SELECT id, UPPER(TRIM(name)) as name, country
+    WHERE active = 1
+
+FilterTx:
+    SELECT id, amount
+    WHERE amount > 100

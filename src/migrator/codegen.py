@@ -1,4 +1,6 @@
 from collections import defaultdict, deque
+from migrator.lineage import LineageTracker
+from migrator.optimizer import DAGOptimizer
 
 
 # ----------------------------
@@ -30,25 +32,26 @@ def topo_sort(nodes, edges):
 # ----------------------------
 # JOIN KEY INFERENCE
 # ----------------------------
-def infer_join_key(left_schema, right_schema):
-    if not left_schema or not right_schema:
-        return "customer_id"
-
-    for k in ["customer_id", "id", "cust_id"]:
-        if k in left_schema and k in right_schema:
-            return k
-
+def infer_join_key():
     return "customer_id"
 
 
 # ----------------------------
-# CODEGEN V5 (FIXED RETURN)
+# V6 CODEGEN
 # ----------------------------
 def generate_glue_job(ir_graph):
-    print("⚙️ BNX v5 DAG Compiler running...")
+
+    print("⚙️ BNX v6 Enterprise Optimizer running...")
+
+    # ----------------------------
+    # OPTIMIZER STEP
+    # ----------------------------
+    optimizer = DAGOptimizer(ir_graph.nodes, ir_graph.edges)
+    optimizer.prune_passthrough()
+    optimizer.fuse_linear_chains()
 
     nodes = list(ir_graph.nodes.keys())
-    edges = ir_graph.edges
+    edges = optimizer.edges
 
     order = topo_sort(nodes, edges)
 
@@ -65,64 +68,67 @@ def generate_glue_job(ir_graph):
     code.append("spark = SparkSession.builder.getOrCreate()\n")
 
     datasets = {}
-    lineage = defaultdict(list)
+    lineage = LineageTracker()
 
     # ----------------------------
-    # EXECUTION
+    # EXECUTION ENGINE
     # ----------------------------
     for node in order:
 
         meta = ir_graph.nodes.get(node, {})
         node_type = meta.get("type")
-        schema = meta.get("schema", {})
         transform = meta.get("transform")
 
+        # --------------------
         # SOURCE
+        # --------------------
         if node_type == "source" or node not in incoming:
             datasets[node] = f"spark.read.table('input_{node}')"
-            lineage[node] = [node]
+            lineage.add_source(node)
             code.append(f"{node} = {datasets[node]}")
             continue
 
         sources = incoming[node]
 
+        # --------------------
         # SINGLE INPUT
+        # --------------------
         if len(sources) == 1:
             src = sources[0]
             datasets[node] = datasets.get(src, src)
-            lineage[node] = lineage.get(src, [src])
 
-            expr = datasets[node]
+            code.append(f"{node} = {datasets[node]}")
 
-            if transform:
-                expr = f"{expr}  # xfr applied: {transform.get('type','generic')}"
+            # LINEAGE PROPAGATION
+            lineage.merge(node, [src])
 
-            code.append(f"{node} = {expr}")
-
-        # MULTI INPUT (JOIN)
+        # --------------------
+        # JOIN
+        # --------------------
         else:
             base = sources[0]
             expr = datasets.get(base, base)
-
-            lineage[node] = []
 
             code.append(f"{node} = {expr}")
 
             for s in sources[1:]:
                 right = datasets.get(s, s)
 
-                left_schema = ir_graph.nodes.get(base, {}).get("schema", {})
-                right_schema = ir_graph.nodes.get(s, {}).get("schema", {})
-
-                join_key = infer_join_key(left_schema, right_schema)
+                join_key = infer_join_key()
 
                 expr = f"{node}.join({right}, '{join_key}', 'left')"
 
                 code.append(f"{node} = {expr}")
 
-                lineage[node].extend(lineage.get(s, []))
+                lineage.merge(node, [base, s])
 
             datasets[node] = node
+
+        # --------------------
+        # TRANSFORM (XFR HOOK)
+        # --------------------
+        if transform:
+            code.append(f"# XFR applied on {node}: {transform.get('type','generic')}")
 
     # ----------------------------
     # SINK DETECTION
@@ -133,5 +139,4 @@ def generate_glue_job(ir_graph):
     code.append(f"\n{sink}.write.mode('overwrite').saveAsTable('output_{sink}')")
     code.append("\nspark.stop()\n")
 
-    # ✅ FIX PRINCIPAL (3 RETURNS ALWAYS)
-    return "\n".join(code), sink, dict(lineage)
+    return "\n".join(code), sink, lineage.get()

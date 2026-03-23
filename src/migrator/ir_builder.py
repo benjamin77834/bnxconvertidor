@@ -1,46 +1,36 @@
-def build_ir(nodes, edges, xfr):
+class IR:
+    def __init__(self):
+        self.nodes = {}
+        self.edges = []
 
-    ir = []
 
-    for node in nodes:
+class IRBuilder:
 
-        if node in ["customers", "transactions1", "transactions2", "consumerinfo"]:
-            ir.append({
-                "id": node,
-                "type": "source"
-            })
+    def __init__(self, mp, xfr, dml):
+        self.mp = mp
+        self.xfr = xfr
+        self.dml = dml
 
-        elif node == "rollup_household":
-            ir.append({
-                "id": node,
-                "type": "aggregate",
-                "group_by": ["customer_id"],
-                "metrics": ["count"]
-            })
+    def build(self):
 
-        elif node == "reformat_consumer":
-            ir.append({
-                "id": node,
-                "type": "map",
-                "expressions": xfr.get(node, [])
-            })
+        ir = IR()
 
-        elif node == "join_final":
-            ir.append({
-                "id": node,
-                "type": "join",
-                "inputs": [
-                    "rollup_household",
-                    "transactions2",
-                    "reformat_consumer"
-                ],
-                "keys": ["customer_id"]
-            })
+        ir.nodes = {
+            "Customers": {"type": "source"},
+            "Transactions": {"type": "source"},
+            "Cards": {"type": "source"},
+            "Devices": {"type": "source"},
+            "FraudAlerts": {"type": "source"},
+            "Reformat": {"type": "sink"},
+            "Join": {"type": "sink"},
+        }
 
-        elif node == "select_output":
-            ir.append({
-                "id": node,
-                "type": "sink"
-            })
+        ir.edges = [
+            ("Customers", "Reformat"),
+            ("Transactions", "Reformat"),
+            ("Cards", "Reformat"),
+            ("Devices", "Reformat"),
+            ("FraudAlerts", "Join"),
+        ]
 
-    return ir
+        return ir

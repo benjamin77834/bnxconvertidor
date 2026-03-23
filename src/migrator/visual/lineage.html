@@ -1,0 +1,25 @@
+def generate_lineage_html(lineage):
+
+    html = """
+    <html>
+    <head><title>BNX Lineage</title></head>
+    <body>
+    <h1>Column Lineage</h1>
+    <pre>
+    """
+
+    for k, v in lineage.items():
+        html += f"{k} => {v}\n"
+
+    html += """
+    </pre>
+    </body>
+    </html>
+    """
+
+    return html
+
+
+def save_html(path, content):
+    with open(path, "w") as f:
+        f.write(content)

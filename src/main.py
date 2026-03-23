@@ -1,47 +1,34 @@
 import argparse
-#from mp_parser import parse_mp
-#from xfr_parser import parse_xfr
-#from ir_builder import build_ir
-#from optimizer import optimize_ir
-#from glue_codegen import generate_glue
-from migrator.mp_parser import parse_mp
-from migrator.xfr_parser import parse_xfr
-from migrator.ir_builder import build_ir
-from migrator.optimizer import optimize_ir
-from migrator.glue_codegen import generate_glue
+from graph_engine import run
+
+
 def main():
+    print("🚀 BNX STARTED")
 
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--mp", required=True)
     parser.add_argument("--xfr", required=True)
     parser.add_argument("--dml", required=True)
-    parser.add_argument("--output", required=True)
+    parser.add_argument("--output", default="glue_job.py")
 
     args = parser.parse_args()
 
-    print(" v7 ENTERPRISE MIGRATION ENGINE STARTED\n")
-
-    nodes, edges = parse_mp(args.mp)
-
-    xfr_rules = parse_xfr(args.xfr)
-
-    ir = build_ir(nodes, edges, xfr_rules)
-
-    ir = optimize_ir(ir)
-
-    glue_code = generate_glue(ir)
-
-    #  CLEAN OUTPUT (CRITICAL FIX)
-    glue_code = "\n".join(
-        line.rstrip().replace("%", "")
-        for line in glue_code.splitlines()
-    )
+    # ❌ NO SQL HERE
+    code, lineage = run(args.mp, args.xfr, args.dml)
 
     with open(args.output, "w") as f:
-        f.write(glue_code + "\n")
+        f.write(code)
 
-    print(f"\n Glue Job generated: {args.output}")
+    print("🚀 GRAPH MODE (MP/XFR/DML)")
+    print("🧬 lineage built")
+
+    for k, v in lineage.items():
+        print(f"{k} ← {v}")
+
+    print(f"✅ Generated: {args.output}")
+    print("🏁 DONE")
+
 
 if __name__ == "__main__":
     main()

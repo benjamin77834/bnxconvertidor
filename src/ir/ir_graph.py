@@ -1,0 +1,14 @@
+class IRGraph:
+
+    def __init__(self):
+        self.nodes = {}
+        self.edges = []
+
+    def add_node(self, node):
+        self.nodes[node.id] = node
+
+    def add_edge(self, src, dst):
+        self.edges.append((src, dst))
+
+    def get_nodes(self):
+        return list(self.nodes.values())
