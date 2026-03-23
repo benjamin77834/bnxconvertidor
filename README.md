@@ -16,8 +16,6 @@ MP → Parser → IR → Optimizer → Glue Codegen
 ## Usage
 
 ```bash
-python src/migrator/main.py \
-  --mp examples/customer_pipeline.mp \
-  --xfr xfr/ \
-  --dml dml/ \
-  --output output/glue_job.py
+bnxconvertidor % python3 main.py --project /Users/benjamingarcia/sam/grafo1 --output glue_job.py
+
+
