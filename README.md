@@ -4,14 +4,29 @@
 
 ## Features
 
-- Parse Ab Initio MP graphs
-- Convert to Intermediate Representation (IR)
-- Apply transformation rules (XFR)
-- Generate PySpark code for AWS Glue
 
-## Architecture
-
-MP → Parser → IR → Optimizer → Glue Codegen
+bnxconvertidor/
+│
+├── main.py
+├── src/
+│   ├── ir/
+│   │   ├── graphir.py        # (2)
+│   │   └── node.py           # (3)
+│   │
+│   ├── parser/
+│   │   └── mp_parser.py      # (4)
+│   │
+│   ├── dag/
+│   │   └── builder.py        # (5)
+│   │
+│   ├── lineage/
+│   │   └── tracker.py       # (6)
+│   │
+│   ├── optimizer/
+│   │   └── optimizer.py      # (7)
+│   │
+│   └── codegen/
+│       └── spark_codegen.py  # (8)
 
 ## Usage
 
