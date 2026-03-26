@@ -1,81 +1,99 @@
-# generate_dag.py
-import re
+# grafo_visual3.py
+import argparse
 from graphviz import Digraph
+from src.mp_parser import parse_mp_ast
+from src.dag.builder import build_dag
 
-# -------------------------
-# Config
-# -------------------------
-glue_file = "glue_job.py"
-output_file = "BNX_GlueJob_DAG"
+TYPE_STYLE = {
+    "SOURCE":    {"shape": "ellipse",   "color": "#90EE90"},  # verde
+    "TRANSFORM": {"shape": "box",       "color": "#ADD8E6"},  # azul
+    "XFR":       {"shape": "box",       "color": "#ADD8E6"},  # azul
+    "JOIN":      {"shape": "diamond",   "color": "#FFD700"},  # amarillo
+    "SINK":      {"shape": "ellipse",   "color": "#FFA07A"},  # salmón
+}
+DEFAULT_STYLE = {"shape": "box", "color": "#EEEEEE"}
 
-# -------------------------
-# Leer nodos del Glue Job
-# -------------------------
-with open(glue_file, "r") as f:
-    content = f.read()
+SUBGRAPH_COLORS = {
+    "Ingestion":        "#FFF9C4",
+    "CustomerPipeline": "#E3F2FD",
+    "OrderPipeline":    "#F3E5F5",
+    "ProductPipeline":  "#E8F5E9",
+    "ReturnsPipeline":  "#FCE4EC",
+    "CampaignPipeline": "#FFF3E0",
+    "FinalReport":      "#ECEFF1",
+}
 
-# Regex para capturar nodos DML y XFR
-pattern = r"# 🔹 (DML|XFR) Node: (\w+)"
-matches = re.findall(pattern, content)
 
-nodes = []
-for typ, name in matches:
-    nodes.append( (name, typ) )
+def build_visual(mp_path, output_file):
+    ast = parse_mp_ast(mp_path)
+    dag = build_dag(ast)
+    subgraphs = ast.get("subgraphs", {})
 
-# Separar por tipo
-xfr_nodes = [n for n,t in nodes if t=="XFR"]
-dml_nodes = [n for n,t in nodes if t=="DML"]
+    # Mapa node_id -> subgraph
+    node_subgraph = {}
+    for sg_name, node_ids in subgraphs.items():
+        for nid in node_ids:
+            node_subgraph[nid] = sg_name
 
-# -------------------------
-# Crear el DAG Graphviz
-# -------------------------
-dot = Digraph("BNX_GlueJob", format="png")
+    dot = Digraph("BNX_DAG", format="png")
+    dot.attr(rankdir="LR")
+    dot.attr(size="36,20")
+    dot.attr(dpi="180")
+    dot.attr(nodesep="0.5")
+    dot.attr(ranksep="1.4")
+    dot.attr(splines="ortho")
+    dot.attr(fontname="Helvetica")
 
-# Layout y tamaño
-dot.attr(rankdir='LR')           # Left -> Right
-dot.attr(size='20,20')           # tamaño grande
-dot.attr(dpi='300')              # alta resolución
-dot.attr(nodesep='0.8')          # separación entre nodos
-dot.attr(ranksep='1')            # separación entre niveles
-dot.attr(splines='ortho')        # líneas ortogonales
-dot.attr(concentrate='true')     # combina líneas
+    # Nodos sin subgraph (sources y sinks)
+    for node in dag.execution_order:
+        if node.id not in node_subgraph:
+            ntype = node.type.upper()
+            style = TYPE_STYLE.get(ntype, DEFAULT_STYLE)
+            dot.node(
+                node.id, node.name,
+                shape=style["shape"],
+                style="filled",
+                fillcolor=style["color"],
+                fontname="Helvetica",
+                fontsize="11",
+            )
 
-# -------------------------
-# Agregar nodos
-# -------------------------
-for n in xfr_nodes:
-    dot.node(n, n, shape='box', style='filled', color='lightblue')
+    # Subgraphs como clusters
+    for sg_name, node_ids in subgraphs.items():
+        bg = SUBGRAPH_COLORS.get(sg_name, "#F5F5F5")
+        with dot.subgraph(name=f"cluster_{sg_name}") as sg:
+            sg.attr(label=sg_name, style="filled", fillcolor=bg,
+                    fontname="Helvetica Bold", fontsize="13", color="#999999")
+            for nid in node_ids:
+                if nid not in dag.nodes:
+                    continue
+                node = dag.nodes[nid]
+                ntype = node.type.upper()
+                style = TYPE_STYLE.get(ntype, DEFAULT_STYLE)
+                sg.node(
+                    node.id, node.name,
+                    shape=style["shape"],
+                    style="filled",
+                    fillcolor=style["color"],
+                    fontname="Helvetica",
+                    fontsize="11",
+                )
 
-for n in dml_nodes:
-    color = "lightgreen" if n != "MasterReport" else "orange"
-    dot.node(n, n, shape='ellipse', style='filled', color=color)
+    # Edges reales del DAG
+    for node in dag.execution_order:
+        for child_id in node.children:
+            dot.edge(node.id, child_id)
 
-# -------------------------
-# Conexiones inferidas
-# -------------------------
+    dot.render(output_file, view=True)
+    print(f"✅ DAG generado: {output_file}.png")
+    print(f"   Nodos : {len(dag.nodes)}")
+    print(f"   Edges : {sum(len(n.children) for n in dag.execution_order)}")
+    print(f"   Clusters: {list(subgraphs.keys())}")
 
-# 1️⃣ Raw/XFR -> DML (Clean)
-for raw in xfr_nodes:
-    matches = [c for c in dml_nodes if c.startswith(raw[3:] if raw.startswith("Raw") else raw)]
-    for c in matches:
-        dot.edge(raw, c)
 
-# 2️⃣ Clean -> Joins/Agg
-joins_aggs = [n for n in dml_nodes if n not in [*xfr_nodes, *[c for c in dml_nodes if c.startswith("Clean")]]]
-cleans = [c for c in dml_nodes if c.startswith("Clean")]
-for c in cleans:
-    for j in joins_aggs:
-        # Si el nombre de Clean aparece en el Join/Agg
-        if c.replace("Clean", "") in j:
-            dot.edge(c, j)
-
-# 3️⃣ Todos los Agg -> MasterReport
-agg_nodes = [n for n in joins_aggs if n != "MasterReport"]
-for a in agg_nodes:
-    dot.edge(a, "MasterReport")
-
-# -------------------------
-# Guardar gráfico
-# -------------------------
-dot.render(output_file, view=True)
-print(f"✅ DAG generado y guardado como {output_file}.png")
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mp", required=True)
+    parser.add_argument("--output", default="BNX_GlueJob_DAG")
+    args = parser.parse_args()
+    build_visual(args.mp, args.output)

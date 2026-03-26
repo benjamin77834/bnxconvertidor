@@ -1,0 +1,150 @@
+# src/validator/semantic.py
+"""
+Validación semántica del DAG antes de codegen.
+Detecta errores de join key, nodos huérfanos, ciclos, etc.
+"""
+
+# Columnas conocidas por tipo de nodo según su schema inferido
+# Se construye propagando los campos a través del DAG
+
+def _infer_columns(node, dag, xfr_rules, col_cache, dml_schema=None):
+    """Infiere las columnas disponibles en un nodo dado su tipo y padres."""
+    if node.id in col_cache:
+        return col_cache[node.id]
+
+    ntype = node.type.upper()
+    rule = xfr_rules.get(node.id.lower()) or xfr_rules.get(node.name.lower()) or {}
+
+    cols = set()
+
+    if ntype == "SOURCE":
+        # Prioridad 1: schema del DML
+        if dml_schema and node.name in dml_schema:
+            cols = set(dml_schema[node.name].keys())
+        elif dml_schema and node.id in dml_schema:
+            cols = set(dml_schema[node.id].keys())
+        else:
+            # Fallback: columnas del select en xfr
+            select = rule.get("select", "*")
+            if select != "*":
+                for col in select.split(","):
+                    col = col.strip()
+                    if " as " in col.lower():
+                        cols.add(col.lower().split(" as ")[-1].strip())
+                    elif "(" not in col:
+                        cols.add(col.strip())
+
+    elif ntype in ("TRANSFORM", "XFR"):
+        # Hereda columnas del padre + aplica select
+        if node.parents:
+            parent_cols = _infer_columns(dag.nodes[node.parents[0]], dag, xfr_rules, col_cache, dml_schema)
+            group_by = rule.get("group_by", [])
+            select = rule.get("select", "*")
+
+            if group_by:
+                # groupBy: solo quedan las keys + aliases del agg
+                cols = set(group_by)
+                for col in select.split(","):
+                    col = col.strip()
+                    if " as " in col.lower():
+                        cols.add(col.lower().split(" as ")[-1].strip())
+            elif select == "*":
+                cols = set(parent_cols)
+            else:
+                for col in select.split(","):
+                    col = col.strip()
+                    if " as " in col.lower():
+                        cols.add(col.lower().split(" as ")[-1].strip())
+                    elif "(" not in col:
+                        cols.add(col.strip())
+
+    elif ntype == "JOIN":
+        # Hereda columnas de todos los padres
+        for pid in node.parents:
+            parent_cols = _infer_columns(dag.nodes[pid], dag, xfr_rules, col_cache, dml_schema)
+            cols |= parent_cols
+
+    elif ntype == "SINK":
+        if node.parents:
+            cols = _infer_columns(dag.nodes[node.parents[0]], dag, xfr_rules, col_cache, dml_schema)
+
+    col_cache[node.id] = cols
+    return cols
+
+
+def validate(dag, xfr_rules, dml_schema=None):
+    """
+    Valida el DAG semánticamente.
+    Retorna lista de errores encontrados.
+    """
+    errors = []
+    warnings = []
+    col_cache = {}
+
+    for node in dag.execution_order:
+        ntype = node.type.upper()
+        rule = xfr_rules.get(node.id.lower()) or xfr_rules.get(node.name.lower()) or {}
+
+        # 1. Nodos JOIN sin join_key definida
+        if ntype == "JOIN":
+            join_key = rule.get("join_key")
+            if not join_key:
+                warnings.append(f"⚠️  JOIN '{node.name}' has no join_key — defaulting to 'id'")
+            else:
+                # Verificar que la join_key existe en los padres
+                for pid in node.parents:
+                    parent_cols = _infer_columns(dag.nodes[pid], dag, xfr_rules, col_cache, dml_schema)
+                    if parent_cols and join_key not in parent_cols:
+                        errors.append(
+                            f"❌ JOIN '{node.name}': join_key '{join_key}' not found in parent '{pid}' "
+                            f"(available: {sorted(parent_cols)})"
+                        )
+
+        # 2. TRANSFORM sin padre
+        if ntype in ("TRANSFORM", "XFR") and not node.parents:
+            errors.append(f"❌ TRANSFORM '{node.name}' has no parent node")
+
+        # 3. SINK sin padre
+        if ntype == "SINK" and not node.parents:
+            errors.append(f"❌ SINK '{node.name}' has no parent — nothing to write")
+
+        # 4. TRANSFORM referencia columna en where que no existe
+        if ntype in ("TRANSFORM", "XFR") and node.parents:
+            parent_cols = _infer_columns(dag.nodes[node.parents[0]], dag, xfr_rules, col_cache)
+            where = rule.get("where")
+            group_by = rule.get("group_by", [])
+            select = rule.get("select", "*")
+            if where and parent_cols:
+                import re
+                # Aliases generados por este mismo nodo (no existen en el padre, se crean aquí)
+                self_aliases = set()
+                for col in select.split(","):
+                    col = col.strip()
+                    if " as " in col.lower():
+                        self_aliases.add(col.lower().split(" as ")[-1].strip())
+                self_aliases |= set(group_by)
+
+                ref_cols = re.findall(r'\b([a-zA-Z_]\w*)\b', where)
+                skip = {
+                    "AND", "OR", "NOT", "IS", "NULL", "IN", "LIKE", "BETWEEN",
+                    "true", "false", "TRUE", "FALSE",
+                }
+                string_vals = set(re.findall(r"'([^']+)'", where))
+
+                for rc in ref_cols:
+                    if rc in skip or rc.upper() in skip:
+                        continue
+                    if rc in string_vals or rc[0].isdigit():
+                        continue
+                    if rc in self_aliases:  # columna creada por este nodo
+                        continue
+                    if rc not in parent_cols:
+                        warnings.append(
+                            f"⚠️  TRANSFORM '{node.name}': column '{rc}' in where clause "
+                            f"may not exist in parent '{node.parents[0]}'"
+                        )
+
+        # Precalcular columnas para este nodo
+        _infer_columns(node, dag, xfr_rules, col_cache, dml_schema)
+
+    return errors, warnings

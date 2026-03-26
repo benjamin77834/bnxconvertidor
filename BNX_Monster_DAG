@@ -1,0 +1,245 @@
+digraph BNX_DAG {
+	rankdir=LR
+	size="36,20"
+	dpi=180
+	nodesep=0.5
+	ranksep=1.4
+	splines=ortho
+	fontname=Helvetica
+	RawOrders [label=RawOrders fillcolor="#90EE90" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	RawCustomers [label=RawCustomers fillcolor="#90EE90" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	RawProducts [label=RawProducts fillcolor="#90EE90" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	RawPayments [label=RawPayments fillcolor="#90EE90" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	RawReturns [label=RawReturns fillcolor="#90EE90" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	RawCampaigns [label=RawCampaigns fillcolor="#90EE90" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	RawInventory [label=RawInventory fillcolor="#90EE90" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	RawReviews [label=RawReviews fillcolor="#90EE90" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	RawShipments [label=RawShipments fillcolor="#90EE90" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	RawSuppliers [label=RawSuppliers fillcolor="#90EE90" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	RawStores [label=RawStores fillcolor="#90EE90" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	RawEmployees [label=RawEmployees fillcolor="#90EE90" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	RawWebEvents [label=RawWebEvents fillcolor="#90EE90" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	RawAppEvents [label=RawAppEvents fillcolor="#90EE90" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	RawSupportTickets [label=RawSupportTickets fillcolor="#90EE90" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	RawFraudSignals [label=RawFraudSignals fillcolor="#90EE90" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	Write_MasterReport [label=Write_MasterReport fillcolor="#FFA07A" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	Write_HighValue [label=Write_HighValue fillcolor="#FFA07A" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	Write_Churned [label=Write_Churned fillcolor="#FFA07A" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	Write_AtRisk [label=Write_AtRisk fillcolor="#FFA07A" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	Write_FraudAlerts [label=Write_FraudAlerts fillcolor="#FFA07A" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	Write_TopProducts [label=Write_TopProducts fillcolor="#FFA07A" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	Write_LowStock [label=Write_LowStock fillcolor="#FFA07A" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	Write_ReturnAlerts [label=Write_ReturnAlerts fillcolor="#FFA07A" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	Write_CampaignReport [label=Write_CampaignReport fillcolor="#FFA07A" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	Write_OperationsReport [label=Write_OperationsReport fillcolor="#FFA07A" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	Write_ShipmentDelay [label=Write_ShipmentDelay fillcolor="#FFA07A" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	Write_SupplierPerformance [label=Write_SupplierPerformance fillcolor="#FFA07A" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	subgraph cluster_Ingestion {
+		color="#999999" fillcolor="#FFF9C4" fontname="Helvetica Bold" fontsize=13 label=Ingestion style=filled
+		CleanOrders [label=CleanOrders fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		CleanCustomers [label=CleanCustomers fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		CleanProducts [label=CleanProducts fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		CleanPayments [label=CleanPayments fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		CleanReturns [label=CleanReturns fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		CleanCampaigns [label=CleanCampaigns fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		CleanInventory [label=CleanInventory fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		CleanReviews [label=CleanReviews fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		CleanShipments [label=CleanShipments fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		CleanSuppliers [label=CleanSuppliers fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		CleanStores [label=CleanStores fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		CleanEmployees [label=CleanEmployees fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		CleanWebEvents [label=CleanWebEvents fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		CleanAppEvents [label=CleanAppEvents fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		CleanSupportTickets [label=CleanSupportTickets fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		CleanFraudSignals [label=CleanFraudSignals fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+	}
+	subgraph cluster_CustomerDomain {
+		color="#999999" fillcolor="#F5F5F5" fontname="Helvetica Bold" fontsize=13 label=CustomerDomain style=filled
+		FilterActiveCustomers [label=FilterActiveCustomers fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		CustomerSegment [label=CustomerSegment fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		CustomerLifetimeValue [label=CustomerLifetimeValue fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		CustomerChurnScore [label=CustomerChurnScore fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		CustomerSupportHistory [label=CustomerSupportHistory fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+		CustomerWebBehavior [label=CustomerWebBehavior fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+		CustomerAppBehavior [label=CustomerAppBehavior fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+		CustomerProfile [label=CustomerProfile fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+	}
+	subgraph cluster_OrderDomain {
+		color="#999999" fillcolor="#F5F5F5" fontname="Helvetica Bold" fontsize=13 label=OrderDomain style=filled
+		FilterPaidOrders [label=FilterPaidOrders fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		OrderTotals [label=OrderTotals fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		OrderTxCount [label=OrderTxCount fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		OrderWithCustomer [label=OrderWithCustomer fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+		OrderWithProduct [label=OrderWithProduct fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+		OrderWithPayment [label=OrderWithPayment fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+		OrderWithShipment [label=OrderWithShipment fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+		OrderFraudCheck [label=OrderFraudCheck fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+		OrderEnriched [label=OrderEnriched fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+	}
+	subgraph cluster_ProductDomain {
+		color="#999999" fillcolor="#F5F5F5" fontname="Helvetica Bold" fontsize=13 label=ProductDomain style=filled
+		FilterActiveProducts [label=FilterActiveProducts fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		ProductRevenue [label=ProductRevenue fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		ProductReturnRate [label=ProductReturnRate fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		ProductRating [label=ProductRating fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+		ProductWithSupplier [label=ProductWithSupplier fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+		ProductWithInventory [label=ProductWithInventory fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+		TopProducts [label=TopProducts fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		LowStockAlert [label=LowStockAlert fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+	}
+	subgraph cluster_ReturnsDomain {
+		color="#999999" fillcolor="#F5F5F5" fontname="Helvetica Bold" fontsize=13 label=ReturnsDomain style=filled
+		FilterReturns [label=FilterReturns fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		ReturnRate [label=ReturnRate fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		ReturnByProduct [label=ReturnByProduct fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+		ReturnByRegion [label=ReturnByRegion fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+		HighReturnCustomers [label=HighReturnCustomers fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		ReturnFraudFlag [label=ReturnFraudFlag fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+	}
+	subgraph cluster_CampaignDomain {
+		color="#999999" fillcolor="#F5F5F5" fontname="Helvetica Bold" fontsize=13 label=CampaignDomain style=filled
+		FilterActiveCampaigns [label=FilterActiveCampaigns fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		CampaignWithCustomer [label=CampaignWithCustomer fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+		CampaignConversion [label=CampaignConversion fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+		CampaignROI [label=CampaignROI fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		RegionalCampaignCount [label=RegionalCampaignCount fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		CampaignFraudFilter [label=CampaignFraudFilter fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+	}
+	subgraph cluster_OperationsDomain {
+		color="#999999" fillcolor="#F5F5F5" fontname="Helvetica Bold" fontsize=13 label=OperationsDomain style=filled
+		ShipmentDelay [label=ShipmentDelay fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		SupplierPerformance [label=SupplierPerformance fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		StoreRevenue [label=StoreRevenue fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+		EmployeeSales [label=EmployeeSales fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+		OperationsReport [label=OperationsReport fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+	}
+	subgraph cluster_FinalReport {
+		color="#999999" fillcolor="#ECEFF1" fontname="Helvetica Bold" fontsize=13 label=FinalReport style=filled
+		FullOrderBase [label=FullOrderBase fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+		EnrichWithReturns [label=EnrichWithReturns fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+		EnrichWithCampaign [label=EnrichWithCampaign fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+		EnrichWithOperations [label=EnrichWithOperations fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+		EnrichWithFraud [label=EnrichWithFraud fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+		FlagHighValue [label=FlagHighValue fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		FlagChurned [label=FlagChurned fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		FlagAtRisk [label=FlagAtRisk fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		FlagFraud [label=FlagFraud fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+		MasterReport [label=MasterReport fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+	}
+	RawOrders -> CleanOrders
+	RawCustomers -> CleanCustomers
+	RawProducts -> CleanProducts
+	RawPayments -> CleanPayments
+	RawReturns -> CleanReturns
+	RawCampaigns -> CleanCampaigns
+	RawInventory -> CleanInventory
+	RawReviews -> CleanReviews
+	RawShipments -> CleanShipments
+	RawSuppliers -> CleanSuppliers
+	RawStores -> CleanStores
+	RawEmployees -> CleanEmployees
+	RawWebEvents -> CleanWebEvents
+	RawAppEvents -> CleanAppEvents
+	RawSupportTickets -> CleanSupportTickets
+	RawFraudSignals -> CleanFraudSignals
+	CleanOrders -> FilterPaidOrders
+	CleanOrders -> ReturnByRegion
+	CleanCustomers -> FilterActiveCustomers
+	CleanProducts -> OrderWithProduct
+	CleanProducts -> FilterActiveProducts
+	CleanProducts -> ReturnByProduct
+	CleanPayments -> OrderWithPayment
+	CleanReturns -> FilterReturns
+	CleanCampaigns -> FilterActiveCampaigns
+	CleanInventory -> ProductWithInventory
+	CleanReviews -> ProductRating
+	CleanShipments -> OrderWithShipment
+	CleanShipments -> ShipmentDelay
+	CleanSuppliers -> ProductWithSupplier
+	CleanSuppliers -> SupplierPerformance
+	CleanStores -> StoreRevenue
+	CleanEmployees -> EmployeeSales
+	CleanWebEvents -> CustomerWebBehavior
+	CleanAppEvents -> CustomerAppBehavior
+	CleanSupportTickets -> CustomerSupportHistory
+	CleanFraudSignals -> OrderFraudCheck
+	CleanFraudSignals -> ReturnFraudFlag
+	CleanFraudSignals -> CampaignFraudFilter
+	CleanFraudSignals -> EnrichWithFraud
+	FilterActiveCustomers -> CustomerSegment
+	CustomerSegment -> CustomerLifetimeValue
+	CustomerSegment -> CustomerChurnScore
+	CustomerSegment -> CustomerSupportHistory
+	CustomerSegment -> CustomerWebBehavior
+	CustomerSegment -> CustomerAppBehavior
+	CustomerLifetimeValue -> CustomerProfile
+	CustomerChurnScore -> CustomerProfile
+	CustomerSupportHistory -> CustomerProfile
+	CustomerWebBehavior -> CustomerProfile
+	CustomerAppBehavior -> CustomerProfile
+	CustomerProfile -> OrderWithCustomer
+	CustomerProfile -> CampaignWithCustomer
+	FilterPaidOrders -> OrderTotals
+	FilterPaidOrders -> OrderTxCount
+	FilterPaidOrders -> ProductRevenue
+	OrderTotals -> OrderWithCustomer
+	OrderTxCount -> OrderEnriched
+	OrderWithCustomer -> OrderWithProduct
+	OrderWithProduct -> OrderWithPayment
+	OrderWithPayment -> OrderWithShipment
+	OrderWithShipment -> OrderFraudCheck
+	OrderFraudCheck -> OrderEnriched
+	OrderEnriched -> CampaignConversion
+	OrderEnriched -> StoreRevenue
+	OrderEnriched -> EmployeeSales
+	OrderEnriched -> FullOrderBase
+	FilterActiveProducts -> ProductRevenue
+	FilterActiveProducts -> ProductReturnRate
+	ProductRevenue -> ProductRating
+	FilterReturns -> ProductReturnRate
+	FilterReturns -> ReturnRate
+	FilterReturns -> ReturnByProduct
+	ProductRating -> ProductWithSupplier
+	ProductWithSupplier -> ProductWithInventory
+	ProductWithInventory -> TopProducts
+	ProductWithInventory -> LowStockAlert
+	TopProducts -> Write_TopProducts
+	LowStockAlert -> Write_LowStock
+	ReturnRate -> HighReturnCustomers
+	ReturnRate -> FullOrderBase
+	ReturnByProduct -> ReturnByRegion
+	ReturnByProduct -> ReturnFraudFlag
+	ReturnByProduct -> Write_ReturnAlerts
+	HighReturnCustomers -> EnrichWithReturns
+	ReturnFraudFlag -> EnrichWithReturns
+	FilterActiveCampaigns -> CampaignWithCustomer
+	CampaignWithCustomer -> CampaignConversion
+	CampaignConversion -> CampaignROI
+	CampaignConversion -> RegionalCampaignCount
+	CampaignROI -> CampaignFraudFilter
+	CampaignFraudFilter -> EnrichWithCampaign
+	CampaignFraudFilter -> Write_CampaignReport
+	ShipmentDelay -> Write_ShipmentDelay
+	SupplierPerformance -> Write_SupplierPerformance
+	StoreRevenue -> OperationsReport
+	EmployeeSales -> OperationsReport
+	OperationsReport -> EnrichWithOperations
+	OperationsReport -> Write_OperationsReport
+	FullOrderBase -> EnrichWithReturns
+	EnrichWithReturns -> EnrichWithCampaign
+	EnrichWithCampaign -> EnrichWithOperations
+	EnrichWithOperations -> EnrichWithFraud
+	EnrichWithFraud -> FlagHighValue
+	EnrichWithFraud -> FlagChurned
+	EnrichWithFraud -> FlagAtRisk
+	EnrichWithFraud -> FlagFraud
+	FlagHighValue -> MasterReport
+	FlagHighValue -> Write_HighValue
+	FlagChurned -> MasterReport
+	FlagChurned -> Write_Churned
+	FlagAtRisk -> MasterReport
+	FlagAtRisk -> Write_AtRisk
+	FlagFraud -> MasterReport
+	FlagFraud -> Write_FraudAlerts
+	MasterReport -> Write_MasterReport
+}

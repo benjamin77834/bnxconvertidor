@@ -1,0 +1,295 @@
+# ============================================================
+# BNX MONSTER XFR - Enterprise Data Platform
+# ============================================================
+
+# --- Ingestion ---
+CleanOrders:
+  select order_id, customer_id, product_id, payment_id, amount, status, order_date, store_id
+  where order_id IS NOT NULL AND amount > 0
+
+CleanCustomers:
+  select customer_id, name, email, region, segment, created_at
+  where customer_id IS NOT NULL
+
+CleanProducts:
+  select product_id, name, category, price, supplier_id, stock
+  where product_id IS NOT NULL AND price > 0
+
+CleanPayments:
+  select payment_id, customer_id, order_id, amount, method, payment_date, confirmed
+  where confirmed = true
+
+CleanReturns:
+  select return_id, order_id, product_id, customer_id, reason, return_date
+  where return_id IS NOT NULL
+
+CleanCampaigns:
+  select campaign_id, customer_id, region, active, start_date, end_date, budget
+  where campaign_id IS NOT NULL
+
+CleanInventory:
+  select product_id, warehouse_id, stock, reorder_level, last_updated
+  where product_id IS NOT NULL
+
+CleanReviews:
+  select review_id, product_id, customer_id, rating, review_date
+  where rating IS NOT NULL
+
+CleanShipments:
+  select shipment_id, order_id, carrier, shipped_date, delivered_date, status
+  where shipment_id IS NOT NULL
+
+CleanSuppliers:
+  select supplier_id, name, country, rating, lead_time_days
+  where supplier_id IS NOT NULL
+
+CleanStores:
+  select store_id, name, region, city, manager_id
+  where store_id IS NOT NULL
+
+CleanEmployees:
+  select employee_id, name, store_id, role, hire_date
+  where employee_id IS NOT NULL
+
+CleanWebEvents:
+  select event_id, customer_id, page, action, event_date
+  where event_id IS NOT NULL
+
+CleanAppEvents:
+  select event_id, customer_id, screen, action, event_date
+  where event_id IS NOT NULL
+
+CleanSupportTickets:
+  select ticket_id, customer_id, issue_type, status, created_at, resolved_at
+  where ticket_id IS NOT NULL
+
+CleanFraudSignals:
+  select signal_id, customer_id, order_id, score, flagged, detected_at
+  where signal_id IS NOT NULL
+
+# --- CustomerDomain ---
+FilterActiveCustomers:
+  select *
+  where segment != 'inactive'
+
+CustomerSegment:
+  select *
+  where segment IN ('premium', 'standard', 'new')
+
+CustomerLifetimeValue:
+  group_by customer_id
+  select SUM(amount) as ltv, COUNT(order_id) as total_orders
+  where ltv > 0
+
+CustomerChurnScore:
+  group_by customer_id
+  select COUNT(ticket_id) as support_count, MAX(created_at) as last_contact
+  where support_count >= 0
+
+CustomerSupportHistory:
+  join_key customer_id
+  join_type left
+
+CustomerWebBehavior:
+  join_key customer_id
+  join_type left
+
+CustomerAppBehavior:
+  join_key customer_id
+  join_type left
+
+CustomerProfile:
+  join_key customer_id
+  join_type left
+
+# --- OrderDomain ---
+FilterPaidOrders:
+  select *
+  where status = 'paid'
+
+OrderTotals:
+  group_by customer_id, product_id, order_id, store_id
+  select SUM(amount) as total_spent, COUNT(order_id) as order_count
+  where total_spent > 0
+
+OrderTxCount:
+  group_by customer_id
+  select COUNT(order_id) as tx_count, MAX(order_date) as last_order_date
+
+OrderWithCustomer:
+  join_key customer_id
+  join_type inner
+
+OrderWithProduct:
+  join_key product_id
+  join_type left
+
+OrderWithPayment:
+  join_key order_id
+  join_type left
+
+OrderWithShipment:
+  join_key order_id
+  join_type left
+
+OrderFraudCheck:
+  join_key order_id
+  join_type left
+
+OrderEnriched:
+  join_key customer_id
+  join_type left
+
+# --- ProductDomain ---
+FilterActiveProducts:
+  select *
+  where stock > 0
+
+ProductRevenue:
+  group_by product_id, supplier_id
+  select SUM(amount) as revenue, COUNT(order_id) as units_sold
+  where revenue > 0
+
+ProductReturnRate:
+  group_by product_id
+  select COUNT(return_id) as return_count
+  where return_count >= 0
+
+ProductRating:
+  join_key product_id
+  join_type left
+
+ProductWithSupplier:
+  join_key supplier_id
+  join_type left
+
+ProductWithInventory:
+  join_key product_id
+  join_type left
+
+ProductWithStore:
+  join_key store_id
+  join_type left
+
+TopProducts:
+  select *
+  where units_sold > 10
+
+LowStockAlert:
+  select *
+  where stock < reorder_level
+
+# --- ReturnsDomain ---
+FilterReturns:
+  select return_id, order_id, product_id, customer_id, reason, return_date
+  where return_date IS NOT NULL
+
+ReturnRate:
+  group_by customer_id
+  select COUNT(return_id) as return_count
+  where return_count > 0
+
+ReturnByProduct:
+  join_key product_id
+  join_type left
+
+ReturnByRegion:
+  join_key order_id
+  join_type left
+
+HighReturnCustomers:
+  select *
+  where return_count > 3
+
+ReturnFraudFlag:
+  join_key order_id
+  join_type left
+
+# --- CampaignDomain ---
+FilterActiveCampaigns:
+  select *
+  where active = true
+
+CampaignWithCustomer:
+  join_key customer_id
+  join_type inner
+
+CampaignConversion:
+  join_key customer_id
+  join_type left
+
+CampaignROI:
+  group_by campaign_id, region, customer_id
+  select SUM(total_spent) as campaign_revenue, COUNT(customer_id) as converted_customers
+  where campaign_revenue > 0
+
+RegionalCampaignCount:
+  group_by region
+  select COUNT(campaign_id) as campaign_count, SUM(campaign_revenue) as regional_revenue
+
+CampaignFraudFilter:
+  join_key customer_id
+  join_type left
+
+# --- OperationsDomain ---
+ShipmentDelay:
+  select *
+  where delivered_date > shipped_date AND status = 'delayed'
+
+SupplierPerformance:
+  group_by supplier_id
+  select AVG(lead_time_days) as avg_lead_time, COUNT(product_id) as product_count
+  where avg_lead_time > 0
+
+StoreRevenue:
+  join_key store_id
+  join_type left
+
+EmployeeSales:
+  join_key store_id
+  join_type left
+
+OperationsReport:
+  join_key store_id
+  join_type left
+
+# --- FinalReport ---
+FullOrderBase:
+  join_key customer_id
+  join_type left
+
+EnrichWithReturns:
+  join_key customer_id
+  join_type left
+
+EnrichWithCampaign:
+  join_key customer_id
+  join_type left
+
+EnrichWithOperations:
+  join_key order_id
+  join_type left
+
+EnrichWithFraud:
+  join_key customer_id
+  join_type left
+
+FlagHighValue:
+  select *
+  where total_spent > 5000
+
+FlagChurned:
+  select *
+  where order_count < 2 AND return_count > 2
+
+FlagAtRisk:
+  select *
+  where total_spent < 500 AND tx_count < 3
+
+FlagFraud:
+  select *
+  where score > 0.8 AND flagged = true
+
+MasterReport:
+  join_key customer_id
+  join_type left

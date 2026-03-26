@@ -1,0 +1,143 @@
+keys:
+  RawOrders: order_id
+  RawCustomers: customer_id
+  RawProducts: product_id
+  RawPayments: payment_id
+  RawReturns: return_id
+  RawCampaigns: campaign_id
+  RawInventory: product_id
+  RawReviews: review_id
+  RawShipments: shipment_id
+  RawSuppliers: supplier_id
+  RawStores: store_id
+  RawEmployees: employee_id
+  RawWebEvents: event_id
+  RawAppEvents: event_id
+  RawSupportTickets: ticket_id
+  RawFraudSignals: signal_id
+
+schema:
+  RawOrders:
+    order_id: string
+    customer_id: string
+    product_id: string
+    payment_id: string
+    amount: double
+    status: string
+    order_date: date
+    store_id: string
+
+  RawCustomers:
+    customer_id: string
+    name: string
+    email: string
+    region: string
+    segment: string
+    created_at: timestamp
+
+  RawProducts:
+    product_id: string
+    name: string
+    category: string
+    price: double
+    supplier_id: string
+    stock: int
+
+  RawPayments:
+    payment_id: string
+    customer_id: string
+    order_id: string
+    amount: double
+    method: string
+    payment_date: date
+    confirmed: boolean
+
+  RawReturns:
+    return_id: string
+    order_id: string
+    product_id: string
+    customer_id: string
+    reason: string
+    return_date: date
+
+  RawCampaigns:
+    campaign_id: string
+    customer_id: string
+    region: string
+    active: boolean
+    start_date: date
+    end_date: date
+    budget: double
+
+  RawInventory:
+    product_id: string
+    warehouse_id: string
+    stock: int
+    reorder_level: int
+    last_updated: timestamp
+
+  RawReviews:
+    review_id: string
+    product_id: string
+    customer_id: string
+    rating: double
+    review_date: date
+
+  RawShipments:
+    shipment_id: string
+    order_id: string
+    carrier: string
+    shipped_date: date
+    delivered_date: date
+    status: string
+
+  RawSuppliers:
+    supplier_id: string
+    name: string
+    country: string
+    rating: double
+    lead_time_days: int
+
+  RawStores:
+    store_id: string
+    name: string
+    region: string
+    city: string
+    manager_id: string
+
+  RawEmployees:
+    employee_id: string
+    name: string
+    store_id: string
+    role: string
+    hire_date: date
+
+  RawWebEvents:
+    event_id: string
+    customer_id: string
+    page: string
+    action: string
+    event_date: date
+
+  RawAppEvents:
+    event_id: string
+    customer_id: string
+    screen: string
+    action: string
+    event_date: date
+
+  RawSupportTickets:
+    ticket_id: string
+    customer_id: string
+    issue_type: string
+    status: string
+    created_at: timestamp
+    resolved_at: timestamp
+
+  RawFraudSignals:
+    signal_id: string
+    customer_id: string
+    order_id: string
+    score: double
+    flagged: boolean
+    detected_at: timestamp

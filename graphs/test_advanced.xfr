@@ -1,0 +1,169 @@
+CleanOrders:
+  select order_id, customer_id, product_id, payment_id, amount, status, order_date
+  where order_id IS NOT NULL AND amount > 0
+
+CleanCustomers:
+  select customer_id, name, email, region, segment, created_at
+  where customer_id IS NOT NULL
+
+CleanProducts:
+  select product_id, name, category, price, stock
+  where product_id IS NOT NULL AND price > 0
+
+CleanPayments:
+  select payment_id, customer_id, amount, method, payment_date, confirmed
+  where confirmed = true
+
+FilterPaidOrders:
+  select *
+  where status = 'paid'
+
+FilterActiveCustomers:
+  select *
+  where segment != 'inactive'
+
+FilterReturns:
+  select return_id, order_id, customer_id, reason, return_date
+  where return_date IS NOT NULL
+
+OrderTotals:
+  group_by customer_id, product_id
+  select SUM(amount) as total_spent, COUNT(order_id) as order_count
+  where total_spent > 0
+
+CustomerSpend:
+  group_by customer_id
+  select SUM(amount) as payment_total, COUNT(payment_id) as payment_count
+  where payment_total > 0
+
+ProductRevenue:
+  group_by product_id
+  select SUM(amount) as revenue, COUNT(order_id) as units_sold
+  where revenue > 0
+
+ReturnRate:
+  group_by customer_id
+  select COUNT(return_id) as return_count
+  where return_count > 0
+
+FlagHighValue:
+  select *
+  where total_spent > 1000
+
+FlagChurned:
+  select *
+  where order_count < 2 AND return_count > 1
+
+OrderWithCustomer:
+  join_key customer_id
+  join_type inner
+
+OrderWithProduct:
+  join_key product_id
+  join_type left
+
+OrderWithPayment:
+  join_key customer_id
+  join_type left
+
+FullOrder:
+  join_key customer_id
+  join_type left
+
+EnrichWithReturn:
+  join_key order_id
+  join_type left
+
+# --- Ingestion missing rules ---
+CleanReturns:
+  select return_id, order_id, customer_id, reason, return_date
+  where return_id IS NOT NULL
+
+CleanCampaigns:
+  select campaign_id, customer_id, region, active, start_date, end_date
+  where campaign_id IS NOT NULL
+
+CleanInventory:
+  select product_id, warehouse_id, stock, reorder_level
+  where product_id IS NOT NULL
+
+CleanReviews:
+  select review_id, product_id, customer_id, rating, review_date
+  where rating IS NOT NULL
+
+# --- CustomerPipeline ---
+CustomerTotals:
+  group_by customer_id
+  select SUM(amount) as customer_total, COUNT(order_id) as total_orders
+
+CustomerTxCount:
+  group_by customer_id
+  select COUNT(order_id) as tx_count, MAX(order_date) as last_order_date
+
+CustomerRegion:
+  join_key customer_id
+  join_type inner
+
+CustomerMetrics:
+  join_key customer_id
+  join_type inner
+
+# --- ProductPipeline ---
+FilterActiveProducts:
+  select *
+  where stock > 0
+
+LowStockAlert:
+  select *
+  where stock < reorder_level
+
+TopProducts:
+  select *
+  where units_sold > 10
+
+ProductRating:
+  join_key product_id
+  join_type left
+
+# --- ReturnsPipeline ---
+HighReturnCustomers:
+  select *
+  where return_count > 3
+
+ReturnByProduct:
+  join_key product_id
+  join_type left
+FilterActiveCampaigns:
+  select *
+  where active = true
+
+CampaignWithCustomer:
+  join_key customer_id
+  join_type inner
+
+CampaignConversion:
+  select *
+  where order_count > 0
+
+RegionalCampaignCount:
+  group_by region
+  select COUNT(campaign_id) as campaign_count, SUM(customer_total) as regional_revenue
+
+# --- FinalReport ---
+FlagAtRisk:
+  select *
+  where customer_total < 200 AND tx_count < 3
+
+EnrichWithReturns:
+  join_key customer_id
+  join_type left
+
+EnrichWithCampaign:
+  join_key customer_id
+  join_type left
+
+MasterReport:
+  join_key customer_id
+  join_type left
+
+# --- CampaignPipeline ---

@@ -1,71 +1,61 @@
-digraph BNX_GlueJob {
+digraph BNX_DAG {
 	rankdir=LR
-	size="20,20"
-	dpi=300
-	nodesep=0.8
-	ranksep=1
+	size="36,20"
+	dpi=180
+	nodesep=0.5
+	ranksep=1.4
 	splines=ortho
-	concentrate=true
-	CleanCustomers___Transform_RawCustomers__rules__ [label=CleanCustomers___Transform_RawCustomers__rules__ color=lightblue shape=box style=filled]
-	_trim_fields__ [label=_trim_fields__ color=lightblue shape=box style=filled]
-	_fill_missing_country__MX____ [label=_fill_missing_country__MX____ color=lightblue shape=box style=filled]
-	_uppercase_name__ [label=_uppercase_name__ color=lightblue shape=box style=filled]
-	__ [label=__ color=lightblue shape=box style=filled]
-	CleanTransactions___Transform_RawTransactions__rules__ [label=CleanTransactions___Transform_RawTransactions__rules__ color=lightblue shape=box style=filled]
-	_parse_dates_transaction_date___ [label=_parse_dates_transaction_date___ color=lightblue shape=box style=filled]
-	_filter_amount___0__ [label=_filter_amount___0__ color=lightblue shape=box style=filled]
-	CleanProducts___Transform_RawProducts__rules__ [label=CleanProducts___Transform_RawProducts__rules__ color=lightblue shape=box style=filled]
-	_standardize_category__ [label=_standardize_category__ color=lightblue shape=box style=filled]
-	_uppercase_product_name__ [label=_uppercase_product_name__ color=lightblue shape=box style=filled]
-	CustomersWithRegion___Join_CleanCustomers__RawRegions__keys___region_id___ [label=CustomersWithRegion___Join_CleanCustomers__RawRegions__keys___region_id___ color=lightblue shape=box style=filled]
-	CustomerAggregates___SubGraph__CustomerAggregates____ [label=CustomerAggregates___SubGraph__CustomerAggregates____ color=lightblue shape=box style=filled]
-	MonthlyAvg___SubGraph__MonthlyAvg____ [label=MonthlyAvg___SubGraph__MonthlyAvg____ color=lightblue shape=box style=filled]
-	TxByMonth___Transform_CleanTransactions__rules___extract_month_transaction_date____ [label=TxByMonth___Transform_CleanTransactions__rules___extract_month_transaction_date____ color=lightblue shape=box style=filled]
-	Output___AvgMonthly [label=Output___AvgMonthly color=lightblue shape=box style=filled]
-	_ [label=_ color=lightblue shape=box style=filled]
-	MergeAgg1___Join_TotalSpent__TxCount__keys___customer_id___ [label=MergeAgg1___Join_TotalSpent__TxCount__keys___customer_id___ color=lightblue shape=box style=filled]
-	MergeAgg2___Join_MergeAgg1__MonthlyAvg_Output__keys___customer_id____join_type__left__ [label=MergeAgg2___Join_MergeAgg1__MonthlyAvg_Output__keys___customer_id____join_type__left__ color=lightblue shape=box style=filled]
-	Output___MergeAgg2 [label=Output___MergeAgg2 color=lightblue shape=box style=filled]
-	TopProducts___SubGraph__TopProducts____ [label=TopProducts___SubGraph__TopProducts____ color=lightblue shape=box style=filled]
-	ProductInfo____Join_ProductSales__CleanProducts__keys___product_id___ [label=ProductInfo____Join_ProductSales__CleanProducts__keys___product_id___ color=lightblue shape=box style=filled]
-	FilterTop______Transform_ProductInfo__rules___top_n_10__amount_____ [label=FilterTop______Transform_ProductInfo__rules___top_n_10__amount_____ color=lightblue shape=box style=filled]
-	CategorySplit___SubGraph__CategorySplit____ [label=CategorySplit___SubGraph__CategorySplit____ color=lightblue shape=box style=filled]
-	SplitByCategory___Transform_FilterTop__rules___split_by_category____ [label=SplitByCategory___Transform_FilterTop__rules___split_by_category____ color=lightblue shape=box style=filled]
-	Output___SplitByCategory [label=Output___SplitByCategory color=lightblue shape=box style=filled]
-	Output___CategorySplit_Output [label=Output___CategorySplit_Output color=lightblue shape=box style=filled]
-	ActiveCampaigns___SubGraph__ActiveCampaigns____ [label=ActiveCampaigns___SubGraph__ActiveCampaigns____ color=lightblue shape=box style=filled]
-	FilterCampaigns___Transform_RawCampaigns__rules___filter_active_true____ [label=FilterCampaigns___Transform_RawCampaigns__rules___filter_active_true____ color=lightblue shape=box style=filled]
-	JoinWithCustomers___Join_FilterCampaigns__CleanCustomers__keys___customer_id___ [label=JoinWithCustomers___Join_FilterCampaigns__CleanCustomers__keys___customer_id___ color=lightblue shape=box style=filled]
-	RegionalCount___SubGraph__RegionalCount____ [label=RegionalCount___SubGraph__RegionalCount____ color=lightblue shape=box style=filled]
-	Output___CountByRegion [label=Output___CountByRegion color=lightblue shape=box style=filled]
-	Output___RegionalCount_Output [label=Output___RegionalCount_Output color=lightblue shape=box style=filled]
-	CustomerReport___Join_CustomersWithRegion__CustomerAggregates_Output__keys___customer_id___ [label=CustomerReport___Join_CustomersWithRegion__CustomerAggregates_Output__keys___customer_id___ color=lightblue shape=box style=filled]
-	CustomerReport2___Join_CustomerReport__TopProducts_Output__keys___product_id____join_type__left__ [label=CustomerReport2___Join_CustomerReport__TopProducts_Output__keys___product_id____join_type__left__ color=lightblue shape=box style=filled]
-	FinalReport___Join_CustomerReport2__ActiveCampaigns_Output__keys___region_id____join_type__left__ [label=FinalReport___Join_CustomerReport2__ActiveCampaigns_Output__keys___region_id____join_type__left__ color=lightblue shape=box style=filled]
-	RawCustomers_______Read__s3 [label=RawCustomers_______Read__s3 color=lightgreen shape=ellipse style=filled]
-	RawTransactions____Read__s3 [label=RawTransactions____Read__s3 color=lightgreen shape=ellipse style=filled]
-	RawProducts________Read__s3 [label=RawProducts________Read__s3 color=lightgreen shape=ellipse style=filled]
-	RawRegions_________Read__s3 [label=RawRegions_________Read__s3 color=lightgreen shape=ellipse style=filled]
-	RawCampaigns_______Read__s3 [label=RawCampaigns_______Read__s3 color=lightgreen shape=ellipse style=filled]
-	TotalSpent___Aggregate_CleanTransactions__group_by___customer_id____agg___amount_ [label=TotalSpent___Aggregate_CleanTransactions__group_by___customer_id____agg___amount_ color=lightgreen shape=ellipse style=filled]
-	TxCount_____Aggregate_CleanTransactions__group_by___customer_id____agg___transaction_id_ [label=TxCount_____Aggregate_CleanTransactions__group_by___customer_id____agg___transaction_id_ color=lightgreen shape=ellipse style=filled]
-	AvgMonthly___Aggregate_TxByMonth__group_by___customer_id___month____agg___amount_ [label=AvgMonthly___Aggregate_TxByMonth__group_by___customer_id___month____agg___amount_ color=lightgreen shape=ellipse style=filled]
-	ProductSales___Aggregate_CleanTransactions__group_by___product_id____agg___amount_ [label=ProductSales___Aggregate_CleanTransactions__group_by___product_id____agg___amount_ color=lightgreen shape=ellipse style=filled]
-	CountByRegion___Aggregate_JoinWithCustomers__group_by___region_id____agg___campaign_id_ [label=CountByRegion___Aggregate_JoinWithCustomers__group_by___region_id____agg___campaign_id_ color=lightgreen shape=ellipse style=filled]
-	Write_FinalReport___s3 [label=Write_FinalReport___s3 color=lightgreen shape=ellipse style=filled]
-	Write_TopProducts_Output___s3 [label=Write_TopProducts_Output___s3 color=lightgreen shape=ellipse style=filled]
-	Write_ActiveCampaigns_Output___s3 [label=Write_ActiveCampaigns_Output___s3 color=lightgreen shape=ellipse style=filled]
-	RawCustomers_______Read__s3 -> MasterReport
-	RawTransactions____Read__s3 -> MasterReport
-	RawProducts________Read__s3 -> MasterReport
-	RawRegions_________Read__s3 -> MasterReport
-	RawCampaigns_______Read__s3 -> MasterReport
-	TotalSpent___Aggregate_CleanTransactions__group_by___customer_id____agg___amount_ -> MasterReport
-	TxCount_____Aggregate_CleanTransactions__group_by___customer_id____agg___transaction_id_ -> MasterReport
-	AvgMonthly___Aggregate_TxByMonth__group_by___customer_id___month____agg___amount_ -> MasterReport
-	ProductSales___Aggregate_CleanTransactions__group_by___product_id____agg___amount_ -> MasterReport
-	CountByRegion___Aggregate_JoinWithCustomers__group_by___region_id____agg___campaign_id_ -> MasterReport
-	Write_FinalReport___s3 -> MasterReport
-	Write_TopProducts_Output___s3 -> MasterReport
-	Write_ActiveCampaigns_Output___s3 -> MasterReport
+	fontname=Helvetica
+	Orders [label=Orders fillcolor="#90EE90" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	Customers [label=Customers fillcolor="#90EE90" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	Products [label=Products fillcolor="#90EE90" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	Payments [label=Payments fillcolor="#90EE90" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	Returns [label=Returns fillcolor="#90EE90" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	CleanOrders [label=CleanOrders fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+	CleanCustomers [label=CleanCustomers fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+	CleanProducts [label=CleanProducts fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+	CleanPayments [label=CleanPayments fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+	FilterPaidOrders [label=FilterPaidOrders fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+	FilterActiveCustomers [label=FilterActiveCustomers fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+	FilterReturns [label=FilterReturns fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+	OrderTotals [label=OrderTotals fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+	CustomerSpend [label=CustomerSpend fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+	ProductRevenue [label=ProductRevenue fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+	ReturnRate [label=ReturnRate fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+	OrderWithCustomer [label=OrderWithCustomer fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+	OrderWithProduct [label=OrderWithProduct fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+	OrderWithPayment [label=OrderWithPayment fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+	FullOrder [label=FullOrder fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+	EnrichWithReturn [label=EnrichWithReturn fillcolor="#FFD700" fontname=Helvetica fontsize=11 shape=diamond style=filled]
+	FlagHighValue [label=FlagHighValue fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+	FlagChurned [label=FlagChurned fillcolor="#ADD8E6" fontname=Helvetica fontsize=11 shape=box style=filled]
+	ReportFull [label=ReportFull fillcolor="#FFA07A" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	ReportHighValue [label=ReportHighValue fillcolor="#FFA07A" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	ReportChurned [label=ReportChurned fillcolor="#FFA07A" fontname=Helvetica fontsize=11 shape=ellipse style=filled]
+	Orders -> CleanOrders
+	Customers -> CleanCustomers
+	Products -> CleanProducts
+	Payments -> CleanPayments
+	Returns -> FilterReturns
+	CleanOrders -> FilterPaidOrders
+	CleanCustomers -> FilterActiveCustomers
+	CleanProducts -> ProductRevenue
+	CleanPayments -> CustomerSpend
+	FilterPaidOrders -> OrderTotals
+	FilterActiveCustomers -> OrderWithCustomer
+	FilterReturns -> ReturnRate
+	FilterReturns -> EnrichWithReturn
+	OrderTotals -> OrderWithCustomer
+	CustomerSpend -> OrderWithPayment
+	ProductRevenue -> OrderWithProduct
+	ReturnRate -> FullOrder
+	OrderWithCustomer -> OrderWithProduct
+	OrderWithProduct -> OrderWithPayment
+	OrderWithPayment -> FullOrder
+	FullOrder -> EnrichWithReturn
+	EnrichWithReturn -> FlagHighValue
+	EnrichWithReturn -> FlagChurned
+	EnrichWithReturn -> ReportFull
+	FlagHighValue -> ReportHighValue
+	FlagChurned -> ReportChurned
 }

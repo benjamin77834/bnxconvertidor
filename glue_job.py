@@ -1,6 +1,6 @@
 """
 🚀 BNX V54 GENERATED GLUE JOB
-📅 Generated at: 2026-03-26 09:08:08.420379
+📅 Generated at: 2026-03-26 11:39:15.125394
 """
 
 from awsglue.context import GlueContext
@@ -17,200 +17,216 @@ print("🚀 BNX Glue Job V54 Started")
 # DAG EXECUTION V54
 # =========================
 
-# 🔹 DML Node: RawCustomers_______Read__s3
-RawCustomers_______Read__s3_df = None  # no parents
-print("🔄 DML: RawCustomers_______Read__s3")
+# 🟢 SOURCE: Orders
+Orders_df = spark.read.format("parquet").load("s3://bnx/raw/orders")
+print("📂 SOURCE: Orders")
 
-# 🔹 DML Node: RawTransactions____Read__s3
-RawTransactions____Read__s3_df = None  # no parents
-print("🔄 DML: RawTransactions____Read__s3")
+# 🟢 SOURCE: Customers
+Customers_df = spark.read.format("parquet").load("s3://bnx/raw/customers")
+print("📂 SOURCE: Customers")
 
-# 🔹 DML Node: RawProducts________Read__s3
-RawProducts________Read__s3_df = None  # no parents
-print("🔄 DML: RawProducts________Read__s3")
+# 🟢 SOURCE: Products
+Products_df = spark.read.format("parquet").load("s3://bnx/raw/products")
+print("📂 SOURCE: Products")
 
-# 🔹 DML Node: RawRegions_________Read__s3
-RawRegions_________Read__s3_df = None  # no parents
-print("🔄 DML: RawRegions_________Read__s3")
+# 🟢 SOURCE: Payments
+Payments_df = spark.read.format("parquet").load("s3://bnx/raw/payments")
+print("📂 SOURCE: Payments")
 
-# 🔹 DML Node: RawCampaigns_______Read__s3
-RawCampaigns_______Read__s3_df = None  # no parents
-print("🔄 DML: RawCampaigns_______Read__s3")
+# 🟢 SOURCE: Returns
+Returns_df = spark.read.format("parquet").load("s3://bnx/raw/returns")
+print("📂 SOURCE: Returns")
 
-# 🔹 XFR Node: CleanCustomers___Transform_RawCustomers__rules__
-CleanCustomers___Transform_RawCustomers__rules___df = spark.read.format("parquet").load("s3://bnx/raw/cleancustomers___transform_rawcustomers__rules__")
-print("📥 XFR: CleanCustomers___Transform_RawCustomers__rules__")
+# 🟢 SOURCE: Campaigns
+Campaigns_df = spark.read.format("parquet").load("s3://bnx/raw/campaigns")
+print("📂 SOURCE: Campaigns")
 
-# 🔹 XFR Node: _trim_fields__
-_trim_fields___df = spark.read.format("parquet").load("s3://bnx/raw/_trim_fields__")
-print("📥 XFR: _trim_fields__")
+# 🟢 SOURCE: Inventory
+Inventory_df = spark.read.format("parquet").load("s3://bnx/raw/inventory")
+print("📂 SOURCE: Inventory")
 
-# 🔹 XFR Node: _fill_missing_country__MX____
-_fill_missing_country__MX_____df = spark.read.format("parquet").load("s3://bnx/raw/_fill_missing_country__mx____")
-print("📥 XFR: _fill_missing_country__MX____")
+# 🟢 SOURCE: Reviews
+Reviews_df = spark.read.format("parquet").load("s3://bnx/raw/reviews")
+print("📂 SOURCE: Reviews")
 
-# 🔹 XFR Node: _uppercase_name__
-_uppercase_name___df = spark.read.format("parquet").load("s3://bnx/raw/_uppercase_name__")
-print("📥 XFR: _uppercase_name__")
+# 🔹 TRANSFORM: CleanOrders
+CleanOrders_df = Orders_df.selectExpr("order_id", "customer_id", "product_id", "payment_id", "amount", "status", "order_date").where("order_id IS NOT NULL AND amount > 0")
+print("🔄 TRANSFORM: CleanOrders")
 
-# 🔹 XFR Node: __
-___df = spark.read.format("parquet").load("s3://bnx/raw/__")
-print("📥 XFR: __")
+# 🔹 TRANSFORM: CleanCustomers
+CleanCustomers_df = Customers_df.selectExpr("customer_id", "name", "email", "region", "segment", "created_at").where("customer_id IS NOT NULL")
+print("🔄 TRANSFORM: CleanCustomers")
 
-# 🔹 XFR Node: CleanTransactions___Transform_RawTransactions__rules__
-CleanTransactions___Transform_RawTransactions__rules___df = spark.read.format("parquet").load("s3://bnx/raw/cleantransactions___transform_rawtransactions__rules__")
-print("📥 XFR: CleanTransactions___Transform_RawTransactions__rules__")
+# 🔹 TRANSFORM: CleanProducts
+CleanProducts_df = Products_df.selectExpr("product_id", "name", "category", "price", "stock").where("product_id IS NOT NULL AND price > 0")
+print("🔄 TRANSFORM: CleanProducts")
 
-# 🔹 XFR Node: _parse_dates_transaction_date___
-_parse_dates_transaction_date____df = spark.read.format("parquet").load("s3://bnx/raw/_parse_dates_transaction_date___")
-print("📥 XFR: _parse_dates_transaction_date___")
+# 🔹 TRANSFORM: CleanPayments
+CleanPayments_df = Payments_df.selectExpr("payment_id", "customer_id", "amount", "method", "payment_date", "confirmed").where("confirmed = true")
+print("🔄 TRANSFORM: CleanPayments")
 
-# 🔹 XFR Node: _filter_amount___0__
-_filter_amount___0___df = spark.read.format("parquet").load("s3://bnx/raw/_filter_amount___0__")
-print("📥 XFR: _filter_amount___0__")
+# 🔹 TRANSFORM: CleanReturns
+CleanReturns_df = Returns_df.selectExpr("return_id", "order_id", "customer_id", "reason", "return_date").where("return_id IS NOT NULL")
+print("🔄 TRANSFORM: CleanReturns")
 
-# 🔹 XFR Node: CleanProducts___Transform_RawProducts__rules__
-CleanProducts___Transform_RawProducts__rules___df = spark.read.format("parquet").load("s3://bnx/raw/cleanproducts___transform_rawproducts__rules__")
-print("📥 XFR: CleanProducts___Transform_RawProducts__rules__")
+# 🔹 TRANSFORM: CleanCampaigns
+CleanCampaigns_df = Campaigns_df.selectExpr("campaign_id", "customer_id", "region", "active", "start_date", "end_date").where("campaign_id IS NOT NULL")
+print("🔄 TRANSFORM: CleanCampaigns")
 
-# 🔹 XFR Node: _standardize_category__
-_standardize_category___df = spark.read.format("parquet").load("s3://bnx/raw/_standardize_category__")
-print("📥 XFR: _standardize_category__")
+# 🔹 TRANSFORM: CleanInventory
+CleanInventory_df = Inventory_df.selectExpr("product_id", "warehouse_id", "stock", "reorder_level").where("product_id IS NOT NULL")
+print("🔄 TRANSFORM: CleanInventory")
 
-# 🔹 XFR Node: _uppercase_product_name__
-_uppercase_product_name___df = spark.read.format("parquet").load("s3://bnx/raw/_uppercase_product_name__")
-print("📥 XFR: _uppercase_product_name__")
+# 🔹 TRANSFORM: CleanReviews
+CleanReviews_df = Reviews_df.selectExpr("review_id", "product_id", "customer_id", "rating", "review_date").where("rating IS NOT NULL")
+print("🔄 TRANSFORM: CleanReviews")
 
-# 🔹 XFR Node: CustomersWithRegion___Join_CleanCustomers__RawRegions__keys___region_id___
-CustomersWithRegion___Join_CleanCustomers__RawRegions__keys___region_id____df = spark.read.format("parquet").load("s3://bnx/raw/customerswithregion___join_cleancustomers__rawregions__keys___region_id___")
-print("📥 XFR: CustomersWithRegion___Join_CleanCustomers__RawRegions__keys___region_id___")
+# 🔹 TRANSFORM: FilterActiveCustomers
+FilterActiveCustomers_df = CleanCustomers_df.selectExpr("*").where("segment != 'inactive'")
+print("🔄 TRANSFORM: FilterActiveCustomers")
 
-# 🔹 XFR Node: CustomerAggregates___SubGraph__CustomerAggregates____
-CustomerAggregates___SubGraph__CustomerAggregates_____df = spark.read.format("parquet").load("s3://bnx/raw/customeraggregates___subgraph__customeraggregates____")
-print("📥 XFR: CustomerAggregates___SubGraph__CustomerAggregates____")
+# 🔗 JOIN: CustomerRegion
+CustomerRegion_df = FilterActiveCustomers_df.join(CleanOrders_df, on="customer_id", how="inner")
+print("🔗 JOIN: CustomerRegion")
 
-# 🔹 DML Node: TotalSpent___Aggregate_CleanTransactions__group_by___customer_id____agg___amount_
-TotalSpent___Aggregate_CleanTransactions__group_by___customer_id____agg___amount__df = None  # no parents
-print("🔄 DML: TotalSpent___Aggregate_CleanTransactions__group_by___customer_id____agg___amount_")
+# 🔹 TRANSFORM: CustomerTotals
+CustomerTotals_df = CustomerRegion_df.groupBy("customer_id").agg(sum("amount").alias("customer_total"), count("order_id").alias("total_orders"))
+print("🔄 TRANSFORM: CustomerTotals")
 
-# 🔹 DML Node: TxCount_____Aggregate_CleanTransactions__group_by___customer_id____agg___transaction_id_
-TxCount_____Aggregate_CleanTransactions__group_by___customer_id____agg___transaction_id__df = None  # no parents
-print("🔄 DML: TxCount_____Aggregate_CleanTransactions__group_by___customer_id____agg___transaction_id_")
+# 🔹 TRANSFORM: CustomerTxCount
+CustomerTxCount_df = CustomerRegion_df.groupBy("customer_id").agg(count("order_id").alias("tx_count"), max("order_date").alias("last_order_date"))
+print("🔄 TRANSFORM: CustomerTxCount")
 
-# 🔹 XFR Node: MonthlyAvg___SubGraph__MonthlyAvg____
-MonthlyAvg___SubGraph__MonthlyAvg_____df = spark.read.format("parquet").load("s3://bnx/raw/monthlyavg___subgraph__monthlyavg____")
-print("📥 XFR: MonthlyAvg___SubGraph__MonthlyAvg____")
+# 🔗 JOIN: CustomerMetrics
+CustomerMetrics_df = CustomerTotals_df.join(CustomerTxCount_df, on="customer_id", how="inner")
+print("🔗 JOIN: CustomerMetrics")
 
-# 🔹 XFR Node: TxByMonth___Transform_CleanTransactions__rules___extract_month_transaction_date____
-TxByMonth___Transform_CleanTransactions__rules___extract_month_transaction_date_____df = spark.read.format("parquet").load("s3://bnx/raw/txbymonth___transform_cleantransactions__rules___extract_month_transaction_date____")
-print("📥 XFR: TxByMonth___Transform_CleanTransactions__rules___extract_month_transaction_date____")
+# 🔹 TRANSFORM: FilterPaidOrders
+FilterPaidOrders_df = CleanOrders_df.selectExpr("*").where("status = 'paid'")
+print("🔄 TRANSFORM: FilterPaidOrders")
 
-# 🔹 DML Node: AvgMonthly___Aggregate_TxByMonth__group_by___customer_id___month____agg___amount_
-AvgMonthly___Aggregate_TxByMonth__group_by___customer_id___month____agg___amount__df = None  # no parents
-print("🔄 DML: AvgMonthly___Aggregate_TxByMonth__group_by___customer_id___month____agg___amount_")
+# 🔹 TRANSFORM: OrderTotals
+OrderTotals_df = FilterPaidOrders_df.groupBy("customer_id", "product_id").agg(sum("amount").alias("total_spent"), count("order_id").alias("order_count")).where("total_spent > 0")
+print("🔄 TRANSFORM: OrderTotals")
 
-# 🔹 XFR Node: Output___AvgMonthly
-Output___AvgMonthly_df = spark.read.format("parquet").load("s3://bnx/raw/output___avgmonthly")
-print("📥 XFR: Output___AvgMonthly")
+# 🔗 JOIN: OrderWithCustomer
+OrderWithCustomer_df = OrderTotals_df.join(CustomerMetrics_df, on="customer_id", how="inner")
+print("🔗 JOIN: OrderWithCustomer")
 
-# 🔹 XFR Node: _
-__df = spark.read.format("parquet").load("s3://bnx/raw/_")
-print("📥 XFR: _")
+# 🔗 JOIN: OrderWithProduct
+OrderWithProduct_df = OrderWithCustomer_df.join(FilterPaidOrders_df, on="product_id", how="left")
+print("🔗 JOIN: OrderWithProduct")
 
-# 🔹 XFR Node: MergeAgg1___Join_TotalSpent__TxCount__keys___customer_id___
-MergeAgg1___Join_TotalSpent__TxCount__keys___customer_id____df = spark.read.format("parquet").load("s3://bnx/raw/mergeagg1___join_totalspent__txcount__keys___customer_id___")
-print("📥 XFR: MergeAgg1___Join_TotalSpent__TxCount__keys___customer_id___")
+# 🔗 JOIN: OrderWithPayment
+OrderWithPayment_df = OrderWithProduct_df.join(CleanPayments_df, on="customer_id", how="left")
+print("🔗 JOIN: OrderWithPayment")
 
-# 🔹 XFR Node: MergeAgg2___Join_MergeAgg1__MonthlyAvg_Output__keys___customer_id____join_type__left__
-MergeAgg2___Join_MergeAgg1__MonthlyAvg_Output__keys___customer_id____join_type__left___df = spark.read.format("parquet").load("s3://bnx/raw/mergeagg2___join_mergeagg1__monthlyavg_output__keys___customer_id____join_type__left__")
-print("📥 XFR: MergeAgg2___Join_MergeAgg1__MonthlyAvg_Output__keys___customer_id____join_type__left__")
+# 🔹 TRANSFORM: FilterActiveProducts
+FilterActiveProducts_df = CleanProducts_df.selectExpr("*").where("stock > 0")
+print("🔄 TRANSFORM: FilterActiveProducts")
 
-# 🔹 XFR Node: Output___MergeAgg2
-Output___MergeAgg2_df = spark.read.format("parquet").load("s3://bnx/raw/output___mergeagg2")
-print("📥 XFR: Output___MergeAgg2")
+# 🔹 TRANSFORM: ProductRevenue
+ProductRevenue_df = FilterPaidOrders_df.groupBy("product_id").agg(sum("amount").alias("revenue"), count("order_id").alias("units_sold")).where("revenue > 0")
+print("🔄 TRANSFORM: ProductRevenue")
 
-# 🔹 XFR Node: TopProducts___SubGraph__TopProducts____
-TopProducts___SubGraph__TopProducts_____df = spark.read.format("parquet").load("s3://bnx/raw/topproducts___subgraph__topproducts____")
-print("📥 XFR: TopProducts___SubGraph__TopProducts____")
+# 🔗 JOIN: ProductRating
+ProductRating_df = CleanReviews_df.join(ProductRevenue_df, on="product_id", how="left")
+print("🔗 JOIN: ProductRating")
 
-# 🔹 DML Node: ProductSales___Aggregate_CleanTransactions__group_by___product_id____agg___amount_
-ProductSales___Aggregate_CleanTransactions__group_by___product_id____agg___amount__df = None  # no parents
-print("🔄 DML: ProductSales___Aggregate_CleanTransactions__group_by___product_id____agg___amount_")
+# 🔹 TRANSFORM: LowStockAlert
+LowStockAlert_df = CleanInventory_df.selectExpr("*").where("stock < reorder_level")
+print("🔄 TRANSFORM: LowStockAlert")
 
-# 🔹 XFR Node: ProductInfo____Join_ProductSales__CleanProducts__keys___product_id___
-ProductInfo____Join_ProductSales__CleanProducts__keys___product_id____df = spark.read.format("parquet").load("s3://bnx/raw/productinfo____join_productsales__cleanproducts__keys___product_id___")
-print("📥 XFR: ProductInfo____Join_ProductSales__CleanProducts__keys___product_id___")
+# 🔹 TRANSFORM: TopProducts
+TopProducts_df = ProductRating_df.selectExpr("*").where("units_sold > 10")
+print("🔄 TRANSFORM: TopProducts")
 
-# 🔹 XFR Node: FilterTop______Transform_ProductInfo__rules___top_n_10__amount_____
-FilterTop______Transform_ProductInfo__rules___top_n_10__amount______df = spark.read.format("parquet").load("s3://bnx/raw/filtertop______transform_productinfo__rules___top_n_10__amount_____")
-print("📥 XFR: FilterTop______Transform_ProductInfo__rules___top_n_10__amount_____")
+# 🔹 TRANSFORM: FilterReturns
+FilterReturns_df = CleanReturns_df.selectExpr("return_id", "order_id", "customer_id", "reason", "return_date").where("return_date IS NOT NULL")
+print("🔄 TRANSFORM: FilterReturns")
 
-# 🔹 XFR Node: CategorySplit___SubGraph__CategorySplit____
-CategorySplit___SubGraph__CategorySplit_____df = spark.read.format("parquet").load("s3://bnx/raw/categorysplit___subgraph__categorysplit____")
-print("📥 XFR: CategorySplit___SubGraph__CategorySplit____")
+# 🔹 TRANSFORM: ReturnRate
+ReturnRate_df = FilterReturns_df.groupBy("customer_id").agg(count("return_id").alias("return_count")).where("return_count > 0")
+print("🔄 TRANSFORM: ReturnRate")
 
-# 🔹 XFR Node: SplitByCategory___Transform_FilterTop__rules___split_by_category____
-SplitByCategory___Transform_FilterTop__rules___split_by_category_____df = spark.read.format("parquet").load("s3://bnx/raw/splitbycategory___transform_filtertop__rules___split_by_category____")
-print("📥 XFR: SplitByCategory___Transform_FilterTop__rules___split_by_category____")
+# 🔹 TRANSFORM: HighReturnCustomers
+HighReturnCustomers_df = ReturnRate_df.selectExpr("*").where("return_count > 3")
+print("🔄 TRANSFORM: HighReturnCustomers")
 
-# 🔹 XFR Node: Output___SplitByCategory
-Output___SplitByCategory_df = spark.read.format("parquet").load("s3://bnx/raw/output___splitbycategory")
-print("📥 XFR: Output___SplitByCategory")
+# 🔗 JOIN: ReturnByProduct
+ReturnByProduct_df = FilterReturns_df.join(CleanProducts_df, on="product_id", how="left")
+print("🔗 JOIN: ReturnByProduct")
 
-# 🔹 XFR Node: Output___CategorySplit_Output
-Output___CategorySplit_Output_df = spark.read.format("parquet").load("s3://bnx/raw/output___categorysplit_output")
-print("📥 XFR: Output___CategorySplit_Output")
+# 🔹 TRANSFORM: FilterActiveCampaigns
+FilterActiveCampaigns_df = CleanCampaigns_df.selectExpr("*").where("active = true")
+print("🔄 TRANSFORM: FilterActiveCampaigns")
 
-# 🔹 XFR Node: ActiveCampaigns___SubGraph__ActiveCampaigns____
-ActiveCampaigns___SubGraph__ActiveCampaigns_____df = spark.read.format("parquet").load("s3://bnx/raw/activecampaigns___subgraph__activecampaigns____")
-print("📥 XFR: ActiveCampaigns___SubGraph__ActiveCampaigns____")
+# 🔗 JOIN: CampaignWithCustomer
+CampaignWithCustomer_df = FilterActiveCampaigns_df.join(FilterActiveCustomers_df, on="customer_id", how="inner")
+print("🔗 JOIN: CampaignWithCustomer")
 
-# 🔹 XFR Node: FilterCampaigns___Transform_RawCampaigns__rules___filter_active_true____
-FilterCampaigns___Transform_RawCampaigns__rules___filter_active_true_____df = spark.read.format("parquet").load("s3://bnx/raw/filtercampaigns___transform_rawcampaigns__rules___filter_active_true____")
-print("📥 XFR: FilterCampaigns___Transform_RawCampaigns__rules___filter_active_true____")
+# 🔹 TRANSFORM: CampaignConversion
+CampaignConversion_df = CampaignWithCustomer_df.selectExpr("*").where("order_count > 0")
+print("🔄 TRANSFORM: CampaignConversion")
 
-# 🔹 XFR Node: JoinWithCustomers___Join_FilterCampaigns__CleanCustomers__keys___customer_id___
-JoinWithCustomers___Join_FilterCampaigns__CleanCustomers__keys___customer_id____df = spark.read.format("parquet").load("s3://bnx/raw/joinwithcustomers___join_filtercampaigns__cleancustomers__keys___customer_id___")
-print("📥 XFR: JoinWithCustomers___Join_FilterCampaigns__CleanCustomers__keys___customer_id___")
+# 🔹 TRANSFORM: RegionalCampaignCount
+RegionalCampaignCount_df = CampaignConversion_df.groupBy("region").agg(count("campaign_id").alias("campaign_count"), sum("customer_total").alias("regional_revenue"))
+print("🔄 TRANSFORM: RegionalCampaignCount")
 
-# 🔹 XFR Node: RegionalCount___SubGraph__RegionalCount____
-RegionalCount___SubGraph__RegionalCount_____df = spark.read.format("parquet").load("s3://bnx/raw/regionalcount___subgraph__regionalcount____")
-print("📥 XFR: RegionalCount___SubGraph__RegionalCount____")
+# 🔗 JOIN: FullOrder
+FullOrder_df = OrderWithPayment_df.join(ReturnRate_df, on="customer_id", how="left")
+print("🔗 JOIN: FullOrder")
 
-# 🔹 DML Node: CountByRegion___Aggregate_JoinWithCustomers__group_by___region_id____agg___campaign_id_
-CountByRegion___Aggregate_JoinWithCustomers__group_by___region_id____agg___campaign_id__df = None  # no parents
-print("🔄 DML: CountByRegion___Aggregate_JoinWithCustomers__group_by___region_id____agg___campaign_id_")
+# 🔗 JOIN: EnrichWithReturns
+EnrichWithReturns_df = FullOrder_df.join(HighReturnCustomers_df, on="customer_id", how="left")
+print("🔗 JOIN: EnrichWithReturns")
 
-# 🔹 XFR Node: Output___CountByRegion
-Output___CountByRegion_df = spark.read.format("parquet").load("s3://bnx/raw/output___countbyregion")
-print("📥 XFR: Output___CountByRegion")
+# 🔗 JOIN: EnrichWithCampaign
+EnrichWithCampaign_df = EnrichWithReturns_df.join(CampaignConversion_df, on="customer_id", how="left")
+print("🔗 JOIN: EnrichWithCampaign")
 
-# 🔹 XFR Node: Output___RegionalCount_Output
-Output___RegionalCount_Output_df = spark.read.format("parquet").load("s3://bnx/raw/output___regionalcount_output")
-print("📥 XFR: Output___RegionalCount_Output")
+# 🔹 TRANSFORM: FlagHighValue
+FlagHighValue_df = EnrichWithCampaign_df.selectExpr("*").where("total_spent > 1000")
+print("🔄 TRANSFORM: FlagHighValue")
 
-# 🔹 XFR Node: CustomerReport___Join_CustomersWithRegion__CustomerAggregates_Output__keys___customer_id___
-CustomerReport___Join_CustomersWithRegion__CustomerAggregates_Output__keys___customer_id____df = spark.read.format("parquet").load("s3://bnx/raw/customerreport___join_customerswithregion__customeraggregates_output__keys___customer_id___")
-print("📥 XFR: CustomerReport___Join_CustomersWithRegion__CustomerAggregates_Output__keys___customer_id___")
+# 🔹 TRANSFORM: FlagChurned
+FlagChurned_df = EnrichWithCampaign_df.selectExpr("*").where("order_count < 2 AND return_count > 1")
+print("🔄 TRANSFORM: FlagChurned")
 
-# 🔹 XFR Node: CustomerReport2___Join_CustomerReport__TopProducts_Output__keys___product_id____join_type__left__
-CustomerReport2___Join_CustomerReport__TopProducts_Output__keys___product_id____join_type__left___df = spark.read.format("parquet").load("s3://bnx/raw/customerreport2___join_customerreport__topproducts_output__keys___product_id____join_type__left__")
-print("📥 XFR: CustomerReport2___Join_CustomerReport__TopProducts_Output__keys___product_id____join_type__left__")
+# 🔹 TRANSFORM: FlagAtRisk
+FlagAtRisk_df = EnrichWithCampaign_df.selectExpr("*").where("customer_total < 200 AND tx_count < 3")
+print("🔄 TRANSFORM: FlagAtRisk")
 
-# 🔹 XFR Node: FinalReport___Join_CustomerReport2__ActiveCampaigns_Output__keys___region_id____join_type__left__
-FinalReport___Join_CustomerReport2__ActiveCampaigns_Output__keys___region_id____join_type__left___df = spark.read.format("parquet").load("s3://bnx/raw/finalreport___join_customerreport2__activecampaigns_output__keys___region_id____join_type__left__")
-print("📥 XFR: FinalReport___Join_CustomerReport2__ActiveCampaigns_Output__keys___region_id____join_type__left__")
+# 🔗 JOIN: MasterReport
+MasterReport_df = FlagHighValue_df.join(FlagChurned_df, on="customer_id", how="left")
+print("🔗 JOIN: MasterReport")
 
-# 🔹 DML Node: Write_FinalReport___s3
-Write_FinalReport___s3_df = None  # no parents
-print("🔄 DML: Write_FinalReport___s3")
+# 🏁 SINK: Write_HighValue
+FlagHighValue_df.write.mode("overwrite").format("parquet").save("s3://bnx/output/write_highvalue")
+print("💾 SINK: Write_HighValue")
 
-# 🔹 DML Node: Write_TopProducts_Output___s3
-Write_TopProducts_Output___s3_df = None  # no parents
-print("🔄 DML: Write_TopProducts_Output___s3")
+# 🏁 SINK: Write_Churned
+FlagChurned_df.write.mode("overwrite").format("parquet").save("s3://bnx/output/write_churned")
+print("💾 SINK: Write_Churned")
 
-# 🔹 DML Node: Write_ActiveCampaigns_Output___s3
-Write_ActiveCampaigns_Output___s3_df = None  # no parents
-print("🔄 DML: Write_ActiveCampaigns_Output___s3")
+# 🏁 SINK: Write_AtRisk
+FlagAtRisk_df.write.mode("overwrite").format("parquet").save("s3://bnx/output/write_atrisk")
+print("💾 SINK: Write_AtRisk")
+
+# 🏁 SINK: Write_MasterReport
+MasterReport_df.write.mode("overwrite").format("parquet").save("s3://bnx/output/write_masterreport")
+print("💾 SINK: Write_MasterReport")
+
+# 🏁 SINK: Write_TopProducts
+TopProducts_df.write.mode("overwrite").format("parquet").save("s3://bnx/output/write_topproducts")
+print("💾 SINK: Write_TopProducts")
+
+# 🏁 SINK: Write_ReturnAlerts
+ReturnByProduct_df.write.mode("overwrite").format("parquet").save("s3://bnx/output/write_returnalerts")
+print("💾 SINK: Write_ReturnAlerts")
+
+# 🏁 SINK: Write_CampaignReport
+RegionalCampaignCount_df.write.mode("overwrite").format("parquet").save("s3://bnx/output/write_campaignreport")
+print("💾 SINK: Write_CampaignReport")
 
 print("✅ BNX Glue Job V54 Finished")
