@@ -1,1 +1,1 @@
-from .optimizer import optimize
+from .normalizer import normalize_graph

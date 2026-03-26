@@ -1,61 +1,52 @@
-import re
-from dataclasses import dataclass, field
+def parse_mp_ast(path):
 
+    print("[MP_AST] loading file:", path)
 
-@dataclass
-class ASTNode:
-    name: str
-    type: str
-    inputs: list = field(default_factory=list)
-    props: dict = field(default_factory=dict)
+    nodes = []
+    edges = []
+    metadata = {}
 
+    with open(path, "r") as f:
+        lines = f.readlines()
 
-def parse_mp_ast(file_path: str):
+    for line in lines:
+        line = line.strip()
 
-    with open(file_path, "r") as f:
-        raw = f.read()
-
-    blocks = [b.strip() for b in raw.split("end") if "component" in b]
-
-    ast_nodes = []
-
-    for b in blocks:
-
-        name = re.search(r"component (\w+)", b)
-        type_ = re.search(r"type:\s*(\w+)", b)
-
-        if not name or not type_:
+        if not line:
             continue
 
-        name = name.group(1)
-        type_ = type_.group(1)
+        # =========================
+        # SIMPLE EDGE DETECTION
+        # =========================
+        if "->" in line:
 
-        inputs = []
+            parts = line.split("->")
 
-        inputs_m = re.findall(r"inputs:\s*(.*)", b)
-        input_m = re.findall(r"input:\s*(.*)", b)
+            if len(parts) == 2:
+                src = parts[0].strip()
+                dst = parts[1].strip()
 
-        if inputs_m:
-            inputs = [x.strip() for x in inputs_m[0].split(",")]
-        elif input_m:
-            inputs = [input_m[0].strip()]
+                nodes.append({"name": src})
+                nodes.append({"name": dst})
 
-        props = {}
+                edges.append((src, dst))
 
-        path = re.findall(r"path:\s*(.*)", b)
-        keys = re.findall(r"keys:\s*(.*)", b)
+        # =========================
+        # NODE DECLARATION FALLBACK
+        # =========================
+        else:
+            nodes.append({"name": line})
 
-        if path:
-            props["path"] = path[0].strip()
+    # =========================
+    # DEDUPLICATE NODES
+    # =========================
+    unique = {}
 
-        if keys:
-            props["keys"] = keys[0].strip()
+    for n in nodes:
+        unique[n["name"]] = n
 
-        ast_nodes.append(ASTNode(
-            name=name,
-            type=type_,
-            inputs=inputs,
-            props=props
-        ))
+    nodes = list(unique.values())
 
-    return ast_nodes
+    print(f"[MP_AST] nodes={len(nodes)} edges={len(edges)}")
+
+    return nodes, edges, metadata

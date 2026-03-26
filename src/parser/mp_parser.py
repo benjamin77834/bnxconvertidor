@@ -1,23 +1,49 @@
-from src.ir.graphir import GraphIR
-from src.ir.node import Node
+import re
+from collections import defaultdict
 
-def parse_mp(path):
+def clean_node(x):
 
-    ir = GraphIR()
+    x = x.strip()
 
-    # 🔹 INPUT NODES
-    ir.add_node(Node("RawCustomers", "input"))
-    ir.add_node(Node("RawTransactions", "input"))
+    # eliminar "connect "
+    x = re.sub(r"^connect\s+", "", x)
 
-    # 🔹 TRANSFORMS
-    ir.add_node(Node("CleanCustomers", "transform", ["RawCustomers"]))
-    ir.add_node(Node("JoinAll", "join", ["CleanCustomers", "RawTransactions"]))
-    ir.add_node(Node("Final", "transform", ["JoinAll"]))
+    return x
 
-    # 🔹 EDGES
-    ir.add_edge("RawCustomers", "CleanCustomers")
-    ir.add_edge("CleanCustomers", "JoinAll")
-    ir.add_edge("RawTransactions", "JoinAll")
-    ir.add_edge("JoinAll", "Final")
 
-    return ir
+def parse_mp_ast(path):
+
+    dag = defaultdict(list)
+
+    with open(path, "r") as f:
+
+        for line in f:
+
+            line = line.strip()
+
+            if "->" not in line:
+                continue
+
+            left, right = line.split("->")
+
+            src = clean_node(left)
+            dst = clean_node(right)
+
+            if not src or not dst:
+                continue
+
+            if src == dst:
+                continue
+
+            dag[dst].append(src)
+
+    # normalizar nodos reales
+    all_nodes = set(dag.keys())
+
+    for v in dag.values():
+        all_nodes.update(v)
+
+    for n in all_nodes:
+        dag.setdefault(n, [])
+
+    return dict(dag)

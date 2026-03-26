@@ -1,78 +1,36 @@
-from src.transforms.registry import TRANSFORMS
+# src/codegen/glue_codegen.py
+from datetime import datetime
 
-
-def generate_glue(ir, output_path):
-
-    print("⚙️ CODEGEN START")
-
-    code = []
-
-    code.append("from pyspark.sql import SparkSession")
-    code.append("from pyspark.sql.functions import *")
-    code.append("")
-    code.append("spark = SparkSession.builder.appName('BNX_V8').getOrCreate()")
-    code.append("")
-
-    # -------------------------
-    # INPUT NODES
-    # -------------------------
-    for node in ir.nodes.values():
-
-        if node.type == "input":
-            code.append(
-                f"{node.id} = spark.read.parquet('{node.id}.parquet')"
-            )
-
-    code.append("")
-
-    resolved = {}
-
-    # -------------------------
-    # BUILD EXECUTION (DAG ORDER SIMPLE)
-    # -------------------------
-    ordered_nodes = list(ir.nodes.values())
-
-    for node in ordered_nodes:
-
-        # resolve inputs
-        inputs = [resolved[i] for i in node.inputs if i in resolved]
-
-        # get transform function
-        fn = TRANSFORMS.get(node.type)
-
-        # -------------------------
-        # IF TRANSFORM EXISTS
-        # -------------------------
-        if fn:
-
-            try:
-                resolved[node.id] = fn(node, inputs)
-            except Exception as e:
-                resolved[node.id] = f"None  # ERROR: {str(e)}"
-
-        # -------------------------
-        # FALLBACK
-        # -------------------------
-        else:
-
-            if node.type == "input":
-                resolved[node.id] = node.id
-
-            elif len(node.inputs) == 1:
-                resolved[node.id] = f"{node.inputs[0]}  # passthrough"
-
-            else:
-                resolved[node.id] = "None  # unsupported transform"
-
-    # -------------------------
-    # EMIT CODE
-    # -------------------------
-    for k, v in resolved.items():
-        code.append(f"{k} = {v}")
-
-    code.append("\n# BNX V8 PIPELINE COMPLETE")
-
+def generate_glue(dag, output_path):
     with open(output_path, "w") as f:
-        f.write("\n".join(code))
+        f.write(f'"""\n🚀 BNX V54 GENERATED GLUE JOB\n📅 Generated at: {datetime.now()}\n"""\n\n')
+        f.write("from awsglue.context import GlueContext\n")
+        f.write("from pyspark.context import SparkContext\n")
+        f.write("from pyspark.sql.functions import *\n\n")
+        f.write("sc = SparkContext()\nglueContext = GlueContext(sc)\nspark = glueContext.spark_session\n\n")
+        f.write('print("🚀 BNX Glue Job V54 Started")\n\n')
+        f.write("# =========================\n# DAG EXECUTION V54\n# =========================\n\n")
 
-    return "\n".join(code)
+        for node in dag.execution_order:
+            var_id = node.id  # ID seguro
+            log_name = node.name  # Nombre original para logs
+
+            if node.type == "XFR":
+                f.write(f'# 🔹 XFR Node: {log_name}\n')
+                f.write(f'{var_id}_df = spark.read.format("parquet").load("s3://bnx/raw/{var_id.lower()}")\n')
+                f.write(f'print("📥 XFR: {log_name}")\n\n')
+            else:
+                f.write(f'# 🔹 DML Node: {log_name}\n')
+                if node.parents:
+                    parent_refs = [f'{p}_df' for p in node.parents]
+                    if len(parent_refs) == 1:
+                        f.write(f'{var_id}_df = {parent_refs[0]}  # placeholder transformation\n')
+                    else:
+                        f.write(f'{var_id}_df = {parent_refs[0]}\n')
+                        for pr in parent_refs[1:]:
+                            f.write(f'{var_id}_df = {var_id}_df.join({pr}, on="id", how="inner")  # placeholder join\n')
+                else:
+                    f.write(f'{var_id}_df = None  # no parents\n')
+                f.write(f'print("🔄 DML: {log_name}")\n\n')
+
+        f.write('print("✅ BNX Glue Job V54 Finished")\n')

@@ -1,75 +1,81 @@
-from collections import defaultdict, deque
+from collections import defaultdict
 
-def generate_glue(nodes, edges, output_path):
+def generate(order, edges, nodes, content, output_path):
 
-    print("⚙️ CODEGEN START (BNX V9)")
+    print("[CODEGEN] BNX V28.6 FIXED ENGINE")
 
-    code = []
-    code.append("from pyspark.sql import SparkSession")
-    code.append("from pyspark.sql.functions import *")
-    code.append("")
-    code.append("spark = SparkSession.builder.appName('BNX_V9').getOrCreate()")
-    code.append("")
+    _ = content  # safe ignore
 
-    # -------------------------
-    # GRAPH BUILD
-    # -------------------------
-    graph = defaultdict(list)
-    indegree = {n: 0 for n in nodes}
+    node_type = {n["id"]: n["type"] for n in nodes}
 
-    for src, dst in edges:
-        graph[src].append(dst)
-        indegree[dst] += 1
+    parents = defaultdict(list)
+    for s, d in edges:
+        parents[d].append(s)
 
-    # -------------------------
-    # TOPO SORT
-    # -------------------------
-    q = deque([n for n in nodes if indegree[n] == 0])
-    order = []
+    def safe(n):
+        return n.replace(".", "_")
 
-    while q:
-        n = q.popleft()
-        order.append(n)
+    def resolve(n):
+        if n not in parents or len(parents[n]) == 0:
+            return None
+        return parents[n][0]
 
-        for nxt in graph[n]:
-            indegree[nxt] -= 1
-            if indegree[nxt] == 0:
-                q.append(nxt)
+    lines = []
 
-    # -------------------------
-    # EXECUTION BUILD
-    # -------------------------
-    resolved = {}
+    lines.append("from pyspark.sql import SparkSession")
+    lines.append("from pyspark.sql.functions import *")
+    lines.append("")
+    lines.append("spark = SparkSession.builder.appName('BNX_V28_6').getOrCreate()")
+    lines.append("print('=== BNX V28.6 START ===')")
+    lines.append("")
+    lines.append("ctx = {}")
+    lines.append("")
 
-    for node in order:
-        obj = nodes[node]
+    lines.append("customers_df = spark.createDataFrame([(1,'A'),(2,'B')], ['id','name'])")
+    lines.append("transactions_df = spark.createDataFrame([(1,100),(2,200)], ['id','amount'])")
+    lines.append("accounts_df = spark.createDataFrame([(1,'ACC1'),(2,'ACC2')], ['id','account'])")
+    lines.append("")
 
-        if obj.type == "input":
-            expr = f"spark.read.parquet('{node}.parquet')"
+    for n in order:
 
-        elif obj.type == "transform":
-            parent = obj.inputs[0]
-            expr = f"{resolved[parent]}.select('*')"
+        t = node_type.get(n, "UNKNOWN")
+        s = safe(n)
+        p = resolve(n)
 
-        elif obj.type == "join":
-            left = obj.inputs[0]
-            right = obj.inputs[1]
-            expr = f"{resolved[left]}.join({resolved[right]}, 'id', 'inner')"
+        if t == "INPUT":
+            if "Customers" in n:
+                expr = "customers_df"
+            elif "Transactions" in n:
+                expr = "transactions_df"
+            else:
+                expr = "accounts_df"
+
+            lines.append(f"ctx['{s}'] = {expr}")
+
+        elif t == "JOIN":
+            ps = parents.get(n, [])
+            if len(ps) >= 2:
+                a, b = safe(ps[0]), safe(ps[1])
+                expr = f"ctx['{a}'].join(ctx['{b}'], 'id')"
+            else:
+                expr = "None"
+
+            lines.append(f"ctx['{s}'] = {expr}")
+
+        elif t == "TRANSFORM":
+            expr = f"ctx['{safe(p)}']" if p else "None"
+            lines.append(f"ctx['{s}'] = {expr}")
+
+        elif t == "OUTPUT":
+            expr = f"ctx['{safe(p)}']" if p else "None"
+            lines.append(f"ctx['{s}'] = {expr}")
+            lines.append(f"if ctx['{s}'] is not None: ctx['{s}'].show()")
 
         else:
-            expr = "None"
+            expr = f"ctx['{safe(p)}']" if p else "None"
+            lines.append(f"ctx['{s}'] = {expr}")
 
-        resolved[node] = expr
-
-    # -------------------------
-    # EMIT CODE
-    # -------------------------
-    for node in order:
-        code.append(f"{node} = {resolved[node]}")
-
-    code.append("\n# BNX V9 PIPELINE COMPLETE")
+    lines.append("print('=== BNX COMPLETE ===')")
 
     with open(output_path, "w") as f:
-        f.write("\n".join(code))
-
-    print("🔥 CODEGEN DONE:", output_path)
+        f.write("\n".join(lines))

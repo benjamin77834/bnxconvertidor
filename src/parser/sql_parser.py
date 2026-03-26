@@ -1,53 +1,40 @@
-import re
+from src.models.node import Node
 
 
-def parse_sql(sql: str):
-    """
-    Parses a simple SQL statement into a structured dictionary (IR).
-    Supports:
-      SELECT ... FROM ... JOIN ... ON ... WHERE ...
-    """
+def parse_sql(sql):
 
-    sql = sql.strip().replace("\n", " ")
+    sql = sql.lower()
 
-    # Normalizar espacios
-    sql = re.sub(r"\s+", " ", sql)
+    # 🔥 MUY SIMPLE (puedes extender)
+    select_part = sql.split("from")[0].replace("select", "").strip()
+    from_part = sql.split("from")[1]
 
-    result = {
-        "type": "SELECT",
-        "tables": [],
-        "joins": [],
-        "columns": [],
-        "where": None
-    }
+    table = from_part.split()[0]
 
-    # SELECT
-    select_match = re.search(r"select (.*?) from", sql, re.IGNORECASE)
-    if select_match:
-        cols = select_match.group(1)
-        result["columns"] = [c.strip() for c in cols.split(",")]
+    where = None
+    if "where" in sql:
+        where = sql.split("where")[1].strip()
 
-    # FROM
-    from_match = re.search(r"from ([a-zA-Z0-9_]+)", sql, re.IGNORECASE)
-    if from_match:
-        result["tables"].append(from_match.group(1))
+    nodes = {}
 
-    # JOIN
-    join_matches = re.findall(
-        r"join ([a-zA-Z0-9_]+) on (.+?)(?: join| where|$)",
-        sql,
-        re.IGNORECASE
+    # input
+    nodes[table] = Node(table, "input")
+
+    # select
+    nodes["select_node"] = Node(
+        "select_node",
+        "select",
+        inputs=[table],
+        columns=[c.strip() for c in select_part.split(",")]
     )
 
-    for table, condition in join_matches:
-        result["joins"].append({
-            "table": table,
-            "condition": condition.strip()
-        })
+    # filter
+    if where:
+        nodes["filter_node"] = Node(
+            "filter_node",
+            "filter",
+            inputs=["select_node"],
+            condition=where
+        )
 
-    # WHERE
-    where_match = re.search(r"where (.+)$", sql, re.IGNORECASE)
-    if where_match:
-        result["where"] = where_match.group(1).strip()
-
-    return result
+    return nodes

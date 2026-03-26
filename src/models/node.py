@@ -1,15 +1,11 @@
 class Node:
 
-    def __init__(self, id, type, inputs=None, attrs=None, expr=None):
+    def __init__(self, name, type_, **kwargs):
 
-        self.id = id
-        self.type = type
-        self.inputs = inputs or []
-        self.attrs = attrs or {}
+        self.name = name
+        self.type = type_
 
-        # 🔥 NEW: XFR EXPRESSION SUPPORT
-        self.expr = expr or []
+        self.inputs = []
 
-        # 🔥 NEW: ROLLUP SUPPORT
-        self.group_by = self.attrs.get("group_by", [])
-        self.aggregations = self.attrs.get("aggs", [])
+        for k, v in kwargs.items():
+            setattr(self, k, v)

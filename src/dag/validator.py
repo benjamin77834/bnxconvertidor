@@ -1,21 +1,13 @@
 def validate_dag(nodes, edges):
 
-    print("🧪 VALIDATING DAG")
+    node_names = set(n["name"] if isinstance(n, dict) else n for n in nodes)
 
-    if isinstance(nodes, dict):
-        node_ids = set(nodes.keys())
-    else:
-        node_ids = set(n["id"] for n in nodes)
+    for s, d in edges:
 
-    for src, dst in edges:
+        if s not in node_names:
+            raise Exception(f"Missing source: {s}")
 
-        src = str(src).strip()
-        dst = str(dst).strip()
+        if d not in node_names:
+            raise Exception(f"Missing target: {d}")
 
-        if src not in node_ids:
-            raise Exception(f"❌ missing node: {src}")
-
-        if dst not in node_ids:
-            raise Exception(f"❌ missing node: {dst}")
-
-    print("✔ DAG VALID")
+    print("✅ DAG VALID")

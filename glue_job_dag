@@ -1,0 +1,23 @@
+// DAG de glue_job.py
+digraph {
+	RawCustomers__XFR_ [label=RawCustomers__XFR_]
+	RawOrders__XFR_ [label=RawOrders__XFR_]
+	RawTransactions__XFR_ [label=RawTransactions__XFR_]
+	RawProducts__XFR_ [label=RawProducts__XFR_]
+	RawSuppliers__XFR_ [label=RawSuppliers__XFR_]
+	RawRegions__XFR_ [label=RawRegions__XFR_]
+	RawPromotions__XFR_ [label=RawPromotions__XFR_]
+	CleanCustomers__DML_ [label=CleanCustomers__DML_]
+	CleanOrders__DML_ [label=CleanOrders__DML_]
+	JoinOrdersProducts__DML_ [label=JoinOrdersProducts__DML_]
+	AggProductSales__DML_ [label=AggProductSales__DML_]
+	JoinCustomersTransactions__DML_ [label=JoinCustomersTransactions__DML_]
+	AggCustomerOrders__DML_ [label=AggCustomerOrders__DML_]
+	JoinProductsSuppliers__DML_ [label=JoinProductsSuppliers__DML_]
+	AggSupplierProducts__DML_ [label=AggSupplierProducts__DML_]
+	JoinOrdersRegions__DML_ [label=JoinOrdersRegions__DML_]
+	AggRegionOrders__DML_ [label=AggRegionOrders__DML_]
+	JoinPromotionsOrders__DML_ [label=JoinPromotionsOrders__DML_]
+	AggPromoOrders__DML_ [label=AggPromoOrders__DML_]
+	MasterReport__DML_ [label=MasterReport__DML_]
+}

@@ -1,15 +1,10 @@
-from dataclasses import dataclass, field
-from typing import List, Dict, Any
-
-
-@dataclass
 class Node:
-    id: str
-    type: str
-    inputs: List[str] = field(default_factory=list)
-    props: Dict[str, Any] = field(default_factory=dict)
+    def __init__(self, name, op_type="pass", attrs=None):
+        self.name = name
+        self.op_type = op_type   # source, transform, join, agg, sink
+        self.attrs = attrs or {}
 
-
-@dataclass
-class IR:
-    nodes: Dict[str, Node]
+class Edge:
+    def __init__(self, src, dst):
+        self.src = src
+        self.dst = dst

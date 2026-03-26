@@ -1,24 +1,30 @@
-from src.ir.graph import GraphIR
-from src.ir.node import Node
+# src/mp_parser.py
 
-def parse_mp(path):
+def normalize_id(name):
+    """Genera un ID seguro para Python: elimina espacios, paréntesis, comillas y signos"""
+    import re
+    safe = re.sub(r"[^\w]", "_", name.strip())
+    return safe
 
-    print(f"📦 Parsing Ab Initio graph: {path}")
+def parse_mp_ast(file_path):
+    nodes = []
+    edges = []
 
-    ir = GraphIR()
+    with open(file_path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
 
-    # demo graph (luego reemplazas por parser real)
-    raw = Node("RawCustomers", "input", [])
-    tx = Node("RawTransactions", "input", [])
+            parts = line.split(":")
+            name = parts[0].strip()
+            node_type = parts[1].strip() if len(parts) > 1 else "XFR"
+            params = ":".join(parts[2:]).strip() if len(parts) > 2 else ""
 
-    stage = Node("StageCustomers", "reformat", ["RawCustomers"])
-    clean = Node("CleanCustomers", "reformat", ["StageCustomers"])
-    valid = Node("ValidCustomers", "filter", ["CleanCustomers"])
-
-    join = Node("JoinAll", "join", ["ValidCustomers", "RawTransactions"])
-    final = Node("Final", "reformat", ["JoinAll"])
-
-    for n in [raw, tx, stage, clean, valid, join, final]:
-        ir.add_node(n)
-
-    return ir
+            nodes.append({
+                "id": normalize_id(name),  # ID seguro para variable
+                "name": name,              # nombre original para logs
+                "type": node_type,
+                "params": params
+            })
+    return {"nodes": nodes, "edges": edges}

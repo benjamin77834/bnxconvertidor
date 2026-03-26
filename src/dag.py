@@ -1,37 +1,39 @@
 from collections import defaultdict, deque
 
 
-def build_dag(ir):
-
-    print("📊 Building DAG...")
-
-    nodes = ir["nodes"]
-    edges = ir["edges"]
+def topological_sort(dag):
 
     graph = defaultdict(list)
-    indegree = {n: 0 for n in nodes}
+    indegree = defaultdict(int)
+    nodes = set()
 
-    for s, t in edges:
-        graph[s].append(t)
-        indegree[t] += 1
+    for node, inputs in dag.items():
 
-    queue = deque([n for n in nodes if indegree[n] == 0])
+        nodes.add(node)
+
+        for i in inputs:
+            nodes.add(i)
+            graph[i].append(node)
+            indegree[node] += 1
+
+    for n in nodes:
+        indegree.setdefault(n, 0)
+
+    q = deque([n for n in nodes if indegree[n] == 0])
+
     order = []
 
-    while queue:
-        n = queue.popleft()
+    while q:
+
+        n = q.popleft()
         order.append(n)
 
         for neigh in graph[n]:
             indegree[neigh] -= 1
             if indegree[neigh] == 0:
-                queue.append(neigh)
+                q.append(neigh)
 
-    print("📊 DAG ORDER:", order)
+    if len(order) != len(nodes):
+        raise Exception("❌ Cycle detected in DAG")
 
-    return {
-        "order": order,
-        "edges": edges,
-        "mappings": ir["mappings"],
-        "schema": ir["schema"]
-    }
+    return order
