@@ -16,6 +16,7 @@ from src.xfr_parser import parse_xfr
 from src.dml_parser import parse_dml
 from src.validator.semantic import validate
 from src.codegen.glue_codegen import generate_glue
+from src.accuracy import compute_accuracy
 
 app = FastAPI(title="BNX Compiler API")
 
@@ -39,8 +40,8 @@ def _save_upload(upload: UploadFile) -> str:
 @app.post("/compile")
 async def compile_graph(
     mp:  UploadFile = File(...),
-    xfr: UploadFile = File(None),
-    dml: UploadFile = File(None),
+    xfr: Optional[UploadFile] = File(None),
+    dml: Optional[UploadFile] = File(None),
 ):
     """
     Compila el grafo y retorna:
@@ -50,8 +51,8 @@ async def compile_graph(
     - code: Glue job generado
     """
     mp_path  = _save_upload(mp)
-    xfr_path = _save_upload(xfr) if xfr else None
-    dml_path = _save_upload(dml) if dml else None
+    xfr_path = _save_upload(xfr) if xfr and xfr.filename else None
+    dml_path = _save_upload(dml) if dml and dml.filename else None
 
     try:
         ast      = parse_mp_ast(mp_path)
@@ -75,22 +76,25 @@ async def compile_graph(
         # Construir respuesta del grafo
         nodes = []
         for node in dag.execution_order:
+            node_rule = xfr_rules.get(node.id.lower()) or xfr_rules.get(node.name.lower()) or {}
+            sg = next((sg for sg, ids in ast["subgraphs"].items() if node.id in ids), None)
             nodes.append({
                 "id":       node.id,
                 "name":     node.name,
                 "type":     node.type.upper(),
-                "subgraph": ast["subgraphs"].get(
-                    next((sg for sg, ids in ast["subgraphs"].items() if node.id in ids), None),
-                    None
-                ),
+                "subgraph": sg,
                 "parents":  node.parents,
                 "children": node.children,
+                "rule":     node_rule,
             })
 
         edges = [
             {"from": e["from"], "to": e["to"]}
             for e in ast["edges"]
         ]
+
+        # Accuracy
+        acc = compute_accuracy(dag, xfr_rules, dml_schema)
 
         return {
             "nodes":    nodes,
@@ -99,6 +103,7 @@ async def compile_graph(
             "errors":   errors,
             "warnings": warnings,
             "code":     code,
+            "accuracy": acc,
         }
 
     finally:

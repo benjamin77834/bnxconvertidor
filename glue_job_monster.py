@@ -1,6 +1,6 @@
 """
 🚀 BNX V54 GENERATED GLUE JOB
-📅 Generated at: 2026-03-26 12:18:00.262860
+📅 Generated at: 2026-03-26 17:22:20.135879
 """
 
 from awsglue.context import GlueContext

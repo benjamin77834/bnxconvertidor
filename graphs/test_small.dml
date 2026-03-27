@@ -1,0 +1,15 @@
+keys:
+  RawSales: sale_id
+  RawClients: client_id
+
+schema:
+  RawSales:
+    sale_id: string
+    client_id: string
+    amount: double
+    sale_date: date
+
+  RawClients:
+    client_id: string
+    name: string
+    region: string

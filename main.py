@@ -6,6 +6,7 @@ from src.xfr_parser import parse_xfr
 from src.dml_parser import parse_dml
 from src.codegen.glue_codegen import generate_glue
 from src.validator.semantic import validate
+from src.accuracy import compute_accuracy
 
 def main(project_path, output_path, xfr_path=None, dml_path=None):
     print("🚀 BNX V54 START\n")
@@ -36,6 +37,19 @@ def main(project_path, output_path, xfr_path=None, dml_path=None):
         print(f"  {i}. {node.name} ({node.type})")
 
     generate_glue(dag, output_path, xfr_rules)
+
+    # Accuracy report
+    acc = compute_accuracy(dag, xfr_rules, dml_schema)
+    print(f"\n📊 ACCURACY REPORT:")
+    print(f"  Nodes:      {acc['resolved_nodes']}/{acc['total_nodes']} ({acc['node_accuracy']}%)")
+    print(f"  Edges:      {acc['resolved_edges']}/{acc['total_edges']} ({acc['edge_accuracy']}%)")
+    print(f"  Transforms: {acc['resolved_transforms']}/{acc['total_transforms']} ({acc['transform_accuracy']}%)")
+    print(f"  Joins:      {acc['resolved_joins']}/{acc['total_joins']} ({acc['join_accuracy']}%)")
+    print(f"  Overall:    {acc['overall_accuracy']}%")
+    if acc['details']:
+        print(f"\n  ⚠️  Issues ({len(acc['details'])}):")
+        for d in acc['details']:
+            print(f"    {d['node']} ({d['type']}): {', '.join(d['issues'])}")
 
     print(f"\n✅ Generated: {output_path}")
     print("🏁 BNX V54 DONE\n")

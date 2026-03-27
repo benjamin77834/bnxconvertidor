@@ -1,0 +1,280 @@
+# ============================================================
+# BNX MONSTER 2 XFR - Streaming Media Analytics
+# ============================================================
+
+# --- Ingestion ---
+CleanUsers:
+  select user_id, username, email, country, plan_type, created_at
+  where user_id IS NOT NULL
+
+CleanStreams:
+  select stream_id, user_id, song_id, device_id, duration_sec, completed, streamed_at
+  where stream_id IS NOT NULL AND duration_sec > 0
+
+CleanSongs:
+  select song_id, title, artist_id, album_id, genre, duration_sec, release_date, published
+  where song_id IS NOT NULL
+
+CleanArtists:
+  select artist_id, name, country, genre, verified, joined_at
+  where artist_id IS NOT NULL
+
+CleanAlbums:
+  select album_id, title, artist_id, release_date, track_count
+  where album_id IS NOT NULL
+
+CleanPlaylists:
+  select playlist_id, user_id, name, is_public, song_count, created_at
+  where playlist_id IS NOT NULL
+
+CleanSubscriptions:
+  select subscription_id, user_id, plan_type, start_date, end_date, active
+  where subscription_id IS NOT NULL
+
+CleanPayments:
+  select payment_id, user_id, amount, method, payment_date, confirmed
+  where confirmed = true
+
+CleanAds:
+  select ad_id, user_id, campaign_id, impressions, clicks, revenue, ad_date
+  where ad_id IS NOT NULL
+
+CleanDevices:
+  select device_id, user_id, device_type, os, last_active
+  where device_id IS NOT NULL
+
+CleanSearches:
+  select search_id, user_id, query, results_count, clicked, searched_at
+  where search_id IS NOT NULL
+
+CleanSkips:
+  select skip_id, user_id, song_id, skip_time_sec, skipped_at
+  where skip_id IS NOT NULL
+
+CleanLikes:
+  select like_id, user_id, song_id, liked_at
+  where like_id IS NOT NULL
+
+CleanReports:
+  select report_id, user_id, song_id, reason, reported_at
+  where report_id IS NOT NULL
+
+# --- UserDomain ---
+FilterActiveUsers:
+  select *
+  where plan_type != 'cancelled'
+
+UserSubscriptionType:
+  join_key user_id
+  join_type left
+
+UserDeviceHistory:
+  join_key user_id
+  join_type left
+
+UserListeningHours:
+  group_by user_id
+  select SUM(duration_sec) as total_listen_sec, COUNT(stream_id) as stream_count
+
+UserSkipRate:
+  group_by user_id
+  select COUNT(skip_id) as skip_count, AVG(skip_time_sec) as avg_skip_sec
+
+UserEngagement:
+  join_key user_id
+  join_type inner
+
+UserProfile:
+  join_key user_id
+  join_type left
+
+# --- ContentDomain ---
+FilterPublishedSongs:
+  select *
+  where published = true
+
+SongWithArtist:
+  join_key artist_id
+  join_type left
+
+SongWithAlbum:
+  join_key album_id
+  join_type left
+
+SongPopularity:
+  group_by song_id
+  select COUNT(stream_id) as play_count, SUM(duration_sec) as total_play_sec
+
+SongSkipRate:
+  group_by song_id
+  select COUNT(skip_id) as song_skip_count
+
+SongLikeRate:
+  group_by song_id
+  select COUNT(like_id) as song_like_count
+
+SongScore:
+  join_key song_id
+  join_type left
+
+TopSongs:
+  select *
+  where play_count > 1000
+
+BottomSongs:
+  select *
+  where play_count < 10 AND song_skip_count > 5
+
+# --- StreamDomain ---
+FilterCompletedStreams:
+  select *
+  where completed = true
+
+StreamTotals:
+  group_by user_id, song_id
+  select SUM(duration_sec) as total_duration, COUNT(stream_id) as stream_count
+
+StreamByDevice:
+  group_by device_id
+  select COUNT(stream_id) as device_stream_count, SUM(duration_sec) as device_total_sec
+
+StreamWithUser:
+  join_key user_id
+  join_type inner
+
+StreamWithSong:
+  join_key song_id
+  join_type left
+
+StreamEnriched:
+  join_key device_id
+  join_type left
+
+# --- PlaylistDomain ---
+FilterPublicPlaylists:
+  select *
+  where is_public = true
+
+PlaylistSongCount:
+  group_by playlist_id
+  select SUM(song_count) as total_songs
+
+PlaylistWithUser:
+  join_key user_id
+  join_type left
+
+PlaylistPopularity:
+  join_key playlist_id
+  join_type left
+
+TopPlaylists:
+  select *
+  where total_songs > 50
+
+# --- RevenueDomain ---
+FilterConfirmedPayments:
+  select *
+  where confirmed = true
+
+RevenueByUser:
+  group_by user_id
+  select SUM(amount) as user_revenue, COUNT(payment_id) as payment_count
+
+RevenueBySubscription:
+  group_by plan_type, user_id
+  select SUM(amount) as plan_revenue, COUNT(user_id) as subscriber_count
+
+AdRevenue:
+  group_by user_id, campaign_id
+  select SUM(revenue) as ad_revenue, SUM(impressions) as total_impressions, SUM(clicks) as total_clicks
+
+AdWithUser:
+  join_key user_id
+  join_type left
+
+TotalRevenue:
+  join_key user_id
+  join_type left
+
+# --- SearchDomain ---
+FilterValidSearches:
+  select *
+  where results_count > 0
+
+SearchTrends:
+  group_by query
+  select COUNT(search_id) as search_count, AVG(results_count) as avg_results
+
+SearchWithUser:
+  join_key user_id
+  join_type left
+
+SearchToStream:
+  join_key user_id
+  join_type left
+
+SearchConversion:
+  group_by user_id
+  select COUNT(search_id) as searches, SUM(clicked) as search_clicks
+
+# --- ArtistDomain ---
+ArtistStreamCount:
+  group_by artist_id
+  select COUNT(stream_id) as artist_streams, SUM(duration_sec) as artist_listen_sec
+
+ArtistRevenue:
+  group_by artist_id
+  select SUM(amount) as artist_revenue, COUNT(payment_id) as artist_payments
+
+ArtistWithAlbums:
+  join_key artist_id
+  join_type left
+
+ArtistPopularity:
+  join_key artist_id
+  join_type left
+
+TopArtists:
+  select *
+  where artist_streams > 10000
+
+EmergingArtists:
+  select *
+  where artist_streams > 500 AND artist_streams < 5000
+
+# --- FinalReport ---
+FullStreamBase:
+  join_key user_id
+  join_type left
+
+EnrichWithRevenue:
+  join_key user_id
+  join_type left
+
+EnrichWithSearch:
+  join_key user_id
+  join_type left
+
+EnrichWithArtist:
+  join_key artist_id
+  join_type left
+
+FlagPowerUser:
+  select *
+  where total_listen_sec > 360000 AND stream_count > 500
+
+FlagChurning:
+  select *
+  where stream_count < 5 AND skip_count > 10
+
+FlagAdTarget:
+  select *
+  where ad_revenue > 0 AND total_impressions > 100
+
+FlagNewFan:
+  select *
+  where stream_count > 50 AND stream_count < 200
+
+MasterReport:
+  join_key user_id
+  join_type left

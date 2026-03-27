@@ -1,52 +1,22 @@
-import React, { useState } from 'react'
+import { useState, useCallback, useRef } from 'react'
 import FileUpload from './components/FileUpload'
 import DagViewer from './components/DagViewer'
+import { COMPILE_URL } from './config'
 
-const s = {
-  app: { display: 'flex', flexDirection: 'column', height: '100vh' },
-  header: {
-    padding: '16px 24px', background: '#1e2433',
-    borderBottom: '1px solid #334155',
-    display: 'flex', alignItems: 'center', gap: 16,
-  },
-  title: { fontSize: 18, fontWeight: 700, color: '#e2e8f0' },
-  badge: {
-    fontSize: 11, padding: '2px 8px', borderRadius: 99,
-    background: '#6366f120', color: '#818cf8', border: '1px solid #6366f140'
-  },
-  body: { display: 'flex', flex: 1, overflow: 'hidden' },
-  sidebar: {
-    width: 320, padding: 20, background: '#161b27',
-    borderRight: '1px solid #334155', display: 'flex',
-    flexDirection: 'column', gap: 20, overflowY: 'auto',
-  },
-  main: { flex: 1, position: 'relative' },
-  section: { display: 'flex', flexDirection: 'column', gap: 8 },
-  sectionTitle: { fontSize: 12, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 1 },
-  msgBox: (type) => ({
-    background: type === 'error' ? '#7f1d1d30' : '#78350f30',
-    border: `1px solid ${type === 'error' ? '#ef444440' : '#f59e0b40'}`,
-    borderRadius: 6, padding: '8px 12px', fontSize: 12,
-    color: type === 'error' ? '#fca5a5' : '#fcd34d',
-    maxHeight: 200, overflowY: 'auto',
-  }),
-  code: {
-    background: '#0f1117', border: '1px solid #334155',
-    borderRadius: 6, padding: 12, fontSize: 11,
-    color: '#94a3b8', maxHeight: 300, overflowY: 'auto',
-    fontFamily: 'monospace', whiteSpace: 'pre',
-  },
-  legend: { display: 'flex', flexWrap: 'wrap', gap: 8 },
-  dot: (color) => ({
-    width: 10, height: 10, borderRadius: '50%',
-    background: color, display: 'inline-block', marginRight: 4,
-  }),
-  legendItem: { fontSize: 12, color: '#94a3b8', display: 'flex', alignItems: 'center' },
-  empty: {
-    position: 'absolute', inset: 0, display: 'flex',
-    alignItems: 'center', justifyContent: 'center',
-    color: '#334155', fontSize: 14,
-  }
+// ── Themes ──────────────────────────────────────────────────
+const dark = {
+  bg: '#0f1117', sidebar: '#161b27', header: '#1e2433',
+  card: '#1e2433', border: '#334155', text: '#e2e8f0',
+  muted: '#94a3b8', dim: '#64748b', codeBg: '#0d1017',
+  accent: '#6366f1', accentBg: '#6366f120', accentBorder: '#6366f140',
+  flowBg: '#1e2433',
+}
+const light = {
+  bg: '#f8fafc', sidebar: '#ffffff', header: '#ffffff',
+  card: '#f1f5f9', border: '#e2e8f0', text: '#1e293b',
+  muted: '#64748b', dim: '#94a3b8', codeBg: '#f8fafc',
+  accent: '#6366f1', accentBg: '#6366f110', accentBorder: '#6366f130',
+  flowBg: '#f1f5f9',
 }
 
 const LEGEND = [
@@ -56,52 +26,135 @@ const LEGEND = [
   { type: 'SINK',      color: '#ef4444' },
 ]
 
-export default function App() {
-  const [files, setFiles]   = useState({ mp: null, xfr: null, dml: null })
-  const [result, setResult] = useState(null)
-  const [loading, setLoading] = useState(false)
+// ── Helpers ─────────────────────────────────────────────────
+function download(content, filename, mime = 'text/plain') {
+  const blob = new Blob([content], { type: mime })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url; a.download = filename; a.click()
+  URL.revokeObjectURL(url)
+}
 
-  const compile = async () => {
+export default function App() {
+  const [files, setFiles]       = useState({ mp: [], xfr: [], dml: [] })
+  const [result, setResult]     = useState(null)
+  const [loading, setLoading]   = useState(false)
+  const [codeOpen, setCodeOpen] = useState(true)
+  const [isDark, setIsDark]     = useState(true)
+  const dagRef                  = useRef(null)
+
+  const t = isDark ? dark : light
+
+  const compile = async (selected) => {
     setLoading(true)
     const form = new FormData()
-    form.append('mp', files.mp)
-    if (files.xfr) form.append('xfr', files.xfr)
-    if (files.dml) form.append('dml', files.dml)
-
+    form.append('mp', selected.mp)
+    if (selected.xfr) form.append('xfr', selected.xfr)
+    if (selected.dml) form.append('dml', selected.dml)
     try {
-      const res = await fetch('/compile', { method: 'POST', body: form })
+      const res = await fetch(COMPILE_URL, { method: 'POST', body: form })
       const data = await res.json()
       setResult(data)
+      if (data.code) setCodeOpen(true)
     } catch (e) {
       setResult({ errors: [`Network error: ${e.message}`], warnings: [], nodes: [], edges: [] })
-    } finally {
-      setLoading(false)
+    } finally { setLoading(false) }
+  }
+
+  const downloadCode = useCallback(() => {
+    if (result?.code) download(result.code, 'glue_job.py')
+  }, [result])
+
+  const downloadDag = useCallback(() => {
+    if (!dagRef.current) return
+    const svgEl = dagRef.current.querySelector('.react-flow__viewport')
+    if (!svgEl) return
+    // Clone the SVG and serialize
+    const flowEl = dagRef.current.querySelector('svg.react-flow__edges')
+      || dagRef.current.querySelector('svg')
+    if (flowEl) {
+      const clone = flowEl.cloneNode(true)
+      const svgData = new XMLSerializer().serializeToString(clone)
+      const blob = new Blob([svgData], { type: 'image/svg+xml' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url; a.download = 'bnx_dag.svg'; a.click()
+      URL.revokeObjectURL(url)
     }
+  }, [])
+
+  const msgBox = (type) => ({
+    background: type === 'error' ? '#7f1d1d30' : '#78350f30',
+    border: `1px solid ${type === 'error' ? '#ef444440' : '#f59e0b40'}`,
+    borderRadius: 6, padding: '8px 12px', fontSize: 14,
+    color: type === 'error' ? '#fca5a5' : '#fcd34d',
+    maxHeight: 200, overflowY: 'auto',
+  })
+
+  const iconBtn = {
+    padding: '8px 14px', borderRadius: 6, border: `1px solid ${t.border}`,
+    background: t.card, color: t.muted, fontSize: 14, cursor: 'pointer',
+    display: 'flex', alignItems: 'center', gap: 4,
   }
 
   return (
-    <div style={s.app}>
-      <header style={s.header}>
-        <span style={s.title}>🚀 BNX Compiler</span>
-        <span style={s.badge}>V54</span>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: t.bg, color: t.text }}>
+      {/* Header */}
+      <header style={{
+        padding: '12px 24px', background: t.header, borderBottom: `1px solid ${t.border}`,
+        display: 'flex', alignItems: 'center', gap: 16,
+      }}>
+        <span style={{ fontSize: 20, fontWeight: 700 }}>🚀 BNX Compiler</span>
+        <span style={{
+          fontSize: 13, padding: '3px 10px', borderRadius: 99,
+          background: t.accentBg, color: t.accent, border: `1px solid ${t.accentBorder}`,
+        }}>V54</span>
+
         {result && (
-          <span style={s.badge}>
+          <span style={{
+            fontSize: 13, padding: '3px 10px', borderRadius: 99,
+            background: t.accentBg, color: t.accent, border: `1px solid ${t.accentBorder}`,
+          }}>
             {result.nodes?.length} nodes · {result.edges?.length} edges
           </span>
         )}
+
+        <div style={{ flex: 1 }} />
+
+        {/* Downloads */}
+        {result?.code && (
+          <button style={iconBtn} onClick={downloadCode}>📥 Code</button>
+        )}
+        {result?.nodes?.length > 0 && (
+          <button style={iconBtn} onClick={downloadDag}>🖼️ DAG</button>
+        )}
+
+        {/* Theme toggle */}
+        <button
+          style={{ ...iconBtn, fontSize: 16, padding: '4px 10px' }}
+          onClick={() => setIsDark(d => !d)}
+        >
+          {isDark ? '☀️' : '🌙'}
+        </button>
       </header>
 
-      <div style={s.body}>
-        <aside style={s.sidebar}>
-          <FileUpload files={files} setFiles={setFiles} onCompile={compile} loading={loading} />
+      <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+        {/* Sidebar */}
+        <aside style={{
+          width: 360, padding: 24, background: t.sidebar, flexShrink: 0,
+          borderRight: `1px solid ${t.border}`, display: 'flex',
+          flexDirection: 'column', gap: 20, overflowY: 'auto',
+        }}>
+          <FileUpload files={files} setFiles={setFiles} onCompile={compile} loading={loading} theme={t} />
 
           {/* Legend */}
-          <div style={s.section}>
-            <span style={s.sectionTitle}>Legend</span>
-            <div style={s.legend}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <span style={{ fontSize: 14, color: t.muted, textTransform: 'uppercase', letterSpacing: 1 }}>Legend</span>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
               {LEGEND.map(l => (
-                <span key={l.type} style={s.legendItem}>
-                  <span style={s.dot(l.color)} />{l.type}
+                <span key={l.type} style={{ fontSize: 14, color: t.muted, display: 'flex', alignItems: 'center' }}>
+                  <span style={{ width: 10, height: 10, borderRadius: '50%', background: l.color, marginRight: 4 }} />
+                  {l.type}
                 </span>
               ))}
             </div>
@@ -109,19 +162,21 @@ export default function App() {
 
           {/* Subgraphs */}
           {result?.subgraphs?.length > 0 && (
-            <div style={s.section}>
-              <span style={s.sectionTitle}>Subgraphs ({result.subgraphs.length})</span>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <span style={{ fontSize: 14, color: t.muted, textTransform: 'uppercase', letterSpacing: 1 }}>
+                Subgraphs ({result.subgraphs.length})
+              </span>
               {result.subgraphs.map(sg => (
-                <span key={sg} style={{ fontSize: 12, color: '#94a3b8' }}>• {sg}</span>
+                <span key={sg} style={{ fontSize: 14, color: t.muted }}>• {sg}</span>
               ))}
             </div>
           )}
 
           {/* Warnings */}
           {result?.warnings?.length > 0 && (
-            <div style={s.section}>
-              <span style={s.sectionTitle}>Warnings</span>
-              <div style={s.msgBox('warning')}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <span style={{ fontSize: 14, color: t.muted, textTransform: 'uppercase', letterSpacing: 1 }}>Warnings</span>
+              <div style={msgBox('warning')}>
                 {result.warnings.map((w, i) => <div key={i}>{w}</div>)}
               </div>
             </div>
@@ -129,29 +184,107 @@ export default function App() {
 
           {/* Errors */}
           {result?.errors?.length > 0 && (
-            <div style={s.section}>
-              <span style={s.sectionTitle}>Errors</span>
-              <div style={s.msgBox('error')}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <span style={{ fontSize: 14, color: t.muted, textTransform: 'uppercase', letterSpacing: 1 }}>Errors</span>
+              <div style={msgBox('error')}>
                 {result.errors.map((e, i) => <div key={i}>{e}</div>)}
               </div>
             </div>
           )}
 
-          {/* Generated code */}
-          {result?.code && (
-            <div style={s.section}>
-              <span style={s.sectionTitle}>Generated Code</span>
-              <pre style={s.code}>{result.code}</pre>
+          {/* Accuracy */}
+          {result?.accuracy && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <span style={{ fontSize: 14, color: t.muted, textTransform: 'uppercase', letterSpacing: 1 }}>Accuracy</span>
+              <div style={{
+                background: t.card, borderRadius: 8, padding: 12,
+                border: `1px solid ${t.border}`, display: 'flex', flexDirection: 'column', gap: 8,
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 8 }}>
+                  <span style={{
+                    fontSize: 28, fontWeight: 700,
+                    color: result.accuracy.overall_accuracy >= 90 ? '#22c55e'
+                         : result.accuracy.overall_accuracy >= 70 ? '#f59e0b' : '#ef4444',
+                  }}>
+                    {result.accuracy.overall_accuracy}%
+                  </span>
+                  <span style={{ fontSize: 13, color: t.dim }}>overall</span>
+                </div>
+                {[
+                  { label: 'Nodes', val: result.accuracy.node_accuracy, n: result.accuracy.resolved_nodes, t: result.accuracy.total_nodes },
+                  { label: 'Edges', val: result.accuracy.edge_accuracy, n: result.accuracy.resolved_edges, t: result.accuracy.total_edges },
+                  { label: 'Transforms', val: result.accuracy.transform_accuracy, n: result.accuracy.resolved_transforms, t: result.accuracy.total_transforms },
+                  { label: 'Joins', val: result.accuracy.join_accuracy, n: result.accuracy.resolved_joins, t: result.accuracy.total_joins },
+                ].map(m => (
+                  <div key={m.label} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 13, color: t.dim, width: 80 }}>{m.label}</span>
+                    <div style={{ flex: 1, height: 6, background: t.bg, borderRadius: 3, overflow: 'hidden' }}>
+                      <div style={{
+                        width: `${m.val}%`, height: '100%', borderRadius: 3,
+                        background: m.val >= 90 ? '#22c55e' : m.val >= 70 ? '#f59e0b' : '#ef4444',
+                      }} />
+                    </div>
+                    <span style={{ fontSize: 13, color: t.muted, width: 50, textAlign: 'right' }}>{m.n}/{m.t}</span>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </aside>
 
-        <main style={s.main}>
-          {result?.nodes?.length > 0
-            ? <DagViewer data={result} />
-            : <div style={s.empty}>Upload a .mp file and click Compile to visualize the DAG</div>
-          }
-        </main>
+        {/* Main */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <div ref={dagRef} style={{ flex: 1, position: 'relative', minHeight: 0 }}>
+            {result?.nodes?.length > 0
+              ? <DagViewer data={result} theme={t} />
+              : <div style={{
+                  position: 'absolute', inset: 0, display: 'flex',
+                  alignItems: 'center', justifyContent: 'center', color: t.dim, fontSize: 14,
+                }}>Upload a .mp file and click Compile to visualize the DAG</div>
+            }
+          </div>
+
+          {/* Code panel */}
+          {result?.code && (
+            <div style={{
+              borderTop: `1px solid ${t.border}`, background: t.codeBg,
+              display: 'flex', flexDirection: 'column', overflow: 'hidden',
+              height: codeOpen ? '40vh' : 36, transition: 'height .3s ease',
+            }}>
+              <div
+                style={{
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                  padding: '8px 16px', background: t.sidebar, cursor: 'pointer',
+                  borderBottom: `1px solid ${t.border}`,
+                }}
+                onClick={() => setCodeOpen(o => !o)}
+              >
+                <span style={{ fontSize: 14, color: t.muted, textTransform: 'uppercase', letterSpacing: 1 }}>
+                  Generated Spark Code ({result.code.split('\n').length} lines)
+                </span>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <button
+                    style={{ ...iconBtn, padding: '4px 10px', fontSize: 13 }}
+                    onClick={(e) => { e.stopPropagation(); downloadCode() }}
+                  >📥 Download</button>
+                  <button style={{
+                    fontSize: 13, color: t.accent, background: 'none',
+                    border: `1px solid ${t.accentBorder}`, borderRadius: 4, padding: '4px 10px', cursor: 'pointer',
+                  }}>
+                    {codeOpen ? '▼ Collapse' : '▲ Expand'}
+                  </button>
+                </div>
+              </div>
+              {codeOpen && (
+                <pre style={{
+                  padding: 16, fontSize: 14, color: t.muted,
+                  fontFamily: 'monospace', whiteSpace: 'pre', overflowY: 'auto',
+                  flex: 1, lineHeight: 1.6, margin: 0,
+                }}>{result.code}</pre>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )

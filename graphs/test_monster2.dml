@@ -1,0 +1,126 @@
+keys:
+  RawUsers: user_id
+  RawStreams: stream_id
+  RawSongs: song_id
+  RawArtists: artist_id
+  RawAlbums: album_id
+  RawPlaylists: playlist_id
+  RawSubscriptions: subscription_id
+  RawPayments: payment_id
+  RawAds: ad_id
+  RawDevices: device_id
+  RawSearches: search_id
+  RawSkips: skip_id
+  RawLikes: like_id
+  RawReports: report_id
+
+schema:
+  RawUsers:
+    user_id: string
+    username: string
+    email: string
+    country: string
+    plan_type: string
+    created_at: timestamp
+
+  RawStreams:
+    stream_id: string
+    user_id: string
+    song_id: string
+    device_id: string
+    duration_sec: int
+    completed: boolean
+    streamed_at: timestamp
+
+  RawSongs:
+    song_id: string
+    title: string
+    artist_id: string
+    album_id: string
+    genre: string
+    duration_sec: int
+    release_date: date
+    published: boolean
+
+  RawArtists:
+    artist_id: string
+    name: string
+    country: string
+    genre: string
+    verified: boolean
+    joined_at: timestamp
+
+  RawAlbums:
+    album_id: string
+    title: string
+    artist_id: string
+    release_date: date
+    track_count: int
+
+  RawPlaylists:
+    playlist_id: string
+    user_id: string
+    name: string
+    is_public: boolean
+    song_count: int
+    created_at: timestamp
+
+  RawSubscriptions:
+    subscription_id: string
+    user_id: string
+    plan_type: string
+    start_date: date
+    end_date: date
+    active: boolean
+
+  RawPayments:
+    payment_id: string
+    user_id: string
+    amount: double
+    method: string
+    payment_date: date
+    confirmed: boolean
+
+  RawAds:
+    ad_id: string
+    user_id: string
+    campaign_id: string
+    impressions: int
+    clicks: int
+    revenue: double
+    ad_date: date
+
+  RawDevices:
+    device_id: string
+    user_id: string
+    device_type: string
+    os: string
+    last_active: timestamp
+
+  RawSearches:
+    search_id: string
+    user_id: string
+    query: string
+    results_count: int
+    clicked: boolean
+    searched_at: timestamp
+
+  RawSkips:
+    skip_id: string
+    user_id: string
+    song_id: string
+    skip_time_sec: int
+    skipped_at: timestamp
+
+  RawLikes:
+    like_id: string
+    user_id: string
+    song_id: string
+    liked_at: timestamp
+
+  RawReports:
+    report_id: string
+    user_id: string
+    song_id: string
+    reason: string
+    reported_at: timestamp

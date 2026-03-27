@@ -1,0 +1,16 @@
+CleanSales:
+  select sale_id, client_id, amount, sale_date
+  where amount > 0
+
+CleanClients:
+  select client_id, name, region
+  where client_id IS NOT NULL
+
+SalesWithClient:
+  join_key client_id
+  join_type inner
+
+TotalByClient:
+  group_by client_id, name, region
+  select SUM(amount) as total_sales, COUNT(sale_id) as sale_count
+  where total_sales > 0
