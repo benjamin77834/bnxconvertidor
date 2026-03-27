@@ -64,6 +64,22 @@ def _infer_columns(node, dag, xfr_rules, col_cache, dml_schema=None):
             parent_cols = _infer_columns(dag.nodes[pid], dag, xfr_rules, col_cache, dml_schema)
             cols |= parent_cols
 
+    elif ntype == "DEDUP":
+        # Mismas columnas que el padre (solo elimina duplicados)
+        if node.parents:
+            cols = set(_infer_columns(dag.nodes[node.parents[0]], dag, xfr_rules, col_cache, dml_schema))
+
+    elif ntype == "NORMALIZE":
+        # Mismas columnas que el padre (explode no cambia schema, solo filas)
+        if node.parents:
+            cols = set(_infer_columns(dag.nodes[node.parents[0]], dag, xfr_rules, col_cache, dml_schema))
+
+    elif ntype == "LOOKUP":
+        # Hereda columnas de todos los padres (main + lookup table)
+        for pid in node.parents:
+            parent_cols = _infer_columns(dag.nodes[pid], dag, xfr_rules, col_cache, dml_schema)
+            cols |= parent_cols
+
     elif ntype == "SINK":
         if node.parents:
             cols = _infer_columns(dag.nodes[node.parents[0]], dag, xfr_rules, col_cache, dml_schema)
@@ -107,6 +123,27 @@ def validate(dag, xfr_rules, dml_schema=None):
         # 3. SINK sin padre
         if ntype == "SINK" and not node.parents:
             errors.append(f"❌ SINK '{node.name}' has no parent — nothing to write")
+
+        # 3b. DEDUP sin padre o sin dedup_keys
+        if ntype == "DEDUP":
+            if not node.parents:
+                errors.append(f"❌ DEDUP '{node.name}' has no parent node")
+            elif not rule.get("dedup_keys"):
+                warnings.append(f"⚠️  DEDUP '{node.name}' has no dedup_keys — using default ['id']")
+
+        # 3c. NORMALIZE sin padre o sin config
+        if ntype == "NORMALIZE":
+            if not node.parents:
+                errors.append(f"❌ NORMALIZE '{node.name}' has no parent node")
+            elif not rule.get("explode_col") and not rule.get("split_col"):
+                warnings.append(f"⚠️  NORMALIZE '{node.name}' has no explode_col or split_col")
+
+        # 3d. LOOKUP sin 2 padres o sin lookup_key
+        if ntype == "LOOKUP":
+            if len(node.parents) < 2:
+                errors.append(f"❌ LOOKUP '{node.name}' needs 2 parents (main + reference), has {len(node.parents)}")
+            elif not rule.get("lookup_key"):
+                warnings.append(f"⚠️  LOOKUP '{node.name}' has no lookup_key — using default 'id'")
 
         # 4. TRANSFORM referencia columna en where que no existe
         if ntype in ("TRANSFORM", "XFR") and node.parents:

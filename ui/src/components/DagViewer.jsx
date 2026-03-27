@@ -11,6 +11,9 @@ const TYPE_COLOR = {
   XFR:       '#6366f1',
   JOIN:      '#f59e0b',
   SINK:      '#ef4444',
+  DEDUP:     '#06b6d4',
+  NORMALIZE: '#a855f7',
+  LOOKUP:    '#ec4899',
 }
 
 const TYPE_ICON = {

@@ -1,0 +1,38 @@
+keys:
+  RawTransactions: tx_id
+  RawCustomers: customer_id
+  RawProducts: product_id
+  RawCategories: category_id
+  RawTags: tag_id
+
+schema:
+  RawTransactions:
+    tx_id: string
+    customer_id: string
+    product_id: string
+    category_id: string
+    amount: double
+    tx_date: date
+
+  RawCustomers:
+    customer_id: string
+    name: string
+    email: string
+    region: string
+    segment: string
+
+  RawProducts:
+    product_id: string
+    name: string
+    tags: string
+    price: double
+
+  RawCategories:
+    category_id: string
+    category_name: string
+    category_group: string
+
+  RawTags:
+    tag_id: string
+    tags: string
+    product_id: string

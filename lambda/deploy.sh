@@ -34,7 +34,7 @@ else
     echo "  --runtime python3.11 \\"
     echo "  --handler lambda.handler.handler \\"
     echo "  --zip-file fileb://$ZIP_FILE \\"
-    echo "  --role arn:aws:iam::<ACCOUNT_ID>:role/<LAMBDA_ROLE> \\"
+    echo "  --role arn:aws:iam::034711235858:role/lambdarol \\"
     echo "  --timeout 30 \\"
     echo "  --memory-size 256 \\"
     echo "  --region $REGION"

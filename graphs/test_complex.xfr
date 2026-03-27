@@ -1,0 +1,54 @@
+# ============================================================
+# BNX Complex XFR - DEDUP, NORMALIZE, LOOKUP rules
+# ============================================================
+
+CleanTransactions:
+  select tx_id, customer_id, product_id, category_id, amount, tx_date
+  where amount > 0
+
+CleanCustomers:
+  select customer_id, name, email, region, segment
+  where customer_id IS NOT NULL
+
+CleanProducts:
+  select product_id, name, tags, price
+  where product_id IS NOT NULL
+
+# DEDUP rules
+DedupTransactions:
+  dedup_keys tx_id
+  order_by tx_date
+
+DedupCustomers:
+  dedup_keys customer_id
+  order_by email
+
+# NORMALIZE rules
+NormalizeTags:
+  split_col tags
+  delimiter ,
+
+NormalizeProducts:
+  explode_col tags
+
+# LOOKUP rules
+LookupCategory:
+  lookup_key category_id
+  lookup_select category_name, category_group
+
+LookupCustomer:
+  lookup_key customer_id
+  lookup_select name, region, segment
+
+# Process
+EnrichedTx:
+  join_key tx_id
+  join_type left
+
+TotalByCustomer:
+  group_by customer_id, name, region
+  select SUM(amount) as total_spent, COUNT(tx_id) as tx_count
+
+TotalByCategory:
+  group_by category_id, category_name
+  select SUM(amount) as category_total, COUNT(tx_id) as category_tx_count

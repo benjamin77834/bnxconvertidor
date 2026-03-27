@@ -23,6 +23,9 @@ const LEGEND = [
   { type: 'SOURCE',    color: '#22c55e' },
   { type: 'TRANSFORM', color: '#6366f1' },
   { type: 'JOIN',      color: '#f59e0b' },
+  { type: 'DEDUP',     color: '#06b6d4' },
+  { type: 'NORMALIZE', color: '#a855f7' },
+  { type: 'LOOKUP',    color: '#ec4899' },
   { type: 'SINK',      color: '#ef4444' },
 ]
 

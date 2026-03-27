@@ -89,6 +89,66 @@ def generate_glue(dag, output_path, xfr_rules=None):
                     f.write(f'{var_id}_df = None  # no parents\n')
                 f.write(f'print("🔗 JOIN: {log_name}")\n\n')
 
+            # DEDUP — deduplicación por key
+            elif ntype == "DEDUP":
+                f.write(f'# 🧹 DEDUP: {log_name}\n')
+                if parents:
+                    src = f'{parents[0]}_df'
+                    dedup_keys = rule.get("dedup_keys", ["id"]) if rule else ["id"]
+                    order_by = rule.get("order_by") if rule else None
+                    keys_str = ", ".join(f'"{k}"' for k in dedup_keys)
+                    if order_by:
+                        # Mantener el registro más reciente
+                        f.write(f'from pyspark.sql.window import Window\n')
+                        f.write(f'_w_{var_id} = Window.partitionBy({keys_str}).orderBy(col("{order_by}").desc())\n')
+                        f.write(f'{var_id}_df = {src}.withColumn("_rn", row_number().over(_w_{var_id})).where("_rn = 1").drop("_rn")\n')
+                    else:
+                        f.write(f'{var_id}_df = {src}.dropDuplicates([{keys_str}])\n')
+                else:
+                    f.write(f'{var_id}_df = None  # no parent\n')
+                f.write(f'print("🧹 DEDUP: {log_name}")\n\n')
+
+            # NORMALIZE — un registro → múltiples registros (explode)
+            elif ntype == "NORMALIZE":
+                f.write(f'# 📐 NORMALIZE: {log_name}\n')
+                if parents:
+                    src = f'{parents[0]}_df'
+                    explode_col = rule.get("explode_col") if rule else None
+                    if explode_col:
+                        f.write(f'{var_id}_df = {src}.withColumn("{explode_col}", explode(col("{explode_col}")))\n')
+                    else:
+                        # Normalize con split: "col|delimiter"
+                        split_col = rule.get("split_col") if rule else None
+                        delimiter = rule.get("delimiter", ",") if rule else ","
+                        if split_col:
+                            f.write(f'{var_id}_df = {src}.withColumn("{split_col}", explode(split(col("{split_col}"), "{delimiter}")))\n')
+                        else:
+                            f.write(f'{var_id}_df = {src}  # no explode/split config\n')
+                else:
+                    f.write(f'{var_id}_df = None  # no parent\n')
+                f.write(f'print("📐 NORMALIZE: {log_name}")\n\n')
+
+            # LOOKUP — referencia a dataset externo (broadcast join)
+            elif ntype == "LOOKUP":
+                f.write(f'# 🔍 LOOKUP: {log_name}\n')
+                if len(parents) >= 2:
+                    main_df = f'{parents[0]}_df'
+                    lookup_df = f'{parents[1]}_df'
+                    lookup_key = rule.get("lookup_key", "id") if rule else "id"
+                    lookup_select = rule.get("lookup_select") if rule else None
+                    f.write(f'from pyspark.sql.functions import broadcast\n')
+                    if lookup_select:
+                        cols = ", ".join(f'"{c.strip()}"' for c in lookup_select.split(","))
+                        f.write(f'_lookup_{var_id} = broadcast({lookup_df}.select("{lookup_key}", {cols}))\n')
+                    else:
+                        f.write(f'_lookup_{var_id} = broadcast({lookup_df})\n')
+                    f.write(f'{var_id}_df = {main_df}.join(_lookup_{var_id}, on="{lookup_key}", how="left")\n')
+                elif len(parents) == 1:
+                    f.write(f'{var_id}_df = {parents[0]}_df\n')
+                else:
+                    f.write(f'{var_id}_df = None  # no parents\n')
+                f.write(f'print("🔍 LOOKUP: {log_name}")\n\n')
+
             # SINK
             elif ntype == "SINK":
                 f.write(f'# 🏁 SINK: {log_name}\n')
