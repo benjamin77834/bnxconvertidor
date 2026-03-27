@@ -20,13 +20,13 @@ const light = {
 }
 
 const LEGEND = [
-  { type: 'SOURCE',    color: '#22c55e' },
-  { type: 'TRANSFORM', color: '#6366f1' },
-  { type: 'JOIN',      color: '#f59e0b' },
-  { type: 'DEDUP',     color: '#06b6d4' },
-  { type: 'NORMALIZE', color: '#a855f7' },
-  { type: 'LOOKUP',    color: '#ec4899' },
-  { type: 'SINK',      color: '#ef4444' },
+  { type: 'SOURCE',    color: '#22c55e', desc: 'Lectura de datos desde S3, DB o archivos' },
+  { type: 'TRANSFORM', color: '#6366f1', desc: 'SELECT, WHERE, GROUP BY sobre los datos' },
+  { type: 'JOIN',      color: '#f59e0b', desc: 'Combina dos o más datasets por una key' },
+  { type: 'DEDUP',     color: '#06b6d4', desc: 'Elimina registros duplicados por key' },
+  { type: 'NORMALIZE', color: '#a855f7', desc: 'Expande un registro en múltiples filas' },
+  { type: 'LOOKUP',    color: '#ec4899', desc: 'Enriquece con tabla de referencia (broadcast)' },
+  { type: 'SINK',      color: '#ef4444', desc: 'Escritura final a S3, DB o archivo' },
 ]
 
 // ── Helpers ─────────────────────────────────────────────────
@@ -153,12 +153,18 @@ export default function App() {
           {/* Legend */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <span style={{ fontSize: 14, color: t.muted, textTransform: 'uppercase', letterSpacing: 1 }}>Legend</span>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {LEGEND.map(l => (
-                <span key={l.type} style={{ fontSize: 14, color: t.muted, display: 'flex', alignItems: 'center' }}>
-                  <span style={{ width: 10, height: 10, borderRadius: '50%', background: l.color, marginRight: 4 }} />
-                  {l.type}
-                </span>
+                <div key={l.type} style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                  <span style={{
+                    width: 12, height: 12, borderRadius: '50%', background: l.color,
+                    marginTop: 3, flexShrink: 0,
+                  }} />
+                  <div>
+                    <span style={{ fontSize: 13, color: t.text, fontWeight: 600 }}>{l.type}</span>
+                    <div style={{ fontSize: 12, color: t.dim, marginTop: 1 }}>{l.desc}</div>
+                  </div>
+                </div>
               ))}
             </div>
           </div>

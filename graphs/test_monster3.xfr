@@ -1,0 +1,232 @@
+# ============================================================
+# BNX MONSTER 3 XFR - Banking Analytics
+# ============================================================
+
+# --- Ingestion ---
+CleanAccounts:
+  select account_id, customer_id, account_type, balance, currency, branch_id, opened_at
+  where account_id IS NOT NULL
+
+CleanTransactions:
+  select tx_id, account_id, customer_id, amount, currency, tx_type, branch_id, product_id, tx_date, status
+  where tx_id IS NOT NULL AND amount != 0
+
+CleanCards:
+  select card_id, customer_id, card_type, benefits, credit_limit, expiry_date, active
+  where card_id IS NOT NULL
+
+CleanLoans:
+  select loan_id, customer_id, principal, interest_rate, term_months, status, disbursed_at
+  where loan_id IS NOT NULL
+
+CleanPayments:
+  select payment_id, customer_id, amount, method, branch_id, payment_date, confirmed
+  where payment_id IS NOT NULL
+
+CleanCustomers:
+  select customer_id, name, email, phone, segment, risk_level, branch_id, created_at
+  where customer_id IS NOT NULL
+
+CleanBranches:
+  select branch_id, branch_name, region, city, manager_id
+  where branch_id IS NOT NULL
+
+CleanProducts:
+  select product_id, product_name, category, features, fee
+  where product_id IS NOT NULL
+
+CleanFXRates:
+  select currency, rate_to_usd, rate_date
+  where currency IS NOT NULL
+
+CleanRiskScores:
+  select customer_id, risk_score, risk_category, scored_at
+  where customer_id IS NOT NULL
+
+CleanAlerts:
+  select alert_id, customer_id, tx_id, alert_type, tags, severity, created_at
+  where alert_id IS NOT NULL
+
+CleanAuditLog:
+  select log_id, customer_id, action, entity_type, entity_id, timestamp
+  where log_id IS NOT NULL
+
+# --- Deduplication ---
+DedupTransactions:
+  dedup_keys tx_id
+  order_by tx_date
+
+DedupPayments:
+  dedup_keys payment_id
+  order_by payment_date
+
+DedupAlerts:
+  dedup_keys alert_id
+  order_by created_at
+
+DedupAuditLog:
+  dedup_keys log_id
+  order_by timestamp
+
+# --- Normalization ---
+NormAlertTags:
+  split_col tags
+  delimiter ,
+
+NormProductFeatures:
+  split_col features
+  delimiter |
+
+NormCardBenefits:
+  split_col benefits
+  delimiter ,
+
+# --- Lookups ---
+LookupBranch:
+  lookup_key branch_id
+  lookup_select branch_name, region, city
+
+LookupProduct:
+  lookup_key product_id
+  lookup_select product_name, category, fee
+
+LookupFXRate:
+  lookup_key currency
+  lookup_select rate_to_usd, rate_date
+
+LookupRisk:
+  lookup_key customer_id
+  lookup_select risk_score, risk_category
+
+# --- CustomerDomain ---
+FilterActiveCustomers:
+  select *
+  where segment != 'closed'
+
+CustomerWithAccount:
+  join_key customer_id
+  join_type left
+
+CustomerWithCards:
+  join_key customer_id
+  join_type left
+
+CustomerRiskProfile:
+  join_key customer_id
+  join_type left
+
+CustomerProfile:
+  join_key customer_id
+  join_type left
+
+# --- TransactionDomain ---
+FilterSettledTx:
+  select *
+  where status = 'settled'
+
+TxWithCustomer:
+  join_key customer_id
+  join_type inner
+
+TxWithFX:
+  join_key currency
+  join_type left
+
+TxNormalized:
+  select tx_id, customer_id, amount, currency, rate_to_usd, amount * rate_to_usd as amount_usd, tx_type, branch_id, product_id, tx_date
+
+TxEnriched:
+  join_key branch_id
+  join_type left
+
+# --- LoanDomain ---
+FilterActiveLoans:
+  select *
+  where status = 'active'
+
+LoanWithCustomer:
+  join_key customer_id
+  join_type inner
+
+LoanWithRisk:
+  join_key customer_id
+  join_type left
+
+LoanAggByCustomer:
+  group_by customer_id
+  select SUM(principal) as total_principal, COUNT(loan_id) as loan_count, AVG(interest_rate) as avg_rate
+
+LoanDefaultRisk:
+  select *
+  where risk_score > 0.7 AND principal > 50000
+
+# --- PaymentDomain ---
+FilterConfirmedPay:
+  select *
+  where confirmed = true
+
+PayWithCustomer:
+  join_key customer_id
+  join_type inner
+
+PayByMethod:
+  group_by customer_id, method
+  select SUM(amount) as method_total, COUNT(payment_id) as method_count
+
+PayByBranch:
+  group_by branch_id, customer_id
+  select SUM(amount) as branch_total, COUNT(payment_id) as branch_pay_count
+
+# --- AMLDomain ---
+SuspiciousTx:
+  select *
+  where amount_usd > 10000 AND tx_type = 'wire'
+
+HighRiskCustomers:
+  select *
+  where risk_score > 0.8
+
+AlertWithTx:
+  join_key tx_id
+  join_type left
+
+AMLReport:
+  join_key customer_id
+  join_type left
+
+# --- FinalReport ---
+FullCustomerBase:
+  join_key customer_id
+  join_type left
+
+EnrichWithLoans:
+  join_key customer_id
+  join_type left
+
+EnrichWithPayments:
+  join_key customer_id
+  join_type left
+
+EnrichWithAML:
+  join_key customer_id
+  join_type left
+
+FlagHighValue:
+  select *
+  where total_principal > 100000 AND method_total > 50000
+
+FlagDefaultRisk:
+  select *
+  where risk_score > 0.7 AND loan_count > 2
+
+FlagSuspicious:
+  select *
+  where amount_usd > 10000
+
+FlagInactive:
+  select *
+  where method_count < 2 AND loan_count < 1
+
+MasterReport:
+  join_key customer_id
+  join_type left
