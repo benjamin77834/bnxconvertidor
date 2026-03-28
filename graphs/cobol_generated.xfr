@@ -1,0 +1,26 @@
+# Auto-generated from COBOL
+
+Clean_CUSTOMER_FILE:
+  select cust_id, cust_name, cust_region, cust_segment, cust_balance, cust_status
+
+Clean_TRANSACTION_FILE:
+  select tx_id, tx_cust_id, tx_amount, tx_type, tx_date, tx_status
+
+Clean_ACCOUNT_FILE:
+  select acct_id, acct_cust_id, acct_type, acct_balance, acct_currency
+
+filter_active_customers:
+  select *
+  where CUST-STATUS = 'A'
+
+filter_valid_transactions:
+  select *
+  where TX-AMOUNT > 0 AND TX-STATUS = 'S'
+
+join_customer_tx:
+  select *
+  where TX-CUST-ID = CUST-ID
+
+compute_totals:
+  group_by 1
+  select SUM(1) as ws_tx_count

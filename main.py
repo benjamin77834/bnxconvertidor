@@ -5,10 +5,11 @@ from src.dag.builder import build_dag
 from src.xfr_parser import parse_xfr
 from src.dml_parser import parse_dml
 from src.codegen.glue_codegen import generate_glue
+from src.codegen.spark_codegen import generate_spark
 from src.validator.semantic import validate
 from src.accuracy import compute_accuracy
 
-def main(project_path, output_path, xfr_path=None, dml_path=None):
+def main(project_path, output_path, xfr_path=None, dml_path=None, target="glue"):
     print("🚀 BNX V54 START\n")
 
     ast = parse_mp_ast(project_path)
@@ -36,7 +37,12 @@ def main(project_path, output_path, xfr_path=None, dml_path=None):
     for i, node in enumerate(dag.execution_order, start=1):
         print(f"  {i}. {node.name} ({node.type})")
 
-    generate_glue(dag, output_path, xfr_rules)
+    if target == "spark":
+        generate_spark(dag, output_path, xfr_rules)
+        print(f"\n⚡ Target: PySpark")
+    else:
+        generate_glue(dag, output_path, xfr_rules)
+        print(f"\n🔧 Target: AWS Glue")
 
     # Accuracy report
     acc = compute_accuracy(dag, xfr_rules, dml_schema)
@@ -60,5 +66,6 @@ if __name__ == "__main__":
     parser.add_argument("--output", required=True)
     parser.add_argument("--xfr", required=False, default=None)
     parser.add_argument("--dml", required=False, default=None)
+    parser.add_argument("--target", choices=["glue", "spark"], default="glue")
     args = parser.parse_args()
-    main(args.project, args.output, args.xfr, args.dml)
+    main(args.project, args.output, args.xfr, args.dml, args.target)

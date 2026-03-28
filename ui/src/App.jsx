@@ -44,7 +44,9 @@ export default function App() {
   const [loading, setLoading]   = useState(false)
   const [codeOpen, setCodeOpen] = useState(true)
   const [isDark, setIsDark]     = useState(true)
+  const [target, setTarget]     = useState('glue')
   const dagRef                  = useRef(null)
+  const cobolRef                = useRef(null)
 
   const t = isDark ? dark : light
 
@@ -54,6 +56,7 @@ export default function App() {
     form.append('mp', selected.mp)
     if (selected.xfr) form.append('xfr', selected.xfr)
     if (selected.dml) form.append('dml', selected.dml)
+    form.append('target', target)
     try {
       const res = await fetch(COMPILE_URL, { method: 'POST', body: form })
       const data = await res.json()
@@ -65,8 +68,23 @@ export default function App() {
   }
 
   const downloadCode = useCallback(() => {
-    if (result?.code) download(result.code, 'glue_job.py')
-  }, [result])
+    if (result?.code) download(result.code, target === 'spark' ? 'pyspark_job.py' : 'glue_job.py')
+  }, [result, target])
+
+  const compileCobol = async (file) => {
+    setLoading(true)
+    const form = new FormData()
+    form.append('cobol', file)
+    form.append('target', target)
+    try {
+      const res = await fetch(COMPILE_URL.replace('/compile', '/cobol'), { method: 'POST', body: form })
+      const data = await res.json()
+      setResult(data)
+      if (data.code) setCodeOpen(true)
+    } catch (e) {
+      setResult({ errors: [`Network error: ${e.message}`], warnings: [], nodes: [], edges: [] })
+    } finally { setLoading(false) }
+  }
 
   const downloadDag = useCallback(() => {
     if (!dagRef.current) return
@@ -149,6 +167,49 @@ export default function App() {
           flexDirection: 'column', gap: 20, overflowY: 'auto',
         }}>
           <FileUpload files={files} setFiles={setFiles} onCompile={compile} loading={loading} theme={t} />
+
+          {/* Target selector */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <span style={{ fontSize: 14, color: t.muted, textTransform: 'uppercase', letterSpacing: 1 }}>Target</span>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {[
+                { id: 'glue', label: '🔧 Glue', desc: 'AWS Glue + GlueContext' },
+                { id: 'spark', label: '⚡ PySpark', desc: 'PySpark puro + SparkSession' },
+              ].map(opt => (
+                <button key={opt.id}
+                  onClick={() => setTarget(opt.id)}
+                  style={{
+                    flex: 1, padding: '8px 12px', borderRadius: 8, cursor: 'pointer',
+                    background: target === opt.id ? t.accent + '20' : t.card,
+                    border: `2px solid ${target === opt.id ? t.accent : t.border}`,
+                    color: target === opt.id ? t.text : t.muted,
+                    fontSize: 13, fontWeight: target === opt.id ? 600 : 400,
+                    textAlign: 'center',
+                  }}
+                  title={opt.desc}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* COBOL upload */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <span style={{ fontSize: 14, color: t.muted, textTransform: 'uppercase', letterSpacing: 1 }}>COBOL Migration</span>
+            <span style={{ fontSize: 12, color: t.dim }}>Sube un .cbl y se convierte a grafo automáticamente</span>
+            <button
+              style={{
+                padding: '8px 16px', borderRadius: 8, cursor: 'pointer',
+                background: t.card, border: `1px dashed ${t.border}`,
+                color: t.muted, fontSize: 13,
+              }}
+              onClick={() => cobolRef.current.click()}
+            >📋 Upload .cbl file</button>
+            <input ref={cobolRef} type="file" accept=".cbl,.cob,.cobol" hidden
+              onChange={(e) => { if (e.target.files[0]) compileCobol(e.target.files[0]); e.target.value = '' }}
+            />
+          </div>
 
           {/* Legend */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>

@@ -1,0 +1,28 @@
+keys:
+  Raw_CUSTOMER_FILE: cust_id
+  Raw_TRANSACTION_FILE: tx_id
+  Raw_ACCOUNT_FILE: acct_id
+
+schema:
+  Raw_CUSTOMER_FILE:
+    cust_id: string
+    cust_name: string
+    cust_region: string
+    cust_segment: string
+    cust_balance: double
+    cust_status: string
+
+  Raw_TRANSACTION_FILE:
+    tx_id: string
+    tx_cust_id: string
+    tx_amount: double
+    tx_type: string
+    tx_date: string
+    tx_status: string
+
+  Raw_ACCOUNT_FILE:
+    acct_id: string
+    acct_cust_id: string
+    acct_type: string
+    acct_balance: double
+    acct_currency: string

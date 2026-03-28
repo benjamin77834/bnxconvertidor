@@ -1,81 +1,153 @@
-from collections import defaultdict
+# src/codegen/spark_codegen.py
+"""
+Generates pure PySpark code (no Glue dependencies).
+Same logic as glue_codegen but with SparkSession instead of GlueContext.
+"""
+import re
+from datetime import datetime
 
-def generate(order, edges, nodes, content, output_path):
 
-    print("[CODEGEN] BNX V28.6 FIXED ENGINE")
+def _build_transform(var_id, src_df, rule):
+    select = rule.get("select", "*")
+    where = rule.get("where")
+    group_by = rule.get("group_by")
 
-    _ = content  # safe ignore
-
-    node_type = {n["id"]: n["type"] for n in nodes}
-
-    parents = defaultdict(list)
-    for s, d in edges:
-        parents[d].append(s)
-
-    def safe(n):
-        return n.replace(".", "_")
-
-    def resolve(n):
-        if n not in parents or len(parents[n]) == 0:
-            return None
-        return parents[n][0]
-
-    lines = []
-
-    lines.append("from pyspark.sql import SparkSession")
-    lines.append("from pyspark.sql.functions import *")
-    lines.append("")
-    lines.append("spark = SparkSession.builder.appName('BNX_V28_6').getOrCreate()")
-    lines.append("print('=== BNX V28.6 START ===')")
-    lines.append("")
-    lines.append("ctx = {}")
-    lines.append("")
-
-    lines.append("customers_df = spark.createDataFrame([(1,'A'),(2,'B')], ['id','name'])")
-    lines.append("transactions_df = spark.createDataFrame([(1,100),(2,200)], ['id','amount'])")
-    lines.append("accounts_df = spark.createDataFrame([(1,'ACC1'),(2,'ACC2')], ['id','account'])")
-    lines.append("")
-
-    for n in order:
-
-        t = node_type.get(n, "UNKNOWN")
-        s = safe(n)
-        p = resolve(n)
-
-        if t == "INPUT":
-            if "Customers" in n:
-                expr = "customers_df"
-            elif "Transactions" in n:
-                expr = "transactions_df"
+    if group_by:
+        keys = ", ".join(f'"{k}"' for k in group_by)
+        agg_exprs = []
+        for col in select.split(","):
+            col = col.strip()
+            m = re.match(r"(\w+)\((\w+)\)\s+as\s+(\w+)", col, re.I)
+            if m:
+                fn, field, alias = m.group(1).lower(), m.group(2), m.group(3)
+                agg_exprs.append(f'{fn}("{field}").alias("{alias}")')
             else:
-                expr = "accounts_df"
+                agg_exprs.append(f'col("{col}")')
+        code = f'{var_id}_df = {src_df}.groupBy({keys}).agg({", ".join(agg_exprs)})'
+        if where:
+            code += f'.where("{where}")'
+        return code
 
-            lines.append(f"ctx['{s}'] = {expr}")
+    cols = [f'"{c.strip()}"' for c in select.split(",")]
+    code = f'{var_id}_df = {src_df}.selectExpr({", ".join(cols)})'
+    if where:
+        code += f'.where("{where}")'
+    return code
 
-        elif t == "JOIN":
-            ps = parents.get(n, [])
-            if len(ps) >= 2:
-                a, b = safe(ps[0]), safe(ps[1])
-                expr = f"ctx['{a}'].join(ctx['{b}'], 'id')"
-            else:
-                expr = "None"
 
-            lines.append(f"ctx['{s}'] = {expr}")
-
-        elif t == "TRANSFORM":
-            expr = f"ctx['{safe(p)}']" if p else "None"
-            lines.append(f"ctx['{s}'] = {expr}")
-
-        elif t == "OUTPUT":
-            expr = f"ctx['{safe(p)}']" if p else "None"
-            lines.append(f"ctx['{s}'] = {expr}")
-            lines.append(f"if ctx['{s}'] is not None: ctx['{s}'].show()")
-
-        else:
-            expr = f"ctx['{safe(p)}']" if p else "None"
-            lines.append(f"ctx['{s}'] = {expr}")
-
-    lines.append("print('=== BNX COMPLETE ===')")
+def generate_spark(dag, output_path, xfr_rules=None):
+    xfr_rules = xfr_rules or {}
 
     with open(output_path, "w") as f:
-        f.write("\n".join(lines))
+        f.write(f'"""\n🚀 BNX V54 GENERATED PYSPARK JOB\n📅 Generated at: {datetime.now()}\n"""\n\n')
+        f.write("from pyspark.sql import SparkSession\n")
+        f.write("from pyspark.sql.functions import *\n")
+        f.write("from pyspark.sql.window import Window\n\n")
+        f.write('spark = SparkSession.builder.appName("BNX_Pipeline").getOrCreate()\n\n')
+        f.write('print("🚀 BNX PySpark Job Started")\n\n')
+
+        for node in dag.execution_order:
+            var_id = node.id
+            log_name = node.name
+            ntype = node.type.upper()
+            parents = node.parents
+            rule = xfr_rules.get(var_id.lower()) or xfr_rules.get(log_name.lower())
+
+            if ntype == "SOURCE":
+                f.write(f'# 🟢 SOURCE: {log_name}\n')
+                f.write(f'{var_id}_df = spark.read.parquet("s3a://bnx/raw/{var_id.lower()}")\n')
+                f.write(f'print("📂 SOURCE: {log_name}")\n\n')
+
+            elif ntype in ("TRANSFORM", "XFR"):
+                f.write(f'# 🔹 TRANSFORM: {log_name}\n')
+                if parents:
+                    src = f'{parents[0]}_df'
+                    if rule:
+                        f.write(_build_transform(var_id, src, rule) + "\n")
+                    else:
+                        f.write(f'{var_id}_df = {src}.selectExpr("*")\n')
+                else:
+                    f.write(f'{var_id}_df = None\n')
+                f.write(f'print("🔄 TRANSFORM: {log_name}")\n\n')
+
+            elif ntype == "JOIN":
+                f.write(f'# 🔗 JOIN: {log_name}\n')
+                if len(parents) >= 2:
+                    jk = rule.get("join_key", "id") if rule else "id"
+                    jt = rule.get("join_type", "inner") if rule else "inner"
+                    f.write(f'{var_id}_df = {parents[0]}_df.join({parents[1]}_df, on="{jk}", how="{jt}")\n')
+                    for ep in parents[2:]:
+                        f.write(f'{var_id}_df = {var_id}_df.join({ep}_df, on="{jk}", how="{jt}")\n')
+                elif len(parents) == 1:
+                    f.write(f'{var_id}_df = {parents[0]}_df\n')
+                else:
+                    f.write(f'{var_id}_df = None\n')
+                f.write(f'print("🔗 JOIN: {log_name}")\n\n')
+
+            elif ntype == "DEDUP":
+                f.write(f'# 🧹 DEDUP: {log_name}\n')
+                if parents:
+                    src = f'{parents[0]}_df'
+                    dk = rule.get("dedup_keys", ["id"]) if rule else ["id"]
+                    ob = rule.get("order_by") if rule else None
+                    ks = ", ".join(f'"{k}"' for k in dk)
+                    if ob:
+                        f.write(f'_w_{var_id} = Window.partitionBy({ks}).orderBy(col("{ob}").desc())\n')
+                        f.write(f'{var_id}_df = {src}.withColumn("_rn", row_number().over(_w_{var_id})).where("_rn = 1").drop("_rn")\n')
+                    else:
+                        f.write(f'{var_id}_df = {src}.dropDuplicates([{ks}])\n')
+                else:
+                    f.write(f'{var_id}_df = None\n')
+                f.write(f'print("🧹 DEDUP: {log_name}")\n\n')
+
+            elif ntype == "NORMALIZE":
+                f.write(f'# 📐 NORMALIZE: {log_name}\n')
+                if parents:
+                    src = f'{parents[0]}_df'
+                    ec = rule.get("explode_col") if rule else None
+                    sc = rule.get("split_col") if rule else None
+                    dl = rule.get("delimiter", ",") if rule else ","
+                    if ec:
+                        f.write(f'{var_id}_df = {src}.withColumn("{ec}", explode(col("{ec}")))\n')
+                    elif sc:
+                        f.write(f'{var_id}_df = {src}.withColumn("{sc}", explode(split(col("{sc}"), "{dl}")))\n')
+                    else:
+                        f.write(f'{var_id}_df = {src}\n')
+                else:
+                    f.write(f'{var_id}_df = None\n')
+                f.write(f'print("📐 NORMALIZE: {log_name}")\n\n')
+
+            elif ntype == "LOOKUP":
+                f.write(f'# 🔍 LOOKUP: {log_name}\n')
+                if len(parents) >= 2:
+                    lk = rule.get("lookup_key", "id") if rule else "id"
+                    ls = rule.get("lookup_select") if rule else None
+                    if ls:
+                        cols = ", ".join(f'"{c.strip()}"' for c in ls.split(","))
+                        f.write(f'_lkp_{var_id} = broadcast({parents[1]}_df.select("{lk}", {cols}))\n')
+                    else:
+                        f.write(f'_lkp_{var_id} = broadcast({parents[1]}_df)\n')
+                    f.write(f'{var_id}_df = {parents[0]}_df.join(_lkp_{var_id}, on="{lk}", how="left")\n')
+                else:
+                    f.write(f'{var_id}_df = None\n')
+                f.write(f'print("🔍 LOOKUP: {log_name}")\n\n')
+
+            elif ntype == "SINK":
+                f.write(f'# 🏁 SINK: {log_name}\n')
+                if parents:
+                    f.write(f'{parents[0]}_df.write.mode("overwrite").parquet("s3a://bnx/output/{var_id.lower()}")\n')
+                f.write(f'print("💾 SINK: {log_name}")\n\n')
+
+            else:
+                f.write(f'# 🔹 {ntype}: {log_name}\n')
+                if parents:
+                    if rule:
+                        f.write(_build_transform(var_id, f'{parents[0]}_df', rule) + "\n")
+                    else:
+                        f.write(f'{var_id}_df = {parents[0]}_df\n')
+                else:
+                    f.write(f'{var_id}_df = None\n')
+                f.write(f'print("🔄 {ntype}: {log_name}")\n\n')
+
+        f.write('spark.stop()\n')
+        f.write('print("✅ BNX PySpark Job Finished")\n')

@@ -16,6 +16,8 @@ from src.xfr_parser import parse_xfr
 from src.dml_parser import parse_dml
 from src.validator.semantic import validate
 from src.codegen.glue_codegen import generate_glue
+from src.codegen.spark_codegen import generate_spark
+from src.cobol_parser import parse_cobol, cobol_to_graph
 from src.accuracy import compute_accuracy
 
 app = FastAPI(title="BNX Compiler API")
@@ -42,6 +44,7 @@ async def compile_graph(
     mp:  UploadFile = File(...),
     xfr: Optional[UploadFile] = File(None),
     dml: Optional[UploadFile] = File(None),
+    target: str = "glue",
 ):
     """
     Compila el grafo y retorna:
@@ -63,12 +66,15 @@ async def compile_graph(
 
         errors, warnings = validate(dag, xfr_rules, dml_schema)
 
-        # Generar código aunque haya warnings (solo bloquear en errores)
+        # Generar código según target
         code = None
         if not errors:
             out = tempfile.NamedTemporaryFile(delete=False, suffix=".py")
             out.close()
-            generate_glue(dag, out.name, xfr_rules)
+            if target == "spark":
+                generate_spark(dag, out.name, xfr_rules)
+            else:
+                generate_glue(dag, out.name, xfr_rules)
             with open(out.name) as f:
                 code = f.read()
             os.unlink(out.name)
@@ -108,5 +114,80 @@ async def compile_graph(
 
     finally:
         for p in [mp_path, xfr_path, dml_path]:
+            if p and os.path.exists(p):
+                os.unlink(p)
+
+
+@app.post("/cobol")
+async def convert_cobol(
+    cobol: UploadFile = File(...),
+    target: str = "glue",
+):
+    """Converts a COBOL file to .mp + .xfr + .dml, then compiles."""
+    cobol_path = _save_upload(cobol)
+
+    try:
+        parsed = parse_cobol(cobol_path)
+        graph = cobol_to_graph(parsed)
+
+        # Save generated files to temp
+        mp_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp", mode="w")
+        mp_tmp.write(graph["mp"])
+        mp_tmp.close()
+
+        xfr_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xfr", mode="w")
+        xfr_tmp.write(graph["xfr"])
+        xfr_tmp.close()
+
+        dml_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".dml", mode="w")
+        dml_tmp.write(graph["dml"])
+        dml_tmp.close()
+
+        ast = parse_mp_ast(mp_tmp.name)
+        dag = build_dag(ast)
+        xfr_rules = parse_xfr(xfr_tmp.name)
+        dml_data = parse_dml(dml_tmp.name)
+        dml_schema = dml_data.get("schema", {})
+
+        errors, warnings = validate(dag, xfr_rules, dml_schema)
+
+        code = None
+        if not errors:
+            out = tempfile.NamedTemporaryFile(delete=False, suffix=".py")
+            out.close()
+            if target == "spark":
+                generate_spark(dag, out.name, xfr_rules)
+            else:
+                generate_glue(dag, out.name, xfr_rules)
+            with open(out.name) as f:
+                code = f.read()
+            os.unlink(out.name)
+
+        acc = compute_accuracy(dag, xfr_rules, dml_schema)
+
+        nodes = []
+        for node in dag.execution_order:
+            node_rule = xfr_rules.get(node.id.lower()) or xfr_rules.get(node.name.lower()) or {}
+            sg = next((sg for sg, ids in ast["subgraphs"].items() if node.id in ids), None)
+            nodes.append({
+                "id": node.id, "name": node.name, "type": node.type.upper(),
+                "subgraph": sg, "parents": node.parents, "children": node.children,
+                "rule": node_rule,
+            })
+
+        edges = [{"from": e["from"], "to": e["to"]} for e in ast["edges"]]
+
+        return {
+            "nodes": nodes, "edges": edges,
+            "subgraphs": list(ast["subgraphs"].keys()),
+            "errors": errors, "warnings": warnings,
+            "code": code, "accuracy": acc,
+            "generated_mp": graph["mp"],
+            "generated_xfr": graph["xfr"],
+            "generated_dml": graph["dml"],
+        }
+
+    finally:
+        for p in [cobol_path, mp_tmp.name, xfr_tmp.name, dml_tmp.name]:
             if p and os.path.exists(p):
                 os.unlink(p)
