@@ -198,6 +198,159 @@ export default function MetricsPage({ theme }) {
           ))}
         </div>
       </div>
+
+      {/* Metodología */}
+      <div style={card}>
+        <h3 style={{ fontSize: 16, fontWeight: 600, color: t.text || '#e2e8f0', marginBottom: 16 }}>
+          🧮 ¿Cuánto hubiera costado construir BNX Convertidor?
+        </h3>
+        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 20 }}>
+          {[
+            { label: 'Equipo Tradicional', items: [
+              { k: 'Personas', v: '2 devs senior' },
+              { k: 'Horas totales', v: '364h' },
+              { k: 'Días laborales', v: '~45 días' },
+              { k: 'Semanas', v: '~9 semanas' },
+              { k: 'Costo ($80/h)', v: '$29,120 USD' },
+            ], color: '#ef4444' },
+            { label: 'Con BNX Convertidor', items: [
+              { k: 'Personas', v: '1 dev' },
+              { k: 'Horas totales', v: '22h' },
+              { k: 'Días laborales', v: '~3 días' },
+              { k: 'Semanas', v: '<1 semana' },
+              { k: 'Costo ($80/h)', v: '$1,760 USD' },
+            ], color: '#22c55e' },
+          ].map(col => (
+            <div key={col.label} style={{
+              flex: '1 1 250px', padding: 16, borderRadius: 8,
+              background: t.bg || '#0f1117', border: `1px solid ${col.color}30`,
+            }}>
+              <div style={{ fontSize: 15, fontWeight: 600, color: col.color, marginBottom: 12 }}>
+                {col.label}
+              </div>
+              {col.items.map(item => (
+                <div key={item.k} style={{
+                  display: 'flex', justifyContent: 'space-between', padding: '4px 0',
+                  borderBottom: `1px solid ${t.border || '#334155'}20`,
+                }}>
+                  <span style={{ fontSize: 13, color: t.dim || '#64748b' }}>{item.k}</span>
+                  <span style={{ fontSize: 13, color: t.text || '#e2e8f0', fontWeight: 600 }}>{item.v}</span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+
+        <div style={{
+          padding: 16, borderRadius: 8, background: '#6366f110',
+          border: `1px solid #6366f130`, marginBottom: 20,
+        }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: '#818cf8', marginBottom: 8 }}>
+            💰 Ahorro Total
+          </div>
+          <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
+            <div>
+              <div style={{ fontSize: 28, fontWeight: 700, color: '#22c55e' }}>$27,360</div>
+              <div style={{ fontSize: 12, color: t.dim || '#64748b' }}>USD ahorrados</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 28, fontWeight: 700, color: '#f59e0b' }}>342h</div>
+              <div style={{ fontSize: 12, color: t.dim || '#64748b' }}>horas ahorradas</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 28, fontWeight: 700, color: '#6366f1' }}>8 semanas</div>
+              <div style={{ fontSize: 12, color: t.dim || '#64748b' }}>de calendario ahorradas</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Metodología detallada */}
+      <div style={card}>
+        <h3 style={{ fontSize: 16, fontWeight: 600, color: t.text || '#e2e8f0', marginBottom: 16 }}>
+          📝 Metodología de Cálculo
+        </h3>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: t.text || '#e2e8f0', marginBottom: 6 }}>
+              Horas Tradicionales
+            </div>
+            <div style={{ fontSize: 13, color: t.muted || '#94a3b8', lineHeight: 1.7 }}>
+              Estimadas con base en benchmarks de la industria para un equipo de 2-3 desarrolladores senior
+              construyendo un compilador de grafos desde cero. Incluye: diseño, implementación, testing,
+              debugging, documentación y deploy. Referencia: proyectos similares de migración Ab Initio → Spark
+              reportan 300-500 horas-hombre para un MVP funcional.
+            </div>
+          </div>
+
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: t.text || '#e2e8f0', marginBottom: 6 }}>
+              Horas BNX Convertidor
+            </div>
+            <div style={{ fontSize: 13, color: t.muted || '#94a3b8', lineHeight: 1.7 }}>
+              Medidas directamente del tiempo real invertido en cada sesión de desarrollo.
+              Cada fase se completó en una sola sesión de trabajo con asistencia de IA generativa.
+              El tiempo incluye: diseño iterativo, implementación, corrección de errores en tiempo real,
+              validación y deploy.
+            </div>
+          </div>
+
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: t.text || '#e2e8f0', marginBottom: 6 }}>
+              Desglose por Fase
+            </div>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${t.border || '#334155'}` }}>
+                  <th style={{ textAlign: 'left', padding: '6px 8px', color: t.dim || '#64748b' }}>Fase</th>
+                  <th style={{ textAlign: 'left', padding: '6px 8px', color: t.dim || '#64748b' }}>Tradicional</th>
+                  <th style={{ textAlign: 'left', padding: '6px 8px', color: t.dim || '#64748b' }}>BNX</th>
+                  <th style={{ textAlign: 'left', padding: '6px 8px', color: t.dim || '#64748b' }}>Justificación</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[
+                  { phase: 'Parser MP/XFR/DML', t: '40h', b: '3h', why: '3 parsers con regex, manejo de errores, tests unitarios' },
+                  { phase: 'DAG Builder', t: '24h', b: '2h', why: 'Topo sort, detección de ciclos, manejo de subgraphs' },
+                  { phase: 'Validador Semántico', t: '32h', b: '2h', why: 'Inferencia de columnas, propagación por DAG, detección de join keys' },
+                  { phase: 'Glue Codegen', t: '40h', b: '3h', why: 'Generación de código Spark válido para 7 tipos de nodo' },
+                  { phase: 'PySpark Codegen', t: '32h', b: '1h', why: 'Variante del Glue codegen con SparkSession' },
+                  { phase: 'COBOL Parser', t: '60h', b: '2h', why: 'Parsing de FILE SECTION, PROCEDURE DIVISION, PIC types' },
+                  { phase: 'DEDUP/NORM/LOOKUP', t: '24h', b: '1h', why: '3 nuevos tipos de nodo con Window, explode, broadcast' },
+                  { phase: 'Accuracy Engine', t: '16h', b: '1h', why: 'Métricas de cobertura por nodo, edge, transform, join' },
+                  { phase: 'React UI', t: '48h', b: '3h', why: 'DAG viewer interactivo, tema dual, panel de detalle, file upload' },
+                  { phase: 'API + Lambda', t: '24h', b: '2h', why: 'FastAPI + Lambda handler con multipart parsing' },
+                  { phase: 'Tests + Cleanup', t: '16h', b: '1h', why: '13 tests, eliminación de 20+ archivos legacy' },
+                  { phase: 'Deploy', t: '8h', b: '1h', why: 'Amplify + Lambda Function URL + CORS' },
+                ].map((r, i) => (
+                  <tr key={i} style={{ borderBottom: `1px solid ${t.border || '#334155'}20` }}>
+                    <td style={{ padding: '6px 8px', color: t.text || '#e2e8f0' }}>{r.phase}</td>
+                    <td style={{ padding: '6px 8px', color: '#ef4444' }}>{r.t}</td>
+                    <td style={{ padding: '6px 8px', color: '#22c55e' }}>{r.b}</td>
+                    <td style={{ padding: '6px 8px', color: t.dim || '#64748b' }}>{r.why}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: t.text || '#e2e8f0', marginBottom: 6 }}>
+              Costos de Infraestructura
+            </div>
+            <div style={{ fontSize: 13, color: t.muted || '#94a3b8', lineHeight: 1.7 }}>
+              <span style={{ fontWeight: 600 }}>Sandbox:</span> $0 — solo requiere Python y Node.js instalados localmente.
+              <br />
+              <span style={{ fontWeight: 600 }}>On-Premise:</span> $200-500/mes — basado en costo de servidor dedicado
+              (4 CPU, 8GB RAM) con Spark standalone. Incluye mantenimiento y SSL.
+              <br />
+              <span style={{ fontWeight: 600 }}>Cloud (AWS):</span> $5-20/mes — Lambda cobra por invocación (~$0.20 por 1M requests),
+              Amplify Hosting es gratuito en tier free (5GB/mes). S3 para datos es ~$0.023/GB.
+              Estimado para uso bajo-medio de un equipo de desarrollo.
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
