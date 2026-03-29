@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 
 // ── Data ────────────────────────────────────────────────────
 const EFFORT_DATA = [
@@ -78,6 +78,162 @@ function BarChart({ data, theme }) {
   )
 }
 
+// ── Migration Estimator ─────────────────────────────────────
+function MigrationEstimator({ theme }) {
+  const t = theme || {}
+  const [jobCount, setJobCount] = useState(40000)
+
+  // Assumptions per job (averages based on Ab Initio complexity profiles)
+  // Simple: 40%, Medium: 40%, Complex: 20%
+  const simple = Math.round(jobCount * 0.4)
+  const medium = Math.round(jobCount * 0.4)
+  const complex = jobCount - simple - medium
+
+  // Hours per job by method
+  const HOURS = {
+    traditional: { simple: 8, medium: 24, complex: 60 },
+    bnx:         { simple: 0.5, medium: 1.5, complex: 4 },
+  }
+
+  const tradTotal = simple * HOURS.traditional.simple + medium * HOURS.traditional.medium + complex * HOURS.traditional.complex
+  const bnxTotal = simple * HOURS.bnx.simple + medium * HOURS.bnx.medium + complex * HOURS.bnx.complex
+
+  const RATE = 80 // USD/hr
+  const tradCost = tradTotal * RATE
+  const bnxCost = bnxTotal * RATE
+
+  // Team size: 8h/day, 22 days/month
+  const tradMonths = Math.round(tradTotal / (10 * 8 * 22)) // 10 devs
+  const bnxMonths = Math.round(bnxTotal / (3 * 8 * 22))    // 3 devs
+
+  const fmt = (n) => n.toLocaleString('en-US')
+
+  const barMax = tradTotal
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      {/* Slider */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+        <span style={{ fontSize: 13, color: t.dim || '#64748b', whiteSpace: 'nowrap' }}>Jobs Ab Initio:</span>
+        <input type="range" min={1000} max={100000} step={1000} value={jobCount}
+          onChange={e => setJobCount(Number(e.target.value))}
+          style={{ flex: 1, accentColor: '#6366f1' }}
+        />
+        <span style={{
+          fontSize: 18, fontWeight: 700, color: '#6366f1', minWidth: 80, textAlign: 'right',
+        }}>{fmt(jobCount)}</span>
+      </div>
+
+      {/* Distribution */}
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+        {[
+          { label: 'Simple (40%)', count: simple, color: '#22c55e', desc: 'Input → Reformat → Output' },
+          { label: 'Medium (40%)', count: medium, color: '#f59e0b', desc: 'Joins + Rollups + Lookups' },
+          { label: 'Complex (20%)', count: complex, color: '#ef4444', desc: 'Multi-stage + COBOL + Subgraphs' },
+        ].map(p => (
+          <div key={p.label} style={{
+            flex: '1 1 150px', padding: 12, borderRadius: 8,
+            background: p.color + '10', border: `1px solid ${p.color}30`,
+          }}>
+            <div style={{ fontSize: 22, fontWeight: 700, color: p.color }}>{fmt(p.count)}</div>
+            <div style={{ fontSize: 13, color: t.text || '#e2e8f0', fontWeight: 600 }}>{p.label}</div>
+            <div style={{ fontSize: 11, color: t.dim || '#64748b', marginTop: 2 }}>{p.desc}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Comparison */}
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+        {[
+          {
+            label: 'Tradicional', color: '#ef4444',
+            items: [
+              { k: 'Horas totales', v: `${fmt(tradTotal)}h` },
+              { k: 'Equipo', v: '10 devs senior' },
+              { k: 'Duración', v: `~${tradMonths} meses` },
+              { k: 'Costo ($80/h)', v: `$${fmt(tradCost)} USD` },
+            ]
+          },
+          {
+            label: 'BNX Convertidor', color: '#22c55e',
+            items: [
+              { k: 'Horas totales', v: `${fmt(bnxTotal)}h` },
+              { k: 'Equipo', v: '3 devs' },
+              { k: 'Duración', v: `~${bnxMonths} meses` },
+              { k: 'Costo ($80/h)', v: `$${fmt(bnxCost)} USD` },
+            ]
+          },
+        ].map(col => (
+          <div key={col.label} style={{
+            flex: '1 1 250px', padding: 16, borderRadius: 8,
+            background: t.bg || '#0f1117', border: `1px solid ${col.color}30`,
+          }}>
+            <div style={{ fontSize: 15, fontWeight: 600, color: col.color, marginBottom: 10 }}>{col.label}</div>
+            {col.items.map(item => (
+              <div key={item.k} style={{
+                display: 'flex', justifyContent: 'space-between', padding: '5px 0',
+                borderBottom: `1px solid ${t.border || '#334155'}20`,
+              }}>
+                <span style={{ fontSize: 13, color: t.dim || '#64748b' }}>{item.k}</span>
+                <span style={{ fontSize: 13, color: t.text || '#e2e8f0', fontWeight: 600 }}>{item.v}</span>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+
+      {/* Visual bar */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <span style={{ fontSize: 12, color: t.dim || '#64748b', width: 90 }}>Tradicional</span>
+          <div style={{ flex: 1, height: 20, background: t.bg || '#0f1117', borderRadius: 4, overflow: 'hidden' }}>
+            <div style={{ width: '100%', height: '100%', background: '#ef4444', borderRadius: 4 }} />
+          </div>
+          <span style={{ fontSize: 12, color: t.muted || '#94a3b8', width: 80, textAlign: 'right' }}>{fmt(tradTotal)}h</span>
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <span style={{ fontSize: 12, color: t.dim || '#64748b', width: 90 }}>BNX</span>
+          <div style={{ flex: 1, height: 20, background: t.bg || '#0f1117', borderRadius: 4, overflow: 'hidden' }}>
+            <div style={{ width: `${(bnxTotal / barMax) * 100}%`, height: '100%', background: '#22c55e', borderRadius: 4 }} />
+          </div>
+          <span style={{ fontSize: 12, color: t.muted || '#94a3b8', width: 80, textAlign: 'right' }}>{fmt(bnxTotal)}h</span>
+        </div>
+      </div>
+
+      {/* Savings */}
+      <div style={{
+        padding: 16, borderRadius: 8, background: '#6366f110', border: '1px solid #6366f130',
+        display: 'flex', gap: 24, flexWrap: 'wrap',
+      }}>
+        <div>
+          <div style={{ fontSize: 28, fontWeight: 700, color: '#22c55e' }}>${fmt(tradCost - bnxCost)}</div>
+          <div style={{ fontSize: 12, color: t.dim || '#64748b' }}>USD ahorrados</div>
+        </div>
+        <div>
+          <div style={{ fontSize: 28, fontWeight: 700, color: '#f59e0b' }}>{fmt(tradTotal - bnxTotal)}h</div>
+          <div style={{ fontSize: 12, color: t.dim || '#64748b' }}>horas ahorradas</div>
+        </div>
+        <div>
+          <div style={{ fontSize: 28, fontWeight: 700, color: '#6366f1' }}>{Math.round(tradTotal / bnxTotal)}x</div>
+          <div style={{ fontSize: 12, color: t.dim || '#64748b' }}>más rápido</div>
+        </div>
+        <div>
+          <div style={{ fontSize: 28, fontWeight: 700, color: '#ec4899' }}>{tradMonths - bnxMonths} meses</div>
+          <div style={{ fontSize: 12, color: t.dim || '#64748b' }}>de calendario ahorrados</div>
+        </div>
+      </div>
+
+      {/* Assumptions */}
+      <div style={{ fontSize: 11, color: t.dim || '#64748b', lineHeight: 1.6 }}>
+        Supuestos: distribución 40% simple / 40% medium / 20% complex basada en perfil típico de migración Ab Initio bancaria.
+        Horas tradicionales: simple 8h, medium 24h, complex 60h por job (incluye análisis, desarrollo, testing, deploy).
+        Horas BNX: simple 0.5h, medium 1.5h, complex 4h por job (compilación automática + validación + ajustes manuales).
+        Tarifa: $80 USD/h (dev senior LATAM). Equipo tradicional: 10 devs. Equipo BNX: 3 devs.
+      </div>
+    </div>
+  )
+}
+
 // ── Main Component ──────────────────────────────────────────
 export default function MetricsPage({ theme }) {
   const t = theme || {}
@@ -122,6 +278,14 @@ export default function MetricsPage({ theme }) {
             <div style={{ fontSize: 12, color: t.dim || '#64748b', marginTop: 2 }}>{c.sub}</div>
           </div>
         ))}
+      </div>
+
+      {/* Estimación migración masiva */}
+      <div style={card}>
+        <h3 style={{ fontSize: 16, fontWeight: 600, color: t.text || '#e2e8f0', marginBottom: 16 }}>
+          🏭 Estimación de Migración Masiva Ab Initio → Spark
+        </h3>
+        <MigrationEstimator theme={t} />
       </div>
 
       {/* Effort chart */}
