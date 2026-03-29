@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef } from 'react'
 import FileUpload from './components/FileUpload'
 import DagViewer from './components/DagViewer'
+import MetricsPage from './components/MetricsPage'
 import { COMPILE_URL } from './config'
 
 // ── Themes ──────────────────────────────────────────────────
@@ -45,6 +46,7 @@ export default function App() {
   const [codeOpen, setCodeOpen] = useState(true)
   const [isDark, setIsDark]     = useState(true)
   const [target, setTarget]     = useState('glue')
+  const [page, setPage]         = useState('compiler')
   const dagRef                  = useRef(null)
   const cobolRef                = useRef(null)
 
@@ -140,6 +142,25 @@ export default function App() {
           </span>
         )}
 
+        {/* Page tabs */}
+        <div style={{ display: 'flex', gap: 4, marginLeft: 8 }}>
+          {[
+            { id: 'compiler', label: '🔧 Compiler' },
+            { id: 'metrics', label: '📊 Metrics' },
+          ].map(tab => (
+            <button key={tab.id}
+              onClick={() => setPage(tab.id)}
+              style={{
+                padding: '6px 14px', borderRadius: 6, cursor: 'pointer', fontSize: 13,
+                background: page === tab.id ? t.accent + '20' : 'transparent',
+                border: `1px solid ${page === tab.id ? t.accent : 'transparent'}`,
+                color: page === tab.id ? t.accent : t.muted,
+                fontWeight: page === tab.id ? 600 : 400,
+              }}
+            >{tab.label}</button>
+          ))}
+        </div>
+
         <div style={{ flex: 1 }} />
 
         {/* Downloads */}
@@ -160,6 +181,10 @@ export default function App() {
       </header>
 
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+        {page === 'metrics' ? (
+          <MetricsPage theme={t} />
+        ) : (
+        <>
         {/* Sidebar */}
         <aside style={{
           width: 360, padding: 24, background: t.sidebar, flexShrink: 0,
@@ -355,6 +380,8 @@ export default function App() {
             </div>
           )}
         </div>
+        </>
+        )}
       </div>
     </div>
   )
