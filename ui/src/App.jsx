@@ -73,6 +73,80 @@ export default function App() {
     if (result?.code) download(result.code, target === 'spark' ? 'pyspark_job.py' : 'glue_job.py')
   }, [result, target])
 
+  const downloadReport = useCallback(() => {
+    if (!result) return
+    const counts = {}
+    result.nodes.forEach(n => { counts[n.type] = (counts[n.type] || 0) + 1 })
+    const acc = result.accuracy || {}
+
+    let report = `BNX CONVERTIDOR - COMPILATION REPORT\n`
+    report += `${'='.repeat(50)}\n`
+    report += `Generated: ${new Date().toISOString()}\n`
+    report += `Target: ${target.toUpperCase()}\n\n`
+
+    report += `GRAPH SUMMARY\n${'-'.repeat(30)}\n`
+    report += `Total Nodes: ${result.nodes.length}\n`
+    report += `Total Edges: ${result.edges.length}\n`
+    report += `Subgraphs: ${result.subgraphs?.length || 0}\n\n`
+
+    report += `NODES BY TYPE\n${'-'.repeat(30)}\n`
+    Object.entries(counts).forEach(([type, count]) => {
+      report += `  ${type}: ${count}\n`
+    })
+
+    report += `\nACCURACY\n${'-'.repeat(30)}\n`
+    report += `  Overall: ${acc.overall_accuracy || 0}%\n`
+    report += `  Nodes: ${acc.resolved_nodes || 0}/${acc.total_nodes || 0} (${acc.node_accuracy || 0}%)\n`
+    report += `  Edges: ${acc.resolved_edges || 0}/${acc.total_edges || 0} (${acc.edge_accuracy || 0}%)\n`
+    report += `  Transforms: ${acc.resolved_transforms || 0}/${acc.total_transforms || 0} (${acc.transform_accuracy || 0}%)\n`
+    report += `  Joins: ${acc.resolved_joins || 0}/${acc.total_joins || 0} (${acc.join_accuracy || 0}%)\n`
+
+    if (result.warnings?.length) {
+      report += `\nWARNINGS (${result.warnings.length})\n${'-'.repeat(30)}\n`
+      result.warnings.forEach(w => { report += `  ${w}\n` })
+    }
+    if (result.errors?.length) {
+      report += `\nERRORS (${result.errors.length})\n${'-'.repeat(30)}\n`
+      result.errors.forEach(e => { report += `  ${e}\n` })
+    }
+
+    report += `\nEXECUTION ORDER\n${'-'.repeat(30)}\n`
+    result.nodes.forEach((n, i) => {
+      const rule = n.rule || {}
+      let detail = ''
+      if (rule.select && rule.select !== '*') detail += ` SELECT ${rule.select}`
+      if (rule.where) detail += ` WHERE ${rule.where}`
+      if (rule.group_by) detail += ` GROUP BY ${Array.isArray(rule.group_by) ? rule.group_by.join(', ') : rule.group_by}`
+      if (rule.join_key) detail += ` JOIN ON ${rule.join_key} (${rule.join_type || 'inner'})`
+      if (rule.dedup_keys) detail += ` DEDUP BY ${rule.dedup_keys.join(', ')}`
+      if (rule.explode_col) detail += ` EXPLODE ${rule.explode_col}`
+      if (rule.split_col) detail += ` SPLIT ${rule.split_col}`
+      if (rule.lookup_key) detail += ` LOOKUP ON ${rule.lookup_key}`
+      report += `  ${i + 1}. ${n.name} (${n.type})${n.subgraph ? ` [${n.subgraph}]` : ''}${detail}\n`
+      if (n.parents?.length) report += `     ← ${n.parents.join(', ')}\n`
+    })
+
+    if (result.code) {
+      report += `\n${'='.repeat(50)}\nGENERATED CODE\n${'='.repeat(50)}\n\n`
+      report += result.code
+    }
+
+    if (result.generated_mp) {
+      report += `\n${'='.repeat(50)}\nGENERATED .MP\n${'='.repeat(50)}\n\n`
+      report += result.generated_mp
+    }
+    if (result.generated_xfr) {
+      report += `\n${'='.repeat(50)}\nGENERATED .XFR\n${'='.repeat(50)}\n\n`
+      report += result.generated_xfr
+    }
+    if (result.generated_dml) {
+      report += `\n${'='.repeat(50)}\nGENERATED .DML\n${'='.repeat(50)}\n\n`
+      report += result.generated_dml
+    }
+
+    download(report, 'bnx_report.txt')
+  }, [result, target])
+
   const compileCobol = async (file) => {
     setLoading(true)
     const form = new FormData()
@@ -329,6 +403,62 @@ export default function App() {
 
         {/* Main */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          {/* Stats bar */}
+          {result?.nodes?.length > 0 && (() => {
+            const counts = {}
+            result.nodes.forEach(n => { counts[n.type] = (counts[n.type] || 0) + 1 })
+            const TYPE_COLOR = {
+              SOURCE: '#22c55e', TRANSFORM: '#6366f1', XFR: '#6366f1',
+              JOIN: '#f59e0b', DEDUP: '#06b6d4', NORMALIZE: '#a855f7',
+              LOOKUP: '#ec4899', SINK: '#ef4444',
+            }
+            return (
+              <div style={{
+                display: 'flex', gap: 12, padding: '10px 20px', flexWrap: 'wrap',
+                background: t.sidebar, borderBottom: `1px solid ${t.border}`,
+                alignItems: 'center',
+              }}>
+                <span style={{
+                  fontSize: 15, fontWeight: 700, color: t.text,
+                  marginRight: 8,
+                }}>
+                  {result.nodes.length} nodes · {result.edges.length} edges
+                  {result.subgraphs?.length > 0 && ` · ${result.subgraphs.length} subgraphs`}
+                </span>
+                <span style={{ width: 1, height: 20, background: t.border }} />
+                {Object.entries(counts).map(([type, count]) => (
+                  <span key={type} style={{
+                    display: 'flex', alignItems: 'center', gap: 5,
+                    padding: '3px 10px', borderRadius: 6,
+                    background: (TYPE_COLOR[type] || '#64748b') + '15',
+                    border: `1px solid ${(TYPE_COLOR[type] || '#64748b')}30`,
+                    fontSize: 13, color: TYPE_COLOR[type] || '#64748b', fontWeight: 600,
+                  }}>
+                    <span style={{
+                      width: 8, height: 8, borderRadius: '50%',
+                      background: TYPE_COLOR[type] || '#64748b',
+                    }} />
+                    {count} {type}
+                  </span>
+                ))}
+                <span style={{ flex: 1 }} />
+                {result.code && (
+                  <button onClick={downloadCode} style={{
+                    padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                    background: t.card, border: `1px solid ${t.border}`, color: t.muted,
+                  }}>📥 Code</button>
+                )}
+                <button onClick={downloadDag} style={{
+                  padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                  background: t.card, border: `1px solid ${t.border}`, color: t.muted,
+                }}>🖼️ DAG</button>
+                <button onClick={downloadReport} style={{
+                  padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                  background: '#6366f115', border: `1px solid #6366f130`, color: '#818cf8',
+                }}>📋 Full Report</button>
+              </div>
+            )
+          })()}
           <div ref={dagRef} style={{ flex: 1, position: 'relative', minHeight: 0 }}>
             {result?.nodes?.length > 0
               ? <DagViewer data={result} theme={t} />
