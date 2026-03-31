@@ -339,7 +339,8 @@ export default function DesignerPage({ theme }) {
       </div>
 
       {/* Canvas — takes ALL remaining space */}
-      <div style={{ flex: 1, position: 'relative' }}>
+      <div style={{ flex: 1, position: 'relative', width: '100%', height: '100%' }}>
+        <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}>
         <ReactFlow
           nodes={nodes} edges={edges}
           onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
@@ -353,6 +354,7 @@ export default function DesignerPage({ theme }) {
           <Controls />
           <MiniMap nodeColor={() => '#6366f1'} style={{ background: t.card || '#1e2433' }} />
         </ReactFlow>
+        </div>
 
         {/* Node editor — floating panel */}
         {editNode && (
