@@ -13,101 +13,126 @@ const LAYERS = [
     y: 0,
     nodes: [
       { id: 'CORE_BANKING', label: 'Core Banking\n(AS/400)', desc: 'Cuentas, saldos, movimientos' },
-      { id: 'CARD_SYSTEM', label: 'Card System\n(COBOL)', desc: 'Tarjetas, autorizaciones' },
-      { id: 'LOAN_SYSTEM', label: 'Loan System\n(DB2)', desc: 'Créditos, amortizaciones' },
-      { id: 'PAYMENT_HUB', label: 'Payment Hub\n(SWIFT/SPEI)', desc: 'Transferencias, pagos' },
-      { id: 'CRM', label: 'CRM\n(Salesforce)', desc: 'Clientes, segmentos' },
-      { id: 'FRAUD_ENGINE', label: 'Fraud Engine\n(Real-time)', desc: 'Alertas, scores' },
-      { id: 'KAFKA_EVENTS', label: 'Kafka\n(Eventos)', desc: 'Clicks, logins, txns' },
+      { id: 'CARD_SYSTEM', label: 'Card System\n(COBOL/VSAM)', desc: 'Tarjetas, autorizaciones, límites' },
+      { id: 'LOAN_SYSTEM', label: 'Loan System\n(DB2)', desc: 'Créditos, amortizaciones, garantías' },
+      { id: 'PAYMENT_HUB', label: 'Payment Hub\n(SWIFT/SPEI)', desc: 'Transferencias, pagos interbancarios' },
+      { id: 'CRM', label: 'CRM\n(Salesforce)', desc: 'Clientes, segmentos, campañas' },
+      { id: 'FRAUD_ENGINE', label: 'Fraud Engine\n(Real-time)', desc: 'Alertas, scores, reglas' },
+      { id: 'KAFKA_EVENTS', label: 'Kafka\n(Eventos)', desc: 'Clicks, logins, sesiones' },
+      { id: 'TREASURY', label: 'Treasury\n(Murex)', desc: 'FX, derivados, posiciones' },
+      { id: 'COMPLIANCE', label: 'Compliance\n(Actimize)', desc: 'KYC, PEP, sanciones' },
     ]
   },
   {
-    name: 'Ingestion Layer',
+    name: 'AWS: Ingestion Layer',
     color: '#06b6d4',
-    y: 140,
+    y: 150,
     nodes: [
-      { id: 'INGEST_BATCH', label: 'Batch Ingestion\n(Ab Initio → Spark)', desc: 'COBOL/EBCDIC → Parquet' },
-      { id: 'INGEST_CDC', label: 'CDC Ingestion\n(Debezium)', desc: 'Change Data Capture' },
-      { id: 'INGEST_STREAM', label: 'Stream Ingestion\n(Kafka Connect)', desc: 'Real-time events' },
+      { id: 'DMS', label: '🔄 AWS DMS\n(Migration)', desc: 'DB2/Oracle → S3 full + CDC' },
+      { id: 'TRANSFER', label: '📦 AWS Transfer\n(SFTP)', desc: 'Archivos EBCDIC/flat del mainframe' },
+      { id: 'MSK', label: '📡 Amazon MSK\n(Kafka)', desc: 'Streaming de eventos real-time' },
+      { id: 'KINESIS', label: '⚡ Kinesis\n(Firehose)', desc: 'Ingesta de clicks y logs' },
+      { id: 'APPFLOW', label: '🔗 AppFlow\n(SaaS)', desc: 'Salesforce, SAP connectors' },
     ]
   },
   {
-    name: 'Raw Zone (Data Lake)',
+    name: 'AWS: Raw Zone (S3 Data Lake)',
     color: '#6366f1',
-    y: 280,
+    y: 300,
     nodes: [
-      { id: 'RAW_ACCOUNTS', label: 'Raw Accounts', desc: 'S3: raw/accounts/' },
-      { id: 'RAW_CARDS', label: 'Raw Cards', desc: 'S3: raw/cards/' },
-      { id: 'RAW_LOANS', label: 'Raw Loans', desc: 'S3: raw/loans/' },
-      { id: 'RAW_PAYMENTS', label: 'Raw Payments', desc: 'S3: raw/payments/' },
-      { id: 'RAW_CUSTOMERS', label: 'Raw Customers', desc: 'S3: raw/customers/' },
-      { id: 'RAW_FRAUD', label: 'Raw Fraud', desc: 'S3: raw/fraud/' },
-      { id: 'RAW_EVENTS', label: 'Raw Events', desc: 'S3: raw/events/' },
+      { id: 'RAW_ACCOUNTS', label: '📂 Raw Accounts\n(S3/Parquet)', desc: 's3://datalake/raw/accounts/' },
+      { id: 'RAW_CARDS', label: '📂 Raw Cards\n(S3/Parquet)', desc: 's3://datalake/raw/cards/' },
+      { id: 'RAW_LOANS', label: '📂 Raw Loans\n(S3/Parquet)', desc: 's3://datalake/raw/loans/' },
+      { id: 'RAW_PAYMENTS', label: '📂 Raw Payments\n(S3/Parquet)', desc: 's3://datalake/raw/payments/' },
+      { id: 'RAW_CUSTOMERS', label: '📂 Raw Customers\n(S3/Parquet)', desc: 's3://datalake/raw/customers/' },
+      { id: 'RAW_FRAUD', label: '📂 Raw Fraud\n(S3/JSON)', desc: 's3://datalake/raw/fraud/' },
+      { id: 'RAW_EVENTS', label: '📂 Raw Events\n(S3/JSON)', desc: 's3://datalake/raw/events/' },
+      { id: 'RAW_TREASURY', label: '📂 Raw Treasury\n(S3/CSV)', desc: 's3://datalake/raw/treasury/' },
+      { id: 'RAW_COMPLIANCE', label: '📂 Raw Compliance\n(S3/Parquet)', desc: 's3://datalake/raw/compliance/' },
     ]
   },
   {
-    name: 'Curated Zone (BNX Transforms)',
+    name: 'AWS: Processing (Glue / EMR / BNX)',
     color: '#f59e0b',
-    y: 420,
+    y: 450,
     nodes: [
-      { id: 'CLEAN_DEDUP', label: 'Clean + Dedup', desc: 'BNX: TRANSFORM + DEDUP' },
-      { id: 'NORMALIZE', label: 'Normalize', desc: 'BNX: NORMALIZE (EBCDIC→UTF8)' },
-      { id: 'ENRICH_JOIN', label: 'Enrich + Join', desc: 'BNX: JOIN + LOOKUP' },
-      { id: 'AGGREGATE', label: 'Aggregate', desc: 'BNX: GROUP BY + Rollup' },
-      { id: 'VALIDATE', label: 'Validate', desc: 'BNX: Semantic Validator' },
+      { id: 'GLUE_CLEAN', label: '🔧 Glue Job\nClean + Dedup', desc: 'BNX: TRANSFORM + DEDUP' },
+      { id: 'GLUE_NORMALIZE', label: '🔧 Glue Job\nNormalize', desc: 'BNX: NORMALIZE (EBCDIC→UTF8)' },
+      { id: 'GLUE_ENRICH', label: '🔧 Glue Job\nEnrich + Join', desc: 'BNX: JOIN + LOOKUP' },
+      { id: 'GLUE_AGGREGATE', label: '🔧 Glue Job\nAggregate', desc: 'BNX: GROUP BY + Rollup' },
+      { id: 'GLUE_VALIDATE', label: '🔧 Glue Job\nValidate', desc: 'BNX: Semantic Validator' },
+      { id: 'EMR_ML', label: '🧠 EMR\nML Models', desc: 'Risk scoring, churn prediction' },
+      { id: 'GLUE_CATALOG', label: '📋 Glue Catalog\n(Metadata)', desc: 'Schema registry, partitions' },
     ]
   },
   {
-    name: 'Business Zone (Modelos)',
+    name: 'AWS: Curated Zone (S3 + Glue Catalog)',
     color: '#a855f7',
-    y: 560,
+    y: 600,
     nodes: [
-      { id: 'DIM_CUSTOMER', label: 'Dim Customer\n360°', desc: 'Perfil completo del cliente' },
-      { id: 'DIM_PRODUCT', label: 'Dim Product', desc: 'Catálogo de productos' },
-      { id: 'FACT_TX', label: 'Fact Transactions', desc: 'Movimientos normalizados' },
-      { id: 'FACT_BALANCE', label: 'Fact Balances', desc: 'Saldos diarios' },
-      { id: 'MODEL_RISK', label: 'Risk Model', desc: 'Score de riesgo crediticio' },
-      { id: 'MODEL_AML', label: 'AML Model', desc: 'Anti Money Laundering' },
+      { id: 'DIM_CUSTOMER', label: '👤 Dim Customer\n360°', desc: 'Perfil completo del cliente' },
+      { id: 'DIM_PRODUCT', label: '📦 Dim Product', desc: 'Catálogo de productos bancarios' },
+      { id: 'DIM_BRANCH', label: '🏢 Dim Branch', desc: 'Sucursales y regiones' },
+      { id: 'FACT_TX', label: '💳 Fact Transactions', desc: 'Movimientos normalizados' },
+      { id: 'FACT_BALANCE', label: '💰 Fact Balances', desc: 'Saldos diarios por cuenta' },
+      { id: 'FACT_PAYMENTS', label: '🔄 Fact Payments', desc: 'Pagos y transferencias' },
+      { id: 'MODEL_RISK', label: '⚠️ Risk Model', desc: 'Score crediticio + PD/LGD' },
+      { id: 'MODEL_AML', label: '🔍 AML Model', desc: 'Anti Money Laundering alerts' },
+      { id: 'MODEL_CHURN', label: '📉 Churn Model', desc: 'Predicción de abandono' },
     ]
   },
   {
-    name: 'Consumo (Reportes / APIs)',
+    name: 'AWS: Consumo (Athena / Redshift / APIs)',
     color: '#ef4444',
-    y: 700,
+    y: 750,
     nodes: [
-      { id: 'RPT_REGULATORY', label: 'Regulatory\nReports', desc: 'CNBV, Banxico, CONDUSEF' },
-      { id: 'RPT_RISK', label: 'Risk\nDashboard', desc: 'Tableau / QuickSight' },
-      { id: 'RPT_FINANCE', label: 'Finance\nReports', desc: 'P&L, Balance Sheet' },
-      { id: 'API_MOBILE', label: 'Mobile\nAPI', desc: 'App bancaria' },
-      { id: 'API_OPENBANKING', label: 'Open\nBanking', desc: 'APIs PSD2/SPEI' },
-      { id: 'KAFKA_OUT', label: 'Kafka\nOutput', desc: 'Eventos procesados' },
+      { id: 'ATHENA', label: '🔎 Athena\n(Ad-hoc SQL)', desc: 'Consultas sobre S3' },
+      { id: 'REDSHIFT', label: '🏗️ Redshift\n(Data Warehouse)', desc: 'Reportes pesados, BI' },
+      { id: 'QUICKSIGHT', label: '📊 QuickSight\n(Dashboards)', desc: 'Risk, Finance, Ops dashboards' },
+      { id: 'RPT_REGULATORY', label: '📋 Regulatory\n(CNBV/Banxico)', desc: 'R04, R08, R28, EACP' },
+      { id: 'RPT_FINANCE', label: '💼 Finance\n(P&L/Balance)', desc: 'Estados financieros' },
+      { id: 'API_GATEWAY', label: '🌐 API Gateway\n(REST)', desc: 'APIs para mobile y web' },
+      { id: 'API_OPENBANKING', label: '🏦 Open Banking\n(PSD2/SPEI)', desc: 'APIs regulatorias' },
+      { id: 'SNS_ALERTS', label: '🔔 SNS\n(Alertas)', desc: 'Notificaciones de fraude' },
+      { id: 'KAFKA_OUT', label: '📡 MSK Output\n(Eventos)', desc: 'Eventos procesados downstream' },
     ]
   },
 ]
 
 const EDGES_DEF = [
   // Sources → Ingestion
-  ['CORE_BANKING', 'INGEST_BATCH'], ['CARD_SYSTEM', 'INGEST_BATCH'], ['LOAN_SYSTEM', 'INGEST_BATCH'],
-  ['PAYMENT_HUB', 'INGEST_CDC'], ['CRM', 'INGEST_CDC'],
-  ['FRAUD_ENGINE', 'INGEST_STREAM'], ['KAFKA_EVENTS', 'INGEST_STREAM'],
+  ['CORE_BANKING', 'DMS'], ['CARD_SYSTEM', 'TRANSFER'], ['LOAN_SYSTEM', 'DMS'],
+  ['PAYMENT_HUB', 'DMS'], ['CRM', 'APPFLOW'],
+  ['FRAUD_ENGINE', 'MSK'], ['KAFKA_EVENTS', 'KINESIS'],
+  ['TREASURY', 'TRANSFER'], ['COMPLIANCE', 'APPFLOW'],
   // Ingestion → Raw
-  ['INGEST_BATCH', 'RAW_ACCOUNTS'], ['INGEST_BATCH', 'RAW_CARDS'], ['INGEST_BATCH', 'RAW_LOANS'],
-  ['INGEST_CDC', 'RAW_PAYMENTS'], ['INGEST_CDC', 'RAW_CUSTOMERS'],
-  ['INGEST_STREAM', 'RAW_FRAUD'], ['INGEST_STREAM', 'RAW_EVENTS'],
-  // Raw → Curated
-  ['RAW_ACCOUNTS', 'CLEAN_DEDUP'], ['RAW_CARDS', 'CLEAN_DEDUP'], ['RAW_LOANS', 'CLEAN_DEDUP'],
-  ['RAW_PAYMENTS', 'NORMALIZE'], ['RAW_CUSTOMERS', 'NORMALIZE'],
-  ['CLEAN_DEDUP', 'ENRICH_JOIN'], ['NORMALIZE', 'ENRICH_JOIN'],
-  ['RAW_FRAUD', 'ENRICH_JOIN'], ['RAW_EVENTS', 'ENRICH_JOIN'],
-  ['ENRICH_JOIN', 'AGGREGATE'], ['ENRICH_JOIN', 'VALIDATE'],
-  // Curated → Business
-  ['AGGREGATE', 'DIM_CUSTOMER'], ['AGGREGATE', 'DIM_PRODUCT'],
-  ['VALIDATE', 'FACT_TX'], ['VALIDATE', 'FACT_BALANCE'],
-  ['ENRICH_JOIN', 'MODEL_RISK'], ['ENRICH_JOIN', 'MODEL_AML'],
-  // Business → Consumo
-  ['FACT_TX', 'RPT_REGULATORY'], ['FACT_BALANCE', 'RPT_FINANCE'],
-  ['MODEL_RISK', 'RPT_RISK'], ['MODEL_AML', 'RPT_REGULATORY'],
-  ['DIM_CUSTOMER', 'API_MOBILE'], ['DIM_CUSTOMER', 'API_OPENBANKING'],
+  ['DMS', 'RAW_ACCOUNTS'], ['DMS', 'RAW_LOANS'], ['DMS', 'RAW_PAYMENTS'],
+  ['TRANSFER', 'RAW_CARDS'], ['TRANSFER', 'RAW_TREASURY'],
+  ['MSK', 'RAW_FRAUD'], ['KINESIS', 'RAW_EVENTS'],
+  ['APPFLOW', 'RAW_CUSTOMERS'], ['APPFLOW', 'RAW_COMPLIANCE'],
+  // Raw → Processing
+  ['RAW_ACCOUNTS', 'GLUE_CLEAN'], ['RAW_CARDS', 'GLUE_CLEAN'], ['RAW_LOANS', 'GLUE_CLEAN'],
+  ['RAW_PAYMENTS', 'GLUE_NORMALIZE'], ['RAW_CUSTOMERS', 'GLUE_NORMALIZE'],
+  ['RAW_TREASURY', 'GLUE_NORMALIZE'],
+  ['GLUE_CLEAN', 'GLUE_ENRICH'], ['GLUE_NORMALIZE', 'GLUE_ENRICH'],
+  ['RAW_FRAUD', 'GLUE_ENRICH'], ['RAW_EVENTS', 'GLUE_ENRICH'],
+  ['RAW_COMPLIANCE', 'GLUE_ENRICH'],
+  ['GLUE_ENRICH', 'GLUE_AGGREGATE'], ['GLUE_ENRICH', 'GLUE_VALIDATE'],
+  ['GLUE_CLEAN', 'GLUE_CATALOG'], ['GLUE_NORMALIZE', 'GLUE_CATALOG'],
+  ['GLUE_ENRICH', 'EMR_ML'],
+  // Processing → Curated
+  ['GLUE_AGGREGATE', 'DIM_CUSTOMER'], ['GLUE_AGGREGATE', 'DIM_PRODUCT'], ['GLUE_AGGREGATE', 'DIM_BRANCH'],
+  ['GLUE_VALIDATE', 'FACT_TX'], ['GLUE_VALIDATE', 'FACT_BALANCE'], ['GLUE_VALIDATE', 'FACT_PAYMENTS'],
+  ['EMR_ML', 'MODEL_RISK'], ['EMR_ML', 'MODEL_AML'], ['EMR_ML', 'MODEL_CHURN'],
+  // Curated → Consumo
+  ['FACT_TX', 'ATHENA'], ['FACT_BALANCE', 'ATHENA'], ['DIM_CUSTOMER', 'ATHENA'],
+  ['FACT_TX', 'REDSHIFT'], ['FACT_BALANCE', 'REDSHIFT'], ['FACT_PAYMENTS', 'REDSHIFT'],
+  ['REDSHIFT', 'QUICKSIGHT'], ['ATHENA', 'QUICKSIGHT'],
+  ['FACT_TX', 'RPT_REGULATORY'], ['MODEL_AML', 'RPT_REGULATORY'],
+  ['FACT_BALANCE', 'RPT_FINANCE'], ['DIM_BRANCH', 'RPT_FINANCE'],
+  ['DIM_CUSTOMER', 'API_GATEWAY'], ['MODEL_CHURN', 'API_GATEWAY'],
+  ['DIM_CUSTOMER', 'API_OPENBANKING'], ['FACT_PAYMENTS', 'API_OPENBANKING'],
+  ['MODEL_AML', 'SNS_ALERTS'], ['MODEL_RISK', 'SNS_ALERTS'],
   ['FACT_TX', 'KAFKA_OUT'], ['MODEL_AML', 'KAFKA_OUT'],
 ]
 
@@ -118,8 +143,8 @@ function buildModel(theme) {
 
   LAYERS.forEach(layer => {
     const count = layer.nodes.length
-    const totalWidth = count * 160
-    const startX = (900 - totalWidth) / 2
+    const totalWidth = count * 150
+    const startX = (1400 - totalWidth) / 2
 
     layer.nodes.forEach((n, i) => {
       nodes.push({
