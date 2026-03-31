@@ -115,6 +115,7 @@ def handler(event, context):
                 return _response(400, {"error": "cobol file is required"})
 
             cobol_path = _save_bytes(files["cobol"], ".cbl")
+            mp_path = xfr_path = dml_path = None
             try:
                 parsed = parse_cobol(cobol_path)
                 graph = cobol_to_graph(parsed)

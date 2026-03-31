@@ -7,8 +7,22 @@ import re
 
 
 def parse_cobol(path):
-    with open(path, "r") as f:
-        lines = [l.rstrip() for l in f.readlines()]
+    # Try UTF-8 first, then EBCDIC (cp500/cp1047)
+    content = None
+    for enc in ["utf-8", "cp500", "cp1047", "latin-1"]:
+        try:
+            with open(path, "r", encoding=enc) as f:
+                content = f.read()
+            # Sanity check: COBOL should have DIVISION or SECTION
+            if "DIVISION" in content.upper() or "SECTION" in content.upper():
+                break
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+
+    if not content:
+        raise ValueError(f"Cannot decode COBOL file: {path}")
+
+    lines = [l.rstrip() for l in content.splitlines()]
 
     files = _parse_file_section(lines)
     fields = _parse_fields(lines)
@@ -24,6 +38,7 @@ def parse_cobol(path):
         "filters": filters,
         "joins": joins,
         "computes": computes,
+        "encoding": "EBCDIC" if content and "COMP-3" in content.upper() else "ASCII",
     }
 
 
@@ -40,7 +55,7 @@ def _parse_file_section(lines):
 
 
 def _parse_fields(lines):
-    """Extract FD + 05 level fields → schema per file."""
+    """Extract FD + 05 level fields → schema per file. Handles COMP-3, COMP, FILLER."""
     schemas = {}
     current_fd = None
 
@@ -52,10 +67,15 @@ def _parse_fields(lines):
             continue
 
         if current_fd:
-            m_field = re.match(r"\s+05\s+([\w-]+)\s+PIC\s+(.+)\.", line, re.I)
+            # Skip FILLER fields
+            if re.match(r"\s+05\s+FILLER\s+", line, re.I):
+                continue
+
+            # Match: 05 FIELD-NAME PIC ... [COMP-3|COMP].
+            m_field = re.match(r"\s+05\s+([\w-]+)\s+PIC\s+(.+?)\.?\s*$", line, re.I)
             if m_field:
                 fname = m_field.group(1).replace("-", "_").lower()
-                pic = m_field.group(2).strip()
+                pic = m_field.group(2).strip().rstrip(".")
                 ftype = _pic_to_type(pic)
                 schemas[current_fd][fname] = ftype
             elif re.match(r"\s+(FD|WORKING-STORAGE|PROCEDURE)", line, re.I):
@@ -65,12 +85,28 @@ def _parse_fields(lines):
 
 
 def _pic_to_type(pic):
-    """Convert COBOL PIC to simple type."""
-    pic = pic.upper()
-    if "V" in pic or "9" in pic and "V" in pic:
+    """Convert COBOL PIC to simple type. Handles COMP-3 (packed), COMP (binary), REDEFINES."""
+    pic = pic.upper().strip()
+
+    # COMP-3 (packed decimal) — always numeric
+    if "COMP-3" in pic:
+        if "V" in pic:
+            return "decimal"  # packed decimal with decimals
+        return "long"  # packed integer
+
+    # COMP (binary)
+    if "COMP" in pic:
+        if "V" in pic:
+            return "double"
+        digits = len(re.findall(r"9", pic.split("COMP")[0]))
+        return "int" if digits <= 9 else "long"
+
+    # Standard PIC
+    if "V" in pic and "9" in pic:
         return "double"
     if "S9" in pic or "9" in pic:
-        return "int" if len(re.findall(r"9", pic)) <= 8 else "double"
+        digits = len(re.findall(r"9", pic))
+        return "int" if digits <= 8 else "long"
     return "string"
 
 
@@ -165,7 +201,7 @@ def cobol_to_graph(parsed):
     output_files = {}
     for line in files:
         name_lower = line.lower()
-        if "report" in name_lower or "error" in name_lower or "output" in name_lower:
+        if "report" in name_lower or "error" in name_lower or "output" in name_lower or "reject" in name_lower or "statement" in name_lower or "fraud" in name_lower or "balance" in name_lower:
             output_files[line] = files[line]
         else:
             input_files[line] = files[line]
@@ -190,9 +226,7 @@ def cobol_to_graph(parsed):
     mp_lines.append("SUBGRAPH Process {")
     proc_nodes = []
     for proc in procedures:
-        if proc.startswith("read_"):
-            continue
-        if proc.startswith("write_"):
+        if proc.startswith("read_") or proc.startswith("write_"):
             continue
         if proc.startswith("filter_"):
             mp_lines.append(f"  NODE {proc} : TRANSFORM")
@@ -200,7 +234,7 @@ def cobol_to_graph(parsed):
         elif proc.startswith("join_"):
             mp_lines.append(f"  NODE {proc} : JOIN")
             proc_nodes.append(proc)
-        elif proc.startswith("compute_"):
+        elif proc.startswith("compute_") or proc.startswith("detect_"):
             mp_lines.append(f"  NODE {proc} : TRANSFORM")
             proc_nodes.append(proc)
     mp_lines.append("}")
@@ -215,14 +249,22 @@ def cobol_to_graph(parsed):
     for f in input_files:
         mp_lines.append(f"Raw_{f} -> Clean_{f}")
 
-    # Edges: clean -> first process node
+    # Edges: clean -> process nodes
     if proc_nodes:
-        for f in input_files:
+        # All cleans feed into the first process node
+        # For JOINs, also connect the previous node
+        input_list = list(input_files.keys())
+        for f in input_list:
             mp_lines.append(f"Clean_{f} -> {proc_nodes[0]}")
 
-        # Chain process nodes
+        # Chain process nodes — JOINs get 2 parents (prev + a clean source)
+        clean_idx = 0
         for i in range(len(proc_nodes) - 1):
             mp_lines.append(f"{proc_nodes[i]} -> {proc_nodes[i+1]}")
+            # If next is a JOIN, give it a second parent from a clean source
+            if proc_nodes[i+1].startswith("join_") and clean_idx < len(input_list):
+                mp_lines.append(f"Clean_{input_list[clean_idx]} -> {proc_nodes[i+1]}")
+                clean_idx = (clean_idx + 1) % len(input_list)
 
         # Last process -> sinks
         for f in output_files:
@@ -256,18 +298,23 @@ def cobol_to_graph(parsed):
             xfr_lines.append(f"  group_by {c['source']}")
             xfr_lines.append(f"  select SUM({c['source']}) as {c['target']}")
             xfr_lines.append("")
+        elif proc.startswith("detect_") and proc in filters:
+            xfr_lines.append(f"{proc}:")
+            xfr_lines.append(f"  select *")
+            xfr_lines.append(f"  where {filters[proc]}")
+            xfr_lines.append("")
 
     # Build .dml
     dml_lines = ["keys:"]
     for f in input_files:
-        if f in fields:
+        if f in fields and fields[f]:
             first_key = list(fields[f].keys())[0]
             dml_lines.append(f"  Raw_{f}: {first_key}")
 
     dml_lines.append("")
     dml_lines.append("schema:")
     for f in input_files:
-        if f in fields:
+        if f in fields and fields[f]:
             dml_lines.append(f"  Raw_{f}:")
             for col, typ in fields[f].items():
                 dml_lines.append(f"    {col}: {typ}")

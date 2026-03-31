@@ -2,6 +2,7 @@ import { useState, useCallback, useRef } from 'react'
 import FileUpload from './components/FileUpload'
 import DagViewer from './components/DagViewer'
 import MetricsPage from './components/MetricsPage'
+import DesignerPage from './components/DesignerPage'
 import { COMPILE_URL } from './config'
 
 // ── Themes ──────────────────────────────────────────────────
@@ -220,6 +221,7 @@ export default function App() {
         <div style={{ display: 'flex', gap: 4, marginLeft: 8 }}>
           {[
             { id: 'compiler', label: '🔧 Compiler' },
+            { id: 'designer', label: '🎨 Designer' },
             { id: 'metrics', label: '📊 Metrics' },
           ].map(tab => (
             <button key={tab.id}
@@ -257,6 +259,8 @@ export default function App() {
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         {page === 'metrics' ? (
           <MetricsPage theme={t} />
+        ) : page === 'designer' ? (
+          <DesignerPage theme={t} />
         ) : (
         <>
         {/* Sidebar */}
