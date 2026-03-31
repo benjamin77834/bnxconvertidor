@@ -250,7 +250,7 @@ export default function DesignerPage({ theme }) {
   }, [exportFiles, target])
 
   return (
-    <div style={{ display: 'flex', height: '100%', overflow: 'hidden' }}>
+    <div style={{ display: 'flex', height: '100%', overflow: 'hidden', minHeight: 0 }}>
       {/* Toolbar */}
       <div style={{
         width: 220, padding: 12, background: t.sidebar || '#161b27',
@@ -339,8 +339,8 @@ export default function DesignerPage({ theme }) {
       </div>
 
       {/* Canvas */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-        <div style={{ flex: 1, position: 'relative' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
+        <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
           <ReactFlow
             nodes={nodes} edges={edges}
             onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
