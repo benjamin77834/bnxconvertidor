@@ -3,6 +3,7 @@ import FileUpload from './components/FileUpload'
 import DagViewer from './components/DagViewer'
 import MetricsPage from './components/MetricsPage'
 import DesignerPage from './components/DesignerPage'
+import BankingModelPage from './components/BankingModelPage'
 import { COMPILE_URL } from './config'
 
 // ── Themes ──────────────────────────────────────────────────
@@ -222,6 +223,7 @@ export default function App() {
           {[
             { id: 'compiler', label: '🔧 Compiler' },
             { id: 'designer', label: '🎨 Designer' },
+            { id: 'banking', label: '🏦 Banking Model' },
             { id: 'metrics', label: '📊 Metrics' },
           ].map(tab => (
             <button key={tab.id}
@@ -261,6 +263,8 @@ export default function App() {
           <MetricsPage theme={t} />
         ) : page === 'designer' ? (
           <DesignerPage theme={t} />
+        ) : page === 'banking' ? (
+          <BankingModelPage theme={t} />
         ) : (
         <>
         {/* Sidebar */}
