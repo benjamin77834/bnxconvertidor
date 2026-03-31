@@ -374,7 +374,7 @@ export default function DesignerPage({ theme }) {
         {/* Floating code button */}
         {result?.code && !showCodeModal && (
           <button onClick={() => setShowCodeModal(true)} style={{
-            position: 'absolute', bottom: 16, right: 16, zIndex: 10,
+            position: 'absolute', bottom: 16, right: 16, zIndex: 100,
             padding: '10px 18px', borderRadius: 10, cursor: 'pointer',
             background: t.accent || '#6366f1', color: '#fff', border: 'none',
             fontSize: 14, fontWeight: 600, boxShadow: '0 4px 20px rgba(0,0,0,.4)',
@@ -387,7 +387,7 @@ export default function DesignerPage({ theme }) {
         {/* Code modal */}
         {showCodeModal && result?.code && (
           <div style={{
-            position: 'absolute', inset: 0, zIndex: 20,
+            position: 'absolute', inset: 0, zIndex: 200,
             background: 'rgba(0,0,0,.6)', display: 'flex',
             alignItems: 'center', justifyContent: 'center',
           }} onClick={() => setShowCodeModal(false)}>
