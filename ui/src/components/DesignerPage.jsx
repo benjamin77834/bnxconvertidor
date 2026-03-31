@@ -341,7 +341,7 @@ export default function DesignerPage({ theme }) {
       {/* Canvas + Code — scrollable */}
       <div style={{ flex: 1, overflowY: 'auto' }}>
         {/* Graph canvas — fixed height */}
-        <div style={{ height: '100vh', position: 'relative' }}>
+        <div style={{ height: '100vh', width: 'calc(100vw - 180px)', position: 'relative' }}>
           <ReactFlow
             nodes={nodes} edges={edges}
             onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
