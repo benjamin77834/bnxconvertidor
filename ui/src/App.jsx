@@ -44,7 +44,7 @@ export default function App() {
   const [files, setFiles]       = useState({ mp: [], xfr: [], dml: [] })
   const [result, setResult]     = useState(null)
   const [loading, setLoading]   = useState(false)
-  const [codeOpen, setCodeOpen] = useState(true)
+  const [codeOpen, setCodeOpen] = useState(false)
   const [isDark, setIsDark]     = useState(true)
   const [target, setTarget]     = useState('glue')
   const [page, setPage]         = useState('compiler')
@@ -478,7 +478,7 @@ export default function App() {
             <div style={{
               borderTop: `1px solid ${t.border}`, background: t.codeBg,
               display: 'flex', flexDirection: 'column', overflow: 'hidden',
-              height: codeOpen ? '40vh' : 36, transition: 'height .3s ease',
+              height: codeOpen ? '50vh' : 36, transition: 'height .3s ease',
             }}>
               <div
                 style={{
