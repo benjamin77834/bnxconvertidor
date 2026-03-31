@@ -250,7 +250,7 @@ export default function DesignerPage({ theme }) {
   }, [exportFiles, target])
 
   return (
-    <div style={{ display: 'flex', height: '100%', overflow: 'hidden', minHeight: 0 }}>
+    <div style={{ display: 'flex', height: '100%', overflow: 'hidden' }}>
       {/* Toolbar */}
       <div style={{
         width: 180, minWidth: 180, padding: 10, background: t.sidebar || '#161b27',
@@ -338,44 +338,48 @@ export default function DesignerPage({ theme }) {
         )}
       </div>
 
-      {/* Canvas */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
-        <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
-          <div style={{ position: 'absolute', inset: 0 }}>
-          <ReactFlow
-            nodes={nodes} edges={edges}
-            onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
-            onConnect={onConnect}
-            onNodeClick={(_, n) => setEditNode(n)}
-            onPaneClick={() => setEditNode(null)}
-            nodeTypes={nodeTypes} fitView minZoom={0.2}
-          >
-            <Background color={t.flowBg || '#1e2433'} gap={20} />
-            <Controls />
-            <MiniMap nodeColor={() => '#6366f1'} style={{ background: t.card || '#1e2433' }} />
-          </ReactFlow>
-          </div>
+      {/* Canvas — takes ALL remaining space */}
+      <div style={{ flex: 1, position: 'relative' }}>
+        <ReactFlow
+          nodes={nodes} edges={edges}
+          onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
+          onConnect={onConnect}
+          onNodeClick={(_, n) => setEditNode(n)}
+          onPaneClick={() => setEditNode(null)}
+          nodeTypes={nodeTypes} fitView minZoom={0.2}
+          style={{ width: '100%', height: '100%' }}
+        >
+          <Background color={t.flowBg || '#1e2433'} gap={20} />
+          <Controls />
+          <MiniMap nodeColor={() => '#6366f1'} style={{ background: t.card || '#1e2433' }} />
+        </ReactFlow>
 
-          {editNode && (
-            <NodeEditor
-              node={editNode}
-              theme={t}
-              onUpdate={updateNodeData}
-              onClose={() => setEditNode(null)}
-            />
-          )}
-        </div>
+        {/* Node editor — floating panel */}
+        {editNode && (
+          <NodeEditor
+            node={editNode}
+            theme={t}
+            onUpdate={updateNodeData}
+            onClose={() => setEditNode(null)}
+          />
+        )}
 
+        {/* Code — floating drawer at bottom */}
         {result?.code && (
           <div style={{
-            height: codeOpen ? '30vh' : 32, borderTop: `1px solid ${t.border || '#334155'}`,
-            background: t.codeBg || '#0d1017', display: 'flex', flexDirection: 'column',
-            transition: 'height .3s ease', overflow: 'hidden',
+            position: 'absolute', bottom: 0, left: 0, right: 0,
+            maxHeight: codeOpen ? '50%' : 32,
+            background: t.codeBg || '#0d1017',
+            borderTop: `1px solid ${t.border || '#334155'}`,
+            display: 'flex', flexDirection: 'column',
+            transition: 'max-height .3s ease', overflow: 'hidden',
+            zIndex: 5,
           }}>
             <div style={{
               padding: '6px 16px', background: t.sidebar || '#161b27',
               borderBottom: `1px solid ${t.border || '#334155'}`,
               display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer',
+              flexShrink: 0,
             }} onClick={() => setCodeOpen(o => !o)}>
               <span style={{ fontSize: 12, color: t.muted, textTransform: 'uppercase' }}>
                 {target === 'spark' ? '⚡ PySpark' : '🔧 Glue'} ({result.code.split('\n').length} lines)
