@@ -11,6 +11,8 @@ const EFFORT_DATA = [
   { phase: 'DEDUP/NORMALIZE/LOOKUP', traditional: 24, bnx: 1, unit: 'hrs' },
   { phase: 'Accuracy Engine', traditional: 16, bnx: 1, unit: 'hrs' },
   { phase: 'React UI + DAG Viewer', traditional: 48, bnx: 3, unit: 'hrs' },
+  { phase: 'Designer Visual (Ab Initio style)', traditional: 60, bnx: 3, unit: 'hrs' },
+  { phase: 'Source/Sink Connectors (S3/JDBC/Kafka)', traditional: 32, bnx: 2, unit: 'hrs' },
   { phase: 'API (FastAPI + Lambda)', traditional: 24, bnx: 2, unit: 'hrs' },
   { phase: 'Tests + Cleanup', traditional: 16, bnx: 1, unit: 'hrs' },
   { phase: 'Deploy (Amplify + Lambda)', traditional: 8, bnx: 1, unit: 'hrs' },
@@ -342,7 +344,9 @@ export default function MetricsPage({ theme }) {
             { week: 'Sesión 3', task: 'DEDUP + NORMALIZE + LOOKUP + Monster Graphs', status: '✅', color: '#22c55e' },
             { week: 'Sesión 4', task: 'React UI + DAG Viewer + Tema día/noche', status: '✅', color: '#22c55e' },
             { week: 'Sesión 5', task: 'COBOL Parser + PySpark Codegen + Deploy Lambda/Amplify', status: '✅', color: '#22c55e' },
-            { week: 'Próximo', task: 'Parallel processing + KAFKA sources + Multi-target', status: '🔜', color: '#f59e0b' },
+            { week: 'Sesión 6', task: 'Designer Visual (drag & drop) + Editor de nodos + Code modal', status: '✅', color: '#22c55e' },
+            { week: 'Sesión 7', task: 'Connectors S3/JDBC/Kafka en SOURCE y SINK', status: '✅', color: '#22c55e' },
+            { week: 'Próximo', task: 'Parallel processing + Multi-target + Schema inference avanzado', status: '🔜', color: '#f59e0b' },
           ].map((s, i) => (
             <div key={i} style={{ display: 'flex', gap: 12, alignItems: 'flex-start', paddingBottom: 16 }}>
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: 24 }}>
@@ -350,7 +354,7 @@ export default function MetricsPage({ theme }) {
                   width: 12, height: 12, borderRadius: '50%', background: s.color,
                   border: `2px solid ${s.color}40`,
                 }} />
-                {i < 5 && <div style={{ width: 2, height: 24, background: t.border || '#334155' }} />}
+                {i < 7 && <div style={{ width: 2, height: 24, background: t.border || '#334155' }} />}
               </div>
               <div>
                 <div style={{ fontSize: 13, fontWeight: 600, color: t.text || '#e2e8f0' }}>
@@ -483,6 +487,8 @@ export default function MetricsPage({ theme }) {
                   { phase: 'DEDUP/NORM/LOOKUP', t: '24h', b: '1h', why: '3 nuevos tipos de nodo con Window, explode, broadcast' },
                   { phase: 'Accuracy Engine', t: '16h', b: '1h', why: 'Métricas de cobertura por nodo, edge, transform, join' },
                   { phase: 'React UI', t: '48h', b: '3h', why: 'DAG viewer interactivo, tema dual, panel de detalle, file upload' },
+                  { phase: 'Designer Visual', t: '60h', b: '3h', why: 'Editor drag & drop tipo Ab Initio, edición de nodos, code modal' },
+                  { phase: 'Connectors', t: '32h', b: '2h', why: 'SOURCE/SINK con S3, JDBC, Kafka en codegen Glue y PySpark' },
                   { phase: 'API + Lambda', t: '24h', b: '2h', why: 'FastAPI + Lambda handler con multipart parsing' },
                   { phase: 'Tests + Cleanup', t: '16h', b: '1h', why: '13 tests, eliminación de 20+ archivos legacy' },
                   { phase: 'Deploy', t: '8h', b: '1h', why: 'Amplify + Lambda Function URL + CORS' },
