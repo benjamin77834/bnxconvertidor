@@ -6,7 +6,8 @@ export default defineConfig({
   server: {
     port: 3000,
     proxy: {
-      '/compile': 'http://localhost:8000'
+      '/compile': 'http://localhost:8000',
+      '/cobol': 'http://localhost:8000'
     }
   }
 })
