@@ -244,7 +244,6 @@ export default function DesignerPage({ theme }) {
       const res = await fetch(COMPILE_URL, { method: 'POST', body: form })
       const data = await res.json()
       setResult(data)
-      if (data.code) setCodeOpen(true)
     } catch (e) {
       setResult({ errors: [`Error: ${e.message}`] })
     } finally { setLoading(false) }
@@ -367,7 +366,7 @@ export default function DesignerPage({ theme }) {
 
         {result?.code && (
           <div style={{
-            height: codeOpen ? '35vh' : 32, borderTop: `1px solid ${t.border || '#334155'}`,
+            height: codeOpen ? '30vh' : 32, borderTop: `1px solid ${t.border || '#334155'}`,
             background: t.codeBg || '#0d1017', display: 'flex', flexDirection: 'column',
             transition: 'height .3s ease', overflow: 'hidden',
           }}>
