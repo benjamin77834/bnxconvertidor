@@ -185,6 +185,11 @@ export default function BankingModelPage({ theme }) {
   const [nodes, setNodes, onNodesChange] = useNodesState(initNodes)
   const [edges, setEdges, onEdgesChange] = useEdgesState(initEdges)
   const [editNode, setEditNode] = useState(null)
+  const [versions, setVersions] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('bnx_banking_versions') || '[]') } catch { return [] }
+  })
+  const [versionName, setVersionName] = useState('')
+  const [showVersions, setShowVersions] = useState(false)
 
   useEffect(() => { setNodes(initNodes) }, [initNodes, setNodes])
   useEffect(() => { setEdges(initEdges) }, [initEdges, setEdges])
@@ -200,29 +205,143 @@ export default function BankingModelPage({ theme }) {
     setEditNode(node)
   }, [])
 
+  const saveVersion = useCallback(() => {
+    const name = versionName.trim() || `v${versions.length + 1} — ${new Date().toLocaleString()}`
+    const snapshot = {
+      name,
+      date: new Date().toISOString(),
+      nodes: nodes.map(n => ({ id: n.id, position: n.position, data: n.data })),
+    }
+    const updated = [snapshot, ...versions].slice(0, 20) // max 20 versions
+    setVersions(updated)
+    localStorage.setItem('bnx_banking_versions', JSON.stringify(updated))
+    setVersionName('')
+  }, [nodes, versions, versionName])
+
+  const loadVersion = useCallback((v) => {
+    setNodes(nds => nds.map(n => {
+      const saved = v.nodes.find(s => s.id === n.id)
+      if (saved) return { ...n, position: saved.position, data: { ...n.data, ...saved.data } }
+      return n
+    }))
+    setShowVersions(false)
+  }, [setNodes])
+
+  const deleteVersion = useCallback((idx) => {
+    const updated = versions.filter((_, i) => i !== idx)
+    setVersions(updated)
+    localStorage.setItem('bnx_banking_versions', JSON.stringify(updated))
+  }, [versions])
+
+  const exportModel = useCallback(() => {
+    const data = {
+      nodes: nodes.map(n => ({ id: n.id, position: n.position, data: n.data })),
+      edges: edges.map(e => ({ source: e.source, target: e.target })),
+      exportedAt: new Date().toISOString(),
+    }
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = 'banking_model.json'; a.click()
+    URL.revokeObjectURL(url)
+  }, [nodes, edges])
+
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative' }}>
-      {/* Title overlay */}
+      {/* Title + Actions overlay */}
       <div style={{
         position: 'absolute', top: 16, left: 16, zIndex: 10,
         background: t.sidebar || '#161b27', padding: '12px 20px',
         borderRadius: 10, border: `1px solid ${t.border || '#334155'}`,
-        boxShadow: '0 4px 20px rgba(0,0,0,.3)',
+        boxShadow: '0 4px 20px rgba(0,0,0,.3)', maxWidth: 360,
       }}>
         <div style={{ fontSize: 18, fontWeight: 700, color: t.text || '#e2e8f0' }}>
           🏦 Modelo Operativo Bancario — Data & Analytics
         </div>
         <div style={{ fontSize: 12, color: t.dim || '#64748b', marginTop: 4 }}>
-          Click en un nodo para editar nombre y descripción
+          Click en un nodo para editar. Guarda versiones de tus cambios.
         </div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
           {LAYERS.map(l => (
             <span key={l.name} style={{
-              fontSize: 10, padding: '2px 8px', borderRadius: 4,
+              fontSize: 9, padding: '2px 6px', borderRadius: 4,
               background: l.color + '20', color: l.color, border: `1px solid ${l.color}40`,
             }}>{l.name}</span>
           ))}
         </div>
+
+        {/* Save */}
+        <div style={{ display: 'flex', gap: 6, marginTop: 12 }}>
+          <input value={versionName} onChange={e => setVersionName(e.target.value)}
+            placeholder="Nombre versión..."
+            style={{
+              flex: 1, padding: '5px 8px', borderRadius: 6, fontSize: 11,
+              background: t.bg || '#0f1117', border: `1px solid ${t.border || '#334155'}`,
+              color: t.text || '#e2e8f0', outline: 'none',
+            }}
+            onKeyDown={e => { if (e.key === 'Enter') saveVersion() }}
+          />
+          <button onClick={saveVersion} style={{
+            padding: '5px 10px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
+            background: '#22c55e20', border: '1px solid #22c55e40', color: '#22c55e',
+          }}>💾 Save</button>
+        </div>
+
+        {/* Action buttons */}
+        <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+          <button onClick={() => setShowVersions(v => !v)} style={{
+            flex: 1, padding: '5px 8px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
+            background: '#6366f120', border: '1px solid #6366f140', color: '#818cf8',
+          }}>📋 Versions ({versions.length})</button>
+          <button onClick={exportModel} style={{
+            flex: 1, padding: '5px 8px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
+            background: '#f59e0b20', border: '1px solid #f59e0b40', color: '#f59e0b',
+          }}>📥 Export JSON</button>
+        </div>
+
+        {/* Versions list */}
+        {showVersions && versions.length > 0 && (
+          <div style={{
+            marginTop: 8, maxHeight: 200, overflowY: 'auto',
+            borderRadius: 6, border: `1px solid ${t.border || '#334155'}`,
+          }}>
+            {versions.map((v, i) => (
+              <div key={i} style={{
+                padding: '6px 10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                borderBottom: `1px solid ${t.border || '#334155'}20`,
+                fontSize: 11,
+              }}>
+                <div>
+                  <div style={{ color: t.text || '#e2e8f0', fontWeight: 500 }}>{v.name}</div>
+                  <div style={{ color: t.dim || '#64748b', fontSize: 10 }}>
+                    {new Date(v.date).toLocaleString()} · {v.nodes.length} nodes
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 4 }}>
+                  <button onClick={() => loadVersion(v)} style={{
+                    padding: '2px 6px', borderRadius: 4, fontSize: 10, cursor: 'pointer',
+                    background: '#22c55e20', border: '1px solid #22c55e40', color: '#22c55e',
+                  }}>Load</button>
+                  <button onClick={() => {
+                    const data = { ...v, exportedAt: new Date().toISOString() }
+                    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+                    const url = URL.createObjectURL(blob)
+                    const a = document.createElement('a')
+                    a.href = url; a.download = `${v.name.replace(/\s/g, '_')}.json`; a.click()
+                    URL.revokeObjectURL(url)
+                  }} style={{
+                    padding: '2px 6px', borderRadius: 4, fontSize: 10, cursor: 'pointer',
+                    background: '#f59e0b20', border: '1px solid #f59e0b40', color: '#f59e0b',
+                  }}>📥</button>
+                  <button onClick={() => deleteVersion(i)} style={{
+                    padding: '2px 6px', borderRadius: 4, fontSize: 10, cursor: 'pointer',
+                    background: '#ef444420', border: '1px solid #ef444440', color: '#ef4444',
+                  }}>✕</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Node editor */}
