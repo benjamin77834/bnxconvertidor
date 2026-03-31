@@ -4,6 +4,7 @@ import ReactFlow, {
   MarkerType, useNodesState, useEdgesState
 } from 'reactflow'
 import 'reactflow/dist/style.css'
+import GovernancePage from './GovernancePage'
 
 // ── Banking Operating Model ─────────────────────────────────
 const LAYERS = [
@@ -190,6 +191,7 @@ export default function BankingModelPage({ theme }) {
   })
   const [versionName, setVersionName] = useState('')
   const [showVersions, setShowVersions] = useState(false)
+  const [subTab, setSubTab] = useState('model')
 
   useEffect(() => { setNodes(initNodes) }, [initNodes, setNodes])
   useEffect(() => { setEdges(initEdges) }, [initEdges, setEdges])
@@ -247,7 +249,32 @@ export default function BankingModelPage({ theme }) {
   }, [nodes, edges])
 
   return (
-    <div style={{ width: '100%', height: '100%', position: 'relative' }}>
+    <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column' }}>
+      {/* Sub-tabs */}
+      <div style={{
+        display: 'flex', gap: 0, background: t.sidebar || '#161b27',
+        borderBottom: `1px solid ${t.border || '#334155'}`, flexShrink: 0,
+      }}>
+        {[
+          { id: 'model', label: '🏦 Modelo Operativo' },
+          { id: 'governance', label: '🏛️ Gobierno de Datos' },
+        ].map(tab => (
+          <button key={tab.id} onClick={() => setSubTab(tab.id)} style={{
+            padding: '10px 20px', cursor: 'pointer', fontSize: 14,
+            background: subTab === tab.id ? (t.accent || '#6366f1') + '15' : 'transparent',
+            borderBottom: subTab === tab.id ? `2px solid ${t.accent || '#6366f1'}` : '2px solid transparent',
+            color: subTab === tab.id ? (t.accent || '#6366f1') : (t.muted || '#94a3b8'),
+            fontWeight: subTab === tab.id ? 600 : 400,
+            border: 'none', borderBottomWidth: 2, borderBottomStyle: 'solid',
+            borderBottomColor: subTab === tab.id ? (t.accent || '#6366f1') : 'transparent',
+          }}>{tab.label}</button>
+        ))}
+      </div>
+
+      {subTab === 'governance' ? (
+        <GovernancePage theme={t} />
+      ) : (
+      <div style={{ flex: 1, position: 'relative' }}>
       {/* Title + Actions overlay */}
       <div style={{
         position: 'absolute', top: 16, left: 16, zIndex: 10,
@@ -429,6 +456,8 @@ export default function BankingModelPage({ theme }) {
           style={{ background: t.card || '#1e2433' }}
         />
       </ReactFlow>
+    </div>
+    )}
     </div>
   )
 }

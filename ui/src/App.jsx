@@ -4,6 +4,7 @@ import DagViewer from './components/DagViewer'
 import MetricsPage from './components/MetricsPage'
 import DesignerPage from './components/DesignerPage'
 import BankingModelPage from './components/BankingModelPage'
+import GovernancePage from './components/GovernancePage'
 import { COMPILE_URL } from './config'
 
 // ── Themes ──────────────────────────────────────────────────
@@ -223,7 +224,7 @@ export default function App() {
           {[
             { id: 'compiler', label: '🔧 Compiler' },
             { id: 'designer', label: '🎨 Designer' },
-            { id: 'banking', label: '🏦 Banking Model' },
+            { id: 'banking', label: '🏦 Banking & Governance' },
             { id: 'metrics', label: '📊 Metrics' },
           ].map(tab => (
             <button key={tab.id}
