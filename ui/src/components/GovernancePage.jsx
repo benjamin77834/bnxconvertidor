@@ -124,20 +124,20 @@ export default function GovernancePage({ theme }) {
   const criticalCount = POLICIES.reduce((s, d) => s + d.policies.filter(p => p.level === 'critical').length, 0)
 
   return (
-    <div style={{ padding: 32, overflowY: 'auto', height: '100%', display: 'flex', flexDirection: 'column', gap: 24 }}>
+    <div style={{ padding: 40, overflowY: 'auto', height: '100%', display: 'flex', flexDirection: 'column', gap: 28 }}>
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12 }}>
         <div>
-          <h2 style={{ fontSize: 22, fontWeight: 700, color: t.text || '#e2e8f0', margin: 0 }}>
+          <h2 style={{ fontSize: 26, fontWeight: 700, color: t.text || '#e2e8f0', margin: 0 }}>
             🏛️ Gobierno de Datos — Políticas
           </h2>
-          <p style={{ fontSize: 14, color: t.dim || '#64748b', marginTop: 4 }}>
-            Marco de gobierno para plataforma de datos bancaria
+          <p style={{ fontSize: 16, color: t.dim || '#64748b', marginTop: 6 }}>
+            Marco de gobierno para plataforma de datos bancaria. Click ✏️ para agregar notas.
           </p>
         </div>
         <button onClick={exportGovernance} style={{
-          padding: '8px 16px', borderRadius: 8, fontSize: 13, cursor: 'pointer',
-          background: '#f59e0b20', border: '1px solid #f59e0b40', color: '#f59e0b',
+          padding: '10px 20px', borderRadius: 8, fontSize: 14, cursor: 'pointer',
+          background: '#f59e0b20', border: '1px solid #f59e0b40', color: '#f59e0b', fontWeight: 600,
         }}>📥 Export Policies</button>
       </div>
 
@@ -149,9 +149,9 @@ export default function GovernancePage({ theme }) {
           { label: 'Críticas', value: criticalCount, color: '#ef4444' },
           { label: 'Con notas', value: Object.keys(customPolicies).length, color: '#f59e0b' },
         ].map(s => (
-          <div key={s.label} style={{ ...card, padding: 16, flex: '1 1 120px', textAlign: 'center' }}>
-            <div style={{ fontSize: 28, fontWeight: 700, color: s.color }}>{s.value}</div>
-            <div style={{ fontSize: 13, color: t.muted || '#94a3b8' }}>{s.label}</div>
+          <div key={s.label} style={{ ...card, padding: 20, flex: '1 1 150px', textAlign: 'center' }}>
+            <div style={{ fontSize: 36, fontWeight: 700, color: s.color }}>{s.value}</div>
+            <div style={{ fontSize: 15, color: t.muted || '#94a3b8', marginTop: 4 }}>{s.label}</div>
           </div>
         ))}
       </div>
@@ -167,10 +167,10 @@ export default function GovernancePage({ theme }) {
               display: 'flex', justifyContent: 'space-between', alignItems: 'center',
             }}
           >
-            <span style={{ fontSize: 16, fontWeight: 600, color: t.text || '#e2e8f0' }}>
+            <span style={{ fontSize: 18, fontWeight: 600, color: t.text || '#e2e8f0' }}>
               {domain.icon} {domain.domain}
             </span>
-            <span style={{ fontSize: 12, color: t.dim || '#64748b' }}>
+            <span style={{ fontSize: 14, color: t.dim || '#64748b' }}>
               {domain.policies.length} políticas {expanded[di] ? '▼' : '▶'}
             </span>
           </div>
@@ -178,33 +178,33 @@ export default function GovernancePage({ theme }) {
             <div style={{ display: 'flex', flexDirection: 'column' }}>
               {domain.policies.map(p => (
                 <div key={p.id} style={{
-                  padding: '12px 20px', borderBottom: `1px solid ${t.border || '#334155'}20`,
-                  display: 'flex', gap: 12, alignItems: 'flex-start',
+                  padding: '16px 24px', borderBottom: `1px solid ${t.border || '#334155'}20`,
+                  display: 'flex', gap: 14, alignItems: 'flex-start',
                 }}>
                   <span style={{
-                    padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 600,
+                    padding: '3px 10px', borderRadius: 4, fontSize: 12, fontWeight: 600,
                     background: LEVEL_COLOR[p.level] + '20', color: LEVEL_COLOR[p.level],
-                    border: `1px solid ${LEVEL_COLOR[p.level]}40`, whiteSpace: 'nowrap', marginTop: 2,
+                    border: `1px solid ${LEVEL_COLOR[p.level]}40`, whiteSpace: 'nowrap', marginTop: 3,
                   }}>{LEVEL_LABEL[p.level]}</span>
                   <div style={{ flex: 1 }}>
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                      <span style={{ fontSize: 11, color: domain.color, fontWeight: 600 }}>{p.id}</span>
-                      <span style={{ fontSize: 14, color: t.text || '#e2e8f0', fontWeight: 500 }}>{p.name}</span>
+                    <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                      <span style={{ fontSize: 13, color: domain.color, fontWeight: 600 }}>{p.id}</span>
+                      <span style={{ fontSize: 16, color: t.text || '#e2e8f0', fontWeight: 500 }}>{p.name}</span>
                     </div>
-                    <div style={{ fontSize: 12, color: t.muted || '#94a3b8', marginTop: 2 }}>{p.desc}</div>
+                    <div style={{ fontSize: 14, color: t.muted || '#94a3b8', marginTop: 4 }}>{p.desc}</div>
                     {(p.examples || p.rule || p.aws || p.freq || p.target) && (
-                      <div style={{ fontSize: 11, color: t.dim || '#64748b', marginTop: 4 }}>
-                        {p.examples && <span>📌 {p.examples}</span>}
-                        {p.rule && <span>📏 {p.rule}</span>}
-                        {p.aws && <span>☁️ {p.aws}</span>}
-                        {p.freq && <span>📅 {p.freq} — {p.entity}</span>}
-                        {p.target && <span>🎯 {p.target} — {p.monitor}</span>}
+                      <div style={{ fontSize: 13, color: t.dim || '#64748b', marginTop: 6, lineHeight: 1.6 }}>
+                        {p.examples && <div>📌 {p.examples}</div>}
+                        {p.rule && <div>📏 {p.rule}</div>}
+                        {p.aws && <div>☁️ {p.aws}</div>}
+                        {p.freq && <div>📅 {p.freq} — {p.entity}</div>}
+                        {p.target && <div>🎯 {p.target} — {p.monitor}</div>}
                       </div>
                     )}
                     {customPolicies[p.id] && (
                       <div style={{
-                        fontSize: 11, color: '#f59e0b', marginTop: 4,
-                        padding: '4px 8px', background: '#f59e0b10', borderRadius: 4,
+                        fontSize: 13, color: '#f59e0b', marginTop: 6,
+                        padding: '6px 10px', background: '#f59e0b10', borderRadius: 6,
                       }}>📝 {customPolicies[p.id]}</div>
                     )}
                   </div>
