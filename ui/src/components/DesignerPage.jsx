@@ -253,9 +253,9 @@ export default function DesignerPage({ theme }) {
     <div style={{ display: 'flex', height: '100%', overflow: 'hidden', minHeight: 0 }}>
       {/* Toolbar */}
       <div style={{
-        width: 220, padding: 12, background: t.sidebar || '#161b27',
+        width: 180, minWidth: 180, padding: 10, background: t.sidebar || '#161b27',
         borderRight: `1px solid ${t.border || '#334155'}`,
-        display: 'flex', flexDirection: 'column', gap: 12, overflowY: 'auto', flexShrink: 0,
+        display: 'flex', flexDirection: 'column', gap: 10, overflowY: 'auto', flexShrink: 0,
       }}>
         <span style={{ fontSize: 13, color: t.muted, textTransform: 'uppercase', letterSpacing: 1 }}>Add Node</span>
         <input ref={nameRef} placeholder="Node name..."
@@ -341,6 +341,7 @@ export default function DesignerPage({ theme }) {
       {/* Canvas */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
         <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
+          <div style={{ position: 'absolute', inset: 0 }}>
           <ReactFlow
             nodes={nodes} edges={edges}
             onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
@@ -353,6 +354,7 @@ export default function DesignerPage({ theme }) {
             <Controls />
             <MiniMap nodeColor={() => '#6366f1'} style={{ background: t.card || '#1e2433' }} />
           </ReactFlow>
+          </div>
 
           {editNode && (
             <NodeEditor
