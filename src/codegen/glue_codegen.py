@@ -56,7 +56,24 @@ def generate_glue(dag, output_path, xfr_rules=None):
             # SOURCE
             if ntype == "SOURCE":
                 f.write(f'# 🟢 SOURCE: {log_name}\n')
-                f.write(f'{var_id}_df = spark.read.format("parquet").load("s3://bnx/raw/{var_id.lower()}")\n')
+                src_type = rule.get("source_type", "s3") if rule else "s3"
+                path = rule.get("path", f"s3://bnx/raw/{var_id.lower()}") if rule else f"s3://bnx/raw/{var_id.lower()}"
+                fmt = rule.get("format", "parquet") if rule else "parquet"
+                topic = rule.get("topic") if rule else None
+                table = rule.get("table") if rule else None
+                conn = rule.get("connection") if rule else None
+
+                if src_type == "kafka" and topic:
+                    f.write(f'{var_id}_df = spark.readStream.format("kafka")')
+                    f.write(f'.option("kafka.bootstrap.servers", "{conn or "localhost:9092"}")')
+                    f.write(f'.option("subscribe", "{topic}").load()\n')
+                    f.write(f'{var_id}_df = {var_id}_df.selectExpr("CAST(value AS STRING) as json_value")\n')
+                elif src_type == "jdbc" and (table or conn):
+                    f.write(f'{var_id}_df = spark.read.format("jdbc")')
+                    f.write(f'.option("url", "{conn or "jdbc:mysql://localhost:3306/db"}")')
+                    f.write(f'.option("dbtable", "{table or var_id.lower()}").load()\n')
+                else:
+                    f.write(f'{var_id}_df = spark.read.format("{fmt}").load("{path}")\n')
                 f.write(f'print("📂 SOURCE: {log_name}")\n\n')
 
             # TRANSFORM / XFR
@@ -154,7 +171,25 @@ def generate_glue(dag, output_path, xfr_rules=None):
                 f.write(f'# 🏁 SINK: {log_name}\n')
                 if parents:
                     src = f'{parents[0]}_df'
-                    f.write(f'{src}.write.mode("overwrite").format("parquet").save("s3://bnx/output/{var_id.lower()}")\n')
+                    sink_type = rule.get("sink_type", "s3") if rule else "s3"
+                    path = rule.get("path", f"s3://bnx/output/{var_id.lower()}") if rule else f"s3://bnx/output/{var_id.lower()}"
+                    fmt = rule.get("format", "parquet") if rule else "parquet"
+                    topic = rule.get("topic") if rule else None
+                    table = rule.get("table") if rule else None
+                    conn = rule.get("connection") if rule else None
+                    mode = rule.get("mode", "overwrite") if rule else "overwrite"
+
+                    if sink_type == "kafka" and topic:
+                        f.write(f'{src}.selectExpr("to_json(struct(*)) AS value")')
+                        f.write(f'.write.format("kafka")')
+                        f.write(f'.option("kafka.bootstrap.servers", "{conn or "localhost:9092"}")')
+                        f.write(f'.option("topic", "{topic}").save()\n')
+                    elif sink_type == "jdbc" and (table or conn):
+                        f.write(f'{src}.write.format("jdbc").mode("{mode}")')
+                        f.write(f'.option("url", "{conn or "jdbc:mysql://localhost:3306/db"}")')
+                        f.write(f'.option("dbtable", "{table or var_id.lower()}").save()\n')
+                    else:
+                        f.write(f'{src}.write.mode("{mode}").format("{fmt}").save("{path}")\n')
                 else:
                     f.write(f'# ⚠️ SINK {log_name} has no parent\n')
                 f.write(f'print("💾 SINK: {log_name}")\n\n')

@@ -18,13 +18,13 @@ const TYPE_ICON = {
 
 // Fields shown per node type in the editor
 const TYPE_FIELDS = {
-  SOURCE:    [],
+  SOURCE:    ['source_type', 'path', 'format', 'topic', 'table', 'connection'],
   TRANSFORM: ['select', 'where', 'group_by'],
   JOIN:      ['join_key', 'join_type'],
   DEDUP:     ['dedup_keys', 'order_by'],
   NORMALIZE: ['explode_col', 'split_col', 'delimiter'],
   LOOKUP:    ['lookup_key', 'lookup_select'],
-  SINK:      [],
+  SINK:      ['sink_type', 'path', 'format', 'topic', 'table', 'connection', 'mode'],
 }
 
 const FIELD_LABELS = {
@@ -33,6 +33,10 @@ const FIELD_LABELS = {
   dedup_keys: 'Dedup Keys', order_by: 'Order By',
   explode_col: 'Explode Column', split_col: 'Split Column', delimiter: 'Delimiter',
   lookup_key: 'Lookup Key', lookup_select: 'Lookup Select',
+  source_type: 'Source Type (s3/jdbc/kafka)', path: 'Path / URI',
+  format: 'Format (parquet/csv/json/avro)', topic: 'Kafka Topic',
+  table: 'Table Name', connection: 'Connection String',
+  sink_type: 'Sink Type (s3/jdbc/kafka)', mode: 'Write Mode (overwrite/append)',
 }
 
 function BnxNode({ data }) {
@@ -160,6 +164,7 @@ export default function DesignerPage({ theme }) {
   const [loading, setLoading] = useState(false)
   const [target, setTarget] = useState('glue')
   const [codeOpen, setCodeOpen] = useState(false)
+  const [showCodeModal, setShowCodeModal] = useState(false)
   const nameRef = useRef(null)
 
   const onConnect = useCallback((params) => {
@@ -366,30 +371,59 @@ export default function DesignerPage({ theme }) {
           )}
         </div>
 
-        {/* Code below — scroll to see */}
-        {result?.code && (
-          <div style={{
-            borderTop: `1px solid ${t.border || '#334155'}`,
-            background: t.codeBg || '#0d1017',
+        {/* Floating code button */}
+        {result?.code && !showCodeModal && (
+          <button onClick={() => setShowCodeModal(true)} style={{
+            position: 'absolute', bottom: 16, right: 16, zIndex: 10,
+            padding: '10px 18px', borderRadius: 10, cursor: 'pointer',
+            background: t.accent || '#6366f1', color: '#fff', border: 'none',
+            fontSize: 14, fontWeight: 600, boxShadow: '0 4px 20px rgba(0,0,0,.4)',
+            display: 'flex', alignItems: 'center', gap: 8,
           }}>
+            📄 View Code ({result.code.split('\n').length} lines)
+          </button>
+        )}
+
+        {/* Code modal */}
+        {showCodeModal && result?.code && (
+          <div style={{
+            position: 'absolute', inset: 0, zIndex: 20,
+            background: 'rgba(0,0,0,.6)', display: 'flex',
+            alignItems: 'center', justifyContent: 'center',
+          }} onClick={() => setShowCodeModal(false)}>
             <div style={{
-              padding: '8px 16px', background: t.sidebar || '#161b27',
-              borderBottom: `1px solid ${t.border || '#334155'}`,
-              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-            }}>
-              <span style={{ fontSize: 12, color: t.muted, textTransform: 'uppercase' }}>
-                {target === 'spark' ? '⚡ PySpark' : '🔧 Glue'} ({result.code.split('\n').length} lines)
-              </span>
-              <button onClick={() => dl(result.code, target === 'spark' ? 'pyspark_job.py' : 'glue_job.py')}
-                style={{ padding: '4px 10px', borderRadius: 4, fontSize: 11, cursor: 'pointer', background: 'transparent', border: `1px solid ${t.border || '#334155'}`, color: t.muted || '#94a3b8' }}>
-                📥 Download
-              </button>
+              width: '80%', maxWidth: 800, maxHeight: '80vh',
+              background: t.sidebar || '#161b27', borderRadius: 12,
+              border: `1px solid ${t.border || '#334155'}`,
+              boxShadow: '0 16px 48px rgba(0,0,0,.5)',
+              display: 'flex', flexDirection: 'column', overflow: 'hidden',
+            }} onClick={e => e.stopPropagation()}>
+              <div style={{
+                padding: '12px 20px', background: t.card || '#1e2433',
+                borderBottom: `1px solid ${t.border || '#334155'}`,
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              }}>
+                <span style={{ fontSize: 14, fontWeight: 600, color: t.text || '#e2e8f0' }}>
+                  {target === 'spark' ? '⚡ PySpark' : '🔧 Glue'} — {result.code.split('\n').length} lines
+                </span>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button onClick={() => dl(result.code, target === 'spark' ? 'pyspark_job.py' : 'glue_job.py')}
+                    style={{
+                      padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                      background: 'transparent', border: `1px solid #22c55e40`, color: '#22c55e',
+                    }}>📥 Download</button>
+                  <button onClick={() => setShowCodeModal(false)} style={{
+                    background: 'none', border: 'none', color: t.muted, fontSize: 18, cursor: 'pointer',
+                  }}>✕</button>
+                </div>
+              </div>
+              <pre style={{
+                padding: 20, fontSize: 13, color: t.muted || '#94a3b8',
+                fontFamily: 'monospace', whiteSpace: 'pre', overflowY: 'auto',
+                flex: 1, lineHeight: 1.7, margin: 0,
+                background: t.codeBg || '#0d1017',
+              }}>{result.code}</pre>
             </div>
-            <pre style={{
-              padding: 16, fontSize: 13, color: t.muted || '#94a3b8',
-              fontFamily: 'monospace', whiteSpace: 'pre',
-              lineHeight: 1.6, margin: 0,
-            }}>{result.code}</pre>
           </div>
         )}
       </div>

@@ -88,5 +88,13 @@ def parse_xfr(path):
             m_lsel = re.match(r"(?i)^lookup_select\s+(.+)$", stripped)
             if m_lsel:
                 xfr_map[current]["lookup_select"] = m_lsel.group(1).strip()
+                continue
+
+            # SOURCE/SINK directives
+            for directive in ["source_type", "sink_type", "path", "format", "topic", "table", "connection", "mode"]:
+                m = re.match(rf"(?i)^{directive}\s+(.+)$", stripped)
+                if m:
+                    xfr_map[current][directive] = m.group(1).strip()
+                    break
 
     return xfr_map
