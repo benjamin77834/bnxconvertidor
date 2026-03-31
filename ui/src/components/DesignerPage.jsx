@@ -338,66 +338,58 @@ export default function DesignerPage({ theme }) {
         )}
       </div>
 
-      {/* Canvas */}
-      <div style={{ flex: '1 1 0', position: 'relative', overflow: 'hidden' }}>
-        <ReactFlow
-          nodes={nodes} edges={edges}
-          onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
-          onConnect={onConnect}
-          onNodeClick={(_, n) => setEditNode(n)}
-          onPaneClick={() => setEditNode(null)}
-          nodeTypes={nodeTypes} fitView minZoom={0.2}
-        >
-          <Background color={t.flowBg || '#1e2433'} gap={20} />
-          <Controls />
-          <MiniMap nodeColor={() => '#6366f1'} style={{ background: t.card || '#1e2433' }} />
-        </ReactFlow>
+      {/* Canvas + Code — scrollable */}
+      <div style={{ flex: 1, overflowY: 'auto' }}>
+        {/* Graph canvas — fixed height */}
+        <div style={{ height: '70vh', position: 'relative' }}>
+          <ReactFlow
+            nodes={nodes} edges={edges}
+            onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
+            onConnect={onConnect}
+            onNodeClick={(_, n) => setEditNode(n)}
+            onPaneClick={() => setEditNode(null)}
+            nodeTypes={nodeTypes} fitView minZoom={0.2}
+          >
+            <Background color={t.flowBg || '#1e2433'} gap={20} />
+            <Controls />
+            <MiniMap nodeColor={() => '#6366f1'} style={{ background: t.card || '#1e2433' }} />
+          </ReactFlow>
 
-        {/* Node editor — floating top-right */}
-        {editNode && (
-          <NodeEditor
-            node={editNode}
-            theme={t}
-            onUpdate={updateNodeData}
-            onClose={() => setEditNode(null)}
-          />
-        )}
+          {/* Node editor — floating top-right */}
+          {editNode && (
+            <NodeEditor
+              node={editNode}
+              theme={t}
+              onUpdate={updateNodeData}
+              onClose={() => setEditNode(null)}
+            />
+          )}
+        </div>
 
-        {/* Code — floating bottom */}
+        {/* Code below — scroll to see */}
         {result?.code && (
           <div style={{
-            position: 'absolute', bottom: 0, left: 0, right: 0,
-            maxHeight: codeOpen ? '50%' : 32,
-            background: t.codeBg || '#0d1017',
             borderTop: `1px solid ${t.border || '#334155'}`,
-            display: 'flex', flexDirection: 'column',
-            transition: 'max-height .3s ease', overflow: 'hidden',
-            zIndex: 5,
+            background: t.codeBg || '#0d1017',
           }}>
             <div style={{
-              padding: '6px 16px', background: t.sidebar || '#161b27',
+              padding: '8px 16px', background: t.sidebar || '#161b27',
               borderBottom: `1px solid ${t.border || '#334155'}`,
-              display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer',
-              flexShrink: 0,
-            }} onClick={() => setCodeOpen(o => !o)}>
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            }}>
               <span style={{ fontSize: 12, color: t.muted, textTransform: 'uppercase' }}>
                 {target === 'spark' ? '⚡ PySpark' : '🔧 Glue'} ({result.code.split('\n').length} lines)
               </span>
-              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                <button onClick={(e) => { e.stopPropagation(); dl(result.code, target === 'spark' ? 'pyspark_job.py' : 'glue_job.py') }}
-                  style={{ padding: '2px 8px', borderRadius: 4, fontSize: 11, cursor: 'pointer', background: 'transparent', border: `1px solid ${t.border || '#334155'}`, color: t.muted || '#94a3b8' }}>
-                  📥
-                </button>
-                <span style={{ fontSize: 11, color: t.dim }}>{codeOpen ? '▼' : '▲'}</span>
-              </div>
+              <button onClick={() => dl(result.code, target === 'spark' ? 'pyspark_job.py' : 'glue_job.py')}
+                style={{ padding: '4px 10px', borderRadius: 4, fontSize: 11, cursor: 'pointer', background: 'transparent', border: `1px solid ${t.border || '#334155'}`, color: t.muted || '#94a3b8' }}>
+                📥 Download
+              </button>
             </div>
-            {codeOpen && (
-              <pre style={{
-                padding: 16, fontSize: 13, color: t.muted || '#94a3b8',
-                fontFamily: 'monospace', whiteSpace: 'pre', overflowY: 'auto',
-                flex: 1, lineHeight: 1.6, margin: 0,
-              }}>{result.code}</pre>
-            )}
+            <pre style={{
+              padding: 16, fontSize: 13, color: t.muted || '#94a3b8',
+              fontFamily: 'monospace', whiteSpace: 'pre',
+              lineHeight: 1.6, margin: 0,
+            }}>{result.code}</pre>
           </div>
         )}
       </div>
