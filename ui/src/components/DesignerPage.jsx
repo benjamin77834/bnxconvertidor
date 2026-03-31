@@ -338,9 +338,8 @@ export default function DesignerPage({ theme }) {
         )}
       </div>
 
-      {/* Canvas — takes ALL remaining space */}
-      <div style={{ flex: 1, position: 'relative', width: '100%', height: '100%' }}>
-        <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}>
+      {/* Canvas */}
+      <div style={{ flex: '1 1 0', position: 'relative', overflow: 'hidden' }}>
         <ReactFlow
           nodes={nodes} edges={edges}
           onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
@@ -348,15 +347,13 @@ export default function DesignerPage({ theme }) {
           onNodeClick={(_, n) => setEditNode(n)}
           onPaneClick={() => setEditNode(null)}
           nodeTypes={nodeTypes} fitView minZoom={0.2}
-          style={{ width: '100%', height: '100%' }}
         >
           <Background color={t.flowBg || '#1e2433'} gap={20} />
           <Controls />
           <MiniMap nodeColor={() => '#6366f1'} style={{ background: t.card || '#1e2433' }} />
         </ReactFlow>
-        </div>
 
-        {/* Node editor — floating panel */}
+        {/* Node editor — floating top-right */}
         {editNode && (
           <NodeEditor
             node={editNode}
@@ -366,7 +363,7 @@ export default function DesignerPage({ theme }) {
           />
         )}
 
-        {/* Code — floating drawer at bottom */}
+        {/* Code — floating bottom */}
         {result?.code && (
           <div style={{
             position: 'absolute', bottom: 0, left: 0, right: 0,
