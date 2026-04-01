@@ -198,15 +198,20 @@ export default function GovernancePage({ theme }) {
           <div
             onClick={() => toggle(di)}
             style={{
-              padding: '14px 20px', cursor: 'pointer',
+              padding: '16px 20px', cursor: 'pointer',
               background: domain.color + '10', borderBottom: expanded[di] ? `1px solid ${t.border || '#334155'}` : 'none',
               display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              userSelect: 'none',
             }}
           >
             <span style={{ fontSize: 18, fontWeight: 600, color: t.text || '#e2e8f0' }}>
               {domain.icon} {domain.domain}
             </span>
-            <span style={{ fontSize: 14, color: t.dim || '#64748b' }}>
+            <span style={{
+              fontSize: 14, color: t.dim || '#64748b',
+              padding: '4px 10px', borderRadius: 4,
+              background: expanded[di] ? 'transparent' : domain.color + '20',
+            }}>
               {domain.policies.length} políticas {expanded[di] ? '▼' : '▶'}
             </span>
           </div>
@@ -225,7 +230,7 @@ export default function GovernancePage({ theme }) {
                     }}>{LEVEL_LABEL[p.level]}</span>
                     <span style={{ fontSize: 13, color: domain.color, fontWeight: 600 }}>{p.id}</span>
                     <span style={{ fontSize: 16, color: t.text || '#e2e8f0', fontWeight: 500 }}>{p.name}</span>
-                    <button onClick={() => setEditPolicy(editPolicy === p.id ? null : p.id)} style={{
+                    <button onClick={(e) => { e.stopPropagation(); setEditPolicy(editPolicy === p.id ? null : p.id) }} style={{
                       marginLeft: 'auto', padding: '3px 10px', borderRadius: 4, fontSize: 11, cursor: 'pointer',
                       background: editPolicy === p.id ? '#f59e0b20' : 'transparent',
                       border: `1px solid ${t.border || '#334155'}`, color: t.muted || '#94a3b8',

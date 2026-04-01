@@ -12,6 +12,9 @@ def _infer_columns(node, dag, xfr_rules, col_cache, dml_schema=None):
     if node.id in col_cache:
         return col_cache[node.id]
 
+    # Mark as in-progress to prevent infinite recursion
+    col_cache[node.id] = set()
+
     ntype = node.type.upper()
     rule = xfr_rules.get(node.id.lower()) or xfr_rules.get(node.name.lower()) or {}
 
@@ -36,7 +39,7 @@ def _infer_columns(node, dag, xfr_rules, col_cache, dml_schema=None):
 
     elif ntype in ("TRANSFORM", "XFR"):
         # Hereda columnas del padre + aplica select
-        if node.parents:
+        if node.parents and node.parents[0] in dag.nodes:
             parent_cols = _infer_columns(dag.nodes[node.parents[0]], dag, xfr_rules, col_cache, dml_schema)
             group_by = rule.get("group_by", [])
             select = rule.get("select", "*")
@@ -59,29 +62,27 @@ def _infer_columns(node, dag, xfr_rules, col_cache, dml_schema=None):
                         cols.add(col.strip())
 
     elif ntype == "JOIN":
-        # Hereda columnas de todos los padres
         for pid in node.parents:
-            parent_cols = _infer_columns(dag.nodes[pid], dag, xfr_rules, col_cache, dml_schema)
-            cols |= parent_cols
+            if pid in dag.nodes:
+                parent_cols = _infer_columns(dag.nodes[pid], dag, xfr_rules, col_cache, dml_schema)
+                cols |= parent_cols
 
     elif ntype == "DEDUP":
-        # Mismas columnas que el padre (solo elimina duplicados)
-        if node.parents:
+        if node.parents and node.parents[0] in dag.nodes:
             cols = set(_infer_columns(dag.nodes[node.parents[0]], dag, xfr_rules, col_cache, dml_schema))
 
     elif ntype == "NORMALIZE":
-        # Mismas columnas que el padre (explode no cambia schema, solo filas)
-        if node.parents:
+        if node.parents and node.parents[0] in dag.nodes:
             cols = set(_infer_columns(dag.nodes[node.parents[0]], dag, xfr_rules, col_cache, dml_schema))
 
     elif ntype == "LOOKUP":
-        # Hereda columnas de todos los padres (main + lookup table)
         for pid in node.parents:
-            parent_cols = _infer_columns(dag.nodes[pid], dag, xfr_rules, col_cache, dml_schema)
-            cols |= parent_cols
+            if pid in dag.nodes:
+                parent_cols = _infer_columns(dag.nodes[pid], dag, xfr_rules, col_cache, dml_schema)
+                cols |= parent_cols
 
     elif ntype == "SINK":
-        if node.parents:
+        if node.parents and node.parents[0] in dag.nodes:
             cols = _infer_columns(dag.nodes[node.parents[0]], dag, xfr_rules, col_cache, dml_schema)
 
     col_cache[node.id] = cols
@@ -109,6 +110,8 @@ def validate(dag, xfr_rules, dml_schema=None):
             else:
                 # Verificar que la join_key existe en los padres
                 for pid in node.parents:
+                    if pid not in dag.nodes:
+                        continue
                     parent_cols = _infer_columns(dag.nodes[pid], dag, xfr_rules, col_cache, dml_schema)
                     if parent_cols and join_key not in parent_cols:
                         errors.append(
@@ -147,6 +150,8 @@ def validate(dag, xfr_rules, dml_schema=None):
 
         # 4. TRANSFORM referencia columna en where que no existe
         if ntype in ("TRANSFORM", "XFR") and node.parents:
+            if node.parents[0] not in dag.nodes:
+                continue
             parent_cols = _infer_columns(dag.nodes[node.parents[0]], dag, xfr_rules, col_cache)
             where = rule.get("where")
             group_by = rule.get("group_by", [])
