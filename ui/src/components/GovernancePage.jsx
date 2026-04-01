@@ -153,7 +153,7 @@ export default function GovernancePage({ theme }) {
 
   const card = {
     background: t.card || '#1e2433', border: `1px solid ${t.border || '#334155'}`,
-    borderRadius: 10, overflow: 'hidden',
+    borderRadius: 10,
   }
 
   const totalPolicies = POLICIES.reduce((s, d) => s + d.policies.length, 0)
