@@ -165,7 +165,79 @@ export default function DesignerPage({ theme }) {
   const [target, setTarget] = useState('glue')
   const [codeOpen, setCodeOpen] = useState(false)
   const [showCodeModal, setShowCodeModal] = useState(false)
+  const [designs, setDesigns] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('bnx_designs') || '[]') } catch { return [] }
+  })
+  const [showDesigns, setShowDesigns] = useState(false)
+  const [designName, setDesignName] = useState('')
   const nameRef = useRef(null)
+  const loadRef = useRef(null)
+
+  const saveDesign = useCallback(() => {
+    const name = designName.trim() || `Design ${designs.length + 1}`
+    const snapshot = {
+      name,
+      date: new Date().toISOString(),
+      nodes: nodes.map(n => ({ id: n.id, type: n.type, position: n.position, data: n.data })),
+      edges: edges.map(e => ({ id: e.id, source: e.source, target: e.target })),
+      nodeCount,
+    }
+    const updated = [snapshot, ...designs].slice(0, 20)
+    setDesigns(updated)
+    localStorage.setItem('bnx_designs', JSON.stringify(updated))
+    setDesignName('')
+  }, [nodes, edges, nodeCount, designs, designName])
+
+  const loadDesign = useCallback((d) => {
+    setNodes(d.nodes.map(n => ({
+      ...n,
+      style: undefined, // let BnxNode handle style
+    })))
+    setEdges(d.edges.map(e => ({
+      ...e,
+      markerEnd: { type: MarkerType.ArrowClosed, color: '#475569' },
+      style: { stroke: '#475569', strokeWidth: 2 },
+    })))
+    setNodeCount(d.nodeCount || d.nodes.length)
+    setShowDesigns(false)
+    setEditNode(null)
+    setResult(null)
+  }, [setNodes, setEdges])
+
+  const deleteDesign = useCallback((idx) => {
+    const updated = designs.filter((_, i) => i !== idx)
+    setDesigns(updated)
+    localStorage.setItem('bnx_designs', JSON.stringify(updated))
+  }, [designs])
+
+  const importDesign = useCallback((e) => {
+    const file = e.target.files[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      try {
+        const d = JSON.parse(ev.target.result)
+        if (d.nodes && d.edges) loadDesign(d)
+      } catch { alert('Invalid design file') }
+    }
+    reader.readAsText(file)
+    e.target.value = ''
+  }, [loadDesign])
+
+  const exportDesign = useCallback(() => {
+    const data = {
+      name: designName.trim() || 'BNX Design',
+      date: new Date().toISOString(),
+      nodes: nodes.map(n => ({ id: n.id, type: n.type, position: n.position, data: n.data })),
+      edges: edges.map(e => ({ id: e.id, source: e.source, target: e.target })),
+      nodeCount,
+    }
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = 'design.json'; a.click()
+    URL.revokeObjectURL(url)
+  }, [nodes, edges, nodeCount, designName])
 
   const onConnect = useCallback((params) => {
     setEdges(eds => addEdge({
@@ -311,6 +383,70 @@ export default function DesignerPage({ theme }) {
             background: 'transparent', border: `1px solid #6366f140`, color: '#6366f1',
           }}>📥 .xfr</button>
         </div>
+
+        <div style={{ height: 1, background: t.border || '#334155' }} />
+
+        {/* Save/Load designs */}
+        <span style={{ fontSize: 11, color: t.muted, textTransform: 'uppercase', letterSpacing: 1 }}>Designs</span>
+        <div style={{ display: 'flex', gap: 4 }}>
+          <input value={designName} onChange={e => setDesignName(e.target.value)}
+            placeholder="Name..."
+            style={{
+              flex: 1, padding: '4px 8px', borderRadius: 6, fontSize: 11,
+              background: t.bg || '#0f1117', border: `1px solid ${t.border || '#334155'}`,
+              color: t.text || '#e2e8f0', outline: 'none',
+            }}
+            onKeyDown={e => { if (e.key === 'Enter') saveDesign() }}
+          />
+          <button onClick={saveDesign} style={{
+            padding: '4px 8px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
+            background: '#22c55e20', border: '1px solid #22c55e40', color: '#22c55e',
+          }}>💾</button>
+        </div>
+        <div style={{ display: 'flex', gap: 4 }}>
+          <button onClick={() => setShowDesigns(v => !v)} style={{
+            flex: 1, padding: '4px 8px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
+            background: '#6366f120', border: '1px solid #6366f140', color: '#818cf8',
+          }}>📋 Load ({designs.length})</button>
+          <button onClick={exportDesign} style={{
+            flex: 1, padding: '4px 8px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
+            background: '#f59e0b20', border: '1px solid #f59e0b40', color: '#f59e0b',
+          }}>📥 JSON</button>
+          <button onClick={() => loadRef.current?.click()} style={{
+            padding: '4px 8px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
+            background: '#06b6d420', border: '1px solid #06b6d440', color: '#06b6d4',
+          }}>📂</button>
+          <input ref={loadRef} type="file" accept=".json" hidden onChange={importDesign} />
+        </div>
+
+        {showDesigns && designs.length > 0 && (
+          <div style={{
+            maxHeight: 150, overflowY: 'auto', borderRadius: 6,
+            border: `1px solid ${t.border || '#334155'}`,
+          }}>
+            {designs.map((d, i) => (
+              <div key={i} style={{
+                padding: '5px 8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                borderBottom: `1px solid ${t.border || '#334155'}20`, fontSize: 10,
+              }}>
+                <div>
+                  <div style={{ color: t.text || '#e2e8f0', fontWeight: 500 }}>{d.name}</div>
+                  <div style={{ color: t.dim || '#64748b', fontSize: 9 }}>{d.nodes.length}n · {d.edges.length}e</div>
+                </div>
+                <div style={{ display: 'flex', gap: 3 }}>
+                  <button onClick={() => loadDesign(d)} style={{
+                    padding: '2px 5px', borderRadius: 3, fontSize: 9, cursor: 'pointer',
+                    background: '#22c55e20', border: '1px solid #22c55e40', color: '#22c55e',
+                  }}>Load</button>
+                  <button onClick={() => deleteDesign(i)} style={{
+                    padding: '2px 5px', borderRadius: 3, fontSize: 9, cursor: 'pointer',
+                    background: '#ef444420', border: '1px solid #ef444440', color: '#ef4444',
+                  }}>✕</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
 
         {editNode && (
           <button onClick={deleteSelected} style={{
