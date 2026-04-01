@@ -356,7 +356,56 @@ export default function GovernancePage({ theme }) {
                     </div>
                   )}
                 </div>
-              ))}
+              )
+            })}
+            {/* Add new policy button */}
+            <div style={{ padding: '12px 24px' }}>
+              {addingTo === domain.domain ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <input value={newPolicy.name} onChange={e => setNewPolicy(p => ({ ...p, name: e.target.value }))}
+                    placeholder="Nombre de la política..."
+                    style={{
+                      padding: '8px 12px', borderRadius: 6, fontSize: 14,
+                      background: t.bg || '#0f1117', border: `1px solid ${t.border || '#334155'}`,
+                      color: t.text || '#e2e8f0', outline: 'none',
+                    }}
+                  />
+                  <input value={newPolicy.desc} onChange={e => setNewPolicy(p => ({ ...p, desc: e.target.value }))}
+                    placeholder="Descripción..."
+                    style={{
+                      padding: '8px 12px', borderRadius: 6, fontSize: 13,
+                      background: t.bg || '#0f1117', border: `1px solid ${t.border || '#334155'}`,
+                      color: t.muted || '#94a3b8', outline: 'none',
+                    }}
+                  />
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    {['low', 'medium', 'high', 'critical'].map(lv => (
+                      <button key={lv} onClick={() => setNewPolicy(p => ({ ...p, level: lv }))} style={{
+                        padding: '4px 10px', borderRadius: 4, fontSize: 11, cursor: 'pointer',
+                        background: newPolicy.level === lv ? LEVEL_COLOR[lv] + '30' : 'transparent',
+                        border: `1px solid ${LEVEL_COLOR[lv]}40`, color: LEVEL_COLOR[lv],
+                      }}>{LEVEL_LABEL[lv]}</button>
+                    ))}
+                  </div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button onClick={() => addPolicy(domain.domain)} style={{
+                      padding: '6px 14px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                      background: '#22c55e20', border: '1px solid #22c55e40', color: '#22c55e',
+                    }}>✅ Add</button>
+                    <button onClick={() => setAddingTo(null)} style={{
+                      padding: '6px 14px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                      background: 'transparent', border: `1px solid ${t.border || '#334155'}`, color: t.muted || '#94a3b8',
+                    }}>Cancel</button>
+                  </div>
+                </div>
+              ) : (
+                <button onClick={() => setAddingTo(domain.domain)} style={{
+                  padding: '8px 16px', borderRadius: 6, fontSize: 13, cursor: 'pointer',
+                  background: domain.color + '10', border: `1px dashed ${domain.color}40`, color: domain.color,
+                  width: '100%',
+                }}>+ Nueva Política en {domain.domain}</button>
+              )}
+            </div>
             </div>
         </div>
       ))}
