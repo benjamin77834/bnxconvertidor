@@ -305,16 +305,42 @@ export default function DesignerPage({ theme }) {
       xfr += '\n'
     })
 
-    return { mp, xfr }
+    // Generate DML from SOURCE nodes
+    let dml = 'keys:\n'
+    const sources = nodes.filter(n => n.data.nodeType === 'SOURCE')
+    sources.forEach(n => {
+      const r = n.data.rule || {}
+      const select = r.select || ''
+      const cols = select ? select.split(',').map(c => c.trim()).filter(c => c) : []
+      if (cols.length > 0) {
+        dml += `  ${n.data.label}: ${cols[0]}\n`
+      }
+    })
+    dml += '\nschema:\n'
+    sources.forEach(n => {
+      const r = n.data.rule || {}
+      const select = r.select || ''
+      const cols = select ? select.split(',').map(c => c.trim()).filter(c => c) : []
+      if (cols.length > 0) {
+        dml += `  ${n.data.label}:\n`
+        cols.forEach(c => { dml += `    ${c}: string\n` })
+        dml += '\n'
+      }
+    })
+
+    return { mp, xfr, dml }
   }, [nodes, edges])
 
   const handleCompile = useCallback(async () => {
     setLoading(true)
-    const { mp, xfr } = exportFiles()
+    const { mp, xfr, dml } = exportFiles()
     const form = new FormData()
     form.append('mp', new File([mp], 'design.mp'))
     if (xfr.trim().split('\n').length > 2) {
       form.append('xfr', new File([xfr], 'design.xfr'))
+    }
+    if (dml.trim().split('\n').length > 3) {
+      form.append('dml', new File([dml], 'design.dml'))
     }
     form.append('target', target)
     try {
@@ -382,6 +408,10 @@ export default function DesignerPage({ theme }) {
             flex: 1, padding: '5px 8px', borderRadius: 6, cursor: 'pointer', fontSize: 11,
             background: 'transparent', border: `1px solid #6366f140`, color: '#6366f1',
           }}>📥 .xfr</button>
+          <button onClick={() => { const f = exportFiles(); dl(f.dml, 'design.dml') }} style={{
+            flex: 1, padding: '5px 8px', borderRadius: 6, cursor: 'pointer', fontSize: 11,
+            background: 'transparent', border: `1px solid #f59e0b40`, color: '#f59e0b',
+          }}>📥 .dml</button>
         </div>
 
         <div style={{ height: 1, background: t.border || '#334155' }} />
