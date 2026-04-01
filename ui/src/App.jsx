@@ -16,11 +16,11 @@ const dark = {
   flowBg: '#1e2433',
 }
 const light = {
-  bg: '#f8fafc', sidebar: '#ffffff', header: '#ffffff',
-  card: '#f1f5f9', border: '#e2e8f0', text: '#1e293b',
-  muted: '#64748b', dim: '#94a3b8', codeBg: '#f8fafc',
+  bg: '#f1f5f9', sidebar: '#f8fafc', header: '#f8fafc',
+  card: '#e8edf3', border: '#cbd5e1', text: '#1e293b',
+  muted: '#475569', dim: '#64748b', codeBg: '#f1f5f9',
   accent: '#6366f1', accentBg: '#6366f110', accentBorder: '#6366f130',
-  flowBg: '#f1f5f9',
+  flowBg: '#e8edf3',
 }
 
 const LEGEND = [
@@ -198,7 +198,7 @@ export default function App() {
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: t.bg, color: t.text }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: t.bg, color: t.text, transition: 'background .4s ease, color .4s ease' }}>
       {/* Header */}
       <header style={{
         padding: '12px 24px', background: t.header, borderBottom: `1px solid ${t.border}`,
