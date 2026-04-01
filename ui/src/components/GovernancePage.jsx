@@ -215,59 +215,71 @@ export default function GovernancePage({ theme }) {
               {domain.policies.map(p => (
                 <div key={p.id} style={{
                   padding: '16px 24px', borderBottom: `1px solid ${t.border || '#334155'}20`,
-                  display: 'flex', gap: 14, alignItems: 'flex-start',
+                  display: 'flex', flexDirection: 'column', gap: 8,
                 }}>
-                  <span style={{
-                    padding: '3px 10px', borderRadius: 4, fontSize: 12, fontWeight: 600,
-                    background: LEVEL_COLOR[p.level] + '20', color: LEVEL_COLOR[p.level],
-                    border: `1px solid ${LEVEL_COLOR[p.level]}40`, whiteSpace: 'nowrap', marginTop: 3,
-                  }}>{LEVEL_LABEL[p.level]}</span>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-                      <span style={{ fontSize: 13, color: domain.color, fontWeight: 600 }}>{p.id}</span>
-                      <span style={{ fontSize: 16, color: t.text || '#e2e8f0', fontWeight: 500 }}>{p.name}</span>
-                    </div>
-                    <div style={{ fontSize: 14, color: t.muted || '#94a3b8', marginTop: 4 }}>{p.desc}</div>
-                    {(p.examples || p.rule || p.aws || p.freq || p.target) && (
-                      <div style={{ fontSize: 13, color: t.dim || '#64748b', marginTop: 6, lineHeight: 1.6 }}>
-                        {p.examples && <div>📌 {p.examples}</div>}
-                        {p.rule && <div>📏 {p.rule}</div>}
-                        {p.aws && <div>☁️ {p.aws}</div>}
-                        {p.freq && <div>📅 {p.freq} — {p.entity}</div>}
-                        {p.target && <div>🎯 {p.target} — {p.monitor}</div>}
-                      </div>
-                    )}
-                    {customPolicies[p.id] && (
-                      <div style={{
-                        fontSize: 13, color: '#f59e0b', marginTop: 6,
-                        padding: '6px 10px', background: '#f59e0b10', borderRadius: 6,
-                      }}>📝 {customPolicies[p.id]}</div>
-                    )}
+                  <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <span style={{
+                      padding: '3px 10px', borderRadius: 4, fontSize: 12, fontWeight: 600,
+                      background: LEVEL_COLOR[p.level] + '20', color: LEVEL_COLOR[p.level],
+                      border: `1px solid ${LEVEL_COLOR[p.level]}40`,
+                    }}>{LEVEL_LABEL[p.level]}</span>
+                    <span style={{ fontSize: 13, color: domain.color, fontWeight: 600 }}>{p.id}</span>
+                    <span style={{ fontSize: 16, color: t.text || '#e2e8f0', fontWeight: 500 }}>{p.name}</span>
+                    <button onClick={() => setEditPolicy(editPolicy === p.id ? null : p.id)} style={{
+                      marginLeft: 'auto', padding: '3px 10px', borderRadius: 4, fontSize: 11, cursor: 'pointer',
+                      background: editPolicy === p.id ? '#f59e0b20' : 'transparent',
+                      border: `1px solid ${t.border || '#334155'}`, color: t.muted || '#94a3b8',
+                    }}>{editPolicy === p.id ? '✕ Close' : '✏️ Notes'}</button>
                   </div>
-                  <button onClick={() => setEditPolicy(editPolicy === p.id ? null : p.id)} style={{
-                    padding: '3px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer',
-                    background: 'transparent', border: `1px solid ${t.border || '#334155'}`,
-                    color: t.muted || '#94a3b8',
-                  }}>{editPolicy === p.id ? '✕' : '✏️'}</button>
+
+                  <div style={{ fontSize: 14, color: t.muted || '#94a3b8', lineHeight: 1.6 }}>{p.desc}</div>
+
+                  {(p.examples || p.rule || p.aws || p.freq || p.target || p.tool) && (
+                    <div style={{
+                      fontSize: 13, color: t.dim || '#64748b', lineHeight: 1.8,
+                      padding: '8px 12px', background: (t.bg || '#0f1117') + '80', borderRadius: 6,
+                    }}>
+                      {p.examples && <div>📌 <span style={{ color: t.muted || '#94a3b8' }}>{p.examples}</span></div>}
+                      {p.rule && <div>📏 <span style={{ color: t.muted || '#94a3b8' }}>{p.rule}</span></div>}
+                      {p.aws && <div>☁️ <span style={{ color: '#ff9900' }}>{p.aws}</span></div>}
+                      {p.tool && <div>🔧 <span style={{ color: '#818cf8' }}>{p.tool}</span></div>}
+                      {p.freq && <div>📅 <span style={{ color: t.muted || '#94a3b8' }}>{p.freq}</span> — <span style={{ color: '#f59e0b' }}>{p.entity}</span></div>}
+                      {p.target && <div>🎯 <span style={{ color: '#22c55e' }}>{p.target}</span> — <span style={{ color: t.muted || '#94a3b8' }}>{p.monitor}</span></div>}
+                    </div>
+                  )}
+
+                  {customPolicies[p.id] && (
+                    <div style={{
+                      fontSize: 13, color: '#f59e0b', padding: '8px 12px',
+                      background: '#f59e0b10', borderRadius: 6, border: '1px solid #f59e0b20',
+                    }}>📝 {customPolicies[p.id]}</div>
+                  )}
+
                   {editPolicy === p.id && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 200 }}>
+                    <div style={{
+                      display: 'flex', flexDirection: 'column', gap: 6,
+                      padding: '10px 12px', background: (t.bg || '#0f1117') + '80', borderRadius: 6,
+                    }}>
+                      <label style={{ fontSize: 12, color: t.dim || '#64748b' }}>Agregar notas o comentarios:</label>
                       <textarea
                         defaultValue={customPolicies[p.id] || ''}
-                        placeholder="Agregar notas..."
-                        rows={2}
+                        placeholder="Escribe notas sobre esta política..."
+                        rows={3}
                         style={{
-                          padding: '6px 8px', borderRadius: 6, fontSize: 11,
+                          padding: '8px 10px', borderRadius: 6, fontSize: 13,
                           background: t.bg || '#0f1117', border: `1px solid ${t.border || '#334155'}`,
                           color: t.text || '#e2e8f0', outline: 'none', resize: 'vertical',
+                          fontFamily: 'inherit', lineHeight: 1.5,
                         }}
-                        ref={el => { if (el) el._save = () => saveCustom(p.id, el.value) }}
+                        id={`note_${p.id}`}
                       />
-                      <button onClick={(e) => {
-                        const textarea = e.target.previousSibling
-                        saveCustom(p.id, textarea.value)
+                      <button onClick={() => {
+                        const el = document.getElementById(`note_${p.id}`)
+                        if (el) saveCustom(p.id, el.value)
                       }} style={{
-                        padding: '3px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer',
+                        padding: '6px 14px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
                         background: '#22c55e20', border: '1px solid #22c55e40', color: '#22c55e',
+                        alignSelf: 'flex-start',
                       }}>💾 Save Note</button>
                     </div>
                   )}
