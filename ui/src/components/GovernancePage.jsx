@@ -123,13 +123,15 @@ const LEVEL_LABEL = {
 
 export default function GovernancePage({ theme }) {
   const t = theme || {}
-  const [expanded, setExpanded] = useState(POLICIES.map(() => true))
   const [editPolicy, setEditPolicy] = useState(null)
   const [customPolicies, setCustomPolicies] = useState(() => {
     try { return JSON.parse(localStorage.getItem('bnx_governance_custom') || '{}') } catch { return {} }
   })
-
-  const toggle = (i) => setExpanded(e => e.map((v, j) => j === i ? !v : v))
+  const [extraPolicies, setExtraPolicies] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('bnx_governance_extra') || '{}') } catch { return {} }
+  })
+  const [addingTo, setAddingTo] = useState(null)
+  const [newPolicy, setNewPolicy] = useState({ name: '', desc: '', level: 'medium' })
 
   const saveCustom = (id, notes) => {
     const updated = { ...customPolicies, [id]: notes }
@@ -138,9 +140,28 @@ export default function GovernancePage({ theme }) {
     setEditPolicy(null)
   }
 
+  const addPolicy = (domainName) => {
+    if (!newPolicy.name.trim()) return
+    const extras = extraPolicies[domainName] || []
+    const id = `CUSTOM_${Date.now()}`
+    const updated = { ...extraPolicies, [domainName]: [...extras, { id, name: newPolicy.name, desc: newPolicy.desc, level: newPolicy.level }] }
+    setExtraPolicies(updated)
+    localStorage.setItem('bnx_governance_extra', JSON.stringify(updated))
+    setNewPolicy({ name: '', desc: '', level: 'medium' })
+    setAddingTo(null)
+  }
+
+  const removeExtra = (domainName, id) => {
+    const updated = { ...extraPolicies, [domainName]: (extraPolicies[domainName] || []).filter(p => p.id !== id) }
+    setExtraPolicies(updated)
+    localStorage.setItem('bnx_governance_extra', JSON.stringify(updated))
+  }
+
+  const getAllPolicies = (domain) => [...domain.policies, ...(extraPolicies[domain.domain] || [])]
+
   const exportGovernance = () => {
     const data = {
-      policies: POLICIES,
+      policies: POLICIES.map(d => ({ ...d, policies: getAllPolicies(d) })),
       customNotes: customPolicies,
       exportedAt: new Date().toISOString(),
     }
@@ -151,13 +172,52 @@ export default function GovernancePage({ theme }) {
     URL.revokeObjectURL(url)
   }
 
+  const exportReport = () => {
+    let r = `GOBIERNO DE DATOS — DOCUMENTO DE POLÍTICAS\n`
+    r += `${'='.repeat(60)}\n`
+    r += `Generado: ${new Date().toLocaleString()}\n`
+    r += `Total dominios: ${POLICIES.length}\n`
+    r += `Total políticas: ${totalPolicies}\n`
+    r += `Políticas críticas: ${criticalCount}\n`
+    r += `Notas personalizadas: ${Object.keys(customPolicies).length}\n\n`
+
+    POLICIES.forEach(domain => {
+      r += `${'─'.repeat(60)}\n`
+      r += `${domain.icon} ${domain.domain.toUpperCase()}\n`
+      r += `${'─'.repeat(60)}\n\n`
+
+      getAllPolicies(domain).forEach(p => {
+        const levelTag = `[${LEVEL_LABEL[p.level] || p.level}]`
+        r += `  ${p.id}  ${levelTag}  ${p.name}\n`
+        r += `  ${p.desc}\n`
+        if (p.examples) r += `    📌 Ejemplos: ${p.examples}\n`
+        if (p.rule) r += `    📏 Regla: ${p.rule}\n`
+        if (p.aws) r += `    ☁️  AWS: ${p.aws}\n`
+        if (p.tool) r += `    🔧 Herramienta: ${p.tool}\n`
+        if (p.freq) r += `    📅 Frecuencia: ${p.freq} — Entidad: ${p.entity}\n`
+        if (p.target) r += `    🎯 Target: ${p.target} — Monitor: ${p.monitor}\n`
+        if (customPolicies[p.id]) r += `    📝 Nota: ${customPolicies[p.id]}\n`
+        r += '\n'
+      })
+    })
+
+    r += `${'='.repeat(60)}\n`
+    r += `FIN DEL DOCUMENTO\n`
+
+    const blob = new Blob([r], { type: 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = 'governance_report.txt'; a.click()
+    URL.revokeObjectURL(url)
+  }
+
   const card = {
     background: t.card || '#1e2433', border: `1px solid ${t.border || '#334155'}`,
     borderRadius: 10,
   }
 
-  const totalPolicies = POLICIES.reduce((s, d) => s + d.policies.length, 0)
-  const criticalCount = POLICIES.reduce((s, d) => s + d.policies.filter(p => p.level === 'critical').length, 0)
+  const totalPolicies = POLICIES.reduce((s, d) => s + getAllPolicies(d).length, 0)
+  const criticalCount = POLICIES.reduce((s, d) => s + getAllPolicies(d).filter(p => p.level === 'critical').length, 0)
 
   return (
     <div style={{ padding: 40, overflowY: 'auto', height: '100%', display: 'flex', flexDirection: 'column', gap: 28 }}>
@@ -171,10 +231,16 @@ export default function GovernancePage({ theme }) {
             Marco de gobierno para plataforma de datos bancaria. Click ✏️ para agregar notas.
           </p>
         </div>
-        <button onClick={exportGovernance} style={{
-          padding: '10px 20px', borderRadius: 8, fontSize: 14, cursor: 'pointer',
-          background: '#f59e0b20', border: '1px solid #f59e0b40', color: '#f59e0b', fontWeight: 600,
-        }}>📥 Export Policies</button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={exportReport} style={{
+            padding: '10px 20px', borderRadius: 8, fontSize: 14, cursor: 'pointer',
+            background: '#22c55e20', border: '1px solid #22c55e40', color: '#22c55e', fontWeight: 600,
+          }}>📄 Report (.txt)</button>
+          <button onClick={exportGovernance} style={{
+            padding: '10px 20px', borderRadius: 8, fontSize: 14, cursor: 'pointer',
+            background: '#f59e0b20', border: '1px solid #f59e0b40', color: '#f59e0b', fontWeight: 600,
+          }}>📥 JSON</button>
+        </div>
       </div>
 
       {/* Summary */}
@@ -210,7 +276,9 @@ export default function GovernancePage({ theme }) {
             </span>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column' }}>
-            {domain.policies.map(p => (
+            {getAllPolicies(domain).map(p => {
+              const isCustom = p.id.startsWith('CUSTOM_')
+              return (
                 <div key={p.id} style={{
                   padding: '16px 24px', borderBottom: `1px solid ${t.border || '#334155'}20`,
                   display: 'flex', flexDirection: 'column', gap: 8,
@@ -228,6 +296,12 @@ export default function GovernancePage({ theme }) {
                       background: editPolicy === p.id ? '#f59e0b20' : 'transparent',
                       border: `1px solid ${t.border || '#334155'}`, color: t.muted || '#94a3b8',
                     }}>{editPolicy === p.id ? '✕ Close' : '✏️ Notes'}</button>
+                    {isCustom && (
+                      <button onClick={(e) => { e.stopPropagation(); removeExtra(domain.domain, p.id) }} style={{
+                        padding: '3px 8px', borderRadius: 4, fontSize: 11, cursor: 'pointer',
+                        background: '#ef444420', border: '1px solid #ef444440', color: '#ef4444',
+                      }}>🗑️</button>
+                    )}
                   </div>
 
                   <div style={{ fontSize: 14, color: t.muted || '#94a3b8', lineHeight: 1.6 }}>{p.desc}</div>
