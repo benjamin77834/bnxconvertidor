@@ -196,28 +196,21 @@ export default function GovernancePage({ theme }) {
       {POLICIES.map((domain, di) => (
         <div key={domain.domain} style={card}>
           <div
-            onClick={() => toggle(di)}
             style={{
-              padding: '16px 20px', cursor: 'pointer',
-              background: domain.color + '10', borderBottom: expanded[di] ? `1px solid ${t.border || '#334155'}` : 'none',
+              padding: '16px 20px',
+              background: domain.color + '10', borderBottom: `1px solid ${t.border || '#334155'}`,
               display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-              userSelect: 'none',
             }}
           >
             <span style={{ fontSize: 18, fontWeight: 600, color: t.text || '#e2e8f0' }}>
               {domain.icon} {domain.domain}
             </span>
-            <span style={{
-              fontSize: 14, color: t.dim || '#64748b',
-              padding: '4px 10px', borderRadius: 4,
-              background: expanded[di] ? 'transparent' : domain.color + '20',
-            }}>
-              {domain.policies.length} políticas {expanded[di] ? '▼' : '▶'}
+            <span style={{ fontSize: 14, color: t.dim || '#64748b' }}>
+              {domain.policies.length} políticas
             </span>
           </div>
-          {expanded[di] && (
-            <div style={{ display: 'flex', flexDirection: 'column' }}>
-              {domain.policies.map(p => (
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            {domain.policies.map(p => (
                 <div key={p.id} style={{
                   padding: '16px 24px', borderBottom: `1px solid ${t.border || '#334155'}20`,
                   display: 'flex', flexDirection: 'column', gap: 8,
@@ -291,7 +284,6 @@ export default function GovernancePage({ theme }) {
                 </div>
               ))}
             </div>
-          )}
         </div>
       ))}
     </div>
