@@ -76,6 +76,42 @@ const POLICIES = [
       { id: 'SL05', name: 'Recovery (RPO/RTO)', desc: 'Recuperación ante desastres', level: 'critical', target: 'RPO 1h, RTO 4h', monitor: 'S3 cross-region replication' },
     ]
   },
+  {
+    domain: 'ML / SageMaker Governance',
+    icon: '🧠',
+    color: '#ec4899',
+    policies: [
+      { id: 'ML01', name: 'Model Registry', desc: 'Todos los modelos registrados con versión y métricas', level: 'high', aws: 'SageMaker Model Registry' },
+      { id: 'ML02', name: 'Feature Store', desc: 'Features centralizados y reutilizables', level: 'high', aws: 'SageMaker Feature Store → S3/Glue Catalog' },
+      { id: 'ML03', name: 'Experiment Tracking', desc: 'Registro de hiperparámetros, métricas y artefactos', level: 'medium', aws: 'SageMaker Experiments + MLflow' },
+      { id: 'ML04', name: 'Model Bias & Fairness', desc: 'Detección de sesgo en datos y predicciones', level: 'critical', aws: 'SageMaker Clarify' },
+      { id: 'ML05', name: 'Model Explainability', desc: 'Explicabilidad de decisiones (SHAP, LIME)', level: 'high', aws: 'SageMaker Clarify Explainability' },
+      { id: 'ML06', name: 'Model Monitoring', desc: 'Detección de data drift y model decay', level: 'critical', aws: 'SageMaker Model Monitor → CloudWatch' },
+      { id: 'ML07', name: 'CI/CD de Modelos', desc: 'Pipeline automatizado de entrenamiento y deploy', level: 'high', aws: 'SageMaker Pipelines + CodePipeline' },
+      { id: 'ML08', name: 'Aprobación de Modelos', desc: 'Workflow de aprobación antes de producción', level: 'critical', aws: 'SageMaker Model Registry approval + SNS' },
+      { id: 'ML09', name: 'Data Lineage ML', desc: 'Trazabilidad de datos usados en entrenamiento', level: 'high', aws: 'SageMaker Lineage Tracking → Glue Catalog' },
+      { id: 'ML10', name: 'Acceso a Datos de Training', desc: 'Solo datos aprobados para entrenamiento', level: 'critical', aws: 'Lake Formation + IAM + VPC endpoints' },
+    ]
+  },
+  {
+    domain: 'Arquitectura AWS — Servicios',
+    icon: '☁️',
+    color: '#ff9900',
+    policies: [
+      { id: 'AW01', name: 'S3 Data Lake', desc: 'Almacenamiento central: raw/, curated/, business/', level: 'critical', aws: 'S3 + Glacier + Lifecycle policies' },
+      { id: 'AW02', name: 'AWS Glue', desc: 'ETL serverless: crawlers, jobs, catalog', level: 'critical', aws: 'Glue Jobs (BNX generated) + Glue Catalog' },
+      { id: 'AW03', name: 'Amazon EMR', desc: 'Procesamiento distribuido para ML y big data', level: 'high', aws: 'EMR Serverless + Spark' },
+      { id: 'AW04', name: 'SageMaker', desc: 'Plataforma ML: training, inference, monitoring', level: 'high', aws: 'SageMaker Studio + Endpoints + Pipelines' },
+      { id: 'AW05', name: 'Amazon Redshift', desc: 'Data Warehouse para BI y reportes pesados', level: 'high', aws: 'Redshift Serverless + Spectrum (S3 query)' },
+      { id: 'AW06', name: 'Amazon Athena', desc: 'SQL ad-hoc sobre S3 sin infraestructura', level: 'medium', aws: 'Athena + Glue Catalog + S3' },
+      { id: 'AW07', name: 'Amazon MSK', desc: 'Kafka managed para streaming de eventos', level: 'high', aws: 'MSK + MSK Connect + Schema Registry' },
+      { id: 'AW08', name: 'AWS DMS', desc: 'Migración y CDC desde bases legacy', level: 'high', aws: 'DMS + SCT (Schema Conversion Tool)' },
+      { id: 'AW09', name: 'Lake Formation', desc: 'Gobierno centralizado del Data Lake', level: 'critical', aws: 'Lake Formation permissions + Glue Catalog' },
+      { id: 'AW10', name: 'CloudWatch + SNS', desc: 'Monitoreo, alertas y notificaciones', level: 'high', aws: 'CloudWatch Alarms + SNS + PagerDuty' },
+      { id: 'AW11', name: 'AWS Step Functions', desc: 'Orquestación de pipelines y workflows', level: 'medium', aws: 'Step Functions + Glue Jobs + Lambda' },
+      { id: 'AW12', name: 'Amazon QuickSight', desc: 'Dashboards y visualización de datos', level: 'medium', aws: 'QuickSight + Athena/Redshift datasources' },
+    ]
+  },
 ]
 
 const LEVEL_COLOR = {
