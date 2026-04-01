@@ -1,7 +1,7 @@
 import { useMemo, useEffect, useState, useCallback } from 'react'
 import ReactFlow, {
   Background, Controls, MiniMap,
-  MarkerType, useNodesState, useEdgesState
+  MarkerType, addEdge, useNodesState, useEdgesState
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import GovernancePage from './GovernancePage'
@@ -192,6 +192,9 @@ export default function BankingModelPage({ theme }) {
   const [versionName, setVersionName] = useState('')
   const [showVersions, setShowVersions] = useState(false)
   const [subTab, setSubTab] = useState('model')
+  const [addNodeLayer, setAddNodeLayer] = useState(null)
+  const [newNodeName, setNewNodeName] = useState('')
+  const [nodeCounter, setNodeCounter] = useState(100)
 
   useEffect(() => { setNodes(initNodes) }, [initNodes, setNodes])
   useEffect(() => { setEdges(initEdges) }, [initEdges, setEdges])
@@ -202,6 +205,58 @@ export default function BankingModelPage({ theme }) {
     ))
     setEditNode(null)
   }, [setNodes])
+
+  const deleteNode = useCallback((id) => {
+    setNodes(nds => nds.filter(n => n.id !== id))
+    setEdges(eds => eds.filter(e => e.source !== id && e.target !== id))
+    setEditNode(null)
+  }, [setNodes, setEdges])
+
+  const addNewNode = useCallback((layerIdx) => {
+    const layer = LAYERS[layerIdx]
+    if (!layer || !newNodeName.trim()) return
+    const id = `CUSTOM_${nodeCounter}`
+    const existingInLayer = nodes.filter(n => {
+      const nl = LAYERS.find(l => l.nodes.some(x => x.id === n.id))
+      return nl?.name === layer.name
+    })
+    setNodes(nds => [...nds, {
+      id,
+      position: { x: 100 + existingInLayer.length * 150, y: layer.y },
+      data: { label: newNodeName.trim(), desc: 'Custom node', layer: layer.name },
+      style: {
+        background: layer.color + '18', border: `2px solid ${layer.color}`,
+        borderRadius: 8, color: t.text || '#e2e8f0', fontSize: 11,
+        padding: '8px 10px', minWidth: 130, textAlign: 'center', whiteSpace: 'pre-line',
+      }
+    }])
+    setNodeCounter(c => c + 1)
+    setNewNodeName('')
+    setAddNodeLayer(null)
+  }, [newNodeName, nodeCounter, nodes, t, setNodes])
+
+  const onConnect = useCallback((params) => {
+    setEdges(eds => addEdge({
+      ...params,
+      markerEnd: { type: MarkerType.ArrowClosed, color: '#47556980' },
+      style: { stroke: '#47556980', strokeWidth: 1.2 },
+    }, eds))
+  }, [setEdges])
+
+  const clearModel = useCallback(() => {
+    if (window.confirm('¿Limpiar todo el modelo? Se perderán los cambios no guardados.')) {
+      setNodes([])
+      setEdges([])
+      setEditNode(null)
+    }
+  }, [setNodes, setEdges])
+
+  const resetModel = useCallback(() => {
+    const { nodes: fresh, edges: freshEdges } = buildModel(t)
+    setNodes(fresh)
+    setEdges(freshEdges)
+    setEditNode(null)
+  }, [t, setNodes, setEdges])
 
   const onNodeClick = useCallback((_, node) => {
     setEditNode(node)
@@ -323,7 +378,54 @@ export default function BankingModelPage({ theme }) {
           <button onClick={exportModel} style={{
             flex: 1, padding: '5px 8px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
             background: '#f59e0b20', border: '1px solid #f59e0b40', color: '#f59e0b',
-          }}>📥 Export JSON</button>
+          }}>📥 Export</button>
+        </div>
+
+        {/* Model management */}
+        <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+          <button onClick={resetModel} style={{
+            flex: 1, padding: '5px 8px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
+            background: '#06b6d420', border: '1px solid #06b6d440', color: '#06b6d4',
+          }}>🔄 Reset</button>
+          <button onClick={clearModel} style={{
+            flex: 1, padding: '5px 8px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
+            background: '#ef444420', border: '1px solid #ef444440', color: '#ef4444',
+          }}>🗑️ Clear</button>
+        </div>
+
+        {/* Add node to layer */}
+        <div style={{ marginTop: 4 }}>
+          <div style={{ fontSize: 11, color: t.dim || '#64748b', marginBottom: 4 }}>Agregar nodo a capa:</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+            {LAYERS.map((l, i) => (
+              <button key={l.name} onClick={() => setAddNodeLayer(addNodeLayer === i ? null : i)} style={{
+                padding: '2px 6px', borderRadius: 4, fontSize: 9, cursor: 'pointer',
+                background: addNodeLayer === i ? l.color + '30' : l.color + '10',
+                border: `1px solid ${l.color}40`, color: l.color,
+              }}>{l.icon}</button>
+            ))}
+          </div>
+          {addNodeLayer !== null && (
+            <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
+              <input value={newNodeName} onChange={e => setNewNodeName(e.target.value)}
+                placeholder={`Nodo en ${LAYERS[addNodeLayer]?.name}...`}
+                style={{
+                  flex: 1, padding: '4px 8px', borderRadius: 6, fontSize: 11,
+                  background: t.bg || '#0f1117', border: `1px solid ${t.border || '#334155'}`,
+                  color: t.text || '#e2e8f0', outline: 'none',
+                }}
+                onKeyDown={e => { if (e.key === 'Enter') addNewNode(addNodeLayer) }}
+              />
+              <button onClick={() => addNewNode(addNodeLayer)} style={{
+                padding: '4px 8px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
+                background: '#22c55e20', border: '1px solid #22c55e40', color: '#22c55e',
+              }}>+</button>
+            </div>
+          )}
+        </div>
+
+        <div style={{ fontSize: 11, color: t.dim || '#64748b', marginTop: 4 }}>
+          {nodes.length} nodos · {edges.length} conexiones · Arrastra entre nodos para conectar
         </div>
 
         {/* Versions list */}
@@ -434,6 +536,10 @@ export default function BankingModelPage({ theme }) {
                 padding: '8px 16px', borderRadius: 6, cursor: 'pointer',
                 background: color, color: '#fff', border: 'none', fontSize: 13, fontWeight: 600,
               }}>💾 Save</button>
+              <button onClick={() => deleteNode(editNode.id)} style={{
+                padding: '8px 16px', borderRadius: 6, cursor: 'pointer',
+                background: '#ef444420', color: '#ef4444', border: '1px solid #ef444440', fontSize: 13,
+              }}>🗑️ Delete Node</button>
             </div>
           </div>
         )
@@ -442,6 +548,7 @@ export default function BankingModelPage({ theme }) {
       <ReactFlow
         nodes={nodes} edges={edges}
         onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
+        onConnect={onConnect}
         onNodeClick={onNodeClick}
         onPaneClick={() => setEditNode(null)}
         fitView minZoom={0.3}
