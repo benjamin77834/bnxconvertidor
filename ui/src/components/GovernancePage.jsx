@@ -173,7 +173,26 @@ export default function GovernancePage({ theme }) {
     localStorage.setItem('bnx_governance_extra', JSON.stringify(updated))
   }
 
-  const getAllPolicies = (domain) => [...domain.policies, ...(extraPolicies[domain.domain] || [])]
+  const [hiddenPolicies, setHiddenPolicies] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('bnx_governance_hidden') || '[]') } catch { return [] }
+  })
+
+  const hidePolicy = (id) => {
+    const updated = [...hiddenPolicies, id]
+    setHiddenPolicies(updated)
+    localStorage.setItem('bnx_governance_hidden', JSON.stringify(updated))
+  }
+
+  const restoreAll = () => {
+    setHiddenPolicies([])
+    localStorage.setItem('bnx_governance_hidden', '[]')
+  }
+
+  const getAllPolicies = (domain) => {
+    const base = domain.policies.filter(p => !hiddenPolicies.includes(p.id))
+    const extras = (extraPolicies[domain.domain] || []).filter(p => !hiddenPolicies.includes(p.id))
+    return [...base, ...extras]
+  }
 
   const exportGovernance = () => {
     const data = {
@@ -247,11 +266,17 @@ export default function GovernancePage({ theme }) {
             Marco de gobierno para plataforma de datos bancaria. Click ✏️ para agregar notas.
           </p>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {hiddenPolicies.length > 0 && (
+            <button onClick={restoreAll} style={{
+              padding: '10px 20px', borderRadius: 8, fontSize: 14, cursor: 'pointer',
+              background: '#06b6d420', border: '1px solid #06b6d440', color: '#06b6d4', fontWeight: 600,
+            }}>🔄 Restore ({hiddenPolicies.length} ocultas)</button>
+          )}
           <button onClick={exportReport} style={{
             padding: '10px 20px', borderRadius: 8, fontSize: 14, cursor: 'pointer',
             background: '#22c55e20', border: '1px solid #22c55e40', color: '#22c55e', fontWeight: 600,
-          }}>📄 Report (.txt)</button>
+          }}>📄 Report</button>
           <button onClick={exportGovernance} style={{
             padding: '10px 20px', borderRadius: 8, fontSize: 14, cursor: 'pointer',
             background: '#f59e0b20', border: '1px solid #f59e0b40', color: '#f59e0b', fontWeight: 600,
@@ -274,9 +299,59 @@ export default function GovernancePage({ theme }) {
         ))}
       </div>
 
+      {/* Policy Map */}
+      <div style={card}>
+        <div style={{ padding: '16px 20px', borderBottom: `1px solid ${t.border || '#334155'}` }}>
+          <span style={{ fontSize: 16, fontWeight: 600, color: t.text || '#e2e8f0' }}>🗺️ Mapa de Políticas</span>
+        </div>
+        <div style={{
+          padding: 20, display: 'flex', flexWrap: 'wrap', gap: 12,
+          justifyContent: 'center', alignItems: 'center',
+        }}>
+          {POLICIES.map(domain => {
+            const count = getAllPolicies(domain).length
+            const criticals = getAllPolicies(domain).filter(p => p.level === 'critical').length
+            const size = 80 + count * 8
+            return (
+              <div key={domain.domain} style={{
+                width: size, height: size, borderRadius: '50%',
+                background: domain.color + '15', border: `3px solid ${domain.color}`,
+                display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                cursor: 'pointer', transition: 'transform .2s',
+                position: 'relative',
+              }}
+                onMouseEnter={e => e.currentTarget.style.transform = 'scale(1.1)'}
+                onMouseLeave={e => e.currentTarget.style.transform = 'scale(1)'}
+                onClick={() => {
+                  const el = document.getElementById(`domain_${domain.domain.replace(/\s/g, '_')}`)
+                  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                }}
+              >
+                <span style={{ fontSize: 20 }}>{domain.icon}</span>
+                <span style={{ fontSize: 10, color: t.text || '#e2e8f0', fontWeight: 600, textAlign: 'center', padding: '0 6px' }}>
+                  {domain.domain.split(' ')[0]}
+                </span>
+                <span style={{ fontSize: 18, fontWeight: 700, color: domain.color }}>{count}</span>
+                {criticals > 0 && (
+                  <span style={{
+                    position: 'absolute', top: -4, right: -4,
+                    background: '#ef4444', color: '#fff', fontSize: 10, fontWeight: 700,
+                    width: 20, height: 20, borderRadius: '50%',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  }}>{criticals}</span>
+                )}
+              </div>
+            )
+          })}
+        </div>
+        <div style={{ padding: '8px 20px 16px', fontSize: 12, color: t.dim || '#64748b', textAlign: 'center' }}>
+          Click en una burbuja para ir al dominio. El número rojo indica políticas críticas.
+        </div>
+      </div>
+
       {/* Policy domains */}
       {POLICIES.map((domain, di) => (
-        <div key={domain.domain} style={card}>
+        <div key={domain.domain} id={`domain_${domain.domain.replace(/\s/g, '_')}`} style={card}>
           <div
             style={{
               padding: '16px 20px',
@@ -332,6 +407,12 @@ export default function GovernancePage({ theme }) {
                         padding: '3px 8px', borderRadius: 4, fontSize: 11, cursor: 'pointer',
                         background: '#ef444420', border: '1px solid #ef444440', color: '#ef4444',
                       }}>🗑️</button>
+                    )}
+                    {!isCustom && (
+                      <button onClick={(e) => { e.stopPropagation(); hidePolicy(p.id) }} style={{
+                        padding: '3px 8px', borderRadius: 4, fontSize: 11, cursor: 'pointer',
+                        background: 'transparent', border: `1px solid ${t.border || '#334155'}`, color: t.dim || '#64748b',
+                      }} title="Ocultar política">👁️‍🗨️</button>
                     )}
                   </div>
 
