@@ -133,6 +133,22 @@ export default function GovernancePage({ theme }) {
   const [addingTo, setAddingTo] = useState(null)
   const [newPolicy, setNewPolicy] = useState({ name: '', desc: '', level: 'medium' })
 
+  const [editingField, setEditingField] = useState(null) // { id, field }
+  const [policyEdits, setPolicyEdits] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('bnx_governance_edits') || '{}') } catch { return {} }
+  })
+
+  const savePolicyEdit = (id, field, value) => {
+    const updated = { ...policyEdits, [id]: { ...(policyEdits[id] || {}), [field]: value } }
+    setPolicyEdits(updated)
+    localStorage.setItem('bnx_governance_edits', JSON.stringify(updated))
+    setEditingField(null)
+  }
+
+  const getPolicyField = (p, field) => {
+    return policyEdits[p.id]?.[field] || p[field] || ''
+  }
+
   const saveCustom = (id, notes) => {
     const updated = { ...customPolicies, [id]: notes }
     setCustomPolicies(updated)
@@ -290,7 +306,22 @@ export default function GovernancePage({ theme }) {
                       border: `1px solid ${LEVEL_COLOR[p.level]}40`,
                     }}>{LEVEL_LABEL[p.level]}</span>
                     <span style={{ fontSize: 13, color: domain.color, fontWeight: 600 }}>{p.id}</span>
-                    <span style={{ fontSize: 16, color: t.text || '#e2e8f0', fontWeight: 500 }}>{p.name}</span>
+                    {editingField?.id === p.id && editingField?.field === 'name' ? (
+                      <input autoFocus defaultValue={getPolicyField(p, 'name')}
+                        onBlur={e => savePolicyEdit(p.id, 'name', e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Enter') savePolicyEdit(p.id, 'name', e.target.value) }}
+                        style={{
+                          fontSize: 16, fontWeight: 500, padding: '2px 6px', borderRadius: 4,
+                          background: t.bg || '#0f1117', border: `1px solid ${t.accent || '#6366f1'}`,
+                          color: t.text || '#e2e8f0', outline: 'none', flex: 1,
+                        }}
+                      />
+                    ) : (
+                      <span style={{ fontSize: 16, color: t.text || '#e2e8f0', fontWeight: 500, cursor: 'pointer' }}
+                        onDoubleClick={() => setEditingField({ id: p.id, field: 'name' })}
+                        title="Doble-click para editar"
+                      >{getPolicyField(p, 'name')}</span>
+                    )}
                     <button onClick={(e) => { e.stopPropagation(); setEditPolicy(editPolicy === p.id ? null : p.id) }} style={{
                       marginLeft: 'auto', padding: '3px 10px', borderRadius: 4, fontSize: 11, cursor: 'pointer',
                       background: editPolicy === p.id ? '#f59e0b20' : 'transparent',
@@ -304,7 +335,22 @@ export default function GovernancePage({ theme }) {
                     )}
                   </div>
 
-                  <div style={{ fontSize: 14, color: t.muted || '#94a3b8', lineHeight: 1.6 }}>{p.desc}</div>
+                  {editingField?.id === p.id && editingField?.field === 'desc' ? (
+                    <input autoFocus defaultValue={getPolicyField(p, 'desc')}
+                      onBlur={e => savePolicyEdit(p.id, 'desc', e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') savePolicyEdit(p.id, 'desc', e.target.value) }}
+                      style={{
+                        fontSize: 14, padding: '4px 8px', borderRadius: 4, width: '100%',
+                        background: t.bg || '#0f1117', border: `1px solid ${t.accent || '#6366f1'}`,
+                        color: t.muted || '#94a3b8', outline: 'none',
+                      }}
+                    />
+                  ) : (
+                    <div style={{ fontSize: 14, color: t.muted || '#94a3b8', lineHeight: 1.6, cursor: 'pointer' }}
+                      onDoubleClick={() => setEditingField({ id: p.id, field: 'desc' })}
+                      title="Doble-click para editar"
+                    >{getPolicyField(p, 'desc')}</div>
+                  )}
 
                   {(p.examples || p.rule || p.aws || p.freq || p.target || p.tool) && (
                     <div style={{
