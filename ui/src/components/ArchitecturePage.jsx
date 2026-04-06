@@ -238,6 +238,22 @@ export default function ArchitecturePage({ theme }) {
             <div style={{ fontSize: 13, color: t.muted || '#94a3b8', lineHeight: 1.7 }}>
               {selected.data.desc}
             </div>
+            {GLOSSARY[selected.id] && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 4 }}>
+                <span style={{ fontSize: 11, color: t.dim || '#64748b', textTransform: 'uppercase', letterSpacing: 1 }}>
+                  Conceptos Clave
+                </span>
+                {GLOSSARY[selected.id].concepts.map(c => (
+                  <div key={c.term} style={{
+                    padding: '8px 10px', borderRadius: 6,
+                    background: (t.bg || '#0f1117') + '80', border: `1px solid ${t.border || '#334155'}30`,
+                  }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: GROUP_COLOR[selected.data.group] }}>{c.term}</div>
+                    <div style={{ fontSize: 12, color: t.muted || '#94a3b8', marginTop: 3, lineHeight: 1.6 }}>{c.def}</div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
