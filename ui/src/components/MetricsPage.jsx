@@ -446,7 +446,7 @@ export default function MetricsPage({ theme }) {
             </div>
             <div style={{ fontSize: 14, color: t.muted || '#94a3b8', lineHeight: 1.8 }}>
               Las horas tradicionales representan el esfuerzo estimado para un equipo de 2-3 desarrolladores senior
-              construyendo cada componente desde cero, sin asistencia de IA. Se calcularon así:
+              construyendo cada componente desde cero, sin herramientas de automatización. Se calcularon así:
             </div>
             <div style={{ fontSize: 13, color: t.muted || '#94a3b8', lineHeight: 1.8, marginTop: 8 }}>
               <div>1. <span style={{ color: t.text || '#e2e8f0', fontWeight: 500 }}>Análisis y diseño</span> — ~20% del tiempo. Definir la arquitectura, formatos de archivo, tipos de nodo, estructura del DAG.</div>
@@ -468,8 +468,8 @@ export default function MetricsPage({ theme }) {
               Las horas BNX son el tiempo real medido en cada sesión de desarrollo. El proceso fue:
             </div>
             <div style={{ fontSize: 13, color: t.muted || '#94a3b8', lineHeight: 1.8, marginTop: 8 }}>
-              <div>1. <span style={{ color: t.text || '#e2e8f0', fontWeight: 500 }}>Diseño iterativo en tiempo real</span> — no hubo fase de diseño separada. Se diseñó e implementó simultáneamente.</div>
-              <div>2. <span style={{ color: t.text || '#e2e8f0', fontWeight: 500 }}>Generación de código asistida por IA</span> — el código se generó, revisó y corrigió en la misma sesión.</div>
+              <div>1. <span style={{ color: t.text || '#e2e8f0', fontWeight: 500 }}>Diseño iterativo en tiempo real</span> — no hubo fase de diseño separada. Se diseñó e implementó simultáneamente con el convertidor.</div>
+              <div>2. <span style={{ color: t.text || '#e2e8f0', fontWeight: 500 }}>Generación de código acelerada</span> — el convertidor BNX automatiza la traducción de grafos a código Spark.</div>
               <div>3. <span style={{ color: t.text || '#e2e8f0', fontWeight: 500 }}>Validación inmediata</span> — cada cambio se probó al instante con grafos de prueba (small, advanced, monster).</div>
               <div>4. <span style={{ color: t.text || '#e2e8f0', fontWeight: 500 }}>Deploy en la misma sesión</span> — Lambda y Amplify se configuraron como parte del flujo.</div>
             </div>
