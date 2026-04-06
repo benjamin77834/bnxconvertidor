@@ -5,6 +5,81 @@ import ReactFlow, {
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 
+const GLOSSARY = {
+  DAG_BUILDER: {
+    concepts: [
+      { term: 'DAG', def: 'Directed Acyclic Graph — grafo dirigido sin ciclos. Cada nodo es una operación y cada edge es una dependencia. Garantiza que los datos fluyen en una sola dirección.' },
+      { term: 'Topological Sort', def: 'Algoritmo que ordena los nodos del DAG de forma que cada nodo se procesa después de todos sus padres. Es lo que determina el orden de ejecución del pipeline.' },
+      { term: 'Subgraph', def: 'Grupo de nodos relacionados dentro del DAG. Equivalente a un "sub-job" en Ab Initio. Permite organizar pipelines complejos en módulos.' },
+    ]
+  },
+  MP_FILE: {
+    concepts: [
+      { term: 'Graph (.mp)', def: 'Archivo que define la estructura del pipeline. Usa formato declarativo: NODE X : TYPE para nodos, A -> B para edges, SUBGRAPH { } para agrupaciones.' },
+      { term: 'Node Types', def: 'SOURCE (lectura), TRANSFORM (select/where/groupby), JOIN (combinar), DEDUP (deduplicar), NORMALIZE (expandir), LOOKUP (referencia), SINK (escritura).' },
+    ]
+  },
+  XFR_FILE: {
+    concepts: [
+      { term: 'XFR (Transform Rules)', def: 'Archivo que define la lógica de cada nodo. Inspirado en Ab Initio Transform functions. Cada nodo tiene su bloque con select, where, group_by, join_key, etc.' },
+      { term: 'Reformat', def: 'En Ab Initio, un componente que transforma campos. En BNX equivale a selectExpr() de Spark.' },
+    ]
+  },
+  DML_FILE: {
+    concepts: [
+      { term: 'DML (Data Manipulation Language)', def: 'En Ab Initio, define el schema de los datos. En BNX define keys y tipos por tabla. Se usa para validación semántica.' },
+      { term: 'Schema Inference', def: 'El validador propaga las columnas a través del DAG usando el DML como fuente de verdad para los SOURCE nodes.' },
+    ]
+  },
+  COBOL_FILE: {
+    concepts: [
+      { term: 'COBOL', def: 'Lenguaje de programación de 1959, aún usado en mainframes bancarios. Los programas batch procesan archivos secuenciales con lógica de negocio.' },
+      { term: 'EBCDIC', def: 'Extended Binary Coded Decimal Interchange Code — encoding de IBM mainframes. Diferente de ASCII/UTF-8. BNX detecta y convierte automáticamente.' },
+      { term: 'COMP-3 (Packed Decimal)', def: 'Formato numérico de mainframe que empaqueta 2 dígitos por byte. BNX lo mapea a Spark DecimalType.' },
+      { term: 'Copybook', def: 'Archivo COBOL reutilizable que define la estructura de un registro. Equivalente a un schema/DML.' },
+    ]
+  },
+  VALIDATOR: {
+    concepts: [
+      { term: 'Semantic Validation', def: 'Verifica que el grafo es ejecutable antes de generar código. Detecta: join keys que no existen en los padres, nodos sin padre, columnas perdidas por groupBy.' },
+      { term: 'Column Inference', def: 'Propaga las columnas disponibles a través del DAG. Un groupBy reduce las columnas a las keys + aliases. Un join las combina.' },
+    ]
+  },
+  ACCURACY: {
+    concepts: [
+      { term: 'Accuracy', def: 'Métrica que mide qué tan completa es la traducción del grafo al código. Evalúa: nodos resueltos, edges válidos, transforms con regla, joins con key.' },
+    ]
+  },
+  GLUE_CODEGEN: {
+    concepts: [
+      { term: 'AWS Glue', def: 'Servicio serverless de ETL de AWS. Usa Apache Spark internamente. GlueContext extiende SparkContext con integración a S3, Glue Catalog, etc.' },
+      { term: 'Codegen', def: 'Generación automática de código. BNX traduce cada nodo del DAG a una línea de PySpark válida según su tipo y reglas XFR.' },
+    ]
+  },
+  SPARK_CODEGEN: {
+    concepts: [
+      { term: 'PySpark', def: 'API de Python para Apache Spark. Permite procesamiento distribuido de datos. BNX genera código PySpark puro sin dependencias de AWS.' },
+      { term: 'SparkSession', def: 'Punto de entrada de Spark. Reemplaza a SparkContext + SQLContext. Permite leer/escribir datos y ejecutar SQL.' },
+    ]
+  },
+  LAMBDA: {
+    concepts: [
+      { term: 'AWS Lambda', def: 'Servicio serverless que ejecuta código sin servidores. Cobra por invocación (~$0.20/1M requests). Ideal para APIs stateless como BNX.' },
+      { term: 'Function URL', def: 'Endpoint HTTP directo para Lambda sin necesidad de API Gateway. Más simple y barato para APIs públicas.' },
+    ]
+  },
+  AMPLIFY: {
+    concepts: [
+      { term: 'AWS Amplify', def: 'Servicio de hosting para apps web estáticas. Conecta a Git, hace build automático, sirve via CDN global. Free tier: 5GB/mes.' },
+    ]
+  },
+  DESIGNER_UI: {
+    concepts: [
+      { term: 'ReactFlow', def: 'Librería React para crear editores de grafos interactivos. Soporta drag & drop, zoom, minimap, custom nodes. Es lo que usa el Designer y el DAG Viewer.' },
+    ]
+  },
+}
+
 const COMPONENTS = [
   // Input Layer
   { id: 'MP_FILE', label: '.mp File\n(Graph)', x: 0, y: 0, group: 'input', desc: 'Define nodos (SOURCE, TRANSFORM, JOIN, DEDUP, NORMALIZE, LOOKUP, SINK), edges y subgraphs del pipeline' },
