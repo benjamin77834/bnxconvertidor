@@ -438,87 +438,135 @@ export default function MetricsPage({ theme }) {
         <h3 style={{ fontSize: 16, fontWeight: 600, color: t.text || '#e2e8f0', marginBottom: 16 }}>
           📝 Metodología de Cálculo
         </h3>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: t.text || '#e2e8f0', marginBottom: 6 }}>
-              Horas Tradicionales
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+          <div style={{ padding: 16, borderRadius: 8, background: (t.bg || '#0f1117') + '80', border: `1px solid ${t.border || '#334155'}30` }}>
+            <div style={{ fontSize: 15, fontWeight: 600, color: '#ef4444', marginBottom: 8 }}>
+              🔴 ¿Cómo se calcularon las Horas Tradicionales?
             </div>
-            <div style={{ fontSize: 13, color: t.muted || '#94a3b8', lineHeight: 1.7 }}>
-              Estimadas con base en benchmarks de la industria para un equipo de 2-3 desarrolladores senior
-              construyendo un compilador de grafos desde cero. Incluye: diseño, implementación, testing,
-              debugging, documentación y deploy. Referencia: proyectos similares de migración Ab Initio → Spark
-              reportan 300-500 horas-hombre para un MVP funcional.
+            <div style={{ fontSize: 14, color: t.muted || '#94a3b8', lineHeight: 1.8 }}>
+              Las horas tradicionales representan el esfuerzo estimado para un equipo de 2-3 desarrolladores senior
+              construyendo cada componente desde cero, sin asistencia de IA. Se calcularon así:
+            </div>
+            <div style={{ fontSize: 13, color: t.muted || '#94a3b8', lineHeight: 1.8, marginTop: 8 }}>
+              <div>1. <span style={{ color: t.text || '#e2e8f0', fontWeight: 500 }}>Análisis y diseño</span> — ~20% del tiempo. Definir la arquitectura, formatos de archivo, tipos de nodo, estructura del DAG.</div>
+              <div>2. <span style={{ color: t.text || '#e2e8f0', fontWeight: 500 }}>Implementación</span> — ~50% del tiempo. Escribir el código, parsers, codegen, validador, UI.</div>
+              <div>3. <span style={{ color: t.text || '#e2e8f0', fontWeight: 500 }}>Testing y debugging</span> — ~20% del tiempo. Tests unitarios, integración, corrección de bugs.</div>
+              <div>4. <span style={{ color: t.text || '#e2e8f0', fontWeight: 500 }}>Deploy y documentación</span> — ~10% del tiempo. Configurar AWS, CI/CD, documentar.</div>
+            </div>
+            <div style={{ fontSize: 13, color: t.dim || '#64748b', marginTop: 10, fontStyle: 'italic' }}>
+              Referencia: proyectos similares de migración Ab Initio → Spark en la industria financiera reportan
+              300-500 horas-hombre para un MVP funcional (fuente: estimaciones de consultoras Big 4 y vendors de migración).
+            </div>
+          </div>
+
+          <div style={{ padding: 16, borderRadius: 8, background: (t.bg || '#0f1117') + '80', border: `1px solid ${t.border || '#334155'}30` }}>
+            <div style={{ fontSize: 15, fontWeight: 600, color: '#22c55e', marginBottom: 8 }}>
+              🟢 ¿Cómo se calcularon las Horas BNX Convertidor?
+            </div>
+            <div style={{ fontSize: 14, color: t.muted || '#94a3b8', lineHeight: 1.8 }}>
+              Las horas BNX son el tiempo real medido en cada sesión de desarrollo. El proceso fue:
+            </div>
+            <div style={{ fontSize: 13, color: t.muted || '#94a3b8', lineHeight: 1.8, marginTop: 8 }}>
+              <div>1. <span style={{ color: t.text || '#e2e8f0', fontWeight: 500 }}>Diseño iterativo en tiempo real</span> — no hubo fase de diseño separada. Se diseñó e implementó simultáneamente.</div>
+              <div>2. <span style={{ color: t.text || '#e2e8f0', fontWeight: 500 }}>Generación de código asistida por IA</span> — el código se generó, revisó y corrigió en la misma sesión.</div>
+              <div>3. <span style={{ color: t.text || '#e2e8f0', fontWeight: 500 }}>Validación inmediata</span> — cada cambio se probó al instante con grafos de prueba (small, advanced, monster).</div>
+              <div>4. <span style={{ color: t.text || '#e2e8f0', fontWeight: 500 }}>Deploy en la misma sesión</span> — Lambda y Amplify se configuraron como parte del flujo.</div>
+            </div>
+            <div style={{ fontSize: 13, color: t.dim || '#64748b', marginTop: 10, fontStyle: 'italic' }}>
+              Cada sesión duró entre 2-4 horas. El total de 27h representa ~7 sesiones de trabajo.
+            </div>
+          </div>
+
+          <div style={{ padding: 16, borderRadius: 8, background: (t.bg || '#0f1117') + '80', border: `1px solid ${t.border || '#334155'}30` }}>
+            <div style={{ fontSize: 15, fontWeight: 600, color: '#6366f1', marginBottom: 8 }}>
+              🔵 ¿Cómo se calcula el Ahorro?
+            </div>
+            <div style={{ fontSize: 14, color: t.muted || '#94a3b8', lineHeight: 1.8 }}>
+              <div><span style={{ color: t.text || '#e2e8f0', fontWeight: 500 }}>Ahorro en horas</span> = Horas Tradicionales - Horas BNX</div>
+              <div><span style={{ color: t.text || '#e2e8f0', fontWeight: 500 }}>Ahorro %</span> = (1 - Horas BNX / Horas Tradicionales) × 100</div>
+              <div><span style={{ color: t.text || '#e2e8f0', fontWeight: 500 }}>Velocidad</span> = Horas Tradicionales / Horas BNX</div>
+              <div><span style={{ color: t.text || '#e2e8f0', fontWeight: 500 }}>Costo</span> = Horas × $80 USD/h (tarifa promedio dev senior LATAM)</div>
+            </div>
+          </div>
+
+          <div style={{ padding: 16, borderRadius: 8, background: (t.bg || '#0f1117') + '80', border: `1px solid ${t.border || '#334155'}30` }}>
+            <div style={{ fontSize: 15, fontWeight: 600, color: '#f59e0b', marginBottom: 8 }}>
+              🟡 ¿Cómo se calcula la Migración Masiva (40K jobs)?
+            </div>
+            <div style={{ fontSize: 14, color: t.muted || '#94a3b8', lineHeight: 1.8 }}>
+              <div><span style={{ color: t.text || '#e2e8f0', fontWeight: 500 }}>Distribución</span>: 40% simple, 40% medium, 20% complex — basado en perfil típico de migración Ab Initio bancaria.</div>
+              <div style={{ marginTop: 6 }}><span style={{ color: t.text || '#e2e8f0', fontWeight: 500 }}>Horas por job (Tradicional)</span>:</div>
+              <div style={{ paddingLeft: 16 }}>• Simple (Input→Reformat→Output): <span style={{ color: '#ef4444' }}>8h</span> — análisis del grafo, mapeo de campos, codificación manual, testing</div>
+              <div style={{ paddingLeft: 16 }}>• Medium (Joins+Rollups+Lookups): <span style={{ color: '#ef4444' }}>24h</span> — múltiples fuentes, lógica de negocio, validación cruzada</div>
+              <div style={{ paddingLeft: 16 }}>• Complex (Multi-stage+COBOL+Subgraphs): <span style={{ color: '#ef4444' }}>60h</span> — COBOL parsing, EBCDIC, subgrafos anidados, testing extensivo</div>
+              <div style={{ marginTop: 6 }}><span style={{ color: t.text || '#e2e8f0', fontWeight: 500 }}>Horas por job (BNX)</span>:</div>
+              <div style={{ paddingLeft: 16 }}>• Simple: <span style={{ color: '#22c55e' }}>0.5h</span> — compilación automática, revisión rápida del output</div>
+              <div style={{ paddingLeft: 16 }}>• Medium: <span style={{ color: '#22c55e' }}>1.5h</span> — compilación + ajustes manuales de join keys y reglas</div>
+              <div style={{ paddingLeft: 16 }}>• Complex: <span style={{ color: '#22c55e' }}>4h</span> — COBOL parsing automático + validación semántica + ajustes</div>
+              <div style={{ marginTop: 6 }}><span style={{ color: t.text || '#e2e8f0', fontWeight: 500 }}>Fórmula</span>: Total = (Simple × hrs) + (Medium × hrs) + (Complex × hrs)</div>
             </div>
           </div>
 
           <div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: t.text || '#e2e8f0', marginBottom: 6 }}>
-              Horas BNX Convertidor
+            <div style={{ fontSize: 15, fontWeight: 600, color: t.text || '#e2e8f0', marginBottom: 8 }}>
+              📋 Desglose por Fase
             </div>
-            <div style={{ fontSize: 13, color: t.muted || '#94a3b8', lineHeight: 1.7 }}>
-              Medidas directamente del tiempo real invertido en cada sesión de desarrollo.
-              Cada fase se completó en una sola sesión de trabajo con asistencia de IA generativa.
-              El tiempo incluye: diseño iterativo, implementación, corrección de errores en tiempo real,
-              validación y deploy.
-            </div>
-          </div>
-
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: t.text || '#e2e8f0', marginBottom: 6 }}>
-              Desglose por Fase
-            </div>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
-                <tr style={{ borderBottom: `1px solid ${t.border || '#334155'}` }}>
-                  <th style={{ textAlign: 'left', padding: '6px 8px', color: t.dim || '#64748b' }}>Fase</th>
-                  <th style={{ textAlign: 'left', padding: '6px 8px', color: t.dim || '#64748b' }}>Tradicional</th>
-                  <th style={{ textAlign: 'left', padding: '6px 8px', color: t.dim || '#64748b' }}>BNX</th>
-                  <th style={{ textAlign: 'left', padding: '6px 8px', color: t.dim || '#64748b' }}>Justificación</th>
+                <tr style={{ borderBottom: `2px solid ${t.border || '#334155'}` }}>
+                  <th style={{ textAlign: 'left', padding: '8px 10px', color: t.dim || '#64748b' }}>Fase</th>
+                  <th style={{ textAlign: 'center', padding: '8px 10px', color: '#ef4444' }}>Tradicional</th>
+                  <th style={{ textAlign: 'center', padding: '8px 10px', color: '#22c55e' }}>BNX</th>
+                  <th style={{ textAlign: 'left', padding: '8px 10px', color: t.dim || '#64748b' }}>Qué incluye</th>
                 </tr>
               </thead>
               <tbody>
                 {[
-                  { phase: 'Parser MP/XFR/DML', t: '40h', b: '3h', why: '3 parsers con regex, manejo de errores, tests unitarios' },
-                  { phase: 'DAG Builder', t: '24h', b: '2h', why: 'Topo sort, detección de ciclos, manejo de subgraphs' },
-                  { phase: 'Validador Semántico', t: '32h', b: '2h', why: 'Inferencia de columnas, propagación por DAG, detección de join keys' },
-                  { phase: 'Glue Codegen', t: '40h', b: '3h', why: 'Generación de código Spark válido para 7 tipos de nodo' },
-                  { phase: 'PySpark Codegen', t: '32h', b: '1h', why: 'Variante del Glue codegen con SparkSession' },
-                  { phase: 'COBOL Parser', t: '60h', b: '2h', why: 'Parsing de FILE SECTION, PROCEDURE DIVISION, PIC types' },
-                  { phase: 'DEDUP/NORM/LOOKUP', t: '24h', b: '1h', why: '3 nuevos tipos de nodo con Window, explode, broadcast' },
-                  { phase: 'Accuracy Engine', t: '16h', b: '1h', why: 'Métricas de cobertura por nodo, edge, transform, join' },
-                  { phase: 'React UI', t: '48h', b: '3h', why: 'DAG viewer interactivo, tema dual, panel de detalle, file upload' },
-                  { phase: 'Designer Visual', t: '60h', b: '3h', why: 'Editor drag & drop tipo Ab Initio, edición de nodos, code modal' },
-                  { phase: 'Connectors', t: '32h', b: '2h', why: 'SOURCE/SINK con S3, JDBC, Kafka en codegen Glue y PySpark' },
-                  { phase: 'API + Lambda', t: '24h', b: '2h', why: 'FastAPI + Lambda handler con multipart parsing' },
-                  { phase: 'Tests + Cleanup', t: '16h', b: '1h', why: '13 tests, eliminación de 20+ archivos legacy' },
-                  { phase: 'Deploy', t: '8h', b: '1h', why: 'Amplify + Lambda Function URL + CORS' },
+                  { phase: 'Parser MP/XFR/DML', t: '40h', b: '3h', why: '3 parsers con regex, manejo de errores, edge cases, tests unitarios por parser' },
+                  { phase: 'DAG Builder', t: '24h', b: '2h', why: 'Topological sort (Kahn\'s algorithm), detección de ciclos, manejo de subgraphs, parents/children' },
+                  { phase: 'Validador Semántico', t: '32h', b: '2h', why: 'Inferencia de columnas nodo por nodo, propagación a través del DAG, validación de join keys vs columnas disponibles' },
+                  { phase: 'Glue Codegen', t: '40h', b: '3h', why: 'Generación de código PySpark válido para 7 tipos de nodo (SOURCE, TRANSFORM, JOIN, DEDUP, NORMALIZE, LOOKUP, SINK) + S3/JDBC/Kafka' },
+                  { phase: 'PySpark Codegen', t: '32h', b: '1h', why: 'Variante sin GlueContext, usa SparkSession. Misma lógica, diferente boilerplate' },
+                  { phase: 'COBOL Parser', t: '60h', b: '2h', why: 'Parsing de FILE SECTION (FD + 05 levels), PROCEDURE DIVISION (PERFORM/IF/COMPUTE), PIC types, COMP-3, detección EBCDIC' },
+                  { phase: 'DEDUP/NORM/LOOKUP', t: '24h', b: '1h', why: 'Window functions para DEDUP, explode/split para NORMALIZE, broadcast join para LOOKUP' },
+                  { phase: 'Accuracy Engine', t: '16h', b: '1h', why: 'Métricas ponderadas: 30% nodos, 20% edges, 30% transforms, 20% joins. Detección de issues por nodo' },
+                  { phase: 'React UI + DAG Viewer', t: '48h', b: '3h', why: 'ReactFlow para grafos interactivos, tema día/noche, panel de detalle por nodo, file upload múltiple' },
+                  { phase: 'Designer Visual', t: '60h', b: '3h', why: 'Editor drag & drop, custom nodes con handles, edición de reglas por nodo, compilación en vivo, code modal' },
+                  { phase: 'Connectors S3/JDBC/Kafka', t: '32h', b: '2h', why: 'source_type/sink_type en XFR, codegen condicional para readStream (Kafka), jdbc options, parquet/csv/json' },
+                  { phase: 'API + Lambda', t: '24h', b: '2h', why: 'FastAPI con multipart upload, Lambda handler con cgi parsing, CORS, Function URL, /compile y /cobol endpoints' },
+                  { phase: 'Tests + Cleanup', t: '16h', b: '1h', why: '13 tests (parser, builder, validator), eliminación de 20+ archivos legacy duplicados' },
+                  { phase: 'Deploy', t: '8h', b: '1h', why: 'Amplify hosting (amplify.yml), Lambda zip deploy, Function URL config, CORS headers, env variables' },
                 ].map((r, i) => (
                   <tr key={i} style={{ borderBottom: `1px solid ${t.border || '#334155'}20` }}>
-                    <td style={{ padding: '6px 8px', color: t.text || '#e2e8f0' }}>{r.phase}</td>
-                    <td style={{ padding: '6px 8px', color: '#ef4444' }}>{r.t}</td>
-                    <td style={{ padding: '6px 8px', color: '#22c55e' }}>{r.b}</td>
-                    <td style={{ padding: '6px 8px', color: t.dim || '#64748b' }}>{r.why}</td>
+                    <td style={{ padding: '8px 10px', color: t.text || '#e2e8f0', fontWeight: 500 }}>{r.phase}</td>
+                    <td style={{ padding: '8px 10px', color: '#ef4444', textAlign: 'center', fontWeight: 600 }}>{r.t}</td>
+                    <td style={{ padding: '8px 10px', color: '#22c55e', textAlign: 'center', fontWeight: 600 }}>{r.b}</td>
+                    <td style={{ padding: '8px 10px', color: t.dim || '#64748b', fontSize: 12 }}>{r.why}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
 
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: t.text || '#e2e8f0', marginBottom: 6 }}>
-              Costos de Infraestructura
+          <div style={{ padding: 16, borderRadius: 8, background: (t.bg || '#0f1117') + '80', border: `1px solid ${t.border || '#334155'}30` }}>
+            <div style={{ fontSize: 15, fontWeight: 600, color: t.text || '#e2e8f0', marginBottom: 8 }}>
+              💰 Costos de Infraestructura
             </div>
-            <div style={{ fontSize: 13, color: t.muted || '#94a3b8', lineHeight: 1.7 }}>
-              <span style={{ fontWeight: 600 }}>Sandbox:</span> $0 — solo requiere Python y Node.js instalados localmente.
-              <br />
-              <span style={{ fontWeight: 600 }}>On-Premise:</span> $200-500/mes — basado en costo de servidor dedicado
-              (4 CPU, 8GB RAM) con Spark standalone. Incluye mantenimiento y SSL.
-              <br />
-              <span style={{ fontWeight: 600 }}>Cloud (AWS):</span> $5-20/mes — Lambda cobra por invocación (~$0.20 por 1M requests),
-              Amplify Hosting es gratuito en tier free (5GB/mes). S3 para datos es ~$0.023/GB.
-              Estimado para uso bajo-medio de un equipo de desarrollo.
+            <div style={{ fontSize: 14, color: t.muted || '#94a3b8', lineHeight: 1.8 }}>
+              <div><span style={{ fontWeight: 600, color: '#22c55e' }}>Sandbox ($0/mes)</span> — Python 3.11 + Node.js 18 instalados localmente. Sin costo. Para desarrollo y pruebas.</div>
+              <div style={{ marginTop: 6 }}><span style={{ fontWeight: 600, color: '#f59e0b' }}>On-Premise ($200-500/mes)</span> — Servidor Linux (4 CPU, 8GB RAM). Spark standalone o YARN. Incluye: hardware, electricidad, mantenimiento, SSL, firewall. Para equipos que no pueden usar cloud.</div>
+              <div style={{ marginTop: 6 }}><span style={{ fontWeight: 600, color: '#6366f1' }}>Cloud AWS ($5-20/mes)</span> — Desglose:</div>
+              <div style={{ paddingLeft: 16, fontSize: 13 }}>
+                <div>• Lambda: ~$0.20 por 1M invocaciones + $0.0000166/GB-segundo</div>
+                <div>• Amplify Hosting: gratis hasta 5GB/mes de transferencia</div>
+                <div>• S3: $0.023/GB almacenamiento + $0.0004/1K requests</div>
+                <div>• CloudWatch Logs: $0.50/GB ingestado</div>
+                <div>• Total estimado para uso bajo-medio: $5-20/mes</div>
+              </div>
             </div>
           </div>
+
         </div>
       </div>
     </div>
