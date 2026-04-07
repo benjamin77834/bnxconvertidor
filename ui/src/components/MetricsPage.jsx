@@ -153,7 +153,7 @@ function MigrationEstimator({ theme }) {
               { k: 'Horas totales', v: `${fmt(tradTotal)}h` },
               { k: 'Equipo', v: '10 devs senior' },
               { k: 'Duración', v: `~${tradMonths} meses` },
-              { k: 'Costo ($80/h)', v: `$${fmt(tradCost)} USD` },
+              { k: 'Costo ($30/h)', v: `$${fmt(tradCost)} USD` },
             ]
           },
           {
