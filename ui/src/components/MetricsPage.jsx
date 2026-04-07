@@ -152,12 +152,21 @@ function MigrationEstimator({ theme }) {
       <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
         {[
           {
-            label: 'Tradicional', color: '#ef4444',
+            label: 'Tradicional (Manual)', color: '#ef4444',
             items: [
               { k: 'Horas totales', v: `${fmt(tradTotal)}h` },
               { k: 'Equipo', v: '10 devs senior' },
               { k: 'Duración', v: `~${tradMonths} meses` },
               { k: 'Costo ($30/h)', v: `$${fmt(tradCost)} USD` },
+            ]
+          },
+          {
+            label: 'Ab Initio Cloud', color: '#f59e0b',
+            items: [
+              { k: 'Horas totales', v: `${fmt(abTotal)}h` },
+              { k: 'Equipo', v: '8 devs Ab Initio' },
+              { k: 'Duración', v: `~${abMonths} meses` },
+              { k: 'Costo ($30/h)', v: `$${fmt(abCost)} USD` },
             ]
           },
           {
@@ -198,6 +207,13 @@ function MigrationEstimator({ theme }) {
           <span style={{ fontSize: 12, color: t.muted || '#94a3b8', width: 80, textAlign: 'right' }}>{fmt(tradTotal)}h</span>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <span style={{ fontSize: 12, color: t.dim || '#64748b', width: 90 }}>Ab Initio Cloud</span>
+          <div style={{ flex: 1, height: 20, background: t.bg || '#0f1117', borderRadius: 4, overflow: 'hidden' }}>
+            <div style={{ width: `${(abTotal / barMax) * 100}%`, height: '100%', background: '#f59e0b', borderRadius: 4 }} />
+          </div>
+          <span style={{ fontSize: 12, color: t.muted || '#94a3b8', width: 80, textAlign: 'right' }}>{fmt(abTotal)}h</span>
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <span style={{ fontSize: 12, color: t.dim || '#64748b', width: 90 }}>BNX</span>
           <div style={{ flex: 1, height: 20, background: t.bg || '#0f1117', borderRadius: 4, overflow: 'hidden' }}>
             <div style={{ width: `${(bnxTotal / barMax) * 100}%`, height: '100%', background: '#22c55e', borderRadius: 4 }} />
@@ -213,19 +229,19 @@ function MigrationEstimator({ theme }) {
       }}>
         <div>
           <div style={{ fontSize: 28, fontWeight: 700, color: '#22c55e' }}>${fmt(tradCost - bnxCost)}</div>
-          <div style={{ fontSize: 12, color: t.dim || '#64748b' }}>USD ahorrados</div>
+          <div style={{ fontSize: 12, color: t.dim || '#64748b' }}>USD ahorrados vs Tradicional</div>
         </div>
         <div>
-          <div style={{ fontSize: 28, fontWeight: 700, color: '#f59e0b' }}>{fmt(tradTotal - bnxTotal)}h</div>
-          <div style={{ fontSize: 12, color: t.dim || '#64748b' }}>horas ahorradas</div>
+          <div style={{ fontSize: 28, fontWeight: 700, color: '#f59e0b' }}>${fmt(abCost - bnxCost)}</div>
+          <div style={{ fontSize: 12, color: t.dim || '#64748b' }}>USD ahorrados vs Ab Initio Cloud</div>
         </div>
         <div>
           <div style={{ fontSize: 28, fontWeight: 700, color: '#6366f1' }}>{Math.round(tradTotal / bnxTotal)}x</div>
-          <div style={{ fontSize: 12, color: t.dim || '#64748b' }}>más rápido</div>
+          <div style={{ fontSize: 12, color: t.dim || '#64748b' }}>más rápido vs Tradicional</div>
         </div>
         <div>
-          <div style={{ fontSize: 28, fontWeight: 700, color: '#ec4899' }}>{tradMonths - bnxMonths} meses</div>
-          <div style={{ fontSize: 12, color: t.dim || '#64748b' }}>de calendario ahorrados</div>
+          <div style={{ fontSize: 28, fontWeight: 700, color: '#ec4899' }}>{Math.round(abTotal / bnxTotal)}x</div>
+          <div style={{ fontSize: 12, color: t.dim || '#64748b' }}>más rápido vs Ab Initio Cloud</div>
         </div>
       </div>
 
