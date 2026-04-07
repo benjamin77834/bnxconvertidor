@@ -291,7 +291,7 @@ function MigrationEstimator({ theme }) {
                 <span style={{ color: '#22c55e' }}>BNX</span> = ({fmt(simple)} × 0.5h) + ({fmt(medium)} × 1.5h) + ({fmt(complex)} × 4h) = <span style={{ color: '#22c55e', fontWeight: 600 }}>{fmt(bnxTotal)}h</span>
               </div>
               <div style={{ marginTop: 4 }}>
-                <span style={{ color: '#6366f1' }}>Costo</span> = Total Horas × $80 USD/h (tarifa dev senior LATAM)
+                <span style={{ color: '#6366f1' }}>Costo</span> = Total Horas × $30 USD/h (tarifa dev senior LATAM)
               </div>
               <div>
                 <span style={{ color: '#6366f1' }}>Duración</span> = Total Horas ÷ (Equipo × 8h × 22 días/mes)
@@ -455,14 +455,14 @@ export default function MetricsPage({ theme }) {
               { k: 'Horas totales', v: '364h' },
               { k: 'Días laborales', v: '~45 días' },
               { k: 'Semanas', v: '~9 semanas' },
-              { k: 'Costo ($80/h)', v: '$29,120 USD' },
+              { k: 'Costo ($30/h)', v: '$13,680 USD' },
             ], color: '#ef4444' },
             { label: 'Con BNX Convertidor', items: [
               { k: 'Personas', v: '1 dev' },
-              { k: 'Horas totales', v: '22h' },
+              { k: 'Horas totales', v: '27h' },
               { k: 'Días laborales', v: '~3 días' },
               { k: 'Semanas', v: '<1 semana' },
-              { k: 'Costo ($80/h)', v: '$1,760 USD' },
+              { k: 'Costo ($30/h)', v: '$810 USD' },
             ], color: '#22c55e' },
           ].map(col => (
             <div key={col.label} style={{
@@ -494,11 +494,11 @@ export default function MetricsPage({ theme }) {
           </div>
           <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
             <div>
-              <div style={{ fontSize: 28, fontWeight: 700, color: '#22c55e' }}>$27,360</div>
+              <div style={{ fontSize: 28, fontWeight: 700, color: '#22c55e' }}>$12,870</div>
               <div style={{ fontSize: 12, color: t.dim || '#64748b' }}>USD ahorrados</div>
             </div>
             <div>
-              <div style={{ fontSize: 28, fontWeight: 700, color: '#f59e0b' }}>342h</div>
+              <div style={{ fontSize: 28, fontWeight: 700, color: '#f59e0b' }}>429h</div>
               <div style={{ fontSize: 12, color: t.dim || '#64748b' }}>horas ahorradas</div>
             </div>
             <div>
@@ -562,7 +562,7 @@ export default function MetricsPage({ theme }) {
               <div><span style={{ color: t.text || '#e2e8f0', fontWeight: 500 }}>Ahorro en horas</span> = Horas Tradicionales - Horas BNX</div>
               <div><span style={{ color: t.text || '#e2e8f0', fontWeight: 500 }}>Ahorro %</span> = (1 - Horas BNX / Horas Tradicionales) × 100</div>
               <div><span style={{ color: t.text || '#e2e8f0', fontWeight: 500 }}>Velocidad</span> = Horas Tradicionales / Horas BNX</div>
-              <div><span style={{ color: t.text || '#e2e8f0', fontWeight: 500 }}>Costo</span> = Horas × $80 USD/h (tarifa promedio dev senior LATAM)</div>
+              <div><span style={{ color: t.text || '#e2e8f0', fontWeight: 500 }}>Costo</span> = Horas × $30 USD/h (tarifa promedio dev senior LATAM)</div>
             </div>
           </div>
 
