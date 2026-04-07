@@ -100,7 +100,7 @@ function MigrationEstimator({ theme }) {
   const tradTotal = simple * HOURS.traditional.simple + medium * HOURS.traditional.medium + complex * HOURS.traditional.complex
   const bnxTotal = simple * HOURS.bnx.simple + medium * HOURS.bnx.medium + complex * HOURS.bnx.complex
 
-  const RATE = 80 // USD/hr
+  const RATE = 30 // USD/hr
   const tradCost = tradTotal * RATE
   const bnxCost = bnxTotal * RATE
 
