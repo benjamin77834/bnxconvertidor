@@ -94,18 +94,22 @@ function MigrationEstimator({ theme }) {
   // Hours per job by method
   const HOURS = {
     traditional: { simple: 8, medium: 24, complex: 60 },
+    abinitio:    { simple: 4, medium: 12, complex: 30 },
     bnx:         { simple: 0.5, medium: 1.5, complex: 4 },
   }
 
   const tradTotal = simple * HOURS.traditional.simple + medium * HOURS.traditional.medium + complex * HOURS.traditional.complex
+  const abTotal = simple * HOURS.abinitio.simple + medium * HOURS.abinitio.medium + complex * HOURS.abinitio.complex
   const bnxTotal = simple * HOURS.bnx.simple + medium * HOURS.bnx.medium + complex * HOURS.bnx.complex
 
   const RATE = 30 // USD/hr
   const tradCost = tradTotal * RATE
+  const abCost = abTotal * RATE
   const bnxCost = bnxTotal * RATE
 
   // Team size: 8h/day, 22 days/month
   const tradMonths = Math.round(tradTotal / (10 * 8 * 22)) // 10 devs
+  const abMonths = Math.round(abTotal / (8 * 8 * 22))      // 8 devs Ab Initio
   const bnxMonths = Math.round(bnxTotal / (3 * 8 * 22))    // 3 devs
 
   const fmt = (n) => n.toLocaleString('en-US')
