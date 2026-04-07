@@ -410,6 +410,30 @@ export default function App() {
                   </div>
                 ))}
               </div>
+
+              {/* Accuracy explanation */}
+              <div style={{
+                marginTop: 4, padding: 10, borderRadius: 6,
+                background: t.bg, border: `1px solid ${t.border}`,
+                fontSize: 12, color: t.dim, lineHeight: 1.6,
+              }}>
+                <div style={{ fontWeight: 600, color: t.muted, marginBottom: 4 }}>¿Cómo se calcula?</div>
+                <div>Mide qué tan completa es la traducción del grafo al código:</div>
+                <div style={{ marginTop: 4 }}>
+                  <div>• <span style={{ color: '#22c55e' }}>Nodes</span> — nodos con padre válido o SOURCE</div>
+                  <div>• <span style={{ color: '#22c55e' }}>Edges</span> — conexiones donde ambos nodos existen</div>
+                  <div>• <span style={{ color: '#6366f1' }}>Transforms</span> — nodos con regla XFR (select/where/group_by)</div>
+                  <div>• <span style={{ color: '#f59e0b' }}>Joins</span> — nodos JOIN con join_key configurada</div>
+                </div>
+                <div style={{ marginTop: 6, fontFamily: 'monospace', fontSize: 11, color: t.muted }}>
+                  Overall = Nodes×30% + Edges×20% + Transforms×30% + Joins×20%
+                </div>
+                <div style={{ marginTop: 4 }}>
+                  <span style={{ color: '#22c55e' }}>90%+</span> producción ·{' '}
+                  <span style={{ color: '#f59e0b' }}>70-89%</span> ajustes ·{' '}
+                  <span style={{ color: '#ef4444' }}>&lt;70%</span> faltan reglas
+                </div>
+              </div>
             </div>
           )}
         </aside>
