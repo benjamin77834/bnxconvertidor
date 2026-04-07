@@ -260,11 +260,12 @@ function MigrationEstimator({ theme }) {
             </div>
             <div style={{ marginTop: 6 }}>El proceso de migración Ab Initio Cloud incluye:</div>
             <div style={{ paddingLeft: 12 }}>
-              <div>1. <span style={{ color: t.text || '#e2e8f0' }}>Re-configurar el Co&gt;Operating System</span> para cloud (EMR/EC2)</div>
+              <div>1. <span style={{ color: t.text || '#e2e8f0' }}>Re-configurar el Co&gt;Operating System</span> para Kubernetes (EKS)</div>
               <div>2. <span style={{ color: t.text || '#e2e8f0' }}>Adaptar paths de archivos</span> de filesystem local a S3</div>
-              <div>3. <span style={{ color: t.text || '#e2e8f0' }}>Ajustar layouts de paralelismo</span> para instancias cloud</div>
+              <div>3. <span style={{ color: t.text || '#e2e8f0' }}>Ajustar layouts de paralelismo</span> para pods de Kubernetes</div>
               <div>4. <span style={{ color: t.text || '#e2e8f0' }}>Migrar conexiones de DB</span> de on-premise a RDS/Redshift</div>
-              <div>5. <span style={{ color: t.text || '#e2e8f0' }}>Re-testing completo</span> de cada grafo en el nuevo ambiente</div>
+              <div>5. <span style={{ color: t.text || '#e2e8f0' }}>Containerizar Ab Initio</span> — empaquetar el runtime en Docker images para EKS</div>
+              <div>6. <span style={{ color: t.text || '#e2e8f0' }}>Re-testing completo</span> de cada grafo en el nuevo ambiente</div>
             </div>
             <div style={{ marginTop: 6 }}>Horas por job (Ab Initio Cloud):</div>
             <div style={{ paddingLeft: 12 }}>
