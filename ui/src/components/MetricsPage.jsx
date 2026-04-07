@@ -248,6 +248,38 @@ function MigrationEstimator({ theme }) {
       {/* Detailed explanation */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 4 }}>
         <div style={{ padding: 14, borderRadius: 8, background: (t.bg || '#0f1117') + '80', border: `1px solid ${t.border || '#334155'}30` }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: '#f59e0b', marginBottom: 8 }}>
+            🟡 ¿Por qué 8 desarrolladores con Ab Initio Cloud?
+          </div>
+          <div style={{ fontSize: 13, color: t.muted || '#94a3b8', lineHeight: 1.8 }}>
+            <div>Migrar Ab Initio de on-premise a cloud (re-platforming) mantiene la tecnología pero requiere adaptación. Con 8 desarrolladores certificados Ab Initio:</div>
+            <div style={{ marginTop: 6 }}>
+              <div>• <span style={{ color: t.text || '#e2e8f0' }}>Capacidad mensual</span>: 8 devs × 8h × 22 días = <span style={{ color: '#f59e0b', fontWeight: 600 }}>1,408 horas/mes</span></div>
+              <div>• <span style={{ color: t.text || '#e2e8f0' }}>Total horas</span>: {fmt(abTotal)}h</div>
+              <div>• <span style={{ color: t.text || '#e2e8f0' }}>Duración</span>: {fmt(abTotal)}h ÷ 1,408 h/mes = <span style={{ color: '#f59e0b', fontWeight: 600 }}>~{abMonths} meses</span></div>
+            </div>
+            <div style={{ marginTop: 6 }}>El proceso de migración Ab Initio Cloud incluye:</div>
+            <div style={{ paddingLeft: 12 }}>
+              <div>1. <span style={{ color: t.text || '#e2e8f0' }}>Re-configurar el Co&gt;Operating System</span> para cloud (EMR/EC2)</div>
+              <div>2. <span style={{ color: t.text || '#e2e8f0' }}>Adaptar paths de archivos</span> de filesystem local a S3</div>
+              <div>3. <span style={{ color: t.text || '#e2e8f0' }}>Ajustar layouts de paralelismo</span> para instancias cloud</div>
+              <div>4. <span style={{ color: t.text || '#e2e8f0' }}>Migrar conexiones de DB</span> de on-premise a RDS/Redshift</div>
+              <div>5. <span style={{ color: t.text || '#e2e8f0' }}>Re-testing completo</span> de cada grafo en el nuevo ambiente</div>
+            </div>
+            <div style={{ marginTop: 6 }}>Horas por job (Ab Initio Cloud):</div>
+            <div style={{ paddingLeft: 12 }}>
+              <div>• Simple: <span style={{ color: '#f59e0b', fontWeight: 600 }}>4h</span> — cambio de paths, ajuste de layout, test básico</div>
+              <div>• Medium: <span style={{ color: '#f59e0b', fontWeight: 600 }}>12h</span> — adaptar conexiones DB, ajustar joins, re-test con datos</div>
+              <div>• Complex: <span style={{ color: '#f59e0b', fontWeight: 600 }}>30h</span> — re-configurar subgraphs, paralelismo, COBOL copybooks, test extensivo</div>
+            </div>
+            <div style={{ marginTop: 6, fontStyle: 'italic', color: t.dim || '#64748b' }}>
+              Nota: Ab Initio Cloud requiere licencias ($$$) + desarrolladores certificados Ab Initio (escasos y caros).
+              El costo de licencia no está incluido en el cálculo de horas-hombre.
+            </div>
+          </div>
+        </div>
+
+        <div style={{ padding: 14, borderRadius: 8, background: (t.bg || '#0f1117') + '80', border: `1px solid ${t.border || '#334155'}30` }}>
           <div style={{ fontSize: 14, fontWeight: 600, color: '#ef4444', marginBottom: 8 }}>
             🔴 ¿Por qué 10 desarrolladores en Tradicional?
           </div>
@@ -306,6 +338,9 @@ function MigrationEstimator({ theme }) {
               <div style={{ color: t.text || '#e2e8f0' }}>Total Horas = (Jobs Simple × Hrs/Job) + (Jobs Medium × Hrs/Job) + (Jobs Complex × Hrs/Job)</div>
               <div style={{ marginTop: 4 }}>
                 <span style={{ color: '#ef4444' }}>Tradicional</span> = ({fmt(simple)} × 8h) + ({fmt(medium)} × 24h) + ({fmt(complex)} × 60h) = <span style={{ color: '#ef4444', fontWeight: 600 }}>{fmt(tradTotal)}h</span>
+              </div>
+              <div>
+                <span style={{ color: '#f59e0b' }}>Ab Initio Cloud</span> = ({fmt(simple)} × 4h) + ({fmt(medium)} × 12h) + ({fmt(complex)} × 30h) = <span style={{ color: '#f59e0b', fontWeight: 600 }}>{fmt(abTotal)}h</span>
               </div>
               <div>
                 <span style={{ color: '#22c55e' }}>BNX</span> = ({fmt(simple)} × 0.5h) + ({fmt(medium)} × 1.5h) + ({fmt(complex)} × 4h) = <span style={{ color: '#22c55e', fontWeight: 600 }}>{fmt(bnxTotal)}h</span>
