@@ -225,12 +225,88 @@ function MigrationEstimator({ theme }) {
         </div>
       </div>
 
-      {/* Assumptions */}
-      <div style={{ fontSize: 11, color: t.dim || '#64748b', lineHeight: 1.6 }}>
-        Supuestos: distribución 40% simple / 40% medium / 20% complex basada en perfil típico de migración Ab Initio bancaria.
-        Horas tradicionales: simple 8h, medium 24h, complex 60h por job (incluye análisis, desarrollo, testing, deploy).
-        Horas BNX: simple 0.5h, medium 1.5h, complex 4h por job (compilación automática + validación + ajustes manuales).
-        Tarifa: $80 USD/h (dev senior LATAM). Equipo tradicional: 10 devs. Equipo BNX: 3 devs.
+      {/* Detailed explanation */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 4 }}>
+        <div style={{ padding: 14, borderRadius: 8, background: (t.bg || '#0f1117') + '80', border: `1px solid ${t.border || '#334155'}30` }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: '#ef4444', marginBottom: 8 }}>
+            🔴 ¿Por qué 10 desarrolladores en Tradicional?
+          </div>
+          <div style={{ fontSize: 13, color: t.muted || '#94a3b8', lineHeight: 1.8 }}>
+            <div>Un proyecto de migración de 40,000 jobs Ab Initio es un programa multi-año. Con 10 desarrolladores senior trabajando 8h/día, 22 días/mes:</div>
+            <div style={{ marginTop: 6 }}>
+              <div>• <span style={{ color: t.text || '#e2e8f0' }}>Capacidad mensual</span>: 10 devs × 8h × 22 días = <span style={{ color: '#ef4444', fontWeight: 600 }}>1,760 horas/mes</span></div>
+              <div>• <span style={{ color: t.text || '#e2e8f0' }}>Total horas</span>: {fmt(tradTotal)}h</div>
+              <div>• <span style={{ color: t.text || '#e2e8f0' }}>Duración</span>: {fmt(tradTotal)}h ÷ 1,760 h/mes = <span style={{ color: '#ef4444', fontWeight: 600 }}>~{tradMonths} meses</span></div>
+            </div>
+            <div style={{ marginTop: 6 }}>Cada desarrollador necesita:</div>
+            <div style={{ paddingLeft: 12 }}>
+              <div>1. Analizar el grafo Ab Initio original (entender la lógica)</div>
+              <div>2. Mapear campos y transformaciones manualmente</div>
+              <div>3. Escribir el código PySpark/Glue equivalente</div>
+              <div>4. Probar con datos de prueba y comparar resultados</div>
+              <div>5. Documentar y hacer code review</div>
+            </div>
+            <div style={{ marginTop: 6, fontStyle: 'italic', color: t.dim || '#64748b' }}>
+              Con menos de 10 devs el proyecto tomaría más de 4 años, lo cual no es viable para la mayoría de bancos.
+            </div>
+          </div>
+        </div>
+
+        <div style={{ padding: 14, borderRadius: 8, background: (t.bg || '#0f1117') + '80', border: `1px solid ${t.border || '#334155'}30` }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: '#22c55e', marginBottom: 8 }}>
+            🟢 ¿Por qué solo 3 desarrolladores con BNX?
+          </div>
+          <div style={{ fontSize: 13, color: t.muted || '#94a3b8', lineHeight: 1.8 }}>
+            <div>BNX Convertidor automatiza los pasos 2 y 3 del proceso tradicional. Con 3 desarrolladores:</div>
+            <div style={{ marginTop: 6 }}>
+              <div>• <span style={{ color: t.text || '#e2e8f0' }}>Capacidad mensual</span>: 3 devs × 8h × 22 días = <span style={{ color: '#22c55e', fontWeight: 600 }}>528 horas/mes</span></div>
+              <div>• <span style={{ color: t.text || '#e2e8f0' }}>Total horas</span>: {fmt(bnxTotal)}h</div>
+              <div>• <span style={{ color: t.text || '#e2e8f0' }}>Duración</span>: {fmt(bnxTotal)}h ÷ 528 h/mes = <span style={{ color: '#22c55e', fontWeight: 600 }}>~{bnxMonths} meses</span></div>
+            </div>
+            <div style={{ marginTop: 6 }}>El flujo con BNX es:</div>
+            <div style={{ paddingLeft: 12 }}>
+              <div>1. Cargar el grafo Ab Initio (.mp) en el convertidor</div>
+              <div>2. <span style={{ color: '#22c55e' }}>BNX genera automáticamente</span> el código PySpark/Glue</div>
+              <div>3. El desarrollador revisa, ajusta join keys y reglas específicas</div>
+              <div>4. El validador semántico detecta errores antes de ejecutar</div>
+              <div>5. Deploy directo a AWS</div>
+            </div>
+            <div style={{ marginTop: 6, fontStyle: 'italic', color: t.dim || '#64748b' }}>
+              Los 3 devs se enfocan en validación y ajustes, no en escribir código desde cero.
+            </div>
+          </div>
+        </div>
+
+        <div style={{ padding: 14, borderRadius: 8, background: (t.bg || '#0f1117') + '80', border: `1px solid ${t.border || '#334155'}30` }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: '#f59e0b', marginBottom: 8 }}>
+            🟡 Fórmula del Cálculo
+          </div>
+          <div style={{ fontSize: 13, color: t.muted || '#94a3b8', lineHeight: 1.8 }}>
+            <div style={{ fontFamily: 'monospace', padding: 10, background: (t.bg || '#0f1117'), borderRadius: 6, marginBottom: 8 }}>
+              <div style={{ color: t.text || '#e2e8f0' }}>Total Horas = (Jobs Simple × Hrs/Job) + (Jobs Medium × Hrs/Job) + (Jobs Complex × Hrs/Job)</div>
+              <div style={{ marginTop: 4 }}>
+                <span style={{ color: '#ef4444' }}>Tradicional</span> = ({fmt(simple)} × 8h) + ({fmt(medium)} × 24h) + ({fmt(complex)} × 60h) = <span style={{ color: '#ef4444', fontWeight: 600 }}>{fmt(tradTotal)}h</span>
+              </div>
+              <div>
+                <span style={{ color: '#22c55e' }}>BNX</span> = ({fmt(simple)} × 0.5h) + ({fmt(medium)} × 1.5h) + ({fmt(complex)} × 4h) = <span style={{ color: '#22c55e', fontWeight: 600 }}>{fmt(bnxTotal)}h</span>
+              </div>
+              <div style={{ marginTop: 4 }}>
+                <span style={{ color: '#6366f1' }}>Costo</span> = Total Horas × $80 USD/h (tarifa dev senior LATAM)
+              </div>
+              <div>
+                <span style={{ color: '#6366f1' }}>Duración</span> = Total Horas ÷ (Equipo × 8h × 22 días/mes)
+              </div>
+            </div>
+            <div>
+              <span style={{ color: t.text || '#e2e8f0', fontWeight: 500 }}>Distribución de complejidad</span>: basada en perfil típico de migración Ab Initio bancaria.
+              40% de los jobs son simples (Input→Reformat→Output), 40% son medium (Joins+Rollups), 20% son complex (Multi-stage+COBOL+Subgraphs).
+            </div>
+            <div style={{ marginTop: 6 }}>
+              <span style={{ color: t.text || '#e2e8f0', fontWeight: 500 }}>Horas por job</span>: estimadas con base en la complejidad del grafo.
+              Un job simple tiene 3-5 nodos, un medium tiene 10-20 nodos con joins, un complex tiene 30+ nodos con subgraphs y lógica COBOL.
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   )
