@@ -198,11 +198,13 @@ async def convert_cobol(
 async def convert_plan(
     plan: UploadFile = File(...),
     pset: Optional[UploadFile] = File(None),
+    xfr: Optional[UploadFile] = File(None),
     target: str = "glue",
 ):
     """Converts Ab Initio PLAN + PSET to .mp + .xfr, then compiles."""
     plan_path = _save_upload(plan)
     pset_path = _save_upload(pset) if pset and pset.filename else None
+    user_xfr_path = _save_upload(xfr) if xfr and xfr.filename else None
     mp_path = xfr_path = None
 
     try:
@@ -222,7 +224,12 @@ async def convert_plan(
 
         ast = parse_mp_ast(mp_path)
         dag = build_dag(ast)
+
+        # Merge: PLAN-generated XFR + user XFR (user wins)
         xfr_rules = parse_xfr(xfr_path)
+        if user_xfr_path:
+            user_rules = parse_xfr(user_xfr_path)
+            xfr_rules.update(user_rules)  # user rules override generated ones
 
         errors, warnings = validate(dag, xfr_rules)
 

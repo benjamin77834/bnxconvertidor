@@ -56,6 +56,8 @@ export default function App() {
   const planRef                 = useRef(null)
   const psetRef                 = useRef(null)
   const [psetFile, setPsetFile] = useState(null)
+  const [planXfrFile, setPlanXfrFile] = useState(null)
+  const planXfrRef              = useRef(null)
 
   const t = isDark ? dark : light
 
@@ -174,6 +176,7 @@ export default function App() {
     const form = new FormData()
     form.append('plan', planFile)
     if (psetFile) form.append('pset', psetFile)
+    if (planXfrFile) form.append('xfr', planXfrFile)
     form.append('target', target)
     try {
       const res = await fetch(COMPILE_URL.replace('/compile', '/plan'), { method: 'POST', body: form })
@@ -345,33 +348,44 @@ export default function App() {
           {/* Ab Initio PLAN/PSET upload */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <span style={{ fontSize: 14, color: t.muted, textTransform: 'uppercase', letterSpacing: 1 }}>Ab Initio PLAN</span>
-            <span style={{ fontSize: 12, color: t.dim }}>Sube .plan + .pset (opcional) para convertir orquestación</span>
+            <span style={{ fontSize: 12, color: t.dim }}>Sube los 3 archivos Ab Initio para máxima precisión</span>
             {psetFile && (
               <span style={{ fontSize: 11, color: '#22c55e' }}>✅ PSET: {psetFile.name}</span>
             )}
+            {planXfrFile && (
+              <span style={{ fontSize: 11, color: '#6366f1' }}>✅ XFR: {planXfrFile.name}</span>
+            )}
             <div style={{ display: 'flex', gap: 6 }}>
-              <button
-                style={{
-                  flex: 1, padding: '8px 12px', borderRadius: 8, cursor: 'pointer',
-                  background: t.card, border: `1px dashed ${t.border}`,
-                  color: t.muted, fontSize: 12,
-                }}
-                onClick={() => planRef.current.click()}
-              >📄 .plan</button>
-              <button
-                style={{
-                  flex: 1, padding: '8px 12px', borderRadius: 8, cursor: 'pointer',
-                  background: t.card, border: `1px dashed ${t.border}`,
-                  color: t.muted, fontSize: 12,
-                }}
-                onClick={() => psetRef.current.click()}
-              >⚙️ .pset</button>
+              <button style={{
+                flex: 1, padding: '8px 12px', borderRadius: 8, cursor: 'pointer',
+                background: t.card, border: `1px dashed ${t.border}`, color: t.muted, fontSize: 12,
+              }} onClick={() => planRef.current.click()}>📄 .plan</button>
+              <button style={{
+                flex: 1, padding: '8px 12px', borderRadius: 8, cursor: 'pointer',
+                background: t.card, border: `1px dashed ${t.border}`, color: t.muted, fontSize: 12,
+              }} onClick={() => psetRef.current.click()}>⚙️ .pset</button>
+              <button style={{
+                flex: 1, padding: '8px 12px', borderRadius: 8, cursor: 'pointer',
+                background: t.card, border: `1px dashed ${t.border}`, color: t.muted, fontSize: 12,
+              }} onClick={() => planXfrRef.current.click()}>🔄 .xfr</button>
+            </div>
+            <div style={{
+              fontSize: 11, color: t.dim, lineHeight: 1.5, padding: '6px 8px',
+              background: t.bg, borderRadius: 6, border: `1px solid ${t.border}`,
+            }}>
+              📄 <span style={{ color: t.muted }}>PLAN</span> = orquestación (qué grafos y en qué orden)<br/>
+              ⚙️ <span style={{ color: t.muted }}>PSET</span> = parámetros (paths S3, Kafka, DB)<br/>
+              🔄 <span style={{ color: t.muted }}>XFR</span> = lógica de negocio (select, where, joins)<br/>
+              <span style={{ color: '#22c55e' }}>Los 3 juntos = máxima precisión en la conversión</span>
             </div>
             <input ref={planRef} type="file" accept=".plan" hidden
               onChange={(e) => { if (e.target.files[0]) compilePlan(e.target.files[0], psetFile); e.target.value = '' }}
             />
             <input ref={psetRef} type="file" accept=".pset" hidden
               onChange={(e) => { if (e.target.files[0]) { setPsetFile(e.target.files[0]) }; e.target.value = '' }}
+            />
+            <input ref={planXfrRef} type="file" accept=".xfr" hidden
+              onChange={(e) => { if (e.target.files[0]) { setPlanXfrFile(e.target.files[0]) }; e.target.value = '' }}
             />
           </div>
 

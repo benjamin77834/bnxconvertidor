@@ -20,6 +20,7 @@ from src.validator.semantic import validate
 from src.codegen.glue_codegen import generate_glue
 from src.codegen.spark_codegen import generate_spark
 from src.cobol_parser import parse_cobol, cobol_to_graph
+from src.plan_parser import parse_plan, parse_pset, plan_to_graph
 from src.accuracy import compute_accuracy
 
 
@@ -108,6 +109,40 @@ def handler(event, context):
     try:
         files, fields = _parse_multipart(event)
         target = fields.get("target", "glue")
+
+        # --- /plan endpoint ---
+        if "/plan" in path:
+            if "plan" not in files:
+                return _response(400, {"error": "plan file is required"})
+
+            plan_path = _save_bytes(files["plan"], ".plan")
+            pset_path = _save_bytes(files["pset"], ".pset") if "pset" in files else None
+            user_xfr_path = _save_bytes(files["xfr"], ".xfr") if "xfr" in files else None
+            mp_path = xfr_path = None
+            try:
+                parsed_plan = parse_plan(plan_path)
+                parsed_pset = parse_pset(pset_path) if pset_path else {}
+                graph = plan_to_graph(parsed_plan, parsed_pset)
+
+                mp_path = _save_bytes(graph["mp"], ".mp")
+                xfr_path = _save_bytes(graph["xfr"], ".xfr")
+
+                ast = parse_mp_ast(mp_path)
+                dag = build_dag(ast)
+                xfr_rules = parse_xfr(xfr_path)
+                if user_xfr_path:
+                    user_rules = parse_xfr(user_xfr_path)
+                    xfr_rules.update(user_rules)
+
+                result = _build_response(dag, ast, xfr_rules, {}, target)
+                result["generated_mp"] = graph["mp"]
+                result["generated_xfr"] = graph["xfr"]
+                result["plan_name"] = parsed_plan.get("name", "")
+                return _response(200, result)
+            finally:
+                for p in [plan_path, pset_path, user_xfr_path, mp_path, xfr_path]:
+                    if p and os.path.exists(p):
+                        os.unlink(p)
 
         # --- /cobol endpoint ---
         if "/cobol" in path:

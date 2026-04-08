@@ -1,0 +1,50 @@
+# XFR rules for Credit Card PLAN
+# Defines business logic for each graph in the pipeline
+
+clean_transactions:
+  select tx_id, card_id, merchant_id, amount, currency, tx_type, tx_date, status
+  where amount != 0 AND status = 'settled'
+
+clean_cardholders:
+  select card_id, customer_id, name, email, segment, risk_level, credit_limit
+  where card_id IS NOT NULL
+
+dedup_transactions:
+  dedup_keys tx_id
+  order_by tx_date
+
+enrich_tx_cardholder:
+  join_key card_id
+  join_type inner
+
+enrich_tx_merchant:
+  join_key merchant_id
+  join_type left
+
+enrich_tx_fx:
+  join_key currency
+  join_type left
+
+enrich_tx_limits:
+  join_key card_id
+  join_type left
+
+agg_daily_spend:
+  group_by customer_id, tx_date
+  select SUM(amount) as daily_total, COUNT(tx_id) as tx_count
+
+agg_merchant_volume:
+  group_by merchant_id
+  select SUM(amount) as merchant_total, COUNT(tx_id) as merchant_tx_count
+
+risk_overlimit:
+  select *
+  where daily_total > credit_limit
+
+fraud_detection:
+  select *
+  where amount > 10000 OR (tx_count > 20 AND daily_total > 50000)
+
+aml_screening:
+  select *
+  where daily_total > 100000 AND risk_level = 'H'
