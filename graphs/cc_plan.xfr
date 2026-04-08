@@ -1,0 +1,76 @@
+# Auto-generated from Ab Initio PLAN + PSET
+
+ingest_transactions:
+  source_type s3
+  path s3://bank-cc-datalake/raw/ingest_transactions
+  format parquet
+
+ingest_cardholders:
+  source_type s3
+  path s3://bank-cc-datalake/raw/ingest_cardholders
+  format parquet
+
+ingest_merchants:
+  source_type s3
+  path s3://bank-cc-datalake/raw/ingest_merchants
+  format parquet
+
+ingest_fx_rates:
+  source_type s3
+  path s3://bank-cc-datalake/raw/ingest_fx_rates
+  format parquet
+
+ingest_limits:
+  source_type s3
+  path s3://bank-cc-datalake/raw/ingest_limits
+  format parquet
+
+dedup_transactions:
+  dedup_keys tx_id
+  order_by tx_date
+
+enrich_tx_cardholder:
+  join_key customer_id
+  join_type left
+
+enrich_tx_merchant:
+  join_key customer_id
+  join_type left
+
+enrich_tx_fx:
+  join_key customer_id
+  join_type left
+
+enrich_tx_limits:
+  join_key customer_id
+  join_type left
+
+report_daily_summary:
+  sink_type s3
+  path s3://bank-cc-datalake/curated/report_daily_summary
+  format parquet
+  mode overwrite
+
+report_fraud_alerts:
+  sink_type s3
+  path s3://bank-cc-datalake/curated/report_fraud_alerts
+  format parquet
+  mode overwrite
+
+report_regulatory:
+  sink_type s3
+  path s3://bank-cc-datalake/curated/report_regulatory
+  format parquet
+  mode overwrite
+
+report_cardholder_statements:
+  sink_type s3
+  path s3://bank-cc-datalake/curated/report_cardholder_statements
+  format parquet
+  mode overwrite
+
+notify_completion:
+  sink_type s3
+  path s3://bank-cc-datalake/curated/notify_completion
+  format parquet
+  mode overwrite
