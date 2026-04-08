@@ -55,6 +55,7 @@ export default function App() {
   const cobolRef                = useRef(null)
   const planRef                 = useRef(null)
   const psetRef                 = useRef(null)
+  const [psetFile, setPsetFile] = useState(null)
 
   const t = isDark ? dark : light
 
@@ -345,6 +346,9 @@ export default function App() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <span style={{ fontSize: 14, color: t.muted, textTransform: 'uppercase', letterSpacing: 1 }}>Ab Initio PLAN</span>
             <span style={{ fontSize: 12, color: t.dim }}>Sube .plan + .pset (opcional) para convertir orquestación</span>
+            {psetFile && (
+              <span style={{ fontSize: 11, color: '#22c55e' }}>✅ PSET: {psetFile.name}</span>
+            )}
             <div style={{ display: 'flex', gap: 6 }}>
               <button
                 style={{
@@ -364,10 +368,10 @@ export default function App() {
               >⚙️ .pset</button>
             </div>
             <input ref={planRef} type="file" accept=".plan" hidden
-              onChange={(e) => { if (e.target.files[0]) compilePlan(e.target.files[0], null); e.target.value = '' }}
+              onChange={(e) => { if (e.target.files[0]) compilePlan(e.target.files[0], psetFile); e.target.value = '' }}
             />
             <input ref={psetRef} type="file" accept=".pset" hidden
-              onChange={(e) => { e.target.value = '' }}
+              onChange={(e) => { if (e.target.files[0]) { setPsetFile(e.target.files[0]) }; e.target.value = '' }}
             />
           </div>
 
