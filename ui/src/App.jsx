@@ -53,6 +53,8 @@ export default function App() {
   const [page, setPage]         = useState('compiler')
   const dagRef                  = useRef(null)
   const cobolRef                = useRef(null)
+  const planRef                 = useRef(null)
+  const psetRef                 = useRef(null)
 
   const t = isDark ? dark : light
 
@@ -158,6 +160,22 @@ export default function App() {
     form.append('target', target)
     try {
       const res = await fetch(COMPILE_URL.replace('/compile', '/cobol'), { method: 'POST', body: form })
+      const data = await res.json()
+      setResult(data)
+      if (data.code) setCodeOpen(true)
+    } catch (e) {
+      setResult({ errors: [`Network error: ${e.message}`], warnings: [], nodes: [], edges: [] })
+    } finally { setLoading(false) }
+  }
+
+  const compilePlan = async (planFile, psetFile) => {
+    setLoading(true)
+    const form = new FormData()
+    form.append('plan', planFile)
+    if (psetFile) form.append('pset', psetFile)
+    form.append('target', target)
+    try {
+      const res = await fetch(COMPILE_URL.replace('/compile', '/plan'), { method: 'POST', body: form })
       const data = await res.json()
       setResult(data)
       if (data.code) setCodeOpen(true)
@@ -320,6 +338,36 @@ export default function App() {
             >📋 Upload .cbl file</button>
             <input ref={cobolRef} type="file" accept=".cbl,.cob,.cobol" hidden
               onChange={(e) => { if (e.target.files[0]) compileCobol(e.target.files[0]); e.target.value = '' }}
+            />
+          </div>
+
+          {/* Ab Initio PLAN/PSET upload */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <span style={{ fontSize: 14, color: t.muted, textTransform: 'uppercase', letterSpacing: 1 }}>Ab Initio PLAN</span>
+            <span style={{ fontSize: 12, color: t.dim }}>Sube .plan + .pset (opcional) para convertir orquestación</span>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button
+                style={{
+                  flex: 1, padding: '8px 12px', borderRadius: 8, cursor: 'pointer',
+                  background: t.card, border: `1px dashed ${t.border}`,
+                  color: t.muted, fontSize: 12,
+                }}
+                onClick={() => planRef.current.click()}
+              >📄 .plan</button>
+              <button
+                style={{
+                  flex: 1, padding: '8px 12px', borderRadius: 8, cursor: 'pointer',
+                  background: t.card, border: `1px dashed ${t.border}`,
+                  color: t.muted, fontSize: 12,
+                }}
+                onClick={() => psetRef.current.click()}
+              >⚙️ .pset</button>
+            </div>
+            <input ref={planRef} type="file" accept=".plan" hidden
+              onChange={(e) => { if (e.target.files[0]) compilePlan(e.target.files[0], null); e.target.value = '' }}
+            />
+            <input ref={psetRef} type="file" accept=".pset" hidden
+              onChange={(e) => { e.target.value = '' }}
             />
           </div>
 

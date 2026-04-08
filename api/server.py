@@ -18,6 +18,7 @@ from src.validator.semantic import validate
 from src.codegen.glue_codegen import generate_glue
 from src.codegen.spark_codegen import generate_spark
 from src.cobol_parser import parse_cobol, cobol_to_graph
+from src.plan_parser import parse_plan, parse_pset, plan_to_graph
 from src.accuracy import compute_accuracy
 
 app = FastAPI(title="BNX Compiler API")
@@ -190,4 +191,79 @@ async def convert_cobol(
     finally:
         for p in [cobol_path, mp_tmp.name, xfr_tmp.name, dml_tmp.name]:
             if p and os.path.exists(p):
+                os.unlink(p)
+
+
+@app.post("/plan")
+async def convert_plan(
+    plan: UploadFile = File(...),
+    pset: Optional[UploadFile] = File(None),
+    target: str = "glue",
+):
+    """Converts Ab Initio PLAN + PSET to .mp + .xfr, then compiles."""
+    plan_path = _save_upload(plan)
+    pset_path = _save_upload(pset) if pset and pset.filename else None
+    mp_path = xfr_path = None
+
+    try:
+        parsed_plan = parse_plan(plan_path)
+        parsed_pset = parse_pset(pset_path) if pset_path else {}
+        graph = plan_to_graph(parsed_plan, parsed_pset)
+
+        mp_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp", mode="w")
+        mp_path.write(graph["mp"])
+        mp_path.close()
+        mp_path = mp_path.name
+
+        xfr_path = tempfile.NamedTemporaryFile(delete=False, suffix=".xfr", mode="w")
+        xfr_path.write(graph["xfr"])
+        xfr_path.close()
+        xfr_path = xfr_path.name
+
+        ast = parse_mp_ast(mp_path)
+        dag = build_dag(ast)
+        xfr_rules = parse_xfr(xfr_path)
+
+        errors, warnings = validate(dag, xfr_rules)
+
+        code = None
+        if not errors:
+            out = tempfile.NamedTemporaryFile(delete=False, suffix=".py")
+            out.close()
+            if target == "spark":
+                generate_spark(dag, out.name, xfr_rules)
+            else:
+                generate_glue(dag, out.name, xfr_rules)
+            with open(out.name) as f:
+                code = f.read()
+            os.unlink(out.name)
+
+        acc = compute_accuracy(dag, xfr_rules)
+
+        nodes = []
+        for node in dag.execution_order:
+            node_rule = xfr_rules.get(node.id.lower()) or xfr_rules.get(node.name.lower()) or {}
+            sg = next((sg for sg, ids in ast["subgraphs"].items() if node.id in ids), None)
+            nodes.append({
+                "id": node.id, "name": node.name, "type": node.type.upper(),
+                "subgraph": sg, "parents": node.parents, "children": node.children,
+                "rule": node_rule,
+            })
+
+        edges = [{"from": e["from"], "to": e["to"]} for e in ast["edges"]]
+
+        return {
+            "nodes": nodes, "edges": edges,
+            "subgraphs": list(ast["subgraphs"].keys()),
+            "errors": errors, "warnings": warnings,
+            "code": code, "accuracy": acc,
+            "generated_mp": graph["mp"],
+            "generated_xfr": graph["xfr"],
+            "plan_name": parsed_plan["name"],
+            "pset_params": graph.get("pset", {}),
+        }
+
+    finally:
+        for p in [plan_path, pset_path, mp_path, xfr_path]:
+            if p and isinstance(p, str) and os.path.exists(p):
                 os.unlink(p)

@@ -1,0 +1,59 @@
+# Ab Initio PSET file - Parameter Set
+# Runtime parameters for the daily banking batch
+
+# Environment
+ENV_NAME=PRODUCTION
+REGION=MX
+DATA_CENTER=DC1
+
+# Paths
+INPUT_BASE=/data/input
+OUTPUT_BASE=/data/output
+TEMP_BASE=/data/temp
+LOG_BASE=/logs
+
+# S3 paths (for cloud migration)
+S3_INPUT=s3://bank-datalake/raw
+S3_OUTPUT=s3://bank-datalake/curated
+S3_ARCHIVE=s3://bank-datalake/archive
+
+# Database connections
+DB_CORE_HOST=core-db.bank.internal
+DB_CORE_PORT=5432
+DB_CORE_NAME=core_banking
+DB_CORE_USER=batch_user
+
+DB_DW_HOST=dw-db.bank.internal
+DB_DW_PORT=5439
+DB_DW_NAME=datawarehouse
+DB_DW_USER=etl_user
+
+# Kafka
+KAFKA_BROKERS=kafka1:9092,kafka2:9092,kafka3:9092
+KAFKA_TOPIC_EVENTS=banking.events
+KAFKA_TOPIC_ALERTS=banking.alerts
+KAFKA_GROUP_ID=daily_batch
+
+# Processing
+PARALLELISM=8
+MAX_MEMORY=16G
+BATCH_DATE=${CURRENT_DATE}
+LOOKBACK_DAYS=1
+
+# Thresholds
+LARGE_TX_THRESHOLD=50000
+AML_SCORE_THRESHOLD=0.8
+RISK_HIGH_THRESHOLD=0.7
+MAX_RETRY=3
+
+# File formats
+INPUT_FORMAT=EBCDIC
+OUTPUT_FORMAT=PARQUET
+COMPRESSION=SNAPPY
+PARTITION_BY=batch_date
+
+# Regulatory
+CNBV_REPORT_PATH=/reports/cnbv
+BANXICO_REPORT_PATH=/reports/banxico
+REPORT_FORMAT=CSV
+REPORT_ENCODING=UTF-8

@@ -1,0 +1,141 @@
+# Ab Initio PLAN file - Daily Banking Batch
+# Defines execution order and dependencies between graphs
+
+PLAN daily_banking_batch
+VERSION 2.1
+
+# Phase 1: Ingestion
+GRAPH ingest_customers
+  MP: /graphs/ingest/customers.mp
+  XFR: /graphs/ingest/customers.xfr
+  DML: /dml/customers.dml
+  SCHEDULE: 00:00
+  PRIORITY: HIGH
+
+GRAPH ingest_transactions
+  MP: /graphs/ingest/transactions.mp
+  XFR: /graphs/ingest/transactions.xfr
+  DML: /dml/transactions.dml
+  SCHEDULE: 00:00
+  PRIORITY: HIGH
+
+GRAPH ingest_accounts
+  MP: /graphs/ingest/accounts.mp
+  XFR: /graphs/ingest/accounts.xfr
+  DML: /dml/accounts.dml
+  SCHEDULE: 00:00
+  PRIORITY: HIGH
+
+GRAPH ingest_cards
+  MP: /graphs/ingest/cards.mp
+  XFR: /graphs/ingest/cards.xfr
+  DML: /dml/cards.dml
+  SCHEDULE: 00:15
+  PRIORITY: MEDIUM
+
+GRAPH ingest_fx_rates
+  MP: /graphs/ingest/fx_rates.mp
+  DML: /dml/fx_rates.dml
+  SCHEDULE: 00:15
+  PRIORITY: MEDIUM
+
+# Phase 2: Clean & Validate
+GRAPH clean_customers
+  MP: /graphs/clean/customers.mp
+  XFR: /graphs/clean/customers.xfr
+  DEPENDS: ingest_customers
+  PRIORITY: HIGH
+
+GRAPH clean_transactions
+  MP: /graphs/clean/transactions.mp
+  XFR: /graphs/clean/transactions.xfr
+  DEPENDS: ingest_transactions
+  PRIORITY: HIGH
+
+GRAPH clean_accounts
+  MP: /graphs/clean/accounts.mp
+  XFR: /graphs/clean/accounts.xfr
+  DEPENDS: ingest_accounts
+  PRIORITY: HIGH
+
+GRAPH dedup_transactions
+  MP: /graphs/clean/dedup_tx.mp
+  XFR: /graphs/clean/dedup_tx.xfr
+  DEPENDS: clean_transactions
+  PRIORITY: HIGH
+
+# Phase 3: Enrich & Join
+GRAPH enrich_tx_with_customer
+  MP: /graphs/enrich/tx_customer.mp
+  XFR: /graphs/enrich/tx_customer.xfr
+  DEPENDS: dedup_transactions, clean_customers
+  PRIORITY: HIGH
+
+GRAPH enrich_tx_with_account
+  MP: /graphs/enrich/tx_account.mp
+  XFR: /graphs/enrich/tx_account.xfr
+  DEPENDS: enrich_tx_with_customer, clean_accounts
+  PRIORITY: HIGH
+
+GRAPH enrich_tx_with_fx
+  MP: /graphs/enrich/tx_fx.mp
+  XFR: /graphs/enrich/tx_fx.xfr
+  DEPENDS: enrich_tx_with_account, ingest_fx_rates
+  PRIORITY: MEDIUM
+
+# Phase 4: Aggregation
+GRAPH agg_daily_totals
+  MP: /graphs/agg/daily_totals.mp
+  XFR: /graphs/agg/daily_totals.xfr
+  DEPENDS: enrich_tx_with_fx
+  PRIORITY: HIGH
+
+GRAPH agg_customer_balance
+  MP: /graphs/agg/customer_balance.mp
+  XFR: /graphs/agg/customer_balance.xfr
+  DEPENDS: enrich_tx_with_fx
+  PRIORITY: HIGH
+
+GRAPH agg_product_revenue
+  MP: /graphs/agg/product_revenue.mp
+  XFR: /graphs/agg/product_revenue.xfr
+  DEPENDS: enrich_tx_with_fx
+  PRIORITY: MEDIUM
+
+# Phase 5: Risk & AML
+GRAPH risk_scoring
+  MP: /graphs/risk/scoring.mp
+  XFR: /graphs/risk/scoring.xfr
+  DEPENDS: agg_customer_balance, enrich_tx_with_fx
+  PRIORITY: CRITICAL
+
+GRAPH aml_detection
+  MP: /graphs/risk/aml.mp
+  XFR: /graphs/risk/aml.xfr
+  DEPENDS: enrich_tx_with_fx, risk_scoring
+  PRIORITY: CRITICAL
+
+# Phase 6: Reports
+GRAPH report_regulatory
+  MP: /graphs/reports/regulatory.mp
+  XFR: /graphs/reports/regulatory.xfr
+  DEPENDS: agg_daily_totals, aml_detection
+  PRIORITY: CRITICAL
+
+GRAPH report_finance
+  MP: /graphs/reports/finance.mp
+  XFR: /graphs/reports/finance.xfr
+  DEPENDS: agg_daily_totals, agg_customer_balance, agg_product_revenue
+  PRIORITY: HIGH
+
+GRAPH report_risk_dashboard
+  MP: /graphs/reports/risk_dashboard.mp
+  DEPENDS: risk_scoring, aml_detection
+  PRIORITY: HIGH
+
+# Notifications
+GRAPH notify_completion
+  DEPENDS: report_regulatory, report_finance, report_risk_dashboard
+  PRIORITY: LOW
+  ON_SUCCESS: email:ops@bank.com
+  ON_FAILURE: pager:oncall@bank.com
