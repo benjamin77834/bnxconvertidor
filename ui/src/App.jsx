@@ -348,26 +348,31 @@ export default function App() {
           {/* Ab Initio PLAN/PSET upload */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <span style={{ fontSize: 14, color: t.muted, textTransform: 'uppercase', letterSpacing: 1 }}>Ab Initio PLAN</span>
-            <span style={{ fontSize: 12, color: t.dim }}>Sube los 3 archivos Ab Initio para máxima precisión</span>
+            <span style={{ fontSize: 12, color: t.dim }}>Sube en orden: 1° PSET, 2° XFR, 3° PLAN (compila al subir PLAN)</span>
             {psetFile && (
-              <span style={{ fontSize: 11, color: '#22c55e' }}>✅ PSET: {psetFile.name}</span>
+              <span style={{ fontSize: 11, color: '#22c55e' }}>✅ 1. PSET: {psetFile.name}</span>
             )}
             {planXfrFile && (
-              <span style={{ fontSize: 11, color: '#6366f1' }}>✅ XFR: {planXfrFile.name}</span>
+              <span style={{ fontSize: 11, color: '#6366f1' }}>✅ 2. XFR: {planXfrFile.name}</span>
             )}
             <div style={{ display: 'flex', gap: 6 }}>
               <button style={{
                 flex: 1, padding: '8px 12px', borderRadius: 8, cursor: 'pointer',
-                background: t.card, border: `1px dashed ${t.border}`, color: t.muted, fontSize: 12,
-              }} onClick={() => planRef.current.click()}>📄 .plan</button>
+                background: psetFile ? '#22c55e15' : t.card,
+                border: `1px dashed ${psetFile ? '#22c55e' : t.border}`,
+                color: psetFile ? '#22c55e' : t.muted, fontSize: 12,
+              }} onClick={() => psetRef.current.click()}>1° ⚙️ .pset</button>
               <button style={{
                 flex: 1, padding: '8px 12px', borderRadius: 8, cursor: 'pointer',
-                background: t.card, border: `1px dashed ${t.border}`, color: t.muted, fontSize: 12,
-              }} onClick={() => psetRef.current.click()}>⚙️ .pset</button>
+                background: planXfrFile ? '#6366f115' : t.card,
+                border: `1px dashed ${planXfrFile ? '#6366f1' : t.border}`,
+                color: planXfrFile ? '#6366f1' : t.muted, fontSize: 12,
+              }} onClick={() => planXfrRef.current.click()}>2° 🔄 .xfr</button>
               <button style={{
                 flex: 1, padding: '8px 12px', borderRadius: 8, cursor: 'pointer',
-                background: t.card, border: `1px dashed ${t.border}`, color: t.muted, fontSize: 12,
-              }} onClick={() => planXfrRef.current.click()}>🔄 .xfr</button>
+                background: t.card, border: `1px dashed ${t.accent || '#6366f1'}`,
+                color: t.accent || '#6366f1', fontSize: 12, fontWeight: 600,
+              }} onClick={() => planRef.current.click()}>3° 📄 .plan</button>
             </div>
             <div style={{
               fontSize: 11, color: t.dim, lineHeight: 1.5, padding: '6px 8px',
