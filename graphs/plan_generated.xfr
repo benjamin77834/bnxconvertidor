@@ -1,0 +1,66 @@
+# Auto-generated from Ab Initio PLAN + PSET
+
+ingest_customers:
+  source_type s3
+  path s3://bank-datalake/raw/ingest_customers
+  format parquet
+
+ingest_transactions:
+  source_type s3
+  path s3://bank-datalake/raw/ingest_transactions
+  format parquet
+
+ingest_accounts:
+  source_type s3
+  path s3://bank-datalake/raw/ingest_accounts
+  format parquet
+
+ingest_cards:
+  source_type s3
+  path s3://bank-datalake/raw/ingest_cards
+  format parquet
+
+ingest_fx_rates:
+  source_type s3
+  path s3://bank-datalake/raw/ingest_fx_rates
+  format parquet
+
+dedup_transactions:
+  dedup_keys tx_id
+  order_by tx_date
+
+enrich_tx_with_customer:
+  join_key customer_id
+  join_type left
+
+enrich_tx_with_account:
+  join_key customer_id
+  join_type left
+
+enrich_tx_with_fx:
+  join_key customer_id
+  join_type left
+
+report_regulatory:
+  sink_type s3
+  path s3://bank-datalake/curated/report_regulatory
+  format parquet
+  mode overwrite
+
+report_finance:
+  sink_type s3
+  path s3://bank-datalake/curated/report_finance
+  format parquet
+  mode overwrite
+
+report_risk_dashboard:
+  sink_type s3
+  path s3://bank-datalake/curated/report_risk_dashboard
+  format parquet
+  mode overwrite
+
+notify_completion:
+  sink_type s3
+  path s3://bank-datalake/curated/notify_completion
+  format parquet
+  mode overwrite
