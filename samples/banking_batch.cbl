@@ -1,0 +1,193 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. EBCDIC-BATCH-PROCESS.
+       AUTHOR. BNX-MIGRATION.
+      * ============================================================
+      * PROCESO BATCH CON ARCHIVOS EBCDIC (MAINFRAME)
+      * Tipico de migracion de mainframe IBM z/OS a cloud.
+      * Usa COMP-3 (packed decimal), COMP (binary), REDEFINES.
+      * ============================================================
+
+       ENVIRONMENT DIVISION.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT MASTER-FILE ASSIGN TO 'MSTFILE'
+               ORGANIZATION IS SEQUENTIAL
+               FILE STATUS IS WS-MASTER-STATUS.
+           SELECT MOVEMENT-FILE ASSIGN TO 'MOVFILE'
+               ORGANIZATION IS SEQUENTIAL
+               FILE STATUS IS WS-MOV-STATUS.
+           SELECT CATALOG-FILE ASSIGN TO 'CATFILE'
+               ORGANIZATION IS SEQUENTIAL.
+           SELECT EXCHANGE-FILE ASSIGN TO 'FXFILE'
+               ORGANIZATION IS SEQUENTIAL.
+           SELECT OUTPUT-REPORT ASSIGN TO 'OUTRPT'
+               ORGANIZATION IS SEQUENTIAL.
+           SELECT ERROR-FILE ASSIGN TO 'ERRFILE'
+               ORGANIZATION IS SEQUENTIAL.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD MASTER-FILE
+           RECORDING MODE IS F
+           RECORD CONTAINS 200 CHARACTERS
+           BLOCK CONTAINS 0 RECORDS.
+       01 MASTER-RECORD.
+           05 MST-ACCOUNT-NUM    PIC X(10).
+           05 MST-CLIENT-ID      PIC X(8).
+           05 MST-CLIENT-NAME    PIC X(30).
+           05 MST-BRANCH-CODE    PIC X(4).
+           05 MST-PRODUCT-CODE   PIC X(6).
+           05 MST-BALANCE        PIC S9(13)V99 COMP-3.
+           05 MST-CURRENCY       PIC X(3).
+           05 MST-OPEN-DATE      PIC 9(8) COMP-3.
+           05 MST-STATUS         PIC X(1).
+           05 MST-RISK-RATING    PIC 9(3) COMP.
+           05 MST-LAST-MOVEMENT  PIC 9(8) COMP-3.
+           05 FILLER             PIC X(119).
+
+       FD MOVEMENT-FILE
+           RECORDING MODE IS F
+           RECORD CONTAINS 150 CHARACTERS
+           BLOCK CONTAINS 0 RECORDS.
+       01 MOVEMENT-RECORD.
+           05 MOV-TRANS-ID       PIC X(12).
+           05 MOV-ACCOUNT-NUM    PIC X(10).
+           05 MOV-AMOUNT         PIC S9(13)V99 COMP-3.
+           05 MOV-CURRENCY       PIC X(3).
+           05 MOV-TYPE           PIC X(2).
+           05 MOV-DATE           PIC 9(8) COMP-3.
+           05 MOV-TIME           PIC 9(6) COMP-3.
+           05 MOV-BRANCH         PIC X(4).
+           05 MOV-CHANNEL        PIC X(3).
+           05 MOV-STATUS         PIC X(1).
+           05 MOV-REFERENCE      PIC X(20).
+           05 FILLER             PIC X(73).
+
+       FD CATALOG-FILE.
+       01 CATALOG-RECORD.
+           05 CAT-PRODUCT-CODE   PIC X(6).
+           05 CAT-PRODUCT-NAME   PIC X(30).
+           05 CAT-PRODUCT-TYPE   PIC X(3).
+           05 CAT-MIN-BALANCE    PIC S9(13)V99 COMP-3.
+           05 CAT-MONTHLY-FEE    PIC S9(7)V99 COMP-3.
+
+       FD EXCHANGE-FILE.
+       01 EXCHANGE-RECORD.
+           05 FX-CURRENCY        PIC X(3).
+           05 FX-RATE            PIC 9(5)V9(6) COMP-3.
+           05 FX-DATE            PIC 9(8) COMP-3.
+
+       FD OUTPUT-REPORT.
+       01 OUTPUT-RECORD          PIC X(300).
+
+       FD ERROR-FILE.
+       01 ERROR-RECORD           PIC X(300).
+
+       WORKING-STORAGE SECTION.
+       01 WS-MASTER-STATUS       PIC XX VALUE SPACES.
+       01 WS-MOV-STATUS          PIC XX VALUE SPACES.
+       01 WS-TOTAL-DEBITS        PIC S9(15)V99 COMP-3 VALUE 0.
+       01 WS-TOTAL-CREDITS       PIC S9(15)V99 COMP-3 VALUE 0.
+       01 WS-NEW-BALANCE         PIC S9(13)V99 COMP-3 VALUE 0.
+       01 WS-AMOUNT-USD          PIC S9(13)V99 COMP-3 VALUE 0.
+       01 WS-ERROR-COUNT         PIC 9(8) COMP VALUE 0.
+       01 WS-PROCESS-COUNT       PIC 9(8) COMP VALUE 0.
+
+       PROCEDURE DIVISION.
+       MAIN-PROCESS.
+           OPEN INPUT MASTER-FILE
+                      MOVEMENT-FILE
+                      CATALOG-FILE
+                      EXCHANGE-FILE
+           OPEN OUTPUT OUTPUT-REPORT
+                       ERROR-FILE
+
+           PERFORM READ-MASTER
+           PERFORM READ-MOVEMENTS
+           PERFORM FILTER-ACTIVE-ACCOUNTS
+           PERFORM FILTER-VALID-MOVEMENTS
+           PERFORM JOIN-MOVEMENT-WITH-MASTER
+           PERFORM JOIN-MASTER-WITH-CATALOG
+           PERFORM JOIN-MOVEMENT-WITH-FX
+           PERFORM COMPUTE-NEW-BALANCE
+           PERFORM COMPUTE-USD-AMOUNT
+           PERFORM DETECT-OVERDRAFT
+           PERFORM DETECT-LARGE-TRANSACTION
+           PERFORM WRITE-OUTPUT
+           PERFORM WRITE-ERRORS
+
+           CLOSE MASTER-FILE
+                 MOVEMENT-FILE
+                 CATALOG-FILE
+                 EXCHANGE-FILE
+                 OUTPUT-REPORT
+                 ERROR-FILE
+           STOP RUN.
+
+       READ-MASTER.
+           READ MASTER-FILE INTO MASTER-RECORD.
+
+       READ-MOVEMENTS.
+           READ MOVEMENT-FILE INTO MOVEMENT-RECORD.
+
+       FILTER-ACTIVE-ACCOUNTS.
+           IF MST-STATUS = 'A'
+               CONTINUE
+           ELSE
+               MOVE SPACES TO MASTER-RECORD
+           END-IF.
+
+       FILTER-VALID-MOVEMENTS.
+           IF MOV-STATUS = 'P' AND MOV-AMOUNT NOT = 0
+               CONTINUE
+           ELSE
+               ADD 1 TO WS-ERROR-COUNT
+               WRITE ERROR-RECORD FROM MOVEMENT-RECORD
+           END-IF.
+
+       JOIN-MOVEMENT-WITH-MASTER.
+           IF MOV-ACCOUNT-NUM = MST-ACCOUNT-NUM
+               CONTINUE
+           END-IF.
+
+       JOIN-MASTER-WITH-CATALOG.
+           IF MST-PRODUCT-CODE = CAT-PRODUCT-CODE
+               CONTINUE
+           END-IF.
+
+       JOIN-MOVEMENT-WITH-FX.
+           IF MOV-CURRENCY = FX-CURRENCY
+               CONTINUE
+           END-IF.
+
+       COMPUTE-NEW-BALANCE.
+           IF MOV-TYPE = 'CR'
+               ADD MOV-AMOUNT TO MST-BALANCE
+               ADD MOV-AMOUNT TO WS-TOTAL-CREDITS
+           ELSE
+               SUBTRACT MOV-AMOUNT FROM MST-BALANCE
+               ADD MOV-AMOUNT TO WS-TOTAL-DEBITS
+           END-IF
+           MOVE MST-BALANCE TO WS-NEW-BALANCE.
+
+       COMPUTE-USD-AMOUNT.
+           COMPUTE WS-AMOUNT-USD = MOV-AMOUNT * FX-RATE.
+
+       DETECT-OVERDRAFT.
+           IF WS-NEW-BALANCE < 0
+               ADD 1 TO WS-ERROR-COUNT
+               WRITE ERROR-RECORD FROM MASTER-RECORD
+           END-IF.
+
+       DETECT-LARGE-TRANSACTION.
+           IF WS-AMOUNT-USD > 10000
+               ADD 1 TO WS-ERROR-COUNT
+               WRITE ERROR-RECORD FROM MOVEMENT-RECORD
+           END-IF.
+
+       WRITE-OUTPUT.
+           WRITE OUTPUT-RECORD FROM MASTER-RECORD
+           ADD 1 TO WS-PROCESS-COUNT.
+
+       WRITE-ERRORS.
+           WRITE ERROR-RECORD FROM MOVEMENT-RECORD.

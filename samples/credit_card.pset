@@ -1,0 +1,42 @@
+# Ab Initio PSET - Credit Card Pipeline Parameters
+
+# Environment
+ENV_NAME=PRODUCTION
+REGION=MX
+BATCH_DATE=${CURRENT_DATE}
+
+# S3 Paths
+S3_INPUT=s3://bank-cc-datalake/raw
+S3_OUTPUT=s3://bank-cc-datalake/curated
+S3_REPORTS=s3://bank-cc-datalake/reports
+S3_ARCHIVE=s3://bank-cc-datalake/archive
+
+# Database
+DB_CORE_HOST=jdbc:postgresql://cc-core.bank.internal:5432/cards
+DB_DW_HOST=jdbc:redshift://cc-dw.bank.internal:5439/analytics
+
+# Kafka
+KAFKA_BROKERS=kafka-cc1:9092,kafka-cc2:9092
+KAFKA_TOPIC_EVENTS=cc.transactions.realtime
+KAFKA_TOPIC_ALERTS=cc.fraud.alerts
+KAFKA_GROUP_ID=cc_daily_batch
+
+# Processing
+PARALLELISM=16
+MAX_MEMORY=32G
+OUTPUT_FORMAT=PARQUET
+COMPRESSION=SNAPPY
+PARTITION_BY=batch_date,region
+
+# Thresholds
+DAILY_LIMIT_DEFAULT=50000
+SINGLE_TX_LIMIT=10000
+FRAUD_SCORE_THRESHOLD=0.85
+AML_AMOUNT_THRESHOLD=100000
+OVERLIMIT_TOLERANCE=0.05
+
+# Regulatory
+CNBV_REPORT_PATH=s3://bank-cc-datalake/reports/cnbv
+UIF_REPORT_PATH=s3://bank-cc-datalake/reports/uif
+REPORT_FORMAT=CSV
+REPORT_ENCODING=UTF-8

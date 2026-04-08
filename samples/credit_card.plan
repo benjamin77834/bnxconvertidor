@@ -1,0 +1,139 @@
+# Ab Initio PLAN - Credit Card Processing Pipeline
+PLAN credit_card_daily
+VERSION 1.0
+
+# Phase 1: Ingestion
+GRAPH ingest_transactions
+  MP: /graphs/cc/transactions.mp
+  XFR: /graphs/cc/transactions.xfr
+  DML: /dml/transactions.dml
+  SCHEDULE: 01:00
+  PRIORITY: HIGH
+
+GRAPH ingest_cardholders
+  MP: /graphs/cc/cardholders.mp
+  XFR: /graphs/cc/cardholders.xfr
+  DML: /dml/cardholders.dml
+  SCHEDULE: 01:00
+  PRIORITY: HIGH
+
+GRAPH ingest_merchants
+  MP: /graphs/cc/merchants.mp
+  DML: /dml/merchants.dml
+  SCHEDULE: 01:00
+  PRIORITY: MEDIUM
+
+GRAPH ingest_fx_rates
+  MP: /graphs/cc/fx.mp
+  DML: /dml/fx.dml
+  SCHEDULE: 01:15
+  PRIORITY: MEDIUM
+
+GRAPH ingest_limits
+  MP: /graphs/cc/limits.mp
+  DML: /dml/limits.dml
+  SCHEDULE: 01:15
+  PRIORITY: MEDIUM
+
+# Phase 2: Clean
+GRAPH clean_transactions
+  MP: /graphs/cc/clean_tx.mp
+  XFR: /graphs/cc/clean_tx.xfr
+  DEPENDS: ingest_transactions
+  PRIORITY: HIGH
+
+GRAPH clean_cardholders
+  MP: /graphs/cc/clean_ch.mp
+  XFR: /graphs/cc/clean_ch.xfr
+  DEPENDS: ingest_cardholders
+  PRIORITY: HIGH
+
+GRAPH dedup_transactions
+  MP: /graphs/cc/dedup_tx.mp
+  XFR: /graphs/cc/dedup_tx.xfr
+  DEPENDS: clean_transactions
+  PRIORITY: HIGH
+
+# Phase 3: Enrich
+GRAPH enrich_tx_cardholder
+  MP: /graphs/cc/enrich_ch.mp
+  XFR: /graphs/cc/enrich_ch.xfr
+  DEPENDS: dedup_transactions, clean_cardholders
+  PRIORITY: HIGH
+
+GRAPH enrich_tx_merchant
+  MP: /graphs/cc/enrich_merch.mp
+  XFR: /graphs/cc/enrich_merch.xfr
+  DEPENDS: enrich_tx_cardholder, ingest_merchants
+  PRIORITY: HIGH
+
+GRAPH enrich_tx_fx
+  MP: /graphs/cc/enrich_fx.mp
+  XFR: /graphs/cc/enrich_fx.xfr
+  DEPENDS: enrich_tx_merchant, ingest_fx_rates
+  PRIORITY: MEDIUM
+
+GRAPH enrich_tx_limits
+  MP: /graphs/cc/enrich_limits.mp
+  XFR: /graphs/cc/enrich_limits.xfr
+  DEPENDS: enrich_tx_fx, ingest_limits
+  PRIORITY: HIGH
+
+# Phase 4: Business Logic
+GRAPH agg_daily_spend
+  MP: /graphs/cc/agg_spend.mp
+  XFR: /graphs/cc/agg_spend.xfr
+  DEPENDS: enrich_tx_limits
+  PRIORITY: HIGH
+
+GRAPH agg_merchant_volume
+  MP: /graphs/cc/agg_merchant.mp
+  XFR: /graphs/cc/agg_merchant.xfr
+  DEPENDS: enrich_tx_limits
+  PRIORITY: MEDIUM
+
+GRAPH risk_overlimit
+  MP: /graphs/cc/risk_overlimit.mp
+  XFR: /graphs/cc/risk_overlimit.xfr
+  DEPENDS: enrich_tx_limits, agg_daily_spend
+  PRIORITY: CRITICAL
+
+GRAPH fraud_detection
+  MP: /graphs/cc/fraud.mp
+  XFR: /graphs/cc/fraud.xfr
+  DEPENDS: enrich_tx_limits, agg_daily_spend
+  PRIORITY: CRITICAL
+
+GRAPH aml_screening
+  MP: /graphs/cc/aml.mp
+  XFR: /graphs/cc/aml.xfr
+  DEPENDS: fraud_detection
+  PRIORITY: CRITICAL
+
+# Phase 5: Reports
+GRAPH report_daily_summary
+  MP: /graphs/cc/rpt_summary.mp
+  DEPENDS: agg_daily_spend, agg_merchant_volume
+  PRIORITY: HIGH
+
+GRAPH report_fraud_alerts
+  MP: /graphs/cc/rpt_fraud.mp
+  DEPENDS: fraud_detection, aml_screening
+  PRIORITY: CRITICAL
+  ON_FAILURE: pager:fraud-team@bank.com
+
+GRAPH report_regulatory
+  MP: /graphs/cc/rpt_reg.mp
+  DEPENDS: aml_screening, risk_overlimit
+  PRIORITY: CRITICAL
+
+GRAPH report_cardholder_statements
+  MP: /graphs/cc/rpt_statements.mp
+  DEPENDS: agg_daily_spend, enrich_tx_limits
+  PRIORITY: HIGH
+
+GRAPH notify_completion
+  DEPENDS: report_daily_summary, report_fraud_alerts, report_regulatory, report_cardholder_statements
+  PRIORITY: LOW
+  ON_SUCCESS: email:ops@bank.com
+  ON_FAILURE: pager:oncall@bank.com
