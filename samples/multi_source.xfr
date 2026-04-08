@@ -1,0 +1,170 @@
+# ============================================================
+# Multi-Source XFR — S3, JDBC, Kafka sources + partitioned sinks
+# ============================================================
+
+# --- SOURCES ---
+RawOrdersS3:
+  source_type s3
+  path s3://datalake/raw/orders
+  format parquet
+
+RawCustomersDB:
+  source_type jdbc
+  table customers
+  connection jdbc:postgresql://db-master:5432/core_banking
+
+RawProductsDB:
+  source_type jdbc
+  table products
+  connection jdbc:mysql://catalog-db:3306/product_catalog
+
+RawPaymentsKafka:
+  source_type kafka
+  topic payments.realtime
+  connection kafka1:9092,kafka2:9092,kafka3:9092
+
+RawEventsKafka:
+  source_type kafka
+  topic user.events.clickstream
+  connection kafka1:9092,kafka2:9092,kafka3:9092
+
+RawInventoryS3:
+  source_type s3
+  path s3://datalake/raw/inventory
+  format csv
+
+RawFXRatesAPI:
+  source_type s3
+  path s3://datalake/raw/fx_rates
+  format json
+
+# --- INGESTION ---
+CleanOrders:
+  select order_id, customer_id, product_id, amount, currency, status, region, order_date
+  where amount > 0 AND status IN ('completed', 'shipped')
+
+CleanCustomers:
+  select customer_id, name, email, region, segment, created_at
+  where customer_id IS NOT NULL
+
+CleanProducts:
+  select product_id, name, category, price, supplier_id
+  where product_id IS NOT NULL AND price > 0
+
+CleanPayments:
+  select payment_id, order_id, amount, method, payment_date, confirmed
+  where confirmed = true
+
+CleanEvents:
+  select event_id, user_id, event_type, page, action, tags, event_date
+  where event_id IS NOT NULL
+
+CleanInventory:
+  select product_id, warehouse_id, stock, reorder_level, last_updated
+  where product_id IS NOT NULL
+
+CleanFXRates:
+  select currency, rate_to_usd, rate_date
+  where currency IS NOT NULL
+
+# --- DEDUP ---
+DedupOrders:
+  dedup_keys order_id
+  order_by order_date
+
+DedupPayments:
+  dedup_keys payment_id
+  order_by payment_date
+
+# --- ENRICH ---
+OrderWithCustomer:
+  join_key customer_id
+  join_type inner
+
+OrderWithProduct:
+  join_key product_id
+  join_type left
+
+OrderWithPayment:
+  join_key order_id
+  join_type left
+
+OrderWithFX:
+  lookup_key currency
+  lookup_select rate_to_usd
+
+FullOrder:
+  join_key product_id
+  join_type left
+
+# --- AGGREGATE ---
+DailyRevenue:
+  group_by order_date
+  select SUM(amount) as daily_revenue, COUNT(order_id) as order_count, SUM(amount * rate_to_usd) as daily_revenue_usd
+
+RevenueByRegion:
+  group_by region, order_date
+  select SUM(amount) as region_revenue, COUNT(order_id) as region_orders
+
+RevenueByProduct:
+  group_by product_id, name, category
+  select SUM(amount) as product_revenue, COUNT(order_id) as product_orders
+
+InventoryAlert:
+  select *
+  where stock < reorder_level
+
+CustomerSpend:
+  group_by customer_id, name, region
+  select SUM(amount) as total_spent, COUNT(order_id) as total_orders, MAX(order_date) as last_order
+
+# --- OUTPUT ---
+NormalizeEvents:
+  split_col tags
+  delimiter ,
+
+EventsByType:
+  group_by event_type
+  select COUNT(event_id) as event_count, COUNT(DISTINCT user_id) as unique_users
+
+# --- SINKS ---
+Write_DailyRevenue:
+  sink_type s3
+  path s3://datalake/curated/daily_revenue
+  format parquet
+  mode overwrite
+
+Write_RevenueByRegion:
+  sink_type s3
+  path s3://datalake/curated/revenue_by_region
+  format parquet
+  mode overwrite
+
+Write_RevenueByProduct:
+  sink_type s3
+  path s3://datalake/curated/revenue_by_product
+  format parquet
+  mode overwrite
+
+Write_InventoryAlert:
+  sink_type jdbc
+  table inventory_alerts
+  connection jdbc:postgresql://db-master:5432/operations
+  mode append
+
+Write_CustomerSpend:
+  sink_type s3
+  path s3://datalake/curated/customer_spend
+  format parquet
+  mode overwrite
+
+Write_EventsByType:
+  sink_type s3
+  path s3://datalake/curated/events_by_type
+  format parquet
+  mode overwrite
+
+Write_FullOrderKafka:
+  sink_type kafka
+  topic orders.enriched
+  connection kafka1:9092,kafka2:9092,kafka3:9092

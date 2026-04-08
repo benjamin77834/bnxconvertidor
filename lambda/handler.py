@@ -19,6 +19,9 @@ from src.dml_parser import parse_dml
 from src.validator.semantic import validate
 from src.codegen.glue_codegen import generate_glue
 from src.codegen.spark_codegen import generate_spark
+from src.codegen.stepfunctions_codegen import generate_stepfunctions
+from src.codegen.terraform_codegen import generate_terraform
+from src.codegen.airflow_codegen import generate_airflow
 from src.cobol_parser import parse_cobol, cobol_to_graph
 from src.plan_parser import parse_plan, parse_pset, plan_to_graph
 from src.accuracy import compute_accuracy
@@ -76,8 +79,32 @@ def _build_response(dag, ast, xfr_rules, dml_schema, target):
     errors, warnings = validate(dag, xfr_rules, dml_schema)
 
     code = None
+    stepfunctions_json = None
+    terraform_code = None
+    airflow_code = None
     if not errors:
         code = _generate_code(dag, xfr_rules, target)
+
+        sf_out = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
+        sf_out.close()
+        generate_stepfunctions(dag, sf_out.name, xfr_rules)
+        with open(sf_out.name) as f:
+            stepfunctions_json = f.read()
+        os.unlink(sf_out.name)
+
+        tf_out = tempfile.NamedTemporaryFile(delete=False, suffix=".tf")
+        tf_out.close()
+        generate_terraform(dag, tf_out.name, xfr_rules)
+        with open(tf_out.name) as f:
+            terraform_code = f.read()
+        os.unlink(tf_out.name)
+
+        af_out = tempfile.NamedTemporaryFile(delete=False, suffix=".py")
+        af_out.close()
+        generate_airflow(dag, af_out.name, xfr_rules)
+        with open(af_out.name) as f:
+            airflow_code = f.read()
+        os.unlink(af_out.name)
 
     acc = compute_accuracy(dag, xfr_rules, dml_schema)
 
@@ -97,7 +124,11 @@ def _build_response(dag, ast, xfr_rules, dml_schema, target):
         "nodes": nodes, "edges": edges,
         "subgraphs": list(ast["subgraphs"].keys()),
         "errors": errors, "warnings": warnings,
-        "code": code, "accuracy": acc,
+        "code": code,
+        "stepfunctions": stepfunctions_json,
+        "terraform": terraform_code,
+        "airflow": airflow_code,
+        "accuracy": acc,
     }
 
 

@@ -1,0 +1,63 @@
+keys:
+  RawOrdersS3: order_id
+  RawCustomersDB: customer_id
+  RawProductsDB: product_id
+  RawPaymentsKafka: payment_id
+  RawEventsKafka: event_id
+  RawInventoryS3: product_id
+  RawFXRatesAPI: currency
+
+schema:
+  RawOrdersS3:
+    order_id: string
+    customer_id: string
+    product_id: string
+    amount: double
+    currency: string
+    status: string
+    region: string
+    order_date: date
+
+  RawCustomersDB:
+    customer_id: string
+    name: string
+    email: string
+    region: string
+    segment: string
+    created_at: timestamp
+
+  RawProductsDB:
+    product_id: string
+    name: string
+    category: string
+    price: double
+    supplier_id: string
+
+  RawPaymentsKafka:
+    payment_id: string
+    order_id: string
+    amount: double
+    method: string
+    payment_date: date
+    confirmed: boolean
+
+  RawEventsKafka:
+    event_id: string
+    user_id: string
+    event_type: string
+    page: string
+    action: string
+    tags: string
+    event_date: date
+
+  RawInventoryS3:
+    product_id: string
+    warehouse_id: string
+    stock: int
+    reorder_level: int
+    last_updated: timestamp
+
+  RawFXRatesAPI:
+    currency: string
+    rate_to_usd: double
+    rate_date: date

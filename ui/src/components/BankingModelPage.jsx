@@ -5,6 +5,7 @@ import ReactFlow, {
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import GovernancePage from './GovernancePage'
+import DamaPage from './DamaPage'
 
 // ── Banking Operating Model ─────────────────────────────────
 const LAYERS = [
@@ -312,6 +313,7 @@ export default function BankingModelPage({ theme }) {
       }}>
         {[
           { id: 'model', label: '🏦 Modelo Operativo' },
+          { id: 'dama', label: '📐 DAMA Framework' },
           { id: 'governance', label: '🏛️ Gobierno de Datos' },
         ].map(tab => (
           <button key={tab.id} onClick={() => setSubTab(tab.id)} style={{
@@ -328,6 +330,8 @@ export default function BankingModelPage({ theme }) {
 
       {subTab === 'governance' ? (
         <GovernancePage theme={t} />
+      ) : subTab === 'dama' ? (
+        <DamaPage theme={t} />
       ) : (
       <div style={{ flex: 1, position: 'relative' }}>
       {/* Title + Actions overlay */}
