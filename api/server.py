@@ -17,6 +17,9 @@ from src.dml_parser import parse_dml
 from src.validator.semantic import validate
 from src.codegen.glue_codegen import generate_glue
 from src.codegen.spark_codegen import generate_spark
+from src.codegen.stepfunctions_codegen import generate_stepfunctions
+from src.codegen.terraform_codegen import generate_terraform
+from src.codegen.airflow_codegen import generate_airflow
 from src.cobol_parser import parse_cobol, cobol_to_graph
 from src.plan_parser import parse_plan, parse_pset, plan_to_graph
 from src.accuracy import compute_accuracy
@@ -69,6 +72,9 @@ async def compile_graph(
 
         # Generar código según target
         code = None
+        stepfunctions_json = None
+        terraform_code = None
+        airflow_code = None
         if not errors:
             out = tempfile.NamedTemporaryFile(delete=False, suffix=".py")
             out.close()
@@ -79,6 +85,30 @@ async def compile_graph(
             with open(out.name) as f:
                 code = f.read()
             os.unlink(out.name)
+
+            # Step Functions
+            sf_out = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
+            sf_out.close()
+            generate_stepfunctions(dag, sf_out.name, xfr_rules)
+            with open(sf_out.name) as f:
+                stepfunctions_json = f.read()
+            os.unlink(sf_out.name)
+
+            # Terraform
+            tf_out = tempfile.NamedTemporaryFile(delete=False, suffix=".tf")
+            tf_out.close()
+            generate_terraform(dag, tf_out.name, xfr_rules)
+            with open(tf_out.name) as f:
+                terraform_code = f.read()
+            os.unlink(tf_out.name)
+
+            # Airflow
+            af_out = tempfile.NamedTemporaryFile(delete=False, suffix=".py")
+            af_out.close()
+            generate_airflow(dag, af_out.name, xfr_rules)
+            with open(af_out.name) as f:
+                airflow_code = f.read()
+            os.unlink(af_out.name)
 
         # Construir respuesta del grafo
         nodes = []
@@ -110,8 +140,10 @@ async def compile_graph(
             "errors":   errors,
             "warnings": warnings,
             "code":     code,
+            "stepfunctions": stepfunctions_json,
+            "terraform": terraform_code,
+            "airflow": airflow_code,
             "accuracy": acc,
-        }
 
     finally:
         for p in [mp_path, xfr_path, dml_path]:

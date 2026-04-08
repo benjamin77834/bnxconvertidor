@@ -62,6 +62,24 @@ const GLOSSARY = {
       { term: 'SparkSession', def: 'Punto de entrada de Spark. Reemplaza a SparkContext + SQLContext. Permite leer/escribir datos y ejecutar SQL.' },
     ]
   },
+  SF_CODEGEN: {
+    concepts: [
+      { term: 'Step Functions', def: 'Servicio de orquestación serverless de AWS. Define workflows como máquinas de estado JSON. Ejecuta Glue jobs en secuencia o paralelo.' },
+      { term: 'State Machine', def: 'Modelo de ejecución donde cada estado es una tarea (Glue job) y las transiciones son las dependencias del DAG.' },
+    ]
+  },
+  TF_CODEGEN: {
+    concepts: [
+      { term: 'Terraform', def: 'Herramienta de Infrastructure as Code (IaC) de HashiCorp. Define recursos AWS en archivos .tf declarativos. BNX genera S3, IAM, Glue jobs, CloudWatch.' },
+      { term: 'IaC', def: 'Infrastructure as Code — definir infraestructura en archivos versionables en vez de configurar manualmente en la consola.' },
+    ]
+  },
+  AF_CODEGEN: {
+    concepts: [
+      { term: 'Apache Airflow', def: 'Plataforma de orquestación de workflows. Define DAGs en Python con operadores para cada servicio (Glue, S3, etc.). Alternativa open-source a Step Functions.' },
+      { term: 'MWAA', def: 'Amazon Managed Workflows for Apache Airflow — Airflow managed en AWS. No necesitas administrar servidores.' },
+    ]
+  },
   LAMBDA: {
     concepts: [
       { term: 'AWS Lambda', def: 'Servicio serverless que ejecuta código sin servidores. Cobra por invocación (~$0.20/1M requests). Ideal para APIs stateless como BNX.' },
@@ -99,8 +117,11 @@ const COMPONENTS = [
   { id: 'ACCURACY', label: 'Accuracy Engine\n(accuracy.py)', x: 440, y: 250, group: 'core', desc: 'Mide cobertura: nodes, edges, transforms, joins. Calcula overall accuracy ponderado' },
 
   // Code Generation
-  { id: 'GLUE_CODEGEN', label: 'Glue Codegen\n(glue_codegen.py)', x: 660, y: 50, group: 'codegen', desc: 'Genera AWS Glue jobs con GlueContext. Soporta 7 tipos de nodo + S3/JDBC/Kafka sources/sinks' },
-  { id: 'SPARK_CODEGEN', label: 'PySpark Codegen\n(spark_codegen.py)', x: 660, y: 150, group: 'codegen', desc: 'Genera PySpark puro con SparkSession. Misma lógica que Glue pero sin dependencias AWS' },
+  { id: 'GLUE_CODEGEN', label: 'Glue Codegen\n(glue_codegen.py)', x: 660, y: 20, group: 'codegen', desc: 'Genera AWS Glue jobs con GlueContext. Soporta 7 tipos de nodo + S3/JDBC/Kafka sources/sinks' },
+  { id: 'SPARK_CODEGEN', label: 'PySpark Codegen\n(spark_codegen.py)', x: 660, y: 100, group: 'codegen', desc: 'Genera PySpark puro con SparkSession. Misma lógica que Glue pero sin dependencias AWS' },
+  { id: 'SF_CODEGEN', label: 'Step Functions\n(stepfunctions.py)', x: 660, y: 180, group: 'codegen', desc: 'Genera AWS Step Functions JSON. Orquesta Glue jobs con fases paralelas y dependencias' },
+  { id: 'TF_CODEGEN', label: 'Terraform\n(terraform.py)', x: 660, y: 260, group: 'codegen', desc: 'Genera Terraform .tf con S3 buckets, IAM roles, Glue jobs, CloudWatch. Infraestructura como código' },
+  { id: 'AF_CODEGEN', label: 'Airflow DAG\n(airflow.py)', x: 660, y: 340, group: 'codegen', desc: 'Genera Apache Airflow DAG con GlueJobOperator. Orquestación alternativa a Step Functions' },
 
   // API Layer
   { id: 'FASTAPI', label: 'FastAPI Server\n(api/server.py)', x: 660, y: 280, group: 'api', desc: 'Endpoints: POST /compile (mp+xfr+dml), POST /cobol. Multipart upload, target selector' },
@@ -129,10 +150,15 @@ const EDGES_DEF = [
   ['DAG_BUILDER', 'VALIDATOR'], ['DAG_BUILDER', 'ACCURACY'], ['VALIDATOR', 'ACCURACY'],
   // Core → Codegen
   ['DAG_BUILDER', 'GLUE_CODEGEN'], ['DAG_BUILDER', 'SPARK_CODEGEN'],
+  ['DAG_BUILDER', 'SF_CODEGEN'], ['DAG_BUILDER', 'TF_CODEGEN'], ['DAG_BUILDER', 'AF_CODEGEN'],
   ['VALIDATOR', 'GLUE_CODEGEN'], ['VALIDATOR', 'SPARK_CODEGEN'],
   // Core → API
-  ['GLUE_CODEGEN', 'FASTAPI'], ['SPARK_CODEGEN', 'FASTAPI'], ['ACCURACY', 'FASTAPI'],
-  ['GLUE_CODEGEN', 'LAMBDA'], ['SPARK_CODEGEN', 'LAMBDA'], ['ACCURACY', 'LAMBDA'],
+  ['GLUE_CODEGEN', 'FASTAPI'], ['SPARK_CODEGEN', 'FASTAPI'],
+  ['SF_CODEGEN', 'FASTAPI'], ['TF_CODEGEN', 'FASTAPI'], ['AF_CODEGEN', 'FASTAPI'],
+  ['ACCURACY', 'FASTAPI'],
+  ['GLUE_CODEGEN', 'LAMBDA'], ['SPARK_CODEGEN', 'LAMBDA'],
+  ['SF_CODEGEN', 'LAMBDA'], ['TF_CODEGEN', 'LAMBDA'], ['AF_CODEGEN', 'LAMBDA'],
+  ['ACCURACY', 'LAMBDA'],
   // API → UI
   ['FASTAPI', 'COMPILER_UI'], ['FASTAPI', 'DESIGNER_UI'],
   ['LAMBDA', 'COMPILER_UI'], ['LAMBDA', 'DESIGNER_UI'],

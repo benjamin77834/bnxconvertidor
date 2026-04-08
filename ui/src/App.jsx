@@ -564,6 +564,24 @@ export default function App() {
                   padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
                   background: '#6366f115', border: `1px solid #6366f130`, color: '#818cf8',
                 }}>📋 Full Report</button>
+                {result.stepfunctions && (
+                  <button onClick={() => download(result.stepfunctions, 'step_functions.json')} style={{
+                    padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                    background: t.card, border: `1px solid ${t.border}`, color: t.muted,
+                  }}>⚡ StepFn</button>
+                )}
+                {result.terraform && (
+                  <button onClick={() => download(result.terraform, 'main.tf')} style={{
+                    padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                    background: t.card, border: `1px solid ${t.border}`, color: t.muted,
+                  }}>🏗️ Terraform</button>
+                )}
+                {result.airflow && (
+                  <button onClick={() => download(result.airflow, 'airflow_dag.py')} style={{
+                    padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                    background: t.card, border: `1px solid ${t.border}`, color: t.muted,
+                  }}>🌀 Airflow</button>
+                )}
               </div>
             )
           })()}
