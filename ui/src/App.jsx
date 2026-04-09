@@ -10,18 +10,18 @@ import { COMPILE_URL } from './config'
 
 // ── Themes ──────────────────────────────────────────────────
 const dark = {
-  bg: '#0f1117', sidebar: '#161b27', header: '#1e2433',
-  card: '#1e2433', border: '#334155', text: '#e2e8f0',
-  muted: '#94a3b8', dim: '#64748b', codeBg: '#0d1017',
-  accent: '#6366f1', accentBg: '#6366f120', accentBorder: '#6366f140',
-  flowBg: '#1e2433',
+  bg: '#0a1628', sidebar: '#0f1f3d', header: '#122448',
+  card: '#152a52', border: '#1e3a6e', text: '#e8edf5',
+  muted: '#8fa3c4', dim: '#5a7399', codeBg: '#081220',
+  accent: '#1a73e8', accentBg: '#1a73e820', accentBorder: '#1a73e840',
+  flowBg: '#0f1f3d',
 }
 const light = {
-  bg: '#d5dbe3', sidebar: '#dce2ea', header: '#dce2ea',
-  card: '#c8d0da', border: '#a8b5c4', text: '#1e293b',
-  muted: '#3e4c5e', dim: '#556270', codeBg: '#d5dbe3',
-  accent: '#6366f1', accentBg: '#6366f118', accentBorder: '#6366f130',
-  flowBg: '#c8d0da',
+  bg: '#c8d5e0', sidebar: '#d4dfe8', header: '#d4dfe8',
+  card: '#bccad8', border: '#94adc4', text: '#0a1628',
+  muted: '#2d4a6e', dim: '#4a6a8e', codeBg: '#c8d5e0',
+  accent: '#1a73e8', accentBg: '#1a73e818', accentBorder: '#1a73e830',
+  flowBg: '#bccad8',
 }
 
 const LEGEND = [
