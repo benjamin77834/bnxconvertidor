@@ -200,17 +200,20 @@ export default function ExecutivePage({ theme }) {
         <h3 style={{ fontSize: 18, fontWeight: 600, color: t.text || '#e2e8f0', marginBottom: 16 }}>
           ¿Por qué BNX vs alternativas?
         </h3>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 2, fontSize: 13 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr 1fr', gap: 2, fontSize: 13 }}>
           {[
-            ['', 'Manual', 'Ab Initio Cloud', 'BNX'],
-            ['Tiempo 40K jobs', '~45 meses', '~15 meses', '~5 meses'],
-            ['Equipo', '10 devs', '8 devs certificados', '3 devs'],
-            ['Costo licencia', '$0', '$500K-2M/año', '$0 (open source)'],
-            ['Costo operativo', '$200-500/mes', '$50K+/mes (EKS)', '$5-20/mes'],
-            ['Multi-output', 'No', 'No', '5 formatos'],
-            ['Validación', 'Manual', 'Parcial', 'Automática'],
-            ['Gobierno datos', 'Externo', 'No', 'Integrado'],
-            ['COBOL support', 'Manual', 'No', 'Automático'],
+            ['', 'Manual', 'Ab Initio Cloud', 'SaaS Migration Tools', 'BNX'],
+            ['Tiempo 40K jobs', '~45 meses', '~15 meses', '~10 meses', '~5 meses'],
+            ['Equipo', '10 devs', '8 devs certificados', '5 devs + vendor', '3 devs'],
+            ['Costo licencia', '$0', '$500K-2M/año', '$100-300/job', '$0 (open source)'],
+            ['Costo operativo', '$200-500/mes', '$50K+/mes (EKS)', 'SaaS fee mensual', '$5-20/mes'],
+            ['Multi-output', 'No', 'No', 'Parcial (1-2)', '5 formatos'],
+            ['Validación', 'Manual', 'Parcial', 'Básica', 'Semántica completa'],
+            ['Gobierno datos', 'Externo', 'No', 'No', 'Integrado (DAMA)'],
+            ['COBOL support', 'Manual', 'No', 'Parcial', 'Automático (EBCDIC)'],
+            ['Designer visual', 'No', 'No', 'No', 'Drag & drop web'],
+            ['Multi-cloud', 'N/A', 'No', 'Sí', 'AWS (extensible)'],
+            ['Vendor lock-in', 'No', 'Total', 'Alto', 'Bajo (open source)'],
           ].map((row, ri) => (
             row.map((cell, ci) => (
               <div key={`${ri}-${ci}`} style={{
@@ -218,7 +221,8 @@ export default function ExecutivePage({ theme }) {
                 background: ri === 0 ? (t.bg || '#0f1117') : 'transparent',
                 fontWeight: ri === 0 || ci === 0 ? 600 : 400,
                 color: ri === 0 ? (t.muted || '#94a3b8')
-                     : ci === 3 ? '#22c55e'
+                     : ci === 4 ? '#22c55e'
+                     : ci === 3 ? '#f59e0b'
                      : ci === 0 ? (t.text || '#e2e8f0')
                      : (t.muted || '#94a3b8'),
                 borderBottom: `1px solid ${t.border || '#334155'}20`,
