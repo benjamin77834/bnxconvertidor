@@ -95,21 +95,25 @@ function MigrationEstimator({ theme }) {
   const HOURS = {
     traditional: { simple: 8, medium: 24, complex: 60 },
     abinitio:    { simple: 4, medium: 12, complex: 30 },
+    saas:        { simple: 2, medium: 6, complex: 15 },
     bnx:         { simple: 0.5, medium: 1.5, complex: 4 },
   }
 
   const tradTotal = simple * HOURS.traditional.simple + medium * HOURS.traditional.medium + complex * HOURS.traditional.complex
   const abTotal = simple * HOURS.abinitio.simple + medium * HOURS.abinitio.medium + complex * HOURS.abinitio.complex
+  const saasTotal = simple * HOURS.saas.simple + medium * HOURS.saas.medium + complex * HOURS.saas.complex
   const bnxTotal = simple * HOURS.bnx.simple + medium * HOURS.bnx.medium + complex * HOURS.bnx.complex
 
   const RATE = 30 // USD/hr
   const tradCost = tradTotal * RATE
   const abCost = abTotal * RATE
+  const saasCost = saasTotal * RATE
   const bnxCost = bnxTotal * RATE
 
   // Team size: 8h/day, 22 days/month
   const tradMonths = Math.round(tradTotal / (10 * 8 * 22)) // 10 devs
   const abMonths = Math.round(abTotal / (8 * 8 * 22))      // 8 devs Ab Initio
+  const saasMonths = Math.round(saasTotal / (5 * 8 * 22))  // 5 devs + vendor
   const bnxMonths = Math.round(bnxTotal / (3 * 8 * 22))    // 3 devs
 
   const fmt = (n) => n.toLocaleString('en-US')
@@ -170,6 +174,16 @@ function MigrationEstimator({ theme }) {
             ]
           },
           {
+            label: 'SaaS Migration Tools', color: '#a855f7',
+            items: [
+              { k: 'Horas totales', v: `${fmt(saasTotal)}h` },
+              { k: 'Equipo', v: '5 devs + vendor' },
+              { k: 'Duración', v: `~${saasMonths} meses` },
+              { k: 'Costo ($30/h)', v: `$${fmt(saasCost)} USD` },
+              { k: '+ Licencia SaaS', v: 'Variable ($100-300/job)' },
+            ]
+          },
+          {
             label: 'BNX Convertidor', color: '#22c55e',
             items: [
               { k: 'Horas totales', v: `${fmt(bnxTotal)}h` },
@@ -214,6 +228,13 @@ function MigrationEstimator({ theme }) {
           <span style={{ fontSize: 12, color: t.muted || '#94a3b8', width: 80, textAlign: 'right' }}>{fmt(abTotal)}h</span>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <span style={{ fontSize: 12, color: t.dim || '#64748b', width: 90 }}>SaaS Tools</span>
+          <div style={{ flex: 1, height: 20, background: t.bg || '#0f1117', borderRadius: 4, overflow: 'hidden' }}>
+            <div style={{ width: `${(saasTotal / barMax) * 100}%`, height: '100%', background: '#a855f7', borderRadius: 4 }} />
+          </div>
+          <span style={{ fontSize: 12, color: t.muted || '#94a3b8', width: 80, textAlign: 'right' }}>{fmt(saasTotal)}h</span>
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <span style={{ fontSize: 12, color: t.dim || '#64748b', width: 90 }}>BNX</span>
           <div style={{ flex: 1, height: 20, background: t.bg || '#0f1117', borderRadius: 4, overflow: 'hidden' }}>
             <div style={{ width: `${(bnxTotal / barMax) * 100}%`, height: '100%', background: '#22c55e', borderRadius: 4 }} />
@@ -233,15 +254,15 @@ function MigrationEstimator({ theme }) {
         </div>
         <div>
           <div style={{ fontSize: 28, fontWeight: 700, color: '#f59e0b' }}>${fmt(abCost - bnxCost)}</div>
-          <div style={{ fontSize: 12, color: t.dim || '#64748b' }}>USD ahorrados vs Ab Initio Cloud</div>
+          <div style={{ fontSize: 12, color: t.dim || '#64748b' }}>vs Ab Initio Cloud</div>
+        </div>
+        <div>
+          <div style={{ fontSize: 28, fontWeight: 700, color: '#a855f7' }}>${fmt(saasCost - bnxCost)}</div>
+          <div style={{ fontSize: 12, color: t.dim || '#64748b' }}>vs SaaS Tools</div>
         </div>
         <div>
           <div style={{ fontSize: 28, fontWeight: 700, color: '#6366f1' }}>{Math.round(tradTotal / bnxTotal)}x</div>
           <div style={{ fontSize: 12, color: t.dim || '#64748b' }}>más rápido vs Tradicional</div>
-        </div>
-        <div>
-          <div style={{ fontSize: 28, fontWeight: 700, color: '#ec4899' }}>{Math.round(abTotal / bnxTotal)}x</div>
-          <div style={{ fontSize: 12, color: t.dim || '#64748b' }}>más rápido vs Ab Initio Cloud</div>
         </div>
       </div>
 
