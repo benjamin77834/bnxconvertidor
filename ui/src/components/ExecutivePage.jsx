@@ -121,6 +121,80 @@ export default function ExecutivePage({ theme }) {
         }}>📥 Download Executive Summary</button>
       </div>
 
+      {/* What is a data pipeline - simple diagram */}
+      <div style={{
+        borderRadius: 10, padding: 24,
+        background: t.card || '#1e2433', border: `1px solid ${t.border || '#334155'}`,
+      }}>
+        <h3 style={{ fontSize: 18, fontWeight: 600, color: t.text || '#e2e8f0', marginBottom: 8 }}>
+          ¿Qué es un pipeline de datos?
+        </h3>
+        <p style={{ fontSize: 14, color: t.dim || '#64748b', marginBottom: 16 }}>
+          Un banco procesa millones de transacciones diarias. Los datos viajan desde los sistemas origen
+          hasta los reportes y aplicaciones que usan los ejecutivos, reguladores y clientes.
+        </p>
+
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0, flexWrap: 'wrap', padding: '10px 0' }}>
+          {[
+            { icon: '🏦', label: 'Sistemas\nOrigen', desc: 'Core Banking\nTarjetas\nCOBOL/Mainframe', color: '#22c55e' },
+            { icon: '→', label: '', color: '#475569' },
+            { icon: '🔄', label: 'ETL\n(Transformación)', desc: 'Limpiar\nValidar\nCombinar', color: '#1a73e8' },
+            { icon: '→', label: '', color: '#475569' },
+            { icon: '💾', label: 'Data Lake\n(Almacén)', desc: 'S3\nParquet\nOrganizado', color: '#a855f7' },
+            { icon: '→', label: '', color: '#475569' },
+            { icon: '📊', label: 'Consumo\n(Reportes)', desc: 'Dashboards\nRegulatorio\nAPIs', color: '#ef4444' },
+          ].map((step, i) => (
+            step.icon === '→' ? (
+              <div key={i} style={{ fontSize: 24, color: t.dim || '#475569', padding: '0 8px' }}>→</div>
+            ) : (
+              <div key={i} style={{
+                textAlign: 'center', padding: '12px 16px', borderRadius: 10,
+                background: step.color + '12', border: `2px solid ${step.color}40`,
+                minWidth: 120,
+              }}>
+                <div style={{ fontSize: 28 }}>{step.icon}</div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: t.text || '#e2e8f0', whiteSpace: 'pre-line', marginTop: 4 }}>{step.label}</div>
+                <div style={{ fontSize: 11, color: t.dim || '#64748b', whiteSpace: 'pre-line', marginTop: 4 }}>{step.desc}</div>
+              </div>
+            )
+          ))}
+        </div>
+
+        <div style={{
+          marginTop: 16, padding: 14, borderRadius: 8,
+          background: (t.accent || '#1a73e8') + '10', border: `1px solid ${t.accent || '#1a73e8'}30`,
+        }}>
+          <div style={{ fontSize: 14, color: t.text || '#e2e8f0', lineHeight: 1.7 }}>
+            <span style={{ fontWeight: 600, color: t.accent || '#1a73e8' }}>El problema:</span> Muchos bancos tienen estos pipelines en tecnología legacy
+            (Ab Initio, COBOL) que corre en servidores propios costosos y difíciles de mantener.
+          </div>
+          <div style={{ fontSize: 14, color: t.text || '#e2e8f0', lineHeight: 1.7, marginTop: 8 }}>
+            <span style={{ fontWeight: 600, color: '#22c55e' }}>La solución:</span> BNX Convertidor toma esos pipelines legacy y los convierte
+            automáticamente a código cloud (AWS), reduciendo costos, tiempo y riesgo.
+          </div>
+        </div>
+
+        <div style={{
+          marginTop: 12, display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap',
+        }}>
+          {[
+            { from: 'Ab Initio (legacy)', to: 'AWS Glue (cloud)', color: '#f59e0b' },
+            { from: 'COBOL/Mainframe', to: 'PySpark', color: '#a855f7' },
+            { from: 'Servidores propios', to: 'Serverless ($5/mes)', color: '#22c55e' },
+          ].map((t2, i) => (
+            <div key={i} style={{
+              display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px',
+              borderRadius: 8, background: t2.color + '10', border: `1px solid ${t2.color}30`,
+              fontSize: 13,
+            }}>
+              <span style={{ color: '#ef4444', textDecoration: 'line-through' }}>{t2.from}</span>
+              <span style={{ color: t.dim || '#64748b' }}>→</span>
+              <span style={{ color: '#22c55e', fontWeight: 600 }}>{t2.to}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
       {/* Numbers */}
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', justifyContent: 'center' }}>
         {NUMBERS.map(n => (
