@@ -6,6 +6,7 @@ import DesignerPage from './components/DesignerPage'
 import BankingModelPage from './components/BankingModelPage'
 import GovernancePage from './components/GovernancePage'
 import ArchitecturePage from './components/ArchitecturePage'
+import ExecutivePage from './components/ExecutivePage'
 import { COMPILE_URL } from './config'
 
 // ── Themes ──────────────────────────────────────────────────
@@ -250,6 +251,7 @@ export default function App() {
         {/* Page tabs */}
         <div style={{ display: 'flex', gap: 4, marginLeft: 8 }}>
           {[
+            { id: 'executive', label: '🎯 Executive' },
             { id: 'compiler', label: '🔧 Compiler' },
             { id: 'designer', label: '🎨 Designer' },
             { id: 'banking', label: '🏦 Banking' },
@@ -289,7 +291,9 @@ export default function App() {
       </header>
 
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-        {page === 'metrics' ? (
+        {page === 'executive' ? (
+          <ExecutivePage theme={t} />
+        ) : page === 'metrics' ? (
           <MetricsPage theme={t} />
         ) : page === 'designer' ? (
           <DesignerPage theme={t} />

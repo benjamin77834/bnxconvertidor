@@ -73,7 +73,10 @@ def generate_glue(dag, output_path, xfr_rules=None):
                     f.write(f'.option("url", "{conn or "jdbc:mysql://localhost:3306/db"}")')
                     f.write(f'.option("dbtable", "{table or var_id.lower()}").load()\n')
                 else:
-                    f.write(f'{var_id}_df = spark.read.format("{fmt}").load("{path}")\n')
+                    if fmt == "csv":
+                        f.write(f'{var_id}_df = spark.read.format("csv").option("header", "true").option("inferSchema", "true").load("{path}")\n')
+                    else:
+                        f.write(f'{var_id}_df = spark.read.format("{fmt}").load("{path}")\n')
                 f.write(f'print("📂 SOURCE: {log_name}")\n\n')
 
             # TRANSFORM / XFR

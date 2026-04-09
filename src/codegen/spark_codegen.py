@@ -72,7 +72,12 @@ def generate_spark(dag, output_path, xfr_rules=None):
                     f.write(f'.option("url", "{conn or "jdbc:mysql://localhost:3306/db"}")')
                     f.write(f'.option("dbtable", "{table or var_id.lower()}").load()\n')
                 else:
-                    f.write(f'{var_id}_df = spark.read.parquet("{path}")\n')
+                    if fmt == "csv":
+                        f.write(f'{var_id}_df = spark.read.option("header", "true").option("inferSchema", "true").csv("{path}")\n')
+                    elif fmt == "json":
+                        f.write(f'{var_id}_df = spark.read.json("{path}")\n')
+                    else:
+                        f.write(f'{var_id}_df = spark.read.parquet("{path}")\n')
                 f.write(f'print("📂 SOURCE: {log_name}")\n\n')
 
             elif ntype in ("TRANSFORM", "XFR"):
