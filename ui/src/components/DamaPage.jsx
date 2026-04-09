@@ -172,7 +172,13 @@ export default function DamaPage({ theme }) {
             📐 DAMA Framework — On-Premise vs Cloud
           </h2>
           <p style={{ fontSize: 14, color: t.dim || '#64748b', marginTop: 4 }}>
-            Comparativa de capacidades de gestión de datos. Click en un rubro para ver detalles.
+            DAMA International (Data Management Association) define 14 áreas de gestión de datos.
+            Esta vista compara cómo se implementa cada área en on-premise vs cloud AWS,
+            y cómo BNX Convertidor facilita la transición.
+          </p>
+          <p style={{ fontSize: 13, color: t.dim || '#64748b', marginTop: 4 }}>
+            Click en un rubro para ver: servicios AWS específicos, cómo BNX lo implementa,
+            y los 5 niveles de madurez para evaluar dónde está tu organización.
           </p>
         </div>
         <button onClick={exportDama} style={{

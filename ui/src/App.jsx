@@ -61,8 +61,11 @@ export default function App() {
 
   const t = isDark ? dark : light
 
+  const [compileTime, setCompileTime] = useState(null)
+
   const compile = async (selected) => {
     setLoading(true)
+    const startTime = Date.now()
     const form = new FormData()
     form.append('mp', selected.mp)
     if (selected.xfr) form.append('xfr', selected.xfr)
@@ -71,9 +74,11 @@ export default function App() {
     try {
       const res = await fetch(COMPILE_URL, { method: 'POST', body: form })
       const data = await res.json()
+      setCompileTime(Date.now() - startTime)
       setResult(data)
       if (data.code) setCodeOpen(true)
     } catch (e) {
+      setCompileTime(Date.now() - startTime)
       setResult({ errors: [`Network error: ${e.message}`], warnings: [], nodes: [], edges: [] })
     } finally { setLoading(false) }
   }
@@ -534,6 +539,13 @@ export default function App() {
                   {result.subgraphs?.length > 0 && ` · ${result.subgraphs.length} subgraphs`}
                 </span>
                 <span style={{ width: 1, height: 20, background: t.border }} />
+                {compileTime && (
+                  <span style={{
+                    fontSize: 13, color: '#22c55e', fontWeight: 600,
+                    padding: '3px 10px', borderRadius: 6,
+                    background: '#22c55e15', border: '1px solid #22c55e30',
+                  }}>⚡ {compileTime}ms</span>
+                )}
                 {Object.entries(counts).map(([type, count]) => (
                   <span key={type} style={{
                     display: 'flex', alignItems: 'center', gap: 5,
