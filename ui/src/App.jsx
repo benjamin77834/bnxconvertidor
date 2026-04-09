@@ -599,7 +599,43 @@ export default function App() {
           })()}
           <div ref={dagRef} style={{ flex: 1, position: 'relative', minHeight: 0 }}>
             {result?.nodes?.length > 0
-              ? <DagViewer data={result} theme={t} />
+              ? <DagViewer data={result} theme={t} onEditNode={(nodeId, newRule) => {
+                  // Update the node rule in result and recompile
+                  const updatedNodes = result.nodes.map(n =>
+                    n.id === nodeId ? { ...n, rule: { ...n.rule, ...newRule } } : n
+                  )
+                  const updatedResult = { ...result, nodes: updatedNodes }
+                  setResult(updatedResult)
+
+                  // Build XFR from updated rules and recompile
+                  let xfr = ''
+                  updatedNodes.forEach(n => {
+                    const r = n.rule || {}
+                    const hasRule = Object.values(r).some(v => v)
+                    if (!hasRule) return
+                    xfr += `${n.name}:\n`
+                    Object.entries(r).forEach(([k, v]) => { if (v) xfr += `  ${k} ${v}\n` })
+                    xfr += '\n'
+                  })
+
+                  // Build MP from nodes/edges
+                  let mp = ''
+                  updatedNodes.forEach(n => { mp += `NODE ${n.name} : ${n.type}\n` })
+                  mp += '\n'
+                  result.edges.forEach(e => { mp += `${e.from} -> ${e.to}\n` })
+
+                  const form = new FormData()
+                  form.append('mp', new File([mp], 'edited.mp'))
+                  if (xfr.trim()) form.append('xfr', new File([xfr], 'edited.xfr'))
+                  form.append('target', target)
+
+                  setLoading(true)
+                  const startTime = Date.now()
+                  fetch(COMPILE_URL, { method: 'POST', body: form })
+                    .then(res => res.json())
+                    .then(data => { setCompileTime(Date.now() - startTime); setResult(data) })
+                    .finally(() => setLoading(false))
+                }} />
               : <div style={{
                   position: 'absolute', inset: 0, display: 'flex',
                   alignItems: 'center', justifyContent: 'center', color: t.dim, fontSize: 14,
