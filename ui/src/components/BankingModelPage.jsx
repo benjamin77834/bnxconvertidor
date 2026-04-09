@@ -486,9 +486,10 @@ export default function BankingModelPage({ theme }) {
         return (
           <div style={{
             position: 'absolute', top: 16, right: 16, zIndex: 10, width: 280,
+            maxHeight: 'calc(100vh - 120px)', overflowY: 'auto',
             background: t.sidebar || '#161b27', borderRadius: 10,
             border: `1px solid ${t.border || '#334155'}`,
-            boxShadow: '0 8px 32px rgba(0,0,0,.4)', overflow: 'hidden',
+            boxShadow: '0 8px 32px rgba(0,0,0,.4)',
           }}>
             <div style={{
               padding: '10px 14px', background: color + '20',
