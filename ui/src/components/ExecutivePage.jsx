@@ -83,7 +83,7 @@ export default function ExecutivePage({ theme }) {
   const exportPDF = () => {
     let r = 'BNX CONVERTIDOR — EXECUTIVE SUMMARY\n'
     r += '='.repeat(50) + '\n\n'
-    r += 'PLATAFORMA DE MIGRACIÓN DE DATOS LEGACY A CLOUD\n\n'
+    r += 'PLATAFORMA PARA CONVERTIR O REFACTORIZAR GRAFOS LEGACY A CLOUD\n\n'
     CAPABILITIES.forEach(c => {
       r += `${c.icon} ${c.area}\n`
       r += `  Qué: ${c.what}\n`
@@ -108,7 +108,7 @@ export default function ExecutivePage({ theme }) {
           🚀 BNX Convertidor
         </div>
         <div style={{ fontSize: 18, color: t.muted || '#94a3b8', marginTop: 8 }}>
-          Plataforma de Migración de Datos Legacy a Cloud
+          Plataforma para convertir o refactorizar grafos Legacy a Cloud
         </div>
         <div style={{ fontSize: 14, color: t.dim || '#64748b', marginTop: 8, maxWidth: 600, margin: '8px auto 0' }}>
           Convierte automáticamente pipelines de Ab Initio y COBOL a AWS Glue/PySpark,
@@ -136,13 +136,13 @@ export default function ExecutivePage({ theme }) {
 
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0, flexWrap: 'wrap', padding: '10px 0' }}>
           {[
-            { icon: '🏦', label: 'Sistemas\nOrigen', desc: 'Core Banking\nTarjetas\nCOBOL/Mainframe', color: '#22c55e' },
+            { icon: '🏦', label: 'F1: Sistemas\nOrigen', desc: 'Core Banking\nTarjetas\nCOBOL/Mainframe', color: '#22c55e', phase: 'FASE 1' },
             { icon: '→', label: '', color: '#475569' },
-            { icon: '🔄', label: 'ETL\n(Transformación)', desc: 'Limpiar\nValidar\nCombinar', color: '#1a73e8' },
+            { icon: '🔄', label: 'F2: ETL\n(Transformación)', desc: 'Limpiar\nValidar\nCombinar', color: '#1a73e8', phase: 'FASE 2' },
             { icon: '→', label: '', color: '#475569' },
-            { icon: '💾', label: 'Data Lake\n(Almacén)', desc: 'S3\nParquet\nOrganizado', color: '#a855f7' },
+            { icon: '💾', label: 'F3: Data Lake\n(Almacén)', desc: 'S3\nParquet\nOrganizado', color: '#a855f7', phase: 'FASE 3' },
             { icon: '→', label: '', color: '#475569' },
-            { icon: '📊', label: 'Consumo\n(Reportes)', desc: 'Dashboards\nRegulatorio\nAPIs', color: '#ef4444' },
+            { icon: '📊', label: 'F4: Consumo\n(Reportes)', desc: 'Dashboards\nRegulatorio\nAPIs', color: '#ef4444', phase: 'FASE 4' },
           ].map((step, i) => (
             step.icon === '→' ? (
               <div key={i} style={{ fontSize: 24, color: t.dim || '#475569', padding: '0 8px' }}>→</div>
@@ -150,9 +150,14 @@ export default function ExecutivePage({ theme }) {
               <div key={i} style={{
                 textAlign: 'center', padding: '12px 16px', borderRadius: 10,
                 background: step.color + '12', border: `2px solid ${step.color}40`,
-                minWidth: 120,
+                minWidth: 120, position: 'relative',
               }}>
-                <div style={{ fontSize: 28 }}>{step.icon}</div>
+                <div style={{
+                  position: 'absolute', top: -10, left: '50%', transform: 'translateX(-50%)',
+                  padding: '1px 8px', borderRadius: 4, fontSize: 9, fontWeight: 700,
+                  background: step.color, color: '#fff', whiteSpace: 'nowrap',
+                }}>{step.phase}</div>
+                <div style={{ fontSize: 28, marginTop: 4 }}>{step.icon}</div>
                 <div style={{ fontSize: 13, fontWeight: 600, color: t.text || '#e2e8f0', whiteSpace: 'pre-line', marginTop: 4 }}>{step.label}</div>
                 <div style={{ fontSize: 11, color: t.dim || '#64748b', whiteSpace: 'pre-line', marginTop: 4 }}>{step.desc}</div>
               </div>
