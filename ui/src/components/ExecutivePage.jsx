@@ -136,13 +136,13 @@ export default function ExecutivePage({ theme }) {
 
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0, flexWrap: 'wrap', padding: '10px 0' }}>
           {[
-            { icon: '🏦', label: 'F1: Sistemas\nOrigen', desc: 'Core Banking\nTarjetas\nCOBOL/Mainframe', color: '#22c55e', phase: 'FASE 1' },
+            { icon: '🏦', label: 'Sistemas\nOrigen', desc: 'Core Banking\nTarjetas\nCOBOL/Mainframe', color: '#22c55e', phase: 'FASE 1' },
             { icon: '→', label: '', color: '#475569' },
-            { icon: '🔄', label: 'F2: ETL\n(Transformación)', desc: 'Limpiar\nValidar\nCombinar', color: '#1a73e8', phase: 'FASE 2' },
+            { icon: '🔄', label: 'ETL\n(Transformación)', desc: 'Limpiar\nValidar\nCombinar', color: '#22c55e', phase: 'FASE 1' },
             { icon: '→', label: '', color: '#475569' },
-            { icon: '💾', label: 'F3: Data Lake\n(Almacén)', desc: 'S3\nParquet\nOrganizado', color: '#a855f7', phase: 'FASE 3' },
+            { icon: '💾', label: 'Data Lake\n(Almacén)', desc: 'S3\nParquet\nOrganizado', color: '#a855f7', phase: 'FASE 2' },
             { icon: '→', label: '', color: '#475569' },
-            { icon: '📊', label: 'F4: Consumo\n(Reportes)', desc: 'Dashboards\nRegulatorio\nAPIs', color: '#ef4444', phase: 'FASE 4' },
+            { icon: '📊', label: 'Consumo\n(Reportes)', desc: 'Dashboards\nRegulatorio\nAPIs', color: '#ef4444', phase: 'FASE 3' },
           ].map((step, i) => (
             step.icon === '→' ? (
               <div key={i} style={{ fontSize: 24, color: t.dim || '#475569', padding: '0 8px' }}>→</div>
