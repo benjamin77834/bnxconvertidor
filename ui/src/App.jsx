@@ -91,7 +91,7 @@ export default function App() {
   }
 
   const downloadCode = useCallback(() => {
-    if (result?.code) download(result.code, target === 'spark' ? 'pyspark_job.py' : 'glue_job.py')
+    if (result?.code) download(result.code, target === 'spark' ? 'pyspark_job.py' : target === 'flink' ? 'flink_job.py' : 'glue_job.py')
   }, [result, target])
 
   const downloadReport = useCallback(() => {
@@ -697,7 +697,7 @@ export default function App() {
                 onClick={() => setCodeOpen(o => !o)}
               >
                 <span style={{ fontSize: 14, color: t.muted, textTransform: 'uppercase', letterSpacing: 1 }}>
-                  Generated Spark Code ({result.code.split('\n').length} lines)
+                  Generated {target === 'flink' ? 'Flink' : target === 'spark' ? 'Spark' : 'Glue'} Code ({result.code.split('\n').length} lines)
                 </span>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                   <button
