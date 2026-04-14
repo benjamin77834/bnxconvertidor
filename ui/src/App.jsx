@@ -65,6 +65,7 @@ export default function App() {
   const planXfrRef              = useRef(null)
   const [mpFiles, setMpFiles]   = useState([])
   const mpFilesRef              = useRef(null)
+  const mpFilesData             = useRef([])  // Persist mp files across re-renders
 
   const t = isDark ? dark : light
 
@@ -193,8 +194,8 @@ export default function App() {
     form.append('plan', planFile)
     if (psetFile) form.append('pset', psetFile)
     if (planXfrFile) form.append('xfr', planXfrFile)
-    console.log('MP FILES COUNT:', mpFiles.length, mpFiles.map(f => f.name))
-    mpFiles.forEach((f, i) => form.append(`mp_file_${i}`, f))
+    console.log('MP FILES COUNT:', mpFilesData.current.length, mpFilesData.current.map(f => f.name))
+    mpFilesData.current.forEach((f, i) => form.append(`mp_file_${i}`, f))
     form.append('target', target)
     try {
       const res = await fetch(COMPILE_URL.replace('/compile', '/plan'), { method: 'POST', body: form })
@@ -394,23 +395,23 @@ export default function App() {
               }} onClick={() => planXfrRef.current.click()}>2° 🔄 .xfr</button>
               <button style={{
                 flex: 1, padding: '8px 12px', borderRadius: 8, cursor: 'pointer',
-                background: mpFiles.length > 0 ? '#f59e0b15' : t.card,
-                border: `1px dashed ${mpFiles.length > 0 ? '#f59e0b' : t.border}`,
-                color: mpFiles.length > 0 ? '#f59e0b' : t.muted, fontSize: 12,
-              }} onClick={() => mpFilesRef.current.click()}>3° 📦 .mp</button>
+                background: mpFilesData.current.length > 0 ? '#f59e0b15' : t.card,
+                border: `1px dashed ${mpFilesData.current.length > 0 ? '#f59e0b' : t.border}`,
+                color: mpFilesData.current.length > 0 ? '#f59e0b' : t.muted, fontSize: 12,
+              }} onClick={() => { console.log('MP BUTTON CLICKED'); mpFilesRef.current.click() }}>3° 📦 .mp ({mpFilesData.current.length})</button>
               <button style={{
                 flex: 1, padding: '8px 12px', borderRadius: 8, cursor: 'pointer',
                 background: t.card, border: `1px dashed ${t.accent || '#6366f1'}`,
                 color: t.accent || '#6366f1', fontSize: 12, fontWeight: 600,
               }} onClick={() => planRef.current.click()}>4° 📄 .plan</button>
             </div>
-            {mpFiles.length > 0 && (
+            {(mpFiles.length > 0 || mpFilesData.current.length > 0) && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                <span style={{ fontSize: 11, color: '#f59e0b' }}>📦 {mpFiles.length} MP file{mpFiles.length > 1 ? 's' : ''}:</span>
-                {mpFiles.map((f, i) => (
+                <span style={{ fontSize: 11, color: '#f59e0b' }}>📦 {mpFilesData.current.length} MP file{mpFilesData.current.length > 1 ? 's' : ''}:</span>
+                {mpFilesData.current.map((f, i) => (
                   <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}>
                     <span style={{ color: t.muted, flex: 1 }}>{f.name}</span>
-                    <button onClick={() => setMpFiles(mf => mf.filter((_, j) => j !== i))} style={{
+                    <button onClick={() => { mpFilesData.current = mpFilesData.current.filter((_, j) => j !== i); setMpFiles([...mpFilesData.current]) }} style={{
                       background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: 11, padding: '0 4px',
                     }}>❌</button>
                   </div>
@@ -437,7 +438,15 @@ export default function App() {
               onChange={(e) => { if (e.target.files[0]) { setPlanXfrFile(e.target.files[0]) }; e.target.value = '' }}
             />
             <input ref={mpFilesRef} type="file" multiple hidden
-              onChange={(e) => { if (e.target.files.length) { setMpFiles(prev => [...prev, ...Array.from(e.target.files)]) }; e.target.value = '' }}
+              onChange={(e) => {
+                if (e.target.files.length) {
+                  const newFiles = Array.from(e.target.files)
+                  mpFilesData.current = [...mpFilesData.current, ...newFiles]
+                  setMpFiles([...mpFilesData.current])
+                  console.log('MP FILES STORED:', mpFilesData.current.length, mpFilesData.current.map(f => f.name))
+                }
+                e.target.value = ''
+              }}
             />
           </div>
 

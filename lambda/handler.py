@@ -174,16 +174,17 @@ def handler(event, context):
             mp_path = xfr_path = None
             mp_temp_paths = {}
 
-            # Collect mp_files from multipart (tracked by _parse_multipart)
+            # Collect mp_files: from mp_file_keys, mp_file_N fields, or .mp filenames
             for key in mp_file_keys:
                 if key in files:
                     tp = _save_bytes(files[key], ".mp")
                     mp_temp_paths[key] = tp
-            # Fallback: also check for any .mp files in the files dict
-            if not mp_temp_paths:
-                for key, data in files.items():
-                    if key.endswith(".mp") and key != "plan" and key != "pset" and key != "xfr":
+            # Also check for mp_file_0, mp_file_1, etc. (individual field names from UI)
+            for key, data in files.items():
+                if key.startswith("mp_file_") or (key.endswith(".mp") and key not in ("plan", "pset", "xfr")):
+                    if key not in mp_temp_paths:
                         tp = _save_bytes(data, ".mp")
+                        # Use original filename if available
                         mp_temp_paths[key] = tp
 
             try:
