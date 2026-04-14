@@ -68,6 +68,9 @@ export default function App() {
 
   const t = isDark ? dark : light
 
+  // Debug: track mpFiles state changes
+  console.log('RENDER - target:', target, 'mpFiles:', mpFiles.length, mpFiles.map(f => f.name))
+
   const [compileTime, setCompileTime] = useState(null)
 
   const compile = async (selected) => {
