@@ -191,12 +191,7 @@ export default function App() {
     if (psetFile) form.append('pset', psetFile)
     if (planXfrFile) form.append('xfr', planXfrFile)
     console.log('MP FILES COUNT:', mpFiles.length, mpFiles.map(f => f.name))
-    if (mpFiles.length > 0) {
-      console.log('SENDING MP FILES:', mpFiles.map(f => f.name))
-    } else {
-      console.log('WARNING: NO MP FILES TO SEND')
-    }
-    mpFiles.forEach(f => form.append('mp_files', f))
+    mpFiles.forEach((f, i) => form.append(`mp_file_${i}`, f))
     form.append('target', target)
     try {
       const res = await fetch(COMPILE_URL.replace('/compile', '/plan'), { method: 'POST', body: form })
