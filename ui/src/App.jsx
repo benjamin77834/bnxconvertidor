@@ -190,6 +190,7 @@ export default function App() {
     form.append('plan', planFile)
     if (psetFile) form.append('pset', psetFile)
     if (planXfrFile) form.append('xfr', planXfrFile)
+    console.log('MP FILES COUNT:', mpFiles.length, mpFiles.map(f => f.name))
     mpFiles.forEach(f => form.append('mp_files', f))
     form.append('target', target)
     try {
