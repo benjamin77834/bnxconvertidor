@@ -169,6 +169,61 @@ def generate_glue(dag, output_path, xfr_rules=None):
                     f.write(f'{var_id}_df = None  # no parents\n')
                 f.write(f'print("🔍 LOOKUP: {log_name}")\n\n')
 
+            # CONCATENATE — union de datasets sin join key
+            elif ntype == "CONCATENATE":
+                f.write(f'# 🔗 CONCATENATE: {log_name}\n')
+                if len(parents) >= 2:
+                    f.write(f'{var_id}_df = {parents[0]}_df.unionByName({parents[1]}_df, allowMissingColumns=True)\n')
+                    for ep in parents[2:]:
+                        f.write(f'{var_id}_df = {var_id}_df.unionByName({ep}_df, allowMissingColumns=True)\n')
+                elif len(parents) == 1:
+                    f.write(f'{var_id}_df = {parents[0]}_df\n')
+                else:
+                    f.write(f'{var_id}_df = None  # no parents\n')
+                f.write(f'print("🔗 CONCATENATE: {log_name}")\n\n')
+
+            # GATHER — merge multiple streams into one
+            elif ntype == "GATHER":
+                f.write(f'# 📥 GATHER: {log_name}\n')
+                if len(parents) >= 2:
+                    f.write(f'{var_id}_df = {parents[0]}_df.unionByName({parents[1]}_df, allowMissingColumns=True)\n')
+                    for ep in parents[2:]:
+                        f.write(f'{var_id}_df = {var_id}_df.unionByName({ep}_df, allowMissingColumns=True)\n')
+                elif len(parents) == 1:
+                    f.write(f'{var_id}_df = {parents[0]}_df\n')
+                else:
+                    f.write(f'{var_id}_df = None\n')
+                f.write(f'print("📥 GATHER: {log_name}")\n\n')
+
+            # PARTITION — repartition by key
+            elif ntype == "PARTITION":
+                f.write(f'# 🔀 PARTITION: {log_name}\n')
+                if parents:
+                    src = f'{parents[0]}_df'
+                    part_keys = rule.get("partition_keys", ["id"]) if rule else ["id"]
+                    num_parts = rule.get("num_partitions", "4") if rule else "4"
+                    keys_str = ", ".join(f'"{k}"' for k in part_keys) if isinstance(part_keys, list) else f'"{part_keys}"'
+                    f.write(f'{var_id}_df = {src}.repartition({num_parts}, {keys_str})\n')
+                else:
+                    f.write(f'{var_id}_df = None\n')
+                f.write(f'print("🔀 PARTITION: {log_name}")\n\n')
+
+            # FILTER — filter with reject port
+            elif ntype == "FILTER":
+                f.write(f'# 🔽 FILTER: {log_name}\n')
+                if parents:
+                    src = f'{parents[0]}_df'
+                    where = rule.get("where") if rule else None
+                    if where:
+                        f.write(f'{var_id}_df = {src}.where("{where}")\n')
+                        f.write(f'{var_id}_reject_df = {src}.where("NOT ({where})")\n')
+                    else:
+                        f.write(f'{var_id}_df = {src}\n')
+                        f.write(f'{var_id}_reject_df = spark.createDataFrame([], {src}.schema)\n')
+                else:
+                    f.write(f'{var_id}_df = None\n')
+                f.write(f'print("🔽 FILTER: {log_name}")\n\n')
+
             # SINK
             elif ntype == "SINK":
                 f.write(f'# 🏁 SINK: {log_name}\n')

@@ -6,14 +6,18 @@ import ReactFlow, {
 import 'reactflow/dist/style.css'
 
 const TYPE_COLOR = {
-  SOURCE:    '#22c55e',
-  TRANSFORM: '#6366f1',
-  XFR:       '#6366f1',
-  JOIN:      '#f59e0b',
-  SINK:      '#ef4444',
-  DEDUP:     '#06b6d4',
-  NORMALIZE: '#a855f7',
-  LOOKUP:    '#ec4899',
+  SOURCE:      '#22c55e',
+  TRANSFORM:   '#6366f1',
+  XFR:         '#6366f1',
+  JOIN:        '#f59e0b',
+  SINK:        '#ef4444',
+  DEDUP:       '#06b6d4',
+  NORMALIZE:   '#a855f7',
+  LOOKUP:      '#ec4899',
+  CONCATENATE: '#14b8a6',
+  GATHER:      '#8b5cf6',
+  PARTITION:   '#f97316',
+  FILTER:      '#eab308',
 }
 
 const TYPE_ICON = {

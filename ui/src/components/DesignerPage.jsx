@@ -9,22 +9,30 @@ import { COMPILE_URL } from '../config'
 
 const TYPE_COLOR = {
   SOURCE: '#22c55e', TRANSFORM: '#6366f1', JOIN: '#f59e0b',
-  DEDUP: '#06b6d4', NORMALIZE: '#a855f7', LOOKUP: '#ec4899', SINK: '#ef4444',
+  DEDUP: '#06b6d4', NORMALIZE: '#a855f7', LOOKUP: '#ec4899',
+  CONCATENATE: '#14b8a6', GATHER: '#8b5cf6', PARTITION: '#f97316',
+  FILTER: '#eab308', SINK: '#ef4444',
 }
 const TYPE_ICON = {
   SOURCE: '📂', TRANSFORM: '🔄', JOIN: '🔗',
-  DEDUP: '🧹', NORMALIZE: '📐', LOOKUP: '🔍', SINK: '💾',
+  DEDUP: '🧹', NORMALIZE: '📐', LOOKUP: '🔍',
+  CONCATENATE: '🔗', GATHER: '📥', PARTITION: '🔀',
+  FILTER: '🔽', SINK: '💾',
 }
 
 // Fields shown per node type in the editor
 const TYPE_FIELDS = {
-  SOURCE:    ['source_type', 'path', 'format', 'topic', 'table', 'connection'],
-  TRANSFORM: ['select', 'where', 'group_by'],
-  JOIN:      ['join_key', 'join_type'],
-  DEDUP:     ['dedup_keys', 'order_by'],
-  NORMALIZE: ['explode_col', 'split_col', 'delimiter'],
-  LOOKUP:    ['lookup_key', 'lookup_select'],
-  SINK:      ['sink_type', 'path', 'format', 'topic', 'table', 'connection', 'mode'],
+  SOURCE:      ['source_type', 'path', 'format', 'topic', 'table', 'connection'],
+  TRANSFORM:   ['select', 'where', 'group_by'],
+  JOIN:        ['join_key', 'join_type'],
+  DEDUP:       ['dedup_keys', 'order_by'],
+  NORMALIZE:   ['explode_col', 'split_col', 'delimiter'],
+  LOOKUP:      ['lookup_key', 'lookup_select'],
+  CONCATENATE: [],
+  GATHER:      [],
+  PARTITION:   ['partition_keys', 'num_partitions'],
+  FILTER:      ['where'],
+  SINK:        ['sink_type', 'path', 'format', 'topic', 'table', 'connection', 'mode'],
 }
 
 const FIELD_LABELS = {

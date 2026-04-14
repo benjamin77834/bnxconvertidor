@@ -81,6 +81,20 @@ def _infer_columns(node, dag, xfr_rules, col_cache, dml_schema=None):
                 parent_cols = _infer_columns(dag.nodes[pid], dag, xfr_rules, col_cache, dml_schema)
                 cols |= parent_cols
 
+    elif ntype in ("CONCATENATE", "GATHER"):
+        for pid in node.parents:
+            if pid in dag.nodes:
+                parent_cols = _infer_columns(dag.nodes[pid], dag, xfr_rules, col_cache, dml_schema)
+                cols |= parent_cols
+
+    elif ntype == "PARTITION":
+        if node.parents and node.parents[0] in dag.nodes:
+            cols = set(_infer_columns(dag.nodes[node.parents[0]], dag, xfr_rules, col_cache, dml_schema))
+
+    elif ntype == "FILTER":
+        if node.parents and node.parents[0] in dag.nodes:
+            cols = set(_infer_columns(dag.nodes[node.parents[0]], dag, xfr_rules, col_cache, dml_schema))
+
     elif ntype == "SINK":
         if node.parents and node.parents[0] in dag.nodes:
             cols = _infer_columns(dag.nodes[node.parents[0]], dag, xfr_rules, col_cache, dml_schema)

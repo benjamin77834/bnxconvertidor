@@ -26,13 +26,17 @@ const light = {
 }
 
 const LEGEND = [
-  { type: 'SOURCE',    color: '#22c55e', desc: 'Lectura de datos desde S3, DB o archivos' },
-  { type: 'TRANSFORM', color: '#6366f1', desc: 'SELECT, WHERE, GROUP BY sobre los datos' },
-  { type: 'JOIN',      color: '#f59e0b', desc: 'Combina dos o más datasets por una key' },
-  { type: 'DEDUP',     color: '#06b6d4', desc: 'Elimina registros duplicados por key' },
-  { type: 'NORMALIZE', color: '#a855f7', desc: 'Expande un registro en múltiples filas' },
-  { type: 'LOOKUP',    color: '#ec4899', desc: 'Enriquece con tabla de referencia (broadcast)' },
-  { type: 'SINK',      color: '#ef4444', desc: 'Escritura final a S3, DB o archivo' },
+  { type: 'SOURCE',      color: '#22c55e', desc: 'Lectura de datos desde S3, DB o archivos (Scan)' },
+  { type: 'TRANSFORM',   color: '#6366f1', desc: 'SELECT, WHERE, GROUP BY (Reformat/Rollup)' },
+  { type: 'JOIN',        color: '#f59e0b', desc: 'Combina dos o más datasets por una key' },
+  { type: 'DEDUP',       color: '#06b6d4', desc: 'Elimina registros duplicados por key (Dedup Sort)' },
+  { type: 'NORMALIZE',   color: '#a855f7', desc: 'Expande un registro en múltiples filas' },
+  { type: 'LOOKUP',      color: '#ec4899', desc: 'Enriquece con tabla de referencia (broadcast)' },
+  { type: 'CONCATENATE', color: '#14b8a6', desc: 'Une datasets sin key (unionByName)' },
+  { type: 'GATHER',      color: '#8b5cf6', desc: 'Merge múltiples streams en uno' },
+  { type: 'PARTITION',   color: '#f97316', desc: 'Reparticiona por key a N particiones' },
+  { type: 'FILTER',      color: '#eab308', desc: 'Filtra con puerto de rechazo (2 salidas)' },
+  { type: 'SINK',        color: '#ef4444', desc: 'Escritura final a S3, DB o Kafka' },
 ]
 
 // ── Helpers ─────────────────────────────────────────────────
