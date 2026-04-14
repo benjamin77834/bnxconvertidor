@@ -226,13 +226,6 @@ def handler(event, context):
                 # --- Legacy single-PLAN path ---
                 graph = plan_to_graph(parsed_plan, parsed_pset)
 
-                # Debug: include mp detection info
-                _debug = {
-                    "file_keys": list(files.keys()),
-                    "mp_file_keys": list(mp_file_keys),
-                    "mp_temp_paths_keys": list(mp_temp_paths.keys()),
-                }
-
                 mp_path = _save_bytes(graph["mp"], ".mp")
                 xfr_path = _save_bytes(graph["xfr"], ".xfr")
 
@@ -247,7 +240,6 @@ def handler(event, context):
                 result["generated_mp"] = graph["mp"]
                 result["generated_xfr"] = graph["xfr"]
                 result["plan_name"] = parsed_plan.get("name", "")
-                result["_debug"] = _debug
                 return _response(200, result)
             finally:
                 for p in [plan_path, pset_path, user_xfr_path, mp_path, xfr_path]:
