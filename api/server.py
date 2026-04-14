@@ -20,6 +20,7 @@ from src.codegen.spark_codegen import generate_spark
 from src.codegen.stepfunctions_codegen import generate_stepfunctions
 from src.codegen.terraform_codegen import generate_terraform
 from src.codegen.airflow_codegen import generate_airflow
+from src.codegen.flink_codegen import generate_flink
 from src.cobol_parser import parse_cobol, cobol_to_graph
 from src.plan_parser import parse_plan, parse_pset, plan_to_graph
 from src.plan_parser import resolve_graph_references, merge_asts, detect_retrocesos, pretty_print_mega_dag
@@ -81,6 +82,8 @@ async def compile_graph(
             out.close()
             if target == "spark":
                 generate_spark(dag, out.name, xfr_rules)
+            elif target == "flink":
+                generate_flink(dag, out.name, xfr_rules)
             else:
                 generate_glue(dag, out.name, xfr_rules)
             with open(out.name) as f:
@@ -191,6 +194,8 @@ async def convert_cobol(
             out.close()
             if target == "spark":
                 generate_spark(dag, out.name, xfr_rules)
+            elif target == "flink":
+                generate_flink(dag, out.name, xfr_rules)
             else:
                 generate_glue(dag, out.name, xfr_rules)
             with open(out.name) as f:
@@ -291,6 +296,8 @@ async def convert_plan(
                 out.close()
                 if target == "spark":
                     generate_spark(dag, out.name, xfr_rules)
+                elif target == "flink":
+                    generate_flink(dag, out.name, xfr_rules)
                 else:
                     generate_glue(dag, out.name, xfr_rules)
                 with open(out.name) as f:
@@ -380,6 +387,8 @@ async def convert_plan(
             out.close()
             if target == "spark":
                 generate_spark(dag, out.name, xfr_rules)
+            elif target == "flink":
+                generate_flink(dag, out.name, xfr_rules)
             else:
                 generate_glue(dag, out.name, xfr_rules)
             with open(out.name) as f:

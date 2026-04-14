@@ -22,6 +22,7 @@ from src.codegen.spark_codegen import generate_spark
 from src.codegen.stepfunctions_codegen import generate_stepfunctions
 from src.codegen.terraform_codegen import generate_terraform
 from src.codegen.airflow_codegen import generate_airflow
+from src.codegen.flink_codegen import generate_flink
 from src.cobol_parser import parse_cobol, cobol_to_graph
 from src.plan_parser import parse_plan, parse_pset, plan_to_graph
 from src.plan_parser import resolve_graph_references, merge_asts, detect_retrocesos, pretty_print_mega_dag
@@ -49,7 +50,16 @@ def _parse_multipart(event):
     fields = {}
     for key in form.keys():
         item = form[key]
-        if item.filename:
+        # Handle multiple files with same key (e.g., mp_files)
+        if isinstance(item, list):
+            for i, sub in enumerate(item):
+                if sub.filename:
+                    # Use original filename as key for matching
+                    files[sub.filename or f"{key}_{i}"] = sub.value
+                else:
+                    val = sub.value if isinstance(sub.value, str) else sub.value.decode()
+                    fields[f"{key}_{i}"] = val
+        elif item.filename:
             files[key] = item.value
         else:
             fields[key] = item.value if isinstance(item.value, str) else item.value.decode()
@@ -68,6 +78,8 @@ def _generate_code(dag, xfr_rules, target):
     out.close()
     if target == "spark":
         generate_spark(dag, out.name, xfr_rules)
+    elif target == "flink":
+        generate_flink(dag, out.name, xfr_rules)
     else:
         generate_glue(dag, out.name, xfr_rules)
     with open(out.name) as f:
@@ -153,16 +165,12 @@ def handler(event, context):
             mp_path = xfr_path = None
             mp_temp_paths = {}
 
-            # Collect mp_files from multipart (mp_file_0, mp_file_1, ... or mp_files)
+            # Collect mp_files from multipart (mp_files uploaded with original filenames)
             for key, data in files.items():
-                if key.startswith("mp_file") or key.startswith("mp_files"):
-                    fname = key + ".mp"
-                    # Try to get original filename from fields
-                    fname_key = key + "_name"
-                    if fname_key in fields:
-                        fname = fields[fname_key]
+                if key.startswith("mp_files") or key.endswith(".mp"):
                     tp = _save_bytes(data, ".mp")
-                    mp_temp_paths[fname] = tp
+                    # key is the original filename (e.g., "ingest.mp")
+                    mp_temp_paths[key] = tp
 
             try:
                 parsed_plan = parse_plan(plan_path)

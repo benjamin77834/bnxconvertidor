@@ -328,6 +328,7 @@ export default function App() {
               {[
                 { id: 'glue', label: '🔧 Glue', desc: 'AWS Glue + GlueContext' },
                 { id: 'spark', label: '⚡ PySpark', desc: 'PySpark puro + SparkSession' },
+                { id: 'flink', label: '🌊 Flink', desc: 'PyFlink + Table API / Flink SQL' },
               ].map(opt => (
                 <button key={opt.id}
                   onClick={() => setTarget(opt.id)}
