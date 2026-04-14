@@ -12,6 +12,9 @@ def generate_stepfunctions(dag, output_path, xfr_rules=None):
     states = {}
     order = [n.id for n in dag.execution_order]
 
+    # Mega-DAG: group by graph boundary first, then by depth
+    graph_boundaries = getattr(dag, 'graph_boundaries', {})
+
     # Group nodes by depth (parallel execution within same depth)
     depth_map = {}
     def get_depth(nid, visited=None):

@@ -86,13 +86,28 @@ function buildLayout(nodes, edges, theme) {
   })
 
   const edgeColor = t.muted || '#475569'
-  const rfEdges = edges.map((e, i) => ({
-    id: `e${i}`,
-    source: e.from,
-    target: e.to,
-    markerEnd: { type: MarkerType.ArrowClosed, color: edgeColor },
-    style: { stroke: edgeColor, strokeWidth: 1.5 },
-  }))
+  const rfEdges = edges.map((e, i) => {
+    const isCrossGraph = e.cross_graph === true
+    const isRetroceso = e.type === 'retroceso'
+    let style = { stroke: edgeColor, strokeWidth: 1.5 }
+    let animated = false
+
+    if (isRetroceso) {
+      style = { stroke: '#ef4444', strokeWidth: 2, strokeDasharray: '6 3' }
+      animated = true
+    } else if (isCrossGraph) {
+      style = { stroke: '#8b5cf6', strokeWidth: 2, strokeDasharray: '8 4' }
+    }
+
+    return {
+      id: `e${i}`,
+      source: e.from,
+      target: e.to,
+      markerEnd: { type: MarkerType.ArrowClosed, color: style.stroke },
+      style,
+      animated,
+    }
+  })
 
   return { rfNodes, rfEdges }
 }

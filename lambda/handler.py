@@ -13,7 +13,7 @@ from io import BytesIO
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from src.mp_parser import parse_mp_ast
-from src.dag.builder import build_dag
+from src.dag.builder import build_dag, build_mega_dag
 from src.xfr_parser import parse_xfr
 from src.dml_parser import parse_dml
 from src.validator.semantic import validate
@@ -24,6 +24,7 @@ from src.codegen.terraform_codegen import generate_terraform
 from src.codegen.airflow_codegen import generate_airflow
 from src.cobol_parser import parse_cobol, cobol_to_graph
 from src.plan_parser import parse_plan, parse_pset, plan_to_graph
+from src.plan_parser import resolve_graph_references, merge_asts, detect_retrocesos, pretty_print_mega_dag
 from src.accuracy import compute_accuracy
 
 
@@ -150,9 +151,57 @@ def handler(event, context):
             pset_path = _save_bytes(files["pset"], ".pset") if "pset" in files else None
             user_xfr_path = _save_bytes(files["xfr"], ".xfr") if "xfr" in files else None
             mp_path = xfr_path = None
+            mp_temp_paths = {}
+
+            # Collect mp_files from multipart (mp_file_0, mp_file_1, ... or mp_files)
+            for key, data in files.items():
+                if key.startswith("mp_file") or key.startswith("mp_files"):
+                    fname = key + ".mp"
+                    # Try to get original filename from fields
+                    fname_key = key + "_name"
+                    if fname_key in fields:
+                        fname = fields[fname_key]
+                    tp = _save_bytes(data, ".mp")
+                    mp_temp_paths[fname] = tp
+
             try:
                 parsed_plan = parse_plan(plan_path)
                 parsed_pset = parse_pset(pset_path) if pset_path else {}
+
+                # --- Multi-MP path ---
+                if mp_temp_paths:
+                    retrocesos = detect_retrocesos(parsed_plan)
+                    resolved, resolve_errors, resolve_warnings = resolve_graph_references(
+                        parsed_plan, mp_temp_paths, parsed_pset
+                    )
+                    if resolve_errors:
+                        return _response(200, {"errors": resolve_errors, "warnings": resolve_warnings,
+                                               "nodes": [], "edges": [], "code": None})
+
+                    dependencies = {g.name: g.depends for g in resolved}
+                    merged_ast = merge_asts(resolved, dependencies, retrocesos)
+                    dag = build_mega_dag(merged_ast)
+
+                    xfr_rules = {}
+                    dml_schema = {}
+                    for g in resolved:
+                        xfr_rules.update(g.xfr_rules)
+                        dml_schema.update(g.dml_schema)
+                    if user_xfr_path:
+                        user_rules = parse_xfr(user_xfr_path)
+                        xfr_rules.update(user_rules)
+
+                    result = _build_response(dag, merged_ast, xfr_rules, dml_schema, target)
+                    result["generated_mp"] = pretty_print_mega_dag(merged_ast)
+                    result["generated_xfr"] = ""
+                    result["plan_name"] = parsed_plan.get("name", "")
+                    result["graphs"] = [{"name": g.name, "nodes": len(g.ast["nodes"]),
+                                         "is_auto_generated": g.is_auto_generated} for g in resolved]
+                    result["cross_graph_edges"] = merged_ast.get("cross_graph_edges", [])
+                    result["warnings"] = resolve_warnings + (result.get("warnings") or [])
+                    return _response(200, result)
+
+                # --- Legacy single-PLAN path ---
                 graph = plan_to_graph(parsed_plan, parsed_pset)
 
                 mp_path = _save_bytes(graph["mp"], ".mp")
@@ -172,6 +221,9 @@ def handler(event, context):
                 return _response(200, result)
             finally:
                 for p in [plan_path, pset_path, user_xfr_path, mp_path, xfr_path]:
+                    if p and os.path.exists(p):
+                        os.unlink(p)
+                for p in mp_temp_paths.values():
                     if p and os.path.exists(p):
                         os.unlink(p)
 

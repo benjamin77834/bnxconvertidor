@@ -10,17 +10,32 @@ class Node:
         self.children = []
 
 class DAG:
-    def __init__(self, nodes_list, edges_list):
+    def __init__(self, nodes_list, edges_list, exclude_edges=None):
         # crear dict de nodos usando ID seguro
-        self.nodes = {n["id"]: Node(n["id"], n["type"], n["params"]) for n in nodes_list}
-        
+        self.nodes = {n["id"]: Node(n["id"], n["type"], n.get("params", "")) for n in nodes_list}
+
+        # Mega-DAG metadata (populated by build_mega_dag)
+        self.cross_graph_edges = []
+        self.retroceso_edges = []
+        self.graph_boundaries = {}
+
+        # Set of edge tuples to exclude from parent/child (retrocesos)
+        self._exclude = set()
+        if exclude_edges:
+            for e in exclude_edges:
+                self._exclude.add((e["from"], e["to"]))
+
         # asignar relaciones padre-hijo
         for e in edges_list:
             parent_id = e["from"]
             child_id = e["to"]
+            if parent_id not in self.nodes or child_id not in self.nodes:
+                continue
+            if (parent_id, child_id) in self._exclude:
+                continue
             self.nodes[parent_id].children.append(child_id)
             self.nodes[child_id].parents.append(parent_id)
-        
+
         self.execution_order = self.topo_sort()
 
     def topo_sort(self):
@@ -41,3 +56,16 @@ class DAG:
 
 def build_dag(ast):
     return DAG(ast["nodes"], ast["edges"])
+
+
+def build_mega_dag(merged_ast):
+    """Build a DAG from a merged multi-graph AST, excluding retroceso edges from topo sort."""
+    retroceso_edges = merged_ast.get("retroceso_edges", [])
+
+    dag = DAG(merged_ast["nodes"], merged_ast["edges"], exclude_edges=retroceso_edges)
+
+    dag.cross_graph_edges = merged_ast.get("cross_graph_edges", [])
+    dag.retroceso_edges = retroceso_edges
+    dag.graph_boundaries = merged_ast.get("subgraphs", {})
+
+    return dag
