@@ -422,16 +422,16 @@ export default function App() {
               📦 <span style={{ color: t.muted }}>MP</span> = grafos externos (Grafo de Grafos)<br/>
               <span style={{ color: '#22c55e' }}>PLAN + MP files = Mega-DAG unificado</span>
             </div>
-            <input ref={planRef} type="file" accept=".plan" hidden
+            <input ref={planRef} type="file" accept=".plan,*" hidden
               onChange={(e) => { if (e.target.files[0]) compilePlan(e.target.files[0], psetFile); e.target.value = '' }}
             />
-            <input ref={psetRef} type="file" accept=".pset" hidden
+            <input ref={psetRef} type="file" accept=".pset,*" hidden
               onChange={(e) => { if (e.target.files[0]) { setPsetFile(e.target.files[0]) }; e.target.value = '' }}
             />
             <input ref={planXfrRef} type="file" accept=".xfr" hidden
               onChange={(e) => { if (e.target.files[0]) { setPlanXfrFile(e.target.files[0]) }; e.target.value = '' }}
             />
-            <input ref={mpFilesRef} type="file" accept=".mp" multiple hidden
+            <input ref={mpFilesRef} type="file" accept=".mp,*" multiple hidden
               onChange={(e) => { if (e.target.files.length) { setMpFiles(prev => [...prev, ...Array.from(e.target.files)]) }; e.target.value = '' }}
             />
           </div>
