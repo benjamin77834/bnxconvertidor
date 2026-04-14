@@ -107,10 +107,41 @@ def validate(dag, xfr_rules, dml_schema=None):
     """
     Valida el DAG semánticamente.
     Retorna lista de errores encontrados.
+    Supports Mega-DAG cross-graph validation.
     """
     errors = []
     warnings = []
     col_cache = {}
+
+    # --- Cross-graph edge validation (Mega-DAG) ---
+    cross_graph_edges = getattr(dag, 'cross_graph_edges', [])
+    retroceso_edges = getattr(dag, 'retroceso_edges', [])
+    graph_boundaries = getattr(dag, 'graph_boundaries', {})
+
+    for cge in cross_graph_edges:
+        from_id = cge.get("from", "")
+        to_id = cge.get("to", "")
+        if from_id not in dag.nodes:
+            errors.append(f"❌ Cross-graph edge: source node '{from_id}' not found in graph '{cge.get('source_graph', '?')}'")
+        if to_id not in dag.nodes:
+            errors.append(f"❌ Cross-graph edge: target node '{to_id}' not found in graph '{cge.get('target_graph', '?')}'")
+
+    for re_edge in retroceso_edges:
+        from_id = re_edge.get("from", "")
+        to_id = re_edge.get("to", "")
+        src_graph = re_edge.get("source_graph", "")
+        tgt_graph = re_edge.get("target_graph", "")
+        # Retrocesos must cross graph boundaries
+        if src_graph == tgt_graph:
+            errors.append(
+                f"❌ Retroceso edge '{from_id}' → '{to_id}' is within graph '{src_graph}'. "
+                f"Retrocesos must cross graph boundaries."
+            )
+        # Validate SINK→SOURCE
+        if from_id in dag.nodes and dag.nodes[from_id].type.upper() != "SINK":
+            warnings.append(f"⚠️  Retroceso source '{from_id}' is not a SINK node")
+        if to_id in dag.nodes and dag.nodes[to_id].type.upper() != "SOURCE":
+            warnings.append(f"⚠️  Retroceso target '{to_id}' is not a SOURCE node")
 
     for node in dag.execution_order:
         ntype = node.type.upper()

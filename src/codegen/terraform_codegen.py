@@ -112,6 +112,13 @@ def generate_terraform(dag, output_path, xfr_rules=None):
 
     # Glue Jobs — one per node that is not SOURCE or SINK
     lines.append('# ── Glue Jobs ──────────────────────────────────')
+    graph_boundaries = getattr(dag, 'graph_boundaries', {})
+    node_to_graph = {}
+    for gname, nids in graph_boundaries.items():
+        if "__" not in gname:
+            for nid in nids:
+                node_to_graph[nid] = gname
+
     for node in dag.execution_order:
         ntype = node.type.upper()
         if ntype in ('SOURCE', 'SINK'):
@@ -139,6 +146,9 @@ def generate_terraform(dag, output_path, xfr_rules=None):
         lines.append(f'  glue_version      = "4.0"')
         lines.append(f'  tags = {{')
         lines.append(f'    NodeType    = "{ntype}"')
+        graph_tag = node_to_graph.get(node.id, "")
+        if graph_tag:
+            lines.append(f'    Graph       = "{graph_tag}"')
         lines.append(f'    ManagedBy   = "BNX-Terraform"')
         lines.append(f'  }}')
         lines.append(f'}}')

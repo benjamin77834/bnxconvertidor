@@ -1,0 +1,14 @@
+PLAN banking_mega
+VERSION 2.0
+
+GRAPH ingest
+  MP: graphs/test_mega/ingest.mp
+  PRIORITY: HIGH
+
+GRAPH enrich
+  MP: graphs/test_mega/enrich.mp
+  DEPENDS: ingest
+
+GRAPH report
+  MP: graphs/test_mega/report.mp
+  DEPENDS: enrich

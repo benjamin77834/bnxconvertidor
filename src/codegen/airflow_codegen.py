@@ -36,7 +36,8 @@ def generate_airflow(dag, output_path, xfr_rules=None):
         f.write('from airflow.providers.amazon.aws.operators.glue import GlueJobOperator\n')
         f.write('from airflow.providers.amazon.aws.sensors.glue import GlueJobSensor\n')
         f.write('from airflow.operators.python import PythonOperator\n')
-        f.write('from airflow.operators.dummy import DummyOperator\n\n')
+        f.write('from airflow.operators.dummy import DummyOperator\n')
+        f.write('from airflow.utils.task_group import TaskGroup\n\n')
 
         f.write('default_args = {\n')
         f.write('    "owner": "bnx-pipeline",\n')

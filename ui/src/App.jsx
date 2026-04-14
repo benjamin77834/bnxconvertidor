@@ -63,6 +63,8 @@ export default function App() {
   const [psetFile, setPsetFile] = useState(null)
   const [planXfrFile, setPlanXfrFile] = useState(null)
   const planXfrRef              = useRef(null)
+  const [mpFiles, setMpFiles]   = useState([])
+  const mpFilesRef              = useRef(null)
 
   const t = isDark ? dark : light
 
@@ -183,17 +185,21 @@ export default function App() {
 
   const compilePlan = async (planFile, psetFile) => {
     setLoading(true)
+    const startTime = Date.now()
     const form = new FormData()
     form.append('plan', planFile)
     if (psetFile) form.append('pset', psetFile)
     if (planXfrFile) form.append('xfr', planXfrFile)
+    mpFiles.forEach(f => form.append('mp_files', f))
     form.append('target', target)
     try {
       const res = await fetch(COMPILE_URL.replace('/compile', '/plan'), { method: 'POST', body: form })
       const data = await res.json()
+      setCompileTime(Date.now() - startTime)
       setResult(data)
       if (data.code) setCodeOpen(true)
     } catch (e) {
+      setCompileTime(Date.now() - startTime)
       setResult({ errors: [`Network error: ${e.message}`], warnings: [], nodes: [], edges: [] })
     } finally { setLoading(false) }
   }
@@ -361,7 +367,7 @@ export default function App() {
           {/* Ab Initio PLAN/PSET upload */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <span style={{ fontSize: 14, color: t.muted, textTransform: 'uppercase', letterSpacing: 1 }}>Ab Initio PLAN</span>
-            <span style={{ fontSize: 12, color: t.dim }}>Sube en orden: 1° PSET, 2° XFR, 3° PLAN (compila al subir PLAN)</span>
+            <span style={{ fontSize: 12, color: t.dim }}>Sube en orden: 1° PSET, 2° XFR, 3° MP files (opcional), 4° PLAN (compila al subir PLAN)</span>
             {psetFile && (
               <span style={{ fontSize: 11, color: '#22c55e' }}>✅ 1. PSET: {psetFile.name}</span>
             )}
@@ -383,10 +389,29 @@ export default function App() {
               }} onClick={() => planXfrRef.current.click()}>2° 🔄 .xfr</button>
               <button style={{
                 flex: 1, padding: '8px 12px', borderRadius: 8, cursor: 'pointer',
+                background: mpFiles.length > 0 ? '#f59e0b15' : t.card,
+                border: `1px dashed ${mpFiles.length > 0 ? '#f59e0b' : t.border}`,
+                color: mpFiles.length > 0 ? '#f59e0b' : t.muted, fontSize: 12,
+              }} onClick={() => mpFilesRef.current.click()}>3° 📦 .mp</button>
+              <button style={{
+                flex: 1, padding: '8px 12px', borderRadius: 8, cursor: 'pointer',
                 background: t.card, border: `1px dashed ${t.accent || '#6366f1'}`,
                 color: t.accent || '#6366f1', fontSize: 12, fontWeight: 600,
-              }} onClick={() => planRef.current.click()}>3° 📄 .plan</button>
+              }} onClick={() => planRef.current.click()}>4° 📄 .plan</button>
             </div>
+            {mpFiles.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                <span style={{ fontSize: 11, color: '#f59e0b' }}>📦 {mpFiles.length} MP file{mpFiles.length > 1 ? 's' : ''}:</span>
+                {mpFiles.map((f, i) => (
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}>
+                    <span style={{ color: t.muted, flex: 1 }}>{f.name}</span>
+                    <button onClick={() => setMpFiles(mf => mf.filter((_, j) => j !== i))} style={{
+                      background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: 11, padding: '0 4px',
+                    }}>❌</button>
+                  </div>
+                ))}
+              </div>
+            )}
             <div style={{
               fontSize: 11, color: t.dim, lineHeight: 1.5, padding: '6px 8px',
               background: t.bg, borderRadius: 6, border: `1px solid ${t.border}`,
@@ -394,7 +419,8 @@ export default function App() {
               📄 <span style={{ color: t.muted }}>PLAN</span> = orquestación (qué grafos y en qué orden)<br/>
               ⚙️ <span style={{ color: t.muted }}>PSET</span> = parámetros (paths S3, Kafka, DB)<br/>
               🔄 <span style={{ color: t.muted }}>XFR</span> = lógica de negocio (select, where, joins)<br/>
-              <span style={{ color: '#22c55e' }}>Los 3 juntos = máxima precisión en la conversión</span>
+              📦 <span style={{ color: t.muted }}>MP</span> = grafos externos (Grafo de Grafos)<br/>
+              <span style={{ color: '#22c55e' }}>PLAN + MP files = Mega-DAG unificado</span>
             </div>
             <input ref={planRef} type="file" accept=".plan" hidden
               onChange={(e) => { if (e.target.files[0]) compilePlan(e.target.files[0], psetFile); e.target.value = '' }}
@@ -404,6 +430,9 @@ export default function App() {
             />
             <input ref={planXfrRef} type="file" accept=".xfr" hidden
               onChange={(e) => { if (e.target.files[0]) { setPlanXfrFile(e.target.files[0]) }; e.target.value = '' }}
+            />
+            <input ref={mpFilesRef} type="file" accept=".mp" multiple hidden
+              onChange={(e) => { if (e.target.files.length) { setMpFiles(prev => [...prev, ...Array.from(e.target.files)]) }; e.target.value = '' }}
             />
           </div>
 

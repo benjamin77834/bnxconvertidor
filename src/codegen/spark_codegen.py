@@ -46,7 +46,22 @@ def generate_spark(dag, output_path, xfr_rules=None):
         f.write('spark = SparkSession.builder.appName("BNX_Pipeline").getOrCreate()\n\n')
         f.write('print("🚀 BNX PySpark Job Started")\n\n')
 
+        # Track graph boundaries for Mega-DAG
+        graph_boundaries = getattr(dag, 'graph_boundaries', {})
+        node_to_graph = {}
+        for gname, nids in graph_boundaries.items():
+            if "__" not in gname:
+                for nid in nids:
+                    node_to_graph[nid] = gname
+        current_graph = None
+
         for node in dag.execution_order:
+            # Insert graph boundary comment if graph changed
+            if node_to_graph:
+                ng = node_to_graph.get(node.id)
+                if ng and ng != current_graph:
+                    current_graph = ng
+                    f.write(f'\n# === GRAPH: {current_graph} ===\n\n')
             var_id = node.id
             log_name = node.name
             ntype = node.type.upper()

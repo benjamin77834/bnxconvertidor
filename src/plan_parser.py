@@ -4,8 +4,11 @@ Parses Ab Initio PLAN and PSET files.
 PLAN: execution order, dependencies between graphs.
 PSET: runtime parameters (paths, connections, thresholds).
 Generates .mp with orchestration DAG.
+Supports "Grafo de Grafos": multiple .mp files referenced from a PLAN.
 """
 import re
+import os
+from dataclasses import dataclass, field
 
 
 def parse_plan(path):
@@ -197,3 +200,329 @@ def plan_to_graph(parsed_plan, parsed_pset=None):
         "xfr": "\n".join(xfr_lines),
         "pset": pset,
     }
+
+
+# ═══════════════════════════════════════════════════════════════
+# GRAFO DE GRAFOS — Multi-MP support
+# ═══════════════════════════════════════════════════════════════
+
+@dataclass
+class ResolvedGraph:
+    """Represents a single graph resolved from a PLAN."""
+    name: str
+    ast: dict                          # {nodes, edges, subgraphs}
+    xfr_rules: dict = field(default_factory=dict)
+    dml_schema: dict = field(default_factory=dict)
+    is_auto_generated: bool = False
+    depends: list = field(default_factory=list)
+
+
+def substitute_pset_params(content, pset_params):
+    """
+    Replace ${PARAM_NAME} in content with PSET values.
+    Returns (substituted_content, warnings).
+    """
+    warnings = []
+    used = set()
+
+    def replacer(m):
+        key = m.group(1)
+        if key in pset_params:
+            used.add(key)
+            return pset_params[key]
+        warnings.append(f"⚠️  PSET parameter '${{{key}}}' is not defined")
+        return m.group(0)  # leave unchanged
+
+    result = re.sub(r'\$\{(\w+)\}', replacer, content)
+    return result, warnings
+
+
+def namespace_ast(ast, graph_name):
+    """
+    Prefix all node IDs with '{graph_name}__'.
+    Preserves original node name as display name.
+    """
+    prefix = f"{graph_name}__"
+    id_map = {}
+
+    new_nodes = []
+    for node in ast["nodes"]:
+        new_id = prefix + node["id"]
+        id_map[node["id"]] = new_id
+        new_nodes.append({
+            **node,
+            "id": new_id,
+            "name": node["name"],
+            "subgraph": graph_name,
+            "source_graph": graph_name,
+        })
+
+    new_edges = []
+    for edge in ast.get("edges", []):
+        new_edges.append({
+            "from": id_map.get(edge["from"], prefix + edge["from"]),
+            "to": id_map.get(edge["to"], prefix + edge["to"]),
+        })
+
+    new_subgraphs = {}
+    for sg_name, node_ids in ast.get("subgraphs", {}).items():
+        new_sg_name = f"{graph_name}__{sg_name}"
+        new_subgraphs[new_sg_name] = [id_map.get(nid, prefix + nid) for nid in node_ids]
+    # Add the whole graph as a subgraph
+    new_subgraphs[graph_name] = [n["id"] for n in new_nodes]
+
+    return {"nodes": new_nodes, "edges": new_edges, "subgraphs": new_subgraphs}
+
+
+def detect_retrocesos(parsed_plan):
+    """
+    Detect backward references (feedback loops) in GRAPH dependencies.
+    Returns list of (from_graph, to_graph) tuples that form cycles.
+    """
+    graphs = parsed_plan["graphs"]
+    adj = {name: g.get("depends", []) for name, g in graphs.items()}
+    retrocesos = []
+
+    def can_reach(start, target, visited=None):
+        if visited is None:
+            visited = set()
+        if start == target:
+            return True
+        if start in visited:
+            return False
+        visited.add(start)
+        for dep in adj.get(start, []):
+            if can_reach(dep, target, visited):
+                return True
+        return False
+
+    for name, g in graphs.items():
+        for dep in g.get("depends", []):
+            if dep in graphs and can_reach(dep, name):
+                retrocesos.append((name, dep))
+
+    return retrocesos
+
+
+def resolve_graph_references(parsed_plan, mp_files=None, pset_params=None, base_dir=None):
+    """
+    For each GRAPH in the PLAN:
+    - If it has an MP property and the file exists → parse it
+    - If MP property but file missing → error
+    - If no MP property → auto-generate with plan_to_graph logic
+    Returns (list[ResolvedGraph], errors, warnings).
+    """
+    from src.mp_parser import parse_mp_ast
+    from src.xfr_parser import parse_xfr
+    from src.dml_parser import parse_dml
+
+    mp_files = mp_files or {}
+    pset_params = pset_params or {}
+    graphs = parsed_plan["graphs"]
+    resolved = []
+    errors = []
+    warnings = []
+
+    for name, g in graphs.items():
+        mp_ref = g.get("mp")
+        xfr_ref = g.get("xfr")
+        dml_ref = g.get("dml")
+
+        # --- Resolve MP ---
+        ast = None
+        is_auto = False
+
+        if mp_ref:
+            # Check mp_files dict first (uploaded files), then filesystem
+            mp_path = mp_files.get(mp_ref) or mp_files.get(os.path.basename(mp_ref))
+            if not mp_path and base_dir:
+                candidate = os.path.join(base_dir, mp_ref)
+                if os.path.exists(candidate):
+                    mp_path = candidate
+            if not mp_path:
+                # Try the ref as absolute/relative path
+                if os.path.exists(mp_ref):
+                    mp_path = mp_ref
+
+            if mp_path and os.path.exists(mp_path):
+                ast = parse_mp_ast(mp_path)
+            else:
+                errors.append(f"❌ GRAPH '{name}': MP file '{mp_ref}' not found or unreadable")
+                continue
+        else:
+            # Auto-generate a simple single-node graph for this GRAPH
+            # Use plan_to_graph logic for this single graph
+            single_plan = {"name": parsed_plan["name"], "graphs": {name: g}}
+            auto = plan_to_graph(single_plan, pset_params)
+            import tempfile
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp", mode="w")
+            tmp.write(auto["mp"])
+            tmp.close()
+            ast = parse_mp_ast(tmp.name)
+            os.unlink(tmp.name)
+            is_auto = True
+            warnings.append(f"⚠️  GRAPH '{name}': no MP file, auto-generating graph")
+
+        # Namespace the AST
+        ast = namespace_ast(ast, name)
+
+        # --- Resolve XFR ---
+        xfr_rules = {}
+        if xfr_ref:
+            xfr_path = mp_files.get(xfr_ref) or mp_files.get(os.path.basename(xfr_ref))
+            if not xfr_path and base_dir:
+                candidate = os.path.join(base_dir, xfr_ref)
+                if os.path.exists(candidate):
+                    xfr_path = candidate
+            if not xfr_path and os.path.exists(xfr_ref):
+                xfr_path = xfr_ref
+
+            if xfr_path and os.path.exists(xfr_path):
+                # Read, substitute PSET params, then parse
+                with open(xfr_path, "r") as f:
+                    xfr_content = f.read()
+                xfr_content, pset_warns = substitute_pset_params(xfr_content, pset_params)
+                for w in pset_warns:
+                    warnings.append(f"GRAPH '{name}': {w}")
+                # Write substituted content to temp and parse
+                import tempfile
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xfr", mode="w")
+                tmp.write(xfr_content)
+                tmp.close()
+                xfr_rules = parse_xfr(tmp.name)
+                os.unlink(tmp.name)
+            else:
+                warnings.append(f"⚠️  GRAPH '{name}': XFR file '{xfr_ref}' not found, using default rules")
+
+        # --- Resolve DML ---
+        dml_schema = {}
+        if dml_ref:
+            dml_path = mp_files.get(dml_ref) or mp_files.get(os.path.basename(dml_ref))
+            if not dml_path and base_dir:
+                candidate = os.path.join(base_dir, dml_ref)
+                if os.path.exists(candidate):
+                    dml_path = candidate
+            if not dml_path and os.path.exists(dml_ref):
+                dml_path = dml_ref
+
+            if dml_path and os.path.exists(dml_path):
+                dml_data = parse_dml(dml_path)
+                dml_schema = dml_data.get("schema", {})
+            else:
+                warnings.append(f"⚠️  GRAPH '{name}': DML file '{dml_ref}' not found, using default schema")
+
+        resolved.append(ResolvedGraph(
+            name=name,
+            ast=ast,
+            xfr_rules=xfr_rules,
+            dml_schema=dml_schema,
+            is_auto_generated=is_auto,
+            depends=g.get("depends", []),
+        ))
+
+    return resolved, errors, warnings
+
+
+def _create_cross_graph_edges(resolved_graphs, dependencies, retrocesos):
+    """Create edges between graphs based on DEPENDS relationships."""
+    cross_edges = []
+    retroceso_set = set(retrocesos)
+    graph_map = {g.name: g for g in resolved_graphs}
+
+    for graph_name, deps in dependencies.items():
+        g = graph_map.get(graph_name)
+        if not g:
+            continue
+        target_sources = [n for n in g.ast["nodes"] if n["type"].upper() == "SOURCE"]
+
+        for dep_name in deps:
+            dep_g = graph_map.get(dep_name)
+            if not dep_g:
+                continue
+            dep_sinks = [n for n in dep_g.ast["nodes"] if n["type"].upper() == "SINK"]
+
+            edge_type = "retroceso" if (graph_name, dep_name) in retroceso_set else "normal"
+
+            for sink in dep_sinks:
+                for source in target_sources:
+                    cross_edges.append({
+                        "from": sink["id"],
+                        "to": source["id"],
+                        "source_graph": dep_name,
+                        "target_graph": graph_name,
+                        "type": edge_type,
+                        "cross_graph": True,
+                    })
+
+    return cross_edges
+
+
+def merge_asts(resolved_graphs, dependencies, retrocesos):
+    """
+    Combine all namespaced ASTs into a single unified AST.
+    Creates cross-graph edges based on dependencies.
+    """
+    all_nodes = []
+    all_edges = []
+    all_subgraphs = {}
+
+    for g in resolved_graphs:
+        all_nodes.extend(g.ast["nodes"])
+        all_edges.extend(g.ast["edges"])
+        all_subgraphs.update(g.ast.get("subgraphs", {}))
+
+    cross_edges = _create_cross_graph_edges(resolved_graphs, dependencies, retrocesos)
+
+    # Separate retroceso edges
+    normal_cross = [e for e in cross_edges if e.get("type") != "retroceso"]
+    retroceso_cross = [e for e in cross_edges if e.get("type") == "retroceso"]
+
+    # Add normal cross-graph edges to the main edge list
+    all_edges.extend(normal_cross)
+
+    return {
+        "nodes": all_nodes,
+        "edges": all_edges,
+        "subgraphs": all_subgraphs,
+        "cross_graph_edges": cross_edges,
+        "retroceso_edges": retroceso_cross,
+    }
+
+
+def pretty_print_mega_dag(merged_ast):
+    """Serialize a Mega-DAG to readable .mp format."""
+    lines = ["# Mega-DAG — Grafo de Grafos", ""]
+
+    subgraphs = merged_ast.get("subgraphs", {})
+    nodes_by_id = {n["id"]: n for n in merged_ast["nodes"]}
+
+    # Write subgraphs
+    for sg_name, node_ids in subgraphs.items():
+        # Skip nested subgraphs (only write top-level graph subgraphs)
+        if "__" in sg_name:
+            continue
+        lines.append(f"SUBGRAPH {sg_name} {{")
+        for nid in node_ids:
+            node = nodes_by_id.get(nid)
+            if node:
+                lines.append(f"  NODE {nid} : {node['type']}")
+        lines.append("}")
+        lines.append("")
+
+    # Write intra-graph edges
+    lines.append("# Intra-graph edges")
+    for edge in merged_ast["edges"]:
+        if not edge.get("cross_graph"):
+            lines.append(f"{edge['from']} -> {edge['to']}")
+
+    # Write cross-graph edges
+    cross = merged_ast.get("cross_graph_edges", [])
+    if cross:
+        lines.append("")
+        lines.append("# Cross-graph edges")
+        for edge in cross:
+            tag = " [retroceso]" if edge.get("type") == "retroceso" else ""
+            lines.append(f"# {edge.get('source_graph', '?')} -> {edge.get('target_graph', '?')}{tag}")
+            lines.append(f"{edge['from']} -> {edge['to']}")
+
+    return "\n".join(lines)

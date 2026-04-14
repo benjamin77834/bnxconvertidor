@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 from src.mp_parser import parse_mp_ast
-from src.dag.builder import build_dag
+from src.dag.builder import build_dag, build_mega_dag
 from src.xfr_parser import parse_xfr
 from src.dml_parser import parse_dml
 from src.validator.semantic import validate
@@ -22,6 +22,7 @@ from src.codegen.terraform_codegen import generate_terraform
 from src.codegen.airflow_codegen import generate_airflow
 from src.cobol_parser import parse_cobol, cobol_to_graph
 from src.plan_parser import parse_plan, parse_pset, plan_to_graph
+from src.plan_parser import resolve_graph_references, merge_asts, detect_retrocesos, pretty_print_mega_dag
 from src.accuracy import compute_accuracy
 
 app = FastAPI(title="BNX Compiler API")
@@ -231,17 +232,125 @@ async def convert_plan(
     plan: UploadFile = File(...),
     pset: Optional[UploadFile] = File(None),
     xfr: Optional[UploadFile] = File(None),
+    mp_files: list[UploadFile] = File(default=[]),
     target: str = "glue",
 ):
-    """Converts Ab Initio PLAN + PSET to .mp + .xfr, then compiles."""
+    """Converts Ab Initio PLAN + PSET to .mp + .xfr, then compiles.
+    Supports multi-MP: upload .mp files referenced by the PLAN."""
     plan_path = _save_upload(plan)
     pset_path = _save_upload(pset) if pset and pset.filename else None
     user_xfr_path = _save_upload(xfr) if xfr and xfr.filename else None
     mp_path = xfr_path = None
+    mp_temp_paths = {}
 
     try:
         parsed_plan = parse_plan(plan_path)
         parsed_pset = parse_pset(pset_path) if pset_path else {}
+
+        # Save uploaded mp_files to temp
+        for mf in mp_files:
+            if mf and mf.filename:
+                tp = _save_upload(mf)
+                mp_temp_paths[mf.filename] = tp
+
+        # --- Multi-MP path (Grafo de Grafos) ---
+        if mp_temp_paths:
+            retrocesos = detect_retrocesos(parsed_plan)
+            resolved, resolve_errors, resolve_warnings = resolve_graph_references(
+                parsed_plan, mp_temp_paths, parsed_pset
+            )
+
+            if resolve_errors:
+                return {"errors": resolve_errors, "warnings": resolve_warnings,
+                        "nodes": [], "edges": [], "code": None}
+
+            dependencies = {g.name: g.depends for g in resolved}
+            merged_ast = merge_asts(resolved, dependencies, retrocesos)
+            dag = build_mega_dag(merged_ast)
+
+            # Merge all XFR rules (namespaced)
+            xfr_rules = {}
+            dml_schema = {}
+            for g in resolved:
+                xfr_rules.update(g.xfr_rules)
+                dml_schema.update(g.dml_schema)
+
+            if user_xfr_path:
+                user_rules = parse_xfr(user_xfr_path)
+                xfr_rules.update(user_rules)
+
+            errors, warnings = validate(dag, xfr_rules, dml_schema)
+            warnings = resolve_warnings + warnings
+
+            code = None
+            stepfunctions_json = None
+            terraform_code = None
+            airflow_code = None
+            if not errors:
+                out = tempfile.NamedTemporaryFile(delete=False, suffix=".py")
+                out.close()
+                if target == "spark":
+                    generate_spark(dag, out.name, xfr_rules)
+                else:
+                    generate_glue(dag, out.name, xfr_rules)
+                with open(out.name) as f:
+                    code = f.read()
+                os.unlink(out.name)
+
+                sf_out = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
+                sf_out.close()
+                generate_stepfunctions(dag, sf_out.name, xfr_rules)
+                with open(sf_out.name) as f:
+                    stepfunctions_json = f.read()
+                os.unlink(sf_out.name)
+
+                tf_out = tempfile.NamedTemporaryFile(delete=False, suffix=".tf")
+                tf_out.close()
+                generate_terraform(dag, tf_out.name, xfr_rules)
+                with open(tf_out.name) as f:
+                    terraform_code = f.read()
+                os.unlink(tf_out.name)
+
+                af_out = tempfile.NamedTemporaryFile(delete=False, suffix=".py")
+                af_out.close()
+                generate_airflow(dag, af_out.name, xfr_rules)
+                with open(af_out.name) as f:
+                    airflow_code = f.read()
+                os.unlink(af_out.name)
+
+            acc = compute_accuracy(dag, xfr_rules, dml_schema)
+
+            nodes = []
+            for node in dag.execution_order:
+                node_rule = xfr_rules.get(node.id.lower()) or xfr_rules.get(node.name.lower()) or {}
+                sg = next((sg for sg, ids in merged_ast["subgraphs"].items() if node.id in ids), None)
+                nodes.append({
+                    "id": node.id, "name": node.name, "type": node.type.upper(),
+                    "subgraph": sg, "parents": node.parents, "children": node.children,
+                    "rule": node_rule,
+                })
+
+            edges = [{"from": e["from"], "to": e["to"]} for e in merged_ast["edges"]]
+
+            return {
+                "nodes": nodes, "edges": edges,
+                "subgraphs": list(merged_ast["subgraphs"].keys()),
+                "errors": errors, "warnings": warnings,
+                "code": code,
+                "stepfunctions": stepfunctions_json,
+                "terraform": terraform_code,
+                "airflow": airflow_code,
+                "accuracy": acc,
+                "generated_mp": pretty_print_mega_dag(merged_ast),
+                "generated_xfr": "",
+                "plan_name": parsed_plan["name"],
+                "pset_params": parsed_pset,
+                "graphs": [{"name": g.name, "nodes": len(g.ast["nodes"]),
+                            "is_auto_generated": g.is_auto_generated} for g in resolved],
+                "cross_graph_edges": merged_ast.get("cross_graph_edges", []),
+            }
+
+        # --- Legacy single-PLAN path (backward compatible) ---
         graph = plan_to_graph(parsed_plan, parsed_pset)
 
         mp_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp", mode="w")
@@ -305,4 +414,7 @@ async def convert_plan(
     finally:
         for p in [plan_path, pset_path, mp_path, xfr_path]:
             if p and isinstance(p, str) and os.path.exists(p):
+                os.unlink(p)
+        for p in mp_temp_paths.values():
+            if p and os.path.exists(p):
                 os.unlink(p)
