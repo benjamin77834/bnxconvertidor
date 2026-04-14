@@ -390,14 +390,14 @@ export default function DesignerPage({ theme }) {
         <div style={{ height: 1, background: t.border || '#334155' }} />
 
         <div style={{ display: 'flex', gap: 4 }}>
-          {['glue', 'spark'].map(tgt => (
+          {['glue', 'spark', 'flink'].map(tgt => (
             <button key={tgt} onClick={() => setTarget(tgt)} style={{
               flex: 1, padding: '5px 8px', borderRadius: 6, cursor: 'pointer', fontSize: 11,
               background: target === tgt ? (t.accent || '#6366f1') + '20' : 'transparent',
               border: `1px solid ${target === tgt ? (t.accent || '#6366f1') : (t.border || '#334155')}`,
               color: target === tgt ? (t.accent || '#6366f1') : (t.muted || '#94a3b8'),
               fontWeight: target === tgt ? 600 : 400,
-            }}>{tgt === 'glue' ? '🔧 Glue' : '⚡ Spark'}</button>
+            }}>{tgt === 'glue' ? '🔧 Glue' : tgt === 'spark' ? '⚡ Spark' : '🌊 Flink'}</button>
           ))}
         </div>
 
