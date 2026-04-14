@@ -48,22 +48,31 @@ def _parse_multipart(event):
 
     files = {}
     fields = {}
+    mp_file_keys = set()  # Track keys that came from mp_files field
     for key in form.keys():
         item = form[key]
         # Handle multiple files with same key (e.g., mp_files)
         if isinstance(item, list):
             for i, sub in enumerate(item):
-                if sub.filename:
-                    # Use original filename as key for matching
-                    files[sub.filename or f"{key}_{i}"] = sub.value
-                else:
+                if hasattr(sub, 'filename') and sub.filename:
+                    fkey = sub.filename or f"{key}_{i}"
+                    files[fkey] = sub.value
+                    if key == "mp_files":
+                        mp_file_keys.add(fkey)
+                elif hasattr(sub, 'value'):
                     val = sub.value if isinstance(sub.value, str) else sub.value.decode()
                     fields[f"{key}_{i}"] = val
-        elif item.filename:
+        elif hasattr(item, 'filename') and item.filename:
+            # Store with form field key (e.g., "plan", "pset", "xfr")
             files[key] = item.value
-        else:
+            # Also store with original filename for mp_files matching
+            if item.filename != key:
+                files[item.filename] = item.value
+            if key == "mp_files":
+                mp_file_keys.add(item.filename)
+        elif hasattr(item, 'value'):
             fields[key] = item.value if isinstance(item.value, str) else item.value.decode()
-    return files, fields
+    return files, fields, mp_file_keys
 
 
 def _save_bytes(data, suffix):
@@ -151,7 +160,7 @@ def handler(event, context):
 
     path = event.get("rawPath", "") or event.get("path", "")
     try:
-        files, fields = _parse_multipart(event)
+        files, fields, mp_file_keys = _parse_multipart(event)
         target = fields.get("target", "glue")
 
         # --- /plan endpoint ---
@@ -165,12 +174,17 @@ def handler(event, context):
             mp_path = xfr_path = None
             mp_temp_paths = {}
 
-            # Collect mp_files from multipart (mp_files uploaded with original filenames)
-            for key, data in files.items():
-                if key.startswith("mp_files") or key.endswith(".mp"):
-                    tp = _save_bytes(data, ".mp")
-                    # key is the original filename (e.g., "ingest.mp")
+            # Collect mp_files from multipart (tracked by _parse_multipart)
+            for key in mp_file_keys:
+                if key in files:
+                    tp = _save_bytes(files[key], ".mp")
                     mp_temp_paths[key] = tp
+            # Fallback: also check for any .mp files in the files dict
+            if not mp_temp_paths:
+                for key, data in files.items():
+                    if key.endswith(".mp") and key != "plan" and key != "pset" and key != "xfr":
+                        tp = _save_bytes(data, ".mp")
+                        mp_temp_paths[key] = tp
 
             try:
                 parsed_plan = parse_plan(plan_path)
@@ -212,6 +226,13 @@ def handler(event, context):
                 # --- Legacy single-PLAN path ---
                 graph = plan_to_graph(parsed_plan, parsed_pset)
 
+                # Debug: include mp detection info
+                _debug = {
+                    "file_keys": list(files.keys()),
+                    "mp_file_keys": list(mp_file_keys),
+                    "mp_temp_paths_keys": list(mp_temp_paths.keys()),
+                }
+
                 mp_path = _save_bytes(graph["mp"], ".mp")
                 xfr_path = _save_bytes(graph["xfr"], ".xfr")
 
@@ -226,6 +247,7 @@ def handler(event, context):
                 result["generated_mp"] = graph["mp"]
                 result["generated_xfr"] = graph["xfr"]
                 result["plan_name"] = parsed_plan.get("name", "")
+                result["_debug"] = _debug
                 return _response(200, result)
             finally:
                 for p in [plan_path, pset_path, user_xfr_path, mp_path, xfr_path]:
