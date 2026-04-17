@@ -198,6 +198,12 @@ export default function App() {
       const res = await fetch(COMPILE_URL.replace('/compile', '/refactor'), { method: 'POST', body: form })
       const data = await res.json()
       setRefactorResult(data)
+      if (data.code) {
+        setResult({ nodes: [], edges: [], code: data.code, errors: [], warnings: [],
+          refactor: true, changes: data.changes, total_changes: data.total_changes,
+          original_lines: data.original_lines, refactored_lines: data.refactored_lines })
+        setCodeOpen(true)
+      }
     } catch (e) {
       setRefactorResult({ error: e.message })
     } finally { setLoading(false) }
@@ -772,7 +778,10 @@ export default function App() {
                 onClick={() => setCodeOpen(o => !o)}
               >
                 <span style={{ fontSize: 14, color: t.muted, textTransform: 'uppercase', letterSpacing: 1 }}>
-                  Generated {target === 'flink' ? 'Flink' : target === 'spark' ? 'Spark' : 'Glue'} Code ({result.code.split('\n').length} lines)
+                  {result.refactor
+                    ? `🔄 Refactored Code (${result.refactored_lines} lines — ${result.total_changes} changes)`
+                    : `Generated ${target === 'flink' ? 'Flink' : target === 'spark' ? 'Spark' : 'Glue'} Code (${result.code.split('\n').length} lines)`
+                  }
                 </span>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                   <button
