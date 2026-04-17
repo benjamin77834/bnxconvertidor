@@ -66,6 +66,8 @@ export default function App() {
   const [mpFiles, setMpFiles]   = useState([])
   const mpFilesRef              = useRef(null)
   const mpFilesData             = useRef([])  // Persist mp files across re-renders
+  const refactorRef             = useRef(null)
+  const [refactorResult, setRefactorResult] = useState(null)
 
   const t = isDark ? dark : light
 
@@ -184,6 +186,20 @@ export default function App() {
       if (data.code) setCodeOpen(true)
     } catch (e) {
       setResult({ errors: [`Network error: ${e.message}`], warnings: [], nodes: [], edges: [] })
+    } finally { setLoading(false) }
+  }
+
+  const refactorCode = async (file) => {
+    setLoading(true)
+    const form = new FormData()
+    form.append('code', file)
+    form.append('source_version', 'all')
+    try {
+      const res = await fetch(COMPILE_URL.replace('/compile', '/refactor'), { method: 'POST', body: form })
+      const data = await res.json()
+      setRefactorResult(data)
+    } catch (e) {
+      setRefactorResult({ error: e.message })
     } finally { setLoading(false) }
   }
 
@@ -368,6 +384,52 @@ export default function App() {
             <input ref={cobolRef} type="file" accept=".cbl,.cob,.cobol" hidden
               onChange={(e) => { if (e.target.files[0]) compileCobol(e.target.files[0]); e.target.value = '' }}
             />
+          </div>
+
+          {/* Refactor Legacy Code */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <span style={{ fontSize: 14, color: t.muted, textTransform: 'uppercase', letterSpacing: 1 }}>Refactorización</span>
+            <span style={{ fontSize: 12, color: t.dim }}>Sube código Spark 2 / Python 2 / Glue 2 y se refactoriza automáticamente</span>
+            <button
+              style={{
+                padding: '8px 16px', borderRadius: 8, cursor: 'pointer',
+                background: t.card, border: `1px dashed ${t.border}`,
+                color: t.muted, fontSize: 13,
+              }}
+              onClick={() => refactorRef.current.click()}
+            >🔄 Upload .py file</button>
+            <input ref={refactorRef} type="file" hidden
+              onChange={(e) => { if (e.target.files[0]) refactorCode(e.target.files[0]); e.target.value = '' }}
+            />
+            {refactorResult && !refactorResult.error && (
+              <div style={{
+                background: t.card, borderRadius: 8, padding: 10,
+                border: `1px solid ${t.border}`, display: 'flex', flexDirection: 'column', gap: 6,
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: '#22c55e' }}>
+                    ✅ {refactorResult.total_changes} cambios aplicados
+                  </span>
+                  <button onClick={() => {
+                    if (refactorResult.code) download(refactorResult.code, 'refactored.py')
+                  }} style={{
+                    padding: '3px 8px', borderRadius: 4, fontSize: 11, cursor: 'pointer',
+                    background: '#22c55e20', border: '1px solid #22c55e40', color: '#22c55e',
+                  }}>📥 Download</button>
+                </div>
+                <div style={{ fontSize: 11, color: t.dim }}>
+                  {refactorResult.original_lines} → {refactorResult.refactored_lines} líneas
+                </div>
+                {refactorResult.changes?.map((c, i) => (
+                  <div key={i} style={{ fontSize: 11, color: c.action.includes('WARNING') ? '#f59e0b' : '#22c55e' }}>
+                    {c.action} {c.name} ({c.count}x)
+                  </div>
+                ))}
+              </div>
+            )}
+            {refactorResult?.error && (
+              <div style={{ fontSize: 11, color: '#ef4444', padding: 6 }}>❌ {refactorResult.error}</div>
+            )}
           </div>
 
           {/* Ab Initio PLAN/PSET upload */}

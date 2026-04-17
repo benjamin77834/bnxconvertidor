@@ -25,6 +25,7 @@ from src.cobol_parser import parse_cobol, cobol_to_graph
 from src.plan_parser import parse_plan, parse_pset, plan_to_graph
 from src.plan_parser import resolve_graph_references, merge_asts, detect_retrocesos, pretty_print_mega_dag
 from src.accuracy import compute_accuracy
+from src.refactor_engine import refactor_code
 
 app = FastAPI(title="BNX Compiler API")
 
@@ -230,6 +231,30 @@ async def convert_cobol(
         for p in [cobol_path, mp_tmp.name, xfr_tmp.name, dml_tmp.name]:
             if p and os.path.exists(p):
                 os.unlink(p)
+
+
+@app.post("/refactor")
+async def refactor(
+    code: UploadFile = File(...),
+    source_version: str = "all",
+    target_version: str = "spark3",
+):
+    """Refactors legacy code: Spark 2→3, Python 2→3, Glue 2→4."""
+    code_path = _save_upload(code)
+    try:
+        with open(code_path) as f:
+            original = f.read()
+        refactored, changes = refactor_code(original, source_version, target_version)
+        return {
+            "original_lines": len(original.splitlines()),
+            "refactored_lines": len(refactored.splitlines()),
+            "changes": changes,
+            "total_changes": sum(c["count"] for c in changes),
+            "code": refactored,
+        }
+    finally:
+        if os.path.exists(code_path):
+            os.unlink(code_path)
 
 
 @app.post("/plan")
