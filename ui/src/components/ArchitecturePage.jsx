@@ -205,6 +205,23 @@ const MECHANISMS = [
       { name: 'AWS Amplify', desc: 'Frontend React hospedado en Amplify. Auto-deploy desde Git, CDN global, dominio custom. Free tier: 5GB/mes.' },
     ]
   },
+  {
+    category: '🎯 Tipos de Nodo (Legend)',
+    color: true,
+    items: [
+      { name: 'SOURCE', color: '#22c55e', desc: 'Lectura de datos. Lee desde S3 (CSV/Parquet/JSON), Kafka (streaming) o JDBC (bases de datos). En Glue/Spark: spark.read.format(). En Flink: CREATE TABLE con conector. Equivale a Read/Scan en Ab Initio.' },
+      { name: 'TRANSFORM', color: '#6366f1', desc: 'Transformación de datos. Aplica SELECT (columnas), WHERE (filtro), GROUP BY (agregación). En Glue/Spark: selectExpr(), where(), groupBy().agg(). En Flink: CREATE TEMPORARY VIEW con SQL. Equivale a Reformat/Rollup en Ab Initio.' },
+      { name: 'JOIN', color: '#f59e0b', desc: 'Combina dos o más datasets por una key. Soporta INNER, LEFT, RIGHT, FULL. En Glue/Spark: df1.join(df2, on=key). En Flink: SQL JOIN ... ON. Soporta joins encadenados para 3+ padres. Equivale a Join en Ab Initio.' },
+      { name: 'DEDUP', color: '#06b6d4', desc: 'Elimina registros duplicados por key. Usa ROW_NUMBER() OVER (PARTITION BY keys ORDER BY col DESC) para mantener el más reciente. En Spark: Window + row_number. En Flink: ROW_NUMBER() en SQL. Equivale a Dedup Sort en Ab Initio.' },
+      { name: 'NORMALIZE', color: '#a855f7', desc: 'Expande un registro en múltiples filas. Dos modos: EXPLODE (array → filas) y SPLIT (string con delimiter → filas). En Spark: explode(col()). En Flink: CROSS JOIN UNNEST. Equivale a Normalize en Ab Initio.' },
+      { name: 'LOOKUP', color: '#ec4899', desc: 'Enriquece datos con tabla de referencia usando broadcast LEFT JOIN. El primer padre es el dataset principal, el segundo es la referencia. En Spark: broadcast(). En Flink: LEFT JOIN. Equivale a Lookup en Ab Initio.' },
+      { name: 'CONCATENATE', color: '#14b8a6', desc: 'Une múltiples datasets sin key (UNION ALL). Los datasets no necesitan tener el mismo schema — usa allowMissingColumns. En Spark: unionByName(). En Flink: UNION ALL. Equivale a Concatenate en Ab Initio.' },
+      { name: 'GATHER', color: '#8b5cf6', desc: 'Merge múltiples streams en uno. Funcionalmente igual a CONCATENATE pero semánticamente indica merge de streams paralelos. En Spark: unionByName(). En Flink: UNION ALL. Equivale a Gather en Ab Initio.' },
+      { name: 'PARTITION', color: '#f97316', desc: 'Reparticiona datos por key a N particiones. Optimiza el paralelismo distribuyendo datos por hash de la key. En Spark: repartition(N, key). En Flink: configuración de parallelism. Equivale a Partition by Key en Ab Initio.' },
+      { name: 'FILTER', color: '#eab308', desc: 'Filtra datos con condición WHERE. Tiene DOS puertos de salida: datos que pasan el filtro y datos rechazados (NOT WHERE). En Spark: where() + where(NOT). En Flink: dos CREATE TEMPORARY VIEW. Equivale a Filter by Expression en Ab Initio.' },
+      { name: 'SINK', color: '#ef4444', desc: 'Escritura final de datos. Escribe a S3 (Parquet/CSV/JSON), Kafka (streaming) o JDBC (bases de datos). Soporta mode overwrite/append. En Glue/Spark: df.write.format(). En Flink: INSERT INTO tabla_sink. Equivale a Write en Ab Initio.' },
+    ]
+  },
 ]
 
 const COMPONENTS = [
@@ -384,9 +401,12 @@ export default function ArchitecturePage({ theme }) {
                     <div key={item.name} style={{
                       padding: '8px 10px', borderRadius: 6,
                       background: (t.bg || '#0f1117') + '80',
-                      border: `1px solid ${t.border || '#334155'}30`,
+                      border: `1px solid ${item.color ? item.color + '40' : (t.border || '#334155') + '30'}`,
                     }}>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: '#818cf8' }}>{item.name}</div>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: item.color || '#818cf8', display: 'flex', alignItems: 'center', gap: 6 }}>
+                        {item.color && <span style={{ width: 10, height: 10, borderRadius: '50%', background: item.color, flexShrink: 0 }} />}
+                        {item.name}
+                      </div>
                       <div style={{ fontSize: 12, color: t.muted || '#94a3b8', marginTop: 3, lineHeight: 1.6 }}>{item.desc}</div>
                     </div>
                   ))}
