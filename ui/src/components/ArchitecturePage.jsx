@@ -184,10 +184,10 @@ const MECHANISMS = [
   {
     category: '🔄 Planes Cíclicos',
     items: [
-      { name: 'Retrocesos (Feedback Loops)', desc: 'Cuando un grafo posterior alimenta datos de vuelta a uno anterior. Se detectan automáticamente por ciclos en las dependencias del PLAN.' },
-      { name: 'SCHEDULE: CYCLIC', desc: 'Directiva en el PLAN que marca un grafo como cíclico. Genera un loop de iteraciones en el código con checkpoint/staging entre cada iteración.' },
-      { name: 'MAX_ITERATIONS', desc: 'Límite de seguridad para planes cíclicos. Se define en el PLAN o PSET. El loop se ejecuta máximo N veces.' },
-      { name: 'CONVERGENCE', desc: 'Condición de parada para planes cíclicos (ej: delta < 0.01). Cuando se cumple, el loop termina antes de MAX_ITERATIONS.' },
+      { name: 'Retrocesos (Feedback Loops)', desc: 'Cuando un grafo posterior alimenta datos de vuelta a uno anterior. Se detectan automáticamente por ciclos en las dependencias del PLAN. Se visualizan como edges rojos dashed animados en el DAG.' },
+      { name: 'SCHEDULE: CYCLIC', desc: 'Directiva en el PLAN que marca un grafo como cíclico. Genera un loop de iteraciones en el código con checkpoint/staging entre cada iteración. El grafo se re-ejecuta hasta cumplir la condición de parada.' },
+      { name: 'MAX_ITERATIONS', desc: 'Límite de seguridad para planes cíclicos. Se define en el PLAN o PSET. El loop se ejecuta máximo N veces. Previene loops infinitos si la convergencia no se alcanza.' },
+      { name: 'CONVERGENCE', desc: 'Condición de parada para planes cíclicos (ej: delta < 0.01). Cuando se cumple, el loop termina antes de MAX_ITERATIONS. Se evalúa al final de cada iteración.' },
     ]
   },
   {
@@ -196,6 +196,32 @@ const MECHANISMS = [
       { name: 'S3 / Filesystem', desc: 'Lee/escribe archivos en S3 o filesystem local. Soporta CSV (con headers), Parquet, JSON, Avro. Es el conector por defecto.' },
       { name: 'Apache Kafka', desc: 'Lee/escribe streams de Kafka. En Glue/Spark usa readStream, en Flink usa conector nativo. Ideal para pipelines de streaming.' },
       { name: 'JDBC (Bases de datos)', desc: 'Lee/escribe a bases de datos via JDBC. Soporta MySQL, PostgreSQL, Oracle, SQL Server. Configurable con connection string y tabla.' },
+    ]
+  },
+  {
+    category: '🔗 Grafo de Grafos (Mega-DAG)',
+    items: [
+      { name: 'Concepto', desc: 'Un PLAN puede referenciar múltiples archivos .mp externos. Cada .mp es un componente/grafo independiente con sus propios nodos y transformaciones. El PLAN define las dependencias entre ellos.' },
+      { name: 'Namespacing', desc: 'Cada nodo se prefija con el nombre del grafo (ej: ingest__ReadCSV, enrich__EnrichJoin) para evitar colisiones cuando dos grafos tienen nodos con el mismo nombre.' },
+      { name: 'Cross-Graph Edges', desc: 'Conexiones automáticas entre grafos. Cuando el grafo B depende del grafo A, el sistema conecta los SINK de A con los SOURCE de B. Se visualizan como líneas dashed púrpura.' },
+      { name: 'Merge de ASTs', desc: 'Todos los grafos individuales se combinan en un único AST unificado. Los nodos se namespacean, los edges intra-grafo se preservan, y se crean cross-graph edges según las dependencias del PLAN.' },
+      { name: 'Flujo de Upload', desc: 'En la UI: 1° PSET (parámetros), 2° XFR (lógica), 3° MP files (grafos externos), 4° PLAN (orquestación). Al subir el PLAN se compila automáticamente el Mega-DAG completo.' },
+      { name: 'Código Unificado', desc: 'El Mega-DAG genera un solo archivo de código (Glue/Spark/Flink) con comentarios # === GRAPH: nombre === marcando las fronteras entre grafos. Se ejecuta como un solo job.' },
+    ]
+  },
+  {
+    category: '📄 Archivos del Sistema',
+    items: [
+      { name: '.mp (Graph)', desc: 'Define la estructura del pipeline. Formato: NODE X : TYPE para nodos, A -> B para edges, SUBGRAPH nombre { } para agrupaciones. Es el archivo principal de entrada.' },
+      { name: '.xfr (Transform Rules)', desc: 'Define la lógica de cada nodo. Formato YAML-like: NombreNodo: seguido de directivas (select, where, group_by, join_key, source_type, sink_type, path, format, etc.).' },
+      { name: '.dml (Schema)', desc: 'Define el schema de datos. Sección keys: (key por tabla) y schema: (columnas con tipos). Se usa para validación semántica y column inference.' },
+      { name: '.plan (PLAN)', desc: 'Orquestación de grafos. Define GRAPH con propiedades: MP (archivo .mp), XFR, DML, DEPENDS (dependencias), SCHEDULE, PRIORITY, MAX_ITERATIONS, CONVERGENCE, ON_SUCCESS, ON_FAILURE.' },
+      { name: '.pset (Parameters)', desc: 'Parámetros runtime en formato KEY = VALUE. Se sustituyen en archivos XFR como ${PARAM}. Incluye paths S3, conexiones Kafka/JDBC, MAX_ITERATIONS, CONVERGENCE, etc.' },
+      { name: '.cbl (COBOL)', desc: 'Código COBOL legacy. El parser detecta FILE SECTION (archivos I/O), PROCEDURE DIVISION (lógica), PIC types, COMP-3/EBCDIC. Genera automáticamente .mp + .xfr + .dml.' },
+      { name: 'Código Generado (.py)', desc: 'Archivo Python generado por el codegen. Según el target: Glue (GlueContext + PySpark), Spark (SparkSession + PySpark), o Flink (StreamTableEnvironment + Flink SQL).' },
+      { name: 'Step Functions (.json)', desc: 'Workflow AWS Step Functions como máquina de estados JSON. Cada fase del DAG es un estado Task o Parallel. Listo para deploy en AWS.' },
+      { name: 'Terraform (.tf)', desc: 'Infraestructura como código. Genera S3 buckets (raw/curated/scripts/logs), IAM roles, Glue jobs, CloudWatch alarms. Listo para terraform apply.' },
+      { name: 'Airflow DAG (.py)', desc: 'DAG de Apache Airflow con GlueJobOperator por nodo. Incluye dependencias, retry, schedule diario. Compatible con MWAA (Managed Airflow en AWS).' },
     ]
   },
   {
