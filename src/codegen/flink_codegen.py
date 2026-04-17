@@ -411,5 +411,26 @@ def generate_flink(dag, output_path, xfr_rules=None):
                     f.write(f'{var_id} = None  # no parents\n')
                 f.write(f'print("🔄 {ntype}: {log_name}")\n\n')
 
+        # Retroceso iteration logic (cyclic plans)
+        retroceso_edges = getattr(dag, 'retroceso_edges', [])
+        if retroceso_edges:
+            f.write('\n# =========================\n# CYCLIC PLAN — RETROCESO ITERATIONS\n# =========================\n\n')
+            max_iter = max(e.get("max_iterations", 5) for e in retroceso_edges)
+            convergence = next((e.get("convergence") for e in retroceso_edges if e.get("convergence")), None)
+            f.write(f'MAX_ITERATIONS = {max_iter}\n')
+            f.write(f'for _iteration in range(MAX_ITERATIONS):\n')
+            f.write(f'    print(f"🔄 Iteration {{_iteration + 1}}/{{MAX_ITERATIONS}}")\n')
+            for re_edge in retroceso_edges:
+                sg = re_edge.get("source_graph", "unknown")
+                tg = re_edge.get("target_graph", "unknown")
+                f.write(f'    # Retroceso: {sg} → {tg}\n')
+                f.write(f'    # Checkpoint staging: write to intermediate path and re-read\n')
+                f.write(f'    _staging_path = f"s3://bnx-staging/{sg}_to_{tg}/iteration_{{_iteration}}"\n')
+                f.write(f'    print(f"  📦 Checkpoint: {sg} → {tg} ({{_staging_path}})")\n')
+            if convergence:
+                f.write(f'    # Convergence check: {convergence}\n')
+                f.write(f'    # if {convergence}: break\n')
+            f.write(f'    print(f"  ✅ Iteration {{_iteration + 1}} complete")\n\n')
+
         # Footer
         f.write('print("✅ BNX PyFlink Job Finished")\n')
