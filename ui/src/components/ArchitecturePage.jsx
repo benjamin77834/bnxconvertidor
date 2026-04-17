@@ -232,6 +232,15 @@ const MECHANISMS = [
     ]
   },
   {
+    category: '🔄 Refactorización de Código',
+    items: [
+      { name: 'Spark 2.x → Spark 3.x', desc: 'Migra APIs deprecadas: SparkContext→SparkSession, SQLContext→SparkSession, registerTempTable→createOrReplaceTempView, unionAll→union, PandasUDFType→type hints, configs de timestamps.' },
+      { name: 'Python 2.7 → Python 3.11+', desc: 'Convierte: print statement→print(), unicode()→str(), has_key()→in, iteritems()→items(), except E,e→except E as e, xrange→range, raw_input→input, basestring→str.' },
+      { name: 'Glue 2.0 → Glue 4.0', desc: 'Actualiza GlueVersion 2.0→4.0 (Spark 3.3 + Python 3.10), shebang python→python3, verifica compatibilidad de DynamicFrame y transforms.' },
+      { name: 'Detección Automática', desc: 'El motor aplica todas las reglas de Spark, Python y Glue en una sola pasada. Reporta cada cambio aplicado y warnings para revisión manual.' },
+    ]
+  },
+  {
     category: '🎯 Tipos de Nodo (Legend)',
     color: true,
     items: [

@@ -27,6 +27,7 @@ from src.cobol_parser import parse_cobol, cobol_to_graph
 from src.plan_parser import parse_plan, parse_pset, plan_to_graph
 from src.plan_parser import resolve_graph_references, merge_asts, detect_retrocesos, pretty_print_mega_dag
 from src.accuracy import compute_accuracy
+from src.refactor_engine import refactor_code
 
 
 def _parse_multipart(event):
@@ -162,6 +163,27 @@ def handler(event, context):
     try:
         files, fields, mp_file_keys = _parse_multipart(event)
         target = fields.get("target", "glue")
+
+        # --- /refactor endpoint ---
+        if "/refactor" in path:
+            if "code" not in files:
+                return _response(400, {"error": "code file is required"})
+            code_path = _save_bytes(files["code"], ".py")
+            try:
+                with open(code_path) as f:
+                    original = f.read()
+                source_version = fields.get("source_version", "all")
+                refactored, changes = refactor_code(original, source_version)
+                return _response(200, {
+                    "original_lines": len(original.splitlines()),
+                    "refactored_lines": len(refactored.splitlines()),
+                    "changes": changes,
+                    "total_changes": sum(c["count"] for c in changes),
+                    "code": refactored,
+                })
+            finally:
+                if os.path.exists(code_path):
+                    os.unlink(code_path)
 
         # --- /plan endpoint ---
         if "/plan" in path:
