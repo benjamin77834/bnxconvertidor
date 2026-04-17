@@ -11,18 +11,32 @@ const GLOSSARY = {
       { term: 'DAG', def: 'Directed Acyclic Graph — grafo dirigido sin ciclos. Cada nodo es una operación y cada edge es una dependencia. Garantiza que los datos fluyen en una sola dirección.' },
       { term: 'Topological Sort', def: 'Algoritmo que ordena los nodos del DAG de forma que cada nodo se procesa después de todos sus padres. Es lo que determina el orden de ejecución del pipeline.' },
       { term: 'Subgraph', def: 'Grupo de nodos relacionados dentro del DAG. Equivalente a un "sub-job" en Ab Initio. Permite organizar pipelines complejos en módulos.' },
+      { term: 'Mega-DAG', def: 'DAG unificado construido a partir de múltiples grafos (.mp) referenciados por un PLAN. Cada grafo se convierte en un subgraph con namespacing para evitar colisiones de nombres.' },
+      { term: 'Cross-Graph Edge', def: 'Conexión entre grafos en un Mega-DAG. Conecta el SINK de un grafo con el SOURCE del siguiente. Se visualiza como línea dashed púrpura.' },
     ]
   },
   MP_FILE: {
     concepts: [
       { term: 'Graph (.mp)', def: 'Archivo que define la estructura del pipeline. Usa formato declarativo: NODE X : TYPE para nodos, A -> B para edges, SUBGRAPH { } para agrupaciones.' },
-      { term: 'Node Types', def: 'SOURCE (lectura), TRANSFORM (select/where/groupby), JOIN (combinar), DEDUP (deduplicar), NORMALIZE (expandir), LOOKUP (referencia), SINK (escritura).' },
+      { term: 'SOURCE', def: 'Nodo de lectura de datos. Soporta S3 (CSV/Parquet/JSON), Kafka (streaming), JDBC (bases de datos). Equivale a Read en Ab Initio.' },
+      { term: 'TRANSFORM', def: 'Nodo de transformación. Aplica SELECT, WHERE, GROUP BY según las reglas XFR. Equivale a Reformat/Rollup en Ab Initio.' },
+      { term: 'JOIN', def: 'Combina dos o más datasets por una key. Soporta INNER, LEFT, RIGHT. Equivale a Join en Ab Initio.' },
+      { term: 'DEDUP', def: 'Elimina registros duplicados por key. Usa ROW_NUMBER() con ORDER BY para mantener el más reciente. Equivale a Dedup Sort en Ab Initio.' },
+      { term: 'NORMALIZE', def: 'Expande un registro en múltiples filas. Usa EXPLODE para arrays o SPLIT para strings. Equivale a Normalize en Ab Initio.' },
+      { term: 'LOOKUP', def: 'Enriquece datos con una tabla de referencia usando broadcast join (LEFT JOIN). Equivale a Lookup en Ab Initio.' },
+      { term: 'CONCATENATE', def: 'Une múltiples datasets sin key (UNION ALL). Equivale a Concatenate en Ab Initio.' },
+      { term: 'GATHER', def: 'Merge múltiples streams en uno. Similar a Concatenate pero para streams. Equivale a Gather en Ab Initio.' },
+      { term: 'PARTITION', def: 'Reparticiona datos por key a N particiones. Optimiza el paralelismo. Equivale a Partition by Key en Ab Initio.' },
+      { term: 'FILTER', def: 'Filtra datos con condición WHERE. Tiene dos puertos de salida: datos que pasan y datos rechazados. Equivale a Filter by Expression en Ab Initio.' },
+      { term: 'SINK', def: 'Nodo de escritura final. Soporta S3, Kafka, JDBC. Equivale a Write en Ab Initio.' },
     ]
   },
   XFR_FILE: {
     concepts: [
       { term: 'XFR (Transform Rules)', def: 'Archivo que define la lógica de cada nodo. Inspirado en Ab Initio Transform functions. Cada nodo tiene su bloque con select, where, group_by, join_key, etc.' },
-      { term: 'Reformat', def: 'En Ab Initio, un componente que transforma campos. En BNX equivale a selectExpr() de Spark.' },
+      { term: 'Reformat', def: 'En Ab Initio, un componente que transforma campos. En BNX equivale a selectExpr() de Spark o SELECT en Flink SQL.' },
+      { term: 'Rollup', def: 'En Ab Initio, un componente que agrega datos con GROUP BY. En BNX se traduce a groupBy().agg() en Spark o GROUP BY en Flink SQL.' },
+      { term: 'PSET Substitution', def: 'Los archivos XFR pueden contener ${PARAM} que se reemplazan con valores del PSET. Permite parametrizar paths, conexiones y thresholds.' },
     ]
   },
   DML_FILE: {
@@ -39,21 +53,36 @@ const GLOSSARY = {
       { term: 'Copybook', def: 'Archivo COBOL reutilizable que define la estructura de un registro. Equivalente a un schema/DML.' },
     ]
   },
+  MP_PARSER: {
+    concepts: [
+      { term: 'AST (Abstract Syntax Tree)', def: 'Representación intermedia del grafo parseado. Contiene nodes (id, name, type), edges (from, to), y subgraphs. Es la entrada del DAG Builder.' },
+      { term: 'Namespacing', def: 'En Mega-DAG, cada nodo se prefija con el nombre del grafo (ej: ingest__ReadCSV) para evitar colisiones entre grafos que tienen nodos con el mismo nombre.' },
+    ]
+  },
+  COBOL_PARSER: {
+    concepts: [
+      { term: 'FILE SECTION', def: 'Sección COBOL que define los archivos de entrada/salida. BNX la parsea para crear nodos SOURCE y SINK.' },
+      { term: 'PROCEDURE DIVISION', def: 'Sección COBOL con la lógica de negocio. BNX detecta READ, WRITE, IF, PERFORM, COMPUTE para crear nodos TRANSFORM.' },
+    ]
+  },
   VALIDATOR: {
     concepts: [
       { term: 'Semantic Validation', def: 'Verifica que el grafo es ejecutable antes de generar código. Detecta: join keys que no existen en los padres, nodos sin padre, columnas perdidas por groupBy.' },
       { term: 'Column Inference', def: 'Propaga las columnas disponibles a través del DAG. Un groupBy reduce las columnas a las keys + aliases. Un join las combina.' },
+      { term: 'Cross-Graph Validation', def: 'En Mega-DAG, valida que los cross-graph edges conectan nodos que existen en los grafos correctos y que los retrocesos son SINK→SOURCE entre grafos distintos.' },
     ]
   },
   ACCURACY: {
     concepts: [
       { term: 'Accuracy', def: 'Métrica que mide qué tan completa es la traducción del grafo al código. Evalúa: nodos resueltos, edges válidos, transforms con regla, joins con key.' },
+      { term: 'Fórmula', def: 'Overall = Nodes×30% + Edges×20% + Transforms×30% + Joins×20%. 90%+ = producción, 70-89% = ajustes, <70% = faltan reglas.' },
     ]
   },
   GLUE_CODEGEN: {
     concepts: [
       { term: 'AWS Glue', def: 'Servicio serverless de ETL de AWS. Usa Apache Spark internamente. GlueContext extiende SparkContext con integración a S3, Glue Catalog, etc.' },
       { term: 'Codegen', def: 'Generación automática de código. BNX traduce cada nodo del DAG a una línea de PySpark válida según su tipo y reglas XFR.' },
+      { term: 'Graph Boundaries', def: 'En Mega-DAG, el código generado incluye comentarios # === GRAPH: nombre === para marcar dónde empieza cada grafo.' },
     ]
   },
   SPARK_CODEGEN: {
@@ -96,7 +125,87 @@ const GLOSSARY = {
       { term: 'ReactFlow', def: 'Librería React para crear editores de grafos interactivos. Soporta drag & drop, zoom, minimap, custom nodes. Es lo que usa el Designer y el DAG Viewer.' },
     ]
   },
+  FASTAPI: {
+    concepts: [
+      { term: 'FastAPI', def: 'Framework Python para APIs REST. Async, validación automática con Pydantic, documentación OpenAPI. Se usa para desarrollo local.' },
+      { term: 'Multipart Upload', def: 'Los archivos .mp/.xfr/.dml se envían como multipart/form-data. Permite subir múltiples archivos en un solo request.' },
+    ]
+  },
+  COMPILER_UI: {
+    concepts: [
+      { term: 'Grafo de Grafos', def: 'Funcionalidad que permite subir múltiples .mp junto con un .plan. El sistema los combina en un Mega-DAG unificado con cross-graph edges.' },
+      { term: 'Target Selector', def: 'Permite elegir entre Glue, PySpark y Flink como target de generación de código. El mismo grafo genera código diferente según el target.' },
+    ]
+  },
+  XFR_PARSER: {
+    concepts: [
+      { term: 'Rule Matching', def: 'Las reglas XFR se asocian a nodos por nombre (case-insensitive). Cada nodo busca su regla en el dict de XFR rules.' },
+    ]
+  },
+  DML_PARSER: {
+    concepts: [
+      { term: 'Type Mapping', def: 'Mapea tipos COBOL PIC a Spark: PIC 9 → IntegerType, PIC X → StringType, PIC S9V9 → DecimalType, COMP-3 → DecimalType.' },
+    ]
+  },
 }
+
+// Mecanismos del convertidor — sección de glosario general
+const MECHANISMS = [
+  {
+    category: '📥 Entrada',
+    items: [
+      { name: 'Compilación .mp + .xfr + .dml', desc: 'Flujo principal: sube un grafo (.mp), reglas de transformación (.xfr) y schema (.dml). El sistema parsea, valida y genera código ejecutable.' },
+      { name: 'Conversión COBOL', desc: 'Sube un archivo .cbl y el sistema detecta FILE SECTION, PROCEDURE DIVISION, EBCDIC/COMP-3. Genera automáticamente .mp + .xfr + .dml y compila.' },
+      { name: 'Conversión Ab Initio PLAN', desc: 'Sube PSET (parámetros) + XFR (lógica) + PLAN (orquestación). El sistema genera el grafo desde las definiciones del PLAN.' },
+      { name: 'Grafo de Grafos (Multi-MP)', desc: 'Sube múltiples .mp junto con un .plan. Cada .mp es un componente independiente. El PLAN define las dependencias entre ellos y se combinan en un Mega-DAG.' },
+    ]
+  },
+  {
+    category: '⚙️ Procesamiento',
+    items: [
+      { name: 'Parsing', desc: 'Cada tipo de archivo tiene su parser: mp_parser (grafos), xfr_parser (reglas), dml_parser (schema), cobol_parser (COBOL), plan_parser (PLAN/PSET).' },
+      { name: 'Namespacing', desc: 'En Mega-DAG, cada nodo se prefija con el nombre del grafo (ej: ingest__ReadCSV) para evitar colisiones entre grafos con nodos del mismo nombre.' },
+      { name: 'DAG Builder', desc: 'Construye el grafo dirigido acíclico con topological sort. Determina el orden de ejecución respetando las dependencias padre→hijo.' },
+      { name: 'Validación Semántica', desc: 'Verifica que el grafo es ejecutable: join keys existen en los padres, nodos tienen padre, columnas referenciadas existen. Propaga schema a través del DAG.' },
+      { name: 'Accuracy Engine', desc: 'Mide qué tan completa es la traducción: nodos resueltos, edges válidos, transforms con regla, joins con key. Fórmula ponderada para overall accuracy.' },
+    ]
+  },
+  {
+    category: '🔧 Generación de Código',
+    items: [
+      { name: 'AWS Glue (PySpark + GlueContext)', desc: 'Genera jobs para AWS Glue con GlueContext, spark.read/write, groupBy/agg, join, dropDuplicates. Soporta S3, Kafka, JDBC.' },
+      { name: 'PySpark (SparkSession)', desc: 'Genera código PySpark puro sin dependencias AWS. Mismo patrón que Glue pero con SparkSession directamente.' },
+      { name: 'Apache Flink (PyFlink + Flink SQL)', desc: 'Genera código PyFlink con StreamTableEnvironment. Usa CREATE TABLE para conectores y CREATE TEMPORARY VIEW para transformaciones SQL.' },
+      { name: 'Step Functions (JSON)', desc: 'Genera workflow AWS Step Functions como máquina de estados JSON. Agrupa nodos por profundidad para ejecución paralela.' },
+      { name: 'Terraform (.tf)', desc: 'Genera infraestructura como código: S3 buckets, IAM roles, Glue jobs, CloudWatch alarms. Listo para terraform apply.' },
+      { name: 'Airflow (Python DAG)', desc: 'Genera DAG de Apache Airflow con GlueJobOperator. Incluye dependencias, retry, schedule. Compatible con MWAA.' },
+    ]
+  },
+  {
+    category: '🔄 Planes Cíclicos',
+    items: [
+      { name: 'Retrocesos (Feedback Loops)', desc: 'Cuando un grafo posterior alimenta datos de vuelta a uno anterior. Se detectan automáticamente por ciclos en las dependencias del PLAN.' },
+      { name: 'SCHEDULE: CYCLIC', desc: 'Directiva en el PLAN que marca un grafo como cíclico. Genera un loop de iteraciones en el código con checkpoint/staging entre cada iteración.' },
+      { name: 'MAX_ITERATIONS', desc: 'Límite de seguridad para planes cíclicos. Se define en el PLAN o PSET. El loop se ejecuta máximo N veces.' },
+      { name: 'CONVERGENCE', desc: 'Condición de parada para planes cíclicos (ej: delta < 0.01). Cuando se cumple, el loop termina antes de MAX_ITERATIONS.' },
+    ]
+  },
+  {
+    category: '🌐 Conectores',
+    items: [
+      { name: 'S3 / Filesystem', desc: 'Lee/escribe archivos en S3 o filesystem local. Soporta CSV (con headers), Parquet, JSON, Avro. Es el conector por defecto.' },
+      { name: 'Apache Kafka', desc: 'Lee/escribe streams de Kafka. En Glue/Spark usa readStream, en Flink usa conector nativo. Ideal para pipelines de streaming.' },
+      { name: 'JDBC (Bases de datos)', desc: 'Lee/escribe a bases de datos via JDBC. Soporta MySQL, PostgreSQL, Oracle, SQL Server. Configurable con connection string y tabla.' },
+    ]
+  },
+  {
+    category: '☁️ Despliegue',
+    items: [
+      { name: 'AWS Lambda + Function URL', desc: 'Backend serverless. El compilador corre en Lambda con Function URL pública. Sin servidores, pago por uso (~$5/mes).' },
+      { name: 'AWS Amplify', desc: 'Frontend React hospedado en Amplify. Auto-deploy desde Git, CDN global, dominio custom. Free tier: 5GB/mes.' },
+    ]
+  },
+]
 
 const COMPONENTS = [
   // Input Layer
@@ -205,6 +314,7 @@ export default function ArchitecturePage({ theme }) {
   const [nodes, setNodes, onNodesChange] = useNodesState(init)
   const [edges, setEdges, onEdgesChange] = useEdgesState(initE)
   const [selected, setSelected] = useState(null)
+  const [showGlossary, setShowGlossary] = useState(false)
 
   useEffect(() => { setNodes(init) }, [init, setNodes])
   useEffect(() => { setEdges(initE) }, [initE, setEdges])
@@ -232,7 +342,60 @@ export default function ArchitecturePage({ theme }) {
             }}>{v}</span>
           ))}
         </div>
+        <button onClick={() => setShowGlossary(g => !g)} style={{
+          marginTop: 10, padding: '6px 14px', borderRadius: 6, cursor: 'pointer', fontSize: 12,
+          background: showGlossary ? '#6366f120' : (t.card || '#1e2433'),
+          border: `1px solid ${showGlossary ? '#6366f1' : (t.border || '#334155')}`,
+          color: showGlossary ? '#818cf8' : (t.muted || '#94a3b8'), fontWeight: 600, width: '100%',
+        }}>📖 {showGlossary ? 'Cerrar Glosario' : 'Glosario de Mecanismos'}</button>
       </div>
+
+      {/* Glossary panel */}
+      {showGlossary && (
+        <div style={{
+          position: 'absolute', top: 16, left: 420, zIndex: 10, width: 420,
+          maxHeight: 'calc(100vh - 120px)', overflowY: 'auto',
+          background: t.sidebar || '#161b27', borderRadius: 10,
+          border: `1px solid ${t.border || '#334155'}`,
+          boxShadow: '0 8px 32px rgba(0,0,0,.4)',
+        }}>
+          <div style={{
+            padding: '12px 16px', borderBottom: `1px solid ${t.border || '#334155'}`,
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            position: 'sticky', top: 0, background: t.sidebar || '#161b27', zIndex: 1,
+          }}>
+            <span style={{ fontSize: 16, fontWeight: 700, color: t.text || '#e2e8f0' }}>
+              📖 Glosario de Mecanismos
+            </span>
+            <button onClick={() => setShowGlossary(false)} style={{
+              background: 'none', border: 'none', color: t.muted, fontSize: 16, cursor: 'pointer',
+            }}>✕</button>
+          </div>
+          <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {MECHANISMS.map(cat => (
+              <div key={cat.category}>
+                <div style={{
+                  fontSize: 14, fontWeight: 700, color: t.text || '#e2e8f0',
+                  marginBottom: 8, padding: '4px 0',
+                  borderBottom: `1px solid ${t.border || '#334155'}30`,
+                }}>{cat.category}</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {cat.items.map(item => (
+                    <div key={item.name} style={{
+                      padding: '8px 10px', borderRadius: 6,
+                      background: (t.bg || '#0f1117') + '80',
+                      border: `1px solid ${t.border || '#334155'}30`,
+                    }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: '#818cf8' }}>{item.name}</div>
+                      <div style={{ fontSize: 12, color: t.muted || '#94a3b8', marginTop: 3, lineHeight: 1.6 }}>{item.desc}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Detail panel */}
       {selected && (
