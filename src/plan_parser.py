@@ -45,6 +45,8 @@ def parse_plan(path):
                     "priority": "MEDIUM",
                     "on_success": None,
                     "on_failure": None,
+                    "max_iterations": None,
+                    "convergence": None,
                 }
                 continue
 
@@ -76,6 +78,12 @@ def parse_plan(path):
 
                 m = re.match(r"ON_FAILURE:\s*(.+)", line, re.I)
                 if m: graphs[current]["on_failure"] = m.group(1).strip(); continue
+
+                m = re.match(r"MAX_ITERATIONS:\s*(.+)", line, re.I)
+                if m: graphs[current]["max_iterations"] = int(m.group(1).strip()); continue
+
+                m = re.match(r"CONVERGENCE:\s*(.+)", line, re.I)
+                if m: graphs[current]["convergence"] = m.group(1).strip(); continue
 
     return {"name": plan_name, "graphs": graphs}
 
@@ -277,6 +285,7 @@ def namespace_ast(ast, graph_name):
 def detect_retrocesos(parsed_plan):
     """
     Detect backward references (feedback loops) in GRAPH dependencies.
+    Also detects SCHEDULE: CYCLIC graphs.
     Returns list of (from_graph, to_graph) tuples that form cycles.
     """
     graphs = parsed_plan["graphs"]
@@ -300,6 +309,12 @@ def detect_retrocesos(parsed_plan):
         for dep in g.get("depends", []):
             if dep in graphs and can_reach(dep, name):
                 retrocesos.append((name, dep))
+
+    # Also detect SCHEDULE: CYCLIC — self-loops (graph depends on itself implicitly)
+    for name, g in graphs.items():
+        if (g.get("schedule") or "").upper() == "CYCLIC" and not any(r[0] == name for r in retrocesos):
+            # A cyclic graph creates a self-loop retroceso
+            retrocesos.append((name, name))
 
     return retrocesos
 
@@ -419,6 +434,17 @@ def resolve_graph_references(parsed_plan, mp_files=None, pset_params=None, base_
             is_auto_generated=is_auto,
             depends=g.get("depends", []),
         ))
+        # Attach cycle config from GRAPH properties and PSET
+        resolved[-1]._max_iterations = g.get("max_iterations") or pset_params.get("MAX_ITERATIONS")
+        resolved[-1]._convergence = g.get("convergence") or pset_params.get("CONVERGENCE")
+        if resolved[-1]._max_iterations:
+            try:
+                resolved[-1]._max_iterations = int(resolved[-1]._max_iterations)
+            except (ValueError, TypeError):
+                resolved[-1]._max_iterations = 5
+        # Also store PSET versions for fallback
+        resolved[-1]._pset_max_iterations = int(pset_params.get("MAX_ITERATIONS", 5)) if pset_params.get("MAX_ITERATIONS") else 5
+        resolved[-1]._pset_convergence = pset_params.get("CONVERGENCE")
 
     return resolved, errors, warnings
 
@@ -439,20 +465,48 @@ def _create_cross_graph_edges(resolved_graphs, dependencies, retrocesos):
             dep_g = graph_map.get(dep_name)
             if not dep_g:
                 continue
+
+            edge_type = "retroceso" if (graph_name, dep_name) in retroceso_set else "normal"
+
+            # Self-loop retroceso (SCHEDULE: CYCLIC)
+            if graph_name == dep_name:
+                dep_sinks = [n for n in g.ast["nodes"] if n["type"].upper() == "SINK"]
+                target_sources_self = [n for n in g.ast["nodes"] if n["type"].upper() == "SOURCE"]
+                for sink in dep_sinks:
+                    for source in target_sources_self:
+                        edge = {
+                            "from": sink["id"],
+                            "to": source["id"],
+                            "source_graph": graph_name,
+                            "target_graph": graph_name,
+                            "type": "retroceso",
+                            "cross_graph": True,
+                            "self_loop": True,
+                        }
+                        edge["max_iterations"] = getattr(g, '_max_iterations', None) or getattr(g, '_pset_max_iterations', 5)
+                        edge["convergence"] = getattr(g, '_convergence', None) or getattr(g, '_pset_convergence', None)
+                        cross_edges.append(edge)
+                continue
+
             dep_sinks = [n for n in dep_g.ast["nodes"] if n["type"].upper() == "SINK"]
 
             edge_type = "retroceso" if (graph_name, dep_name) in retroceso_set else "normal"
 
             for sink in dep_sinks:
                 for source in target_sources:
-                    cross_edges.append({
+                    edge = {
                         "from": sink["id"],
                         "to": source["id"],
                         "source_graph": dep_name,
                         "target_graph": graph_name,
                         "type": edge_type,
                         "cross_graph": True,
-                    })
+                    }
+                    if edge_type == "retroceso":
+                        # Get iteration config from graph or PSET
+                        edge["max_iterations"] = getattr(g, '_max_iterations', None) or getattr(g, '_pset_max_iterations', 5)
+                        edge["convergence"] = getattr(g, '_convergence', None) or getattr(g, '_pset_convergence', None)
+                    cross_edges.append(edge)
 
     return cross_edges
 
@@ -471,7 +525,15 @@ def merge_asts(resolved_graphs, dependencies, retrocesos):
         all_edges.extend(g.ast["edges"])
         all_subgraphs.update(g.ast.get("subgraphs", {}))
 
-    cross_edges = _create_cross_graph_edges(resolved_graphs, dependencies, retrocesos)
+    # Add self-loop retrocesos to dependencies
+    extended_deps = {k: list(v) for k, v in dependencies.items()}
+    for (from_g, to_g) in retrocesos:
+        if from_g == to_g and from_g not in extended_deps.get(from_g, []):
+            if from_g not in extended_deps:
+                extended_deps[from_g] = []
+            extended_deps[from_g].append(from_g)
+
+    cross_edges = _create_cross_graph_edges(resolved_graphs, extended_deps, retrocesos)
 
     # Separate retroceso edges
     normal_cross = [e for e in cross_edges if e.get("type") != "retroceso"]

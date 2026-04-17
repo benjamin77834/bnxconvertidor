@@ -1,0 +1,21 @@
+PLAN banking_cyclic
+VERSION 2.0
+
+GRAPH ingest
+  MP: graphs/test_mega/ingest.mp
+  PRIORITY: HIGH
+
+GRAPH enrich
+  MP: graphs/test_mega/enrich.mp
+  DEPENDS: ingest
+
+GRAPH report
+  MP: graphs/test_mega/report.mp
+  DEPENDS: enrich
+
+GRAPH feedback
+  MP: graphs/test_mega/feedback.mp
+  DEPENDS: report, ingest
+  SCHEDULE: CYCLIC
+  MAX_ITERATIONS: 10
+  CONVERGENCE: delta < 0.01
