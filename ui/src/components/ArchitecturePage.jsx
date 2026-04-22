@@ -259,6 +259,311 @@ const MECHANISMS = [
   },
 ]
 
+const CODE_EXAMPLES = {
+  MP_FILE: {
+    file: 'graph.mp',
+    code: `NODE ReadCSV    : SOURCE
+NODE CleanData  : TRANSFORM
+NODE JoinRef    : JOIN
+NODE WriteOut   : SINK
+
+SUBGRAPH ETL {
+  ReadCSV -> CleanData
+  CleanData -> JoinRef
+}
+JoinRef -> WriteOut`,
+    batch: `# Compilar un grafo .mp
+python3 main.py \\
+  --project graph.mp \\
+  --xfr rules.xfr \\
+  --target glue \\
+  --output glue_job.py`,
+  },
+  XFR_FILE: {
+    file: 'rules.xfr',
+    code: `ReadCSV:
+  source_type s3
+  path s3://bucket/raw/data
+  format csv
+
+CleanData:
+  select id, name, amount, status
+  where status = 'active'
+
+JoinRef:
+  join_key customer_id
+  join_type left
+
+WriteOut:
+  sink_type s3
+  path s3://bucket/output
+  format parquet
+  mode overwrite`,
+    batch: `# Las reglas XFR se pasan con --xfr
+python3 main.py \\
+  --project graph.mp \\
+  --xfr rules.xfr \\
+  --target spark \\
+  --output spark_job.py`,
+  },
+  DML_FILE: {
+    file: 'schema.dml',
+    code: `keys:
+  orders: order_id
+  customers: customer_id
+
+schema:
+  orders:
+    order_id: string
+    customer_id: string
+    amount: double
+    status: string
+  customers:
+    customer_id: string
+    name: string
+    region: string`,
+    batch: `# El DML se pasa con --dml
+python3 main.py \\
+  --project graph.mp \\
+  --xfr rules.xfr \\
+  --dml schema.dml \\
+  --target glue \\
+  --output job.py`,
+  },
+  COBOL_FILE: {
+    file: 'batch.cbl',
+    code: `IDENTIFICATION DIVISION.
+PROGRAM-ID. CREDIT-BATCH.
+
+DATA DIVISION.
+FILE SECTION.
+FD INPUT-FILE.
+01 INPUT-REC.
+   05 ACCT-NUM    PIC X(10).
+   05 AMOUNT      PIC S9(7)V99 COMP-3.
+
+PROCEDURE DIVISION.
+    OPEN INPUT INPUT-FILE
+    READ INPUT-FILE
+    IF AMOUNT > 1000
+       PERFORM PROCESS-HIGH
+    END-IF
+    CLOSE INPUT-FILE.`,
+    batch: `# COBOL se convierte automáticamente
+# Genera .mp + .xfr + .dml internamente
+curl -X POST API_URL/cobol \\
+  -F "cobol=@batch.cbl" \\
+  -F "target=glue"`,
+  },
+  MP_PARSER: {
+    file: 'src/mp_parser.py',
+    code: `from src.mp_parser import parse_mp_ast
+
+# Parsea un archivo .mp a AST
+ast = parse_mp_ast("graph.mp")
+
+print(ast["nodes"])     # [{id, name, type, params, subgraph}]
+print(ast["edges"])     # [{from, to}]
+print(ast["subgraphs"]) # {name: [node_ids]}`,
+    batch: `# Uso directo del parser
+python3 -c "
+from src.mp_parser import parse_mp_ast
+ast = parse_mp_ast('graph.mp')
+for n in ast['nodes']:
+    print(f'{n[\"name\"]} : {n[\"type\"]}')
+"`,
+  },
+  DAG_BUILDER: {
+    file: 'src/dag/builder.py',
+    code: `from src.mp_parser import parse_mp_ast
+from src.dag.builder import build_dag
+
+ast = parse_mp_ast("graph.mp")
+dag = build_dag(ast)
+
+# Orden de ejecución (topological sort)
+for node in dag.execution_order:
+    print(f"{node.name} ({node.type})")
+    print(f"  parents: {node.parents}")
+    print(f"  children: {node.children}")`,
+    batch: `# Ver orden de ejecución
+python3 -c "
+from src.mp_parser import parse_mp_ast
+from src.dag.builder import build_dag
+dag = build_dag(parse_mp_ast('graph.mp'))
+for i, n in enumerate(dag.execution_order, 1):
+    print(f'{i}. {n.name} ({n.type})')
+"`,
+  },
+  VALIDATOR: {
+    file: 'src/validator/semantic.py',
+    code: `from src.validator.semantic import validate
+
+# Valida el DAG antes de generar código
+errors, warnings = validate(dag, xfr_rules, dml_schema)
+
+for e in errors:    # Errores fatales (bloquean codegen)
+    print(e)
+for w in warnings:  # Warnings (no bloquean)
+    print(w)`,
+    batch: `# Validar un grafo
+python3 -c "
+from src.mp_parser import parse_mp_ast
+from src.dag.builder import build_dag
+from src.xfr_parser import parse_xfr
+from src.validator.semantic import validate
+dag = build_dag(parse_mp_ast('graph.mp'))
+xfr = parse_xfr('rules.xfr')
+errors, warnings = validate(dag, xfr)
+print(f'Errors: {len(errors)}, Warnings: {len(warnings)}')
+"`,
+  },
+  ACCURACY: {
+    file: 'src/accuracy.py',
+    code: `from src.accuracy import compute_accuracy
+
+acc = compute_accuracy(dag, xfr_rules, dml_schema)
+
+print(f"Overall: {acc['overall_accuracy']}%")
+print(f"Nodes: {acc['resolved_nodes']}/{acc['total_nodes']}")
+print(f"Edges: {acc['resolved_edges']}/{acc['total_edges']}")
+print(f"Transforms: {acc['resolved_transforms']}/{acc['total_transforms']}")
+print(f"Joins: {acc['resolved_joins']}/{acc['total_joins']}")`,
+    batch: `# Calcular accuracy de un grafo
+python3 main.py \\
+  --project graph.mp \\
+  --xfr rules.xfr \\
+  --target glue \\
+  --output job.py
+# El accuracy se imprime automáticamente`,
+  },
+  GLUE_CODEGEN: {
+    file: 'src/codegen/glue_codegen.py',
+    code: `from src.codegen.glue_codegen import generate_glue
+
+# Genera código AWS Glue
+generate_glue(dag, "output/glue_job.py", xfr_rules)
+
+# El código generado usa:
+# - GlueContext + SparkContext
+# - spark.read.format("csv").option("header","true")
+# - df.join(df2, on="key", how="inner")
+# - df.write.mode("overwrite").parquet("s3://...")`,
+    batch: `python3 main.py \\
+  --project graph.mp \\
+  --xfr rules.xfr \\
+  --target glue \\
+  --output glue_job.py`,
+  },
+  SPARK_CODEGEN: {
+    file: 'src/codegen/spark_codegen.py',
+    code: `from src.codegen.spark_codegen import generate_spark
+
+# Genera código PySpark puro
+generate_spark(dag, "output/spark_job.py", xfr_rules)
+
+# El código generado usa:
+# - SparkSession.builder.appName("BNX")
+# - spark.read.parquet("s3a://...")
+# - Sin dependencias de AWS Glue`,
+    batch: `python3 main.py \\
+  --project graph.mp \\
+  --xfr rules.xfr \\
+  --target spark \\
+  --output spark_job.py`,
+  },
+  FLINK_CODEGEN: {
+    file: 'src/codegen/flink_codegen.py',
+    code: `from src.codegen.flink_codegen import generate_flink
+
+# Genera código PyFlink
+generate_flink(dag, "output/flink_job.py", xfr_rules)
+
+# El código generado usa:
+# - StreamTableEnvironment
+# - CREATE TABLE ... WITH ('connector'='kafka')
+# - CREATE TEMPORARY VIEW ... AS SELECT ...
+# - Flink SQL para todas las transformaciones`,
+    batch: `python3 main.py \\
+  --project graph.mp \\
+  --xfr rules.xfr \\
+  --target flink \\
+  --output flink_job.py`,
+  },
+  LAMBDA: {
+    file: 'lambda/handler.py',
+    code: `# Endpoints disponibles:
+# POST /compile  — .mp + .xfr + .dml → código
+# POST /cobol    — .cbl → grafo → código
+# POST /plan     — .plan + .pset + .mp files → Mega-DAG
+# POST /refactor — .py legacy → código refactorizado
+
+# Deploy:
+# zip -r lambda_package.zip lambda/handler.py src/
+# aws lambda update-function-code \\
+#   --function-name bnx-compiler \\
+#   --zip-file fileb://lambda_package.zip`,
+    batch: `# Compilar via API
+curl -X POST LAMBDA_URL/compile \\
+  -F "mp=@graph.mp" \\
+  -F "xfr=@rules.xfr" \\
+  -F "target=flink"
+
+# Refactorizar via API
+curl -X POST LAMBDA_URL/refactor \\
+  -F "code=@spark2_code.py"`,
+  },
+  FASTAPI: {
+    file: 'api/server.py',
+    code: `# Servidor local para desarrollo
+# Mismos endpoints que Lambda
+
+# Iniciar:
+# cd api && uvicorn server:app --reload --port 8000
+
+# Endpoints:
+# POST /compile  — compilar grafo
+# POST /cobol    — convertir COBOL
+# POST /plan     — Mega-DAG
+# POST /refactor — refactorizar código`,
+    batch: `# Iniciar servidor local
+pip install fastapi uvicorn python-multipart
+uvicorn api.server:app --reload --port 8000
+
+# Probar
+curl -X POST http://localhost:8000/compile \\
+  -F "mp=@graph.mp" \\
+  -F "target=glue"`,
+  },
+  COMPILER_UI: {
+    file: 'ui/src/App.jsx',
+    code: `// Flujos de compilación en la UI:
+//
+// 1. Grafo simple:
+//    Upload .mp → (opcional .xfr, .dml) → Compile → DAG + Code
+//
+// 2. COBOL:
+//    Upload .cbl → Auto-genera .mp/.xfr/.dml → DAG + Code
+//
+// 3. Grafo de Grafos (Mega-DAG):
+//    Upload .mp files → Upload .plan → Mega-DAG + Code
+//
+// 4. Refactorización:
+//    Upload .py → Código refactorizado + Log de cambios
+//
+// Targets: Glue | PySpark | Flink`,
+    batch: `# El UI se conecta a la Lambda URL
+# Config en ui/src/config.js
+
+# Desarrollo local:
+cd ui && npm install && npm run dev
+
+# Build para producción:
+cd ui && npm run build
+# Amplify auto-deploys desde Git`,
+  },
+}
+
 const COMPONENTS = [
   // Input Layer
   { id: 'MP_FILE', label: '.mp File\n(Graph)', x: 0, y: 0, group: 'input', desc: 'Define nodos (SOURCE, TRANSFORM, JOIN, DEDUP, NORMALIZE, LOOKUP, SINK), edges y subgraphs del pipeline' },
@@ -496,6 +801,31 @@ export default function ArchitecturePage({ theme }) {
                     <div style={{ fontSize: 12, color: t.muted || '#94a3b8', marginTop: 3, lineHeight: 1.6 }}>{c.def}</div>
                   </div>
                 ))}
+              </div>
+            )}
+            {CODE_EXAMPLES[selected.id] && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
+                <span style={{ fontSize: 11, color: t.dim || '#64748b', textTransform: 'uppercase', letterSpacing: 1 }}>
+                  📄 Código — {CODE_EXAMPLES[selected.id].file}
+                </span>
+                <pre style={{
+                  padding: 10, borderRadius: 6, fontSize: 11, lineHeight: 1.5,
+                  background: t.codeBg || '#081220', color: '#94a3b8',
+                  border: `1px solid ${t.border || '#334155'}30`,
+                  overflow: 'auto', maxHeight: 200, margin: 0, whiteSpace: 'pre',
+                  fontFamily: 'monospace',
+                }}>{CODE_EXAMPLES[selected.id].code}</pre>
+
+                <span style={{ fontSize: 11, color: t.dim || '#64748b', textTransform: 'uppercase', letterSpacing: 1 }}>
+                  🖥️ Uso Batch (CLI)
+                </span>
+                <pre style={{
+                  padding: 10, borderRadius: 6, fontSize: 11, lineHeight: 1.5,
+                  background: '#22c55e08', color: '#22c55e',
+                  border: `1px solid #22c55e20`,
+                  overflow: 'auto', maxHeight: 150, margin: 0, whiteSpace: 'pre',
+                  fontFamily: 'monospace',
+                }}>{CODE_EXAMPLES[selected.id].batch}</pre>
               </div>
             )}
           </div>
