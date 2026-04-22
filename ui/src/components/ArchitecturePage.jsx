@@ -880,10 +880,11 @@ export default function ArchitecturePage({ theme }) {
       {/* Detail panel */}
       {selected && (
         <div style={{
-          position: 'absolute', top: 16, right: 16, zIndex: 10, width: 300,
+          position: 'absolute', top: 16, right: 16, zIndex: 10, width: 380,
+          maxHeight: 'calc(100vh - 120px)', overflowY: 'auto',
           background: t.sidebar || '#161b27', borderRadius: 10,
           border: `1px solid ${t.border || '#334155'}`,
-          boxShadow: '0 8px 32px rgba(0,0,0,.4)', overflow: 'hidden',
+          boxShadow: '0 8px 32px rgba(0,0,0,.4)',
         }}>
           <div style={{
             padding: '10px 14px', background: GROUP_COLOR[selected.data.group] + '20',
@@ -925,26 +926,40 @@ export default function ArchitecturePage({ theme }) {
             )}
             {adminMode && CODE_EXAMPLES[selected.id] && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
-                <span style={{ fontSize: 11, color: t.dim || '#64748b', textTransform: 'uppercase', letterSpacing: 1 }}>
-                  📄 Código — {CODE_EXAMPLES[selected.id].file}
-                </span>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: 11, color: t.dim || '#64748b', textTransform: 'uppercase', letterSpacing: 1 }}>
+                    📄 Código — {CODE_EXAMPLES[selected.id].file}
+                  </span>
+                  <button onClick={() => { navigator.clipboard.writeText(CODE_EXAMPLES[selected.id].code); }} style={{
+                    padding: '2px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer',
+                    background: '#6366f120', border: '1px solid #6366f140', color: '#818cf8',
+                  }}>📋 Copiar</button>
+                </div>
                 <pre style={{
-                  padding: 10, borderRadius: 6, fontSize: 11, lineHeight: 1.5,
+                  padding: 12, borderRadius: 6, fontSize: 12, lineHeight: 1.6,
                   background: t.codeBg || '#081220', color: '#94a3b8',
                   border: `1px solid ${t.border || '#334155'}30`,
-                  overflow: 'auto', maxHeight: 200, margin: 0, whiteSpace: 'pre',
-                  fontFamily: 'monospace',
+                  overflowX: 'auto', overflowY: 'auto', maxHeight: 300, margin: 0,
+                  whiteSpace: 'pre', fontFamily: "'Fira Code', 'Cascadia Code', monospace',",
+                  userSelect: 'all',
                 }}>{CODE_EXAMPLES[selected.id].code}</pre>
 
-                <span style={{ fontSize: 11, color: t.dim || '#64748b', textTransform: 'uppercase', letterSpacing: 1 }}>
-                  🖥️ Uso Batch (CLI)
-                </span>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: 11, color: t.dim || '#64748b', textTransform: 'uppercase', letterSpacing: 1 }}>
+                    🖥️ Uso Batch (CLI)
+                  </span>
+                  <button onClick={() => { navigator.clipboard.writeText(CODE_EXAMPLES[selected.id].batch); }} style={{
+                    padding: '2px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer',
+                    background: '#22c55e20', border: '1px solid #22c55e40', color: '#22c55e',
+                  }}>📋 Copiar</button>
+                </div>
                 <pre style={{
-                  padding: 10, borderRadius: 6, fontSize: 11, lineHeight: 1.5,
+                  padding: 12, borderRadius: 6, fontSize: 12, lineHeight: 1.6,
                   background: '#22c55e08', color: '#22c55e',
                   border: `1px solid #22c55e20`,
-                  overflow: 'auto', maxHeight: 150, margin: 0, whiteSpace: 'pre',
-                  fontFamily: 'monospace',
+                  overflowX: 'auto', overflowY: 'auto', maxHeight: 200, margin: 0,
+                  whiteSpace: 'pre', fontFamily: "'Fira Code', 'Cascadia Code', monospace",
+                  userSelect: 'all',
                 }}>{CODE_EXAMPLES[selected.id].batch}</pre>
               </div>
             )}
