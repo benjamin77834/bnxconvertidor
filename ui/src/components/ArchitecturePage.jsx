@@ -733,7 +733,97 @@ export default function ArchitecturePage({ theme }) {
           </div>
         )}
         {adminMode && (
-          <span style={{ fontSize: 10, color: '#22c55e', marginTop: 4, textAlign: 'center' }}>🔓 Admin mode</span>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 }}>
+            <span style={{ fontSize: 10, color: '#22c55e', textAlign: 'center' }}>🔓 Admin mode</span>
+            <button onClick={() => {
+              const backend = [
+                '# ═══════════════════════════════════════',
+                '# BNX CONVERTIDOR — BACKEND SOURCE CODE',
+                '# ═══════════════════════════════════════',
+                '',
+                '# Archivos del backend:',
+                '# src/mp_parser.py — Parser de grafos .mp',
+                '# src/xfr_parser.py — Parser de reglas .xfr',
+                '# src/dml_parser.py — Parser de schema .dml',
+                '# src/cobol_parser.py — Parser COBOL',
+                '# src/plan_parser.py — Parser PLAN/PSET + Grafo de Grafos',
+                '# src/accuracy.py — Motor de accuracy',
+                '# src/refactor_engine.py — Refactorizador Spark/Python/Glue',
+                '# src/dag/builder.py — DAG Builder + Mega-DAG',
+                '# src/validator/semantic.py — Validación semántica',
+                '# src/codegen/glue_codegen.py — Generador AWS Glue',
+                '# src/codegen/spark_codegen.py — Generador PySpark',
+                '# src/codegen/flink_codegen.py — Generador Apache Flink',
+                '# src/codegen/stepfunctions_codegen.py — Generador Step Functions',
+                '# src/codegen/terraform_codegen.py — Generador Terraform',
+                '# src/codegen/airflow_codegen.py — Generador Airflow',
+                '# api/server.py — FastAPI Server',
+                '# lambda/handler.py — AWS Lambda Handler',
+                '# main.py — CLI batch',
+                '',
+                '# Para usar:',
+                '# python3 main.py --project graph.mp --xfr rules.xfr --target glue --output job.py',
+                '# python3 main.py --project graph.mp --target spark --output spark_job.py',
+                '# python3 main.py --project graph.mp --target flink --output flink_job.py',
+                '',
+                '# Deploy Lambda:',
+                '# zip -r lambda_package.zip lambda/handler.py src/',
+                '# aws lambda update-function-code --function-name bnx-compiler --zip-file fileb://lambda_package.zip',
+              ].join('\n')
+              const blob = new Blob([backend], { type: 'text/plain' })
+              const url = URL.createObjectURL(blob)
+              const a = document.createElement('a')
+              a.href = url; a.download = 'bnx_backend_guide.txt'; a.click()
+              URL.revokeObjectURL(url)
+            }} style={{
+              padding: '5px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 11,
+              background: '#6366f120', border: '1px solid #6366f140', color: '#818cf8', width: '100%',
+            }}>📥 Backend Guide</button>
+            <button onClick={() => {
+              const frontend = [
+                '# ═══════════════════════════════════════',
+                '# BNX CONVERTIDOR — FRONTEND SOURCE CODE',
+                '# ═══════════════════════════════════════',
+                '',
+                '# Archivos del frontend (ui/src/):',
+                '# App.jsx — App principal (6 tabs, compilador)',
+                '# config.js — URL de la Lambda',
+                '# components/ExecutivePage.jsx — Resumen C-level',
+                '# components/FileUpload.jsx — Upload .mp/.xfr/.dml',
+                '# components/DagViewer.jsx — Visualizador DAG (ReactFlow)',
+                '# components/DesignerPage.jsx — Editor visual drag & drop',
+                '# components/BankingModelPage.jsx — Modelo operativo',
+                '# components/GovernancePage.jsx — Gobierno de datos',
+                '# components/DamaPage.jsx — Framework DAMA',
+                '# components/ArchitecturePage.jsx — Arquitectura + Glosario',
+                '# components/MetricsPage.jsx — Métricas y estimaciones',
+                '',
+                '# Para desarrollo local:',
+                '# cd ui && npm install && npm run dev',
+                '# Abre http://localhost:3000',
+                '',
+                '# Para build de producción:',
+                '# cd ui && npm run build',
+                '# Deploy automático via Amplify (git push)',
+                '',
+                '# Stack: React + Vite + ReactFlow',
+                '# Hosting: AWS Amplify',
+              ].join('\n')
+              const blob = new Blob([frontend], { type: 'text/plain' })
+              const url = URL.createObjectURL(blob)
+              const a = document.createElement('a')
+              a.href = url; a.download = 'bnx_frontend_guide.txt'; a.click()
+              URL.revokeObjectURL(url)
+            }} style={{
+              padding: '5px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 11,
+              background: '#a855f720', border: '1px solid #a855f740', color: '#a855f7', width: '100%',
+            }}>📥 Frontend Guide</button>
+            <a href="https://github.com/benjamin77834/bnxconvertidor" target="_blank" rel="noopener" style={{
+              padding: '5px 10px', borderRadius: 6, fontSize: 11, textAlign: 'center',
+              background: '#22c55e20', border: '1px solid #22c55e40', color: '#22c55e',
+              textDecoration: 'none', display: 'block',
+            }}>🔗 GitHub Repo (código completo)</a>
+          </div>
         )}
       </div>
 
