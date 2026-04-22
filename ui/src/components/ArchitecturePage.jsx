@@ -672,6 +672,9 @@ export default function ArchitecturePage({ theme }) {
   const [edges, setEdges, onEdgesChange] = useEdgesState(initE)
   const [selected, setSelected] = useState(null)
   const [showGlossary, setShowGlossary] = useState(false)
+  const [adminMode, setAdminMode] = useState(false)
+  const [adminInput, setAdminInput] = useState('')
+  const [showAdminPrompt, setShowAdminPrompt] = useState(false)
 
   useEffect(() => { setNodes(init) }, [init, setNodes])
   useEffect(() => { setEdges(initE) }, [initE, setEdges])
@@ -705,6 +708,33 @@ export default function ArchitecturePage({ theme }) {
           border: `1px solid ${showGlossary ? '#6366f1' : (t.border || '#334155')}`,
           color: showGlossary ? '#818cf8' : (t.muted || '#94a3b8'), fontWeight: 600, width: '100%',
         }}>📖 {showGlossary ? 'Cerrar Glosario' : 'Glosario de Mecanismos'}</button>
+        {!adminMode && (
+          <button onClick={() => setShowAdminPrompt(p => !p)} style={{
+            marginTop: 4, padding: '4px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 10,
+            background: 'transparent', border: `1px solid ${t.border || '#334155'}30`,
+            color: t.dim || '#64748b', width: '100%',
+          }}>🔒 Admin</button>
+        )}
+        {showAdminPrompt && !adminMode && (
+          <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+            <input type="password" value={adminInput} onChange={e => setAdminInput(e.target.value)}
+              placeholder="Password..."
+              onKeyDown={e => { if (e.key === 'Enter') { if (adminInput === 'Altima2020$') { setAdminMode(true); setShowAdminPrompt(false) } else { setAdminInput('') } } }}
+              style={{
+                flex: 1, padding: '4px 8px', borderRadius: 4, fontSize: 11,
+                background: t.bg || '#0f1117', border: `1px solid ${t.border || '#334155'}`,
+                color: t.text || '#e2e8f0', outline: 'none',
+              }}
+            />
+            <button onClick={() => { if (adminInput === 'Altima2020$') { setAdminMode(true); setShowAdminPrompt(false) } else { setAdminInput('') } }} style={{
+              padding: '4px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer',
+              background: '#22c55e20', border: '1px solid #22c55e40', color: '#22c55e',
+            }}>OK</button>
+          </div>
+        )}
+        {adminMode && (
+          <span style={{ fontSize: 10, color: '#22c55e', marginTop: 4, textAlign: 'center' }}>🔓 Admin mode</span>
+        )}
       </div>
 
       {/* Glossary panel */}
@@ -803,7 +833,7 @@ export default function ArchitecturePage({ theme }) {
                 ))}
               </div>
             )}
-            {CODE_EXAMPLES[selected.id] && (
+            {adminMode && CODE_EXAMPLES[selected.id] && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
                 <span style={{ fontSize: 11, color: t.dim || '#64748b', textTransform: 'uppercase', letterSpacing: 1 }}>
                   📄 Código — {CODE_EXAMPLES[selected.id].file}
