@@ -164,6 +164,88 @@ def handler(event, context):
         files, fields, mp_file_keys = _parse_multipart(event)
         target = fields.get("target", "glue")
 
+        # --- /download endpoint (admin) ---
+        if "/download" in path:
+            import zipfile
+            import io
+            import glob
+
+            pack = fields.get("pack", "backend")  # backend | frontend | all
+            src_dir = os.path.dirname(os.path.dirname(__file__))
+
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+                if pack in ("backend", "all"):
+                    # Backend files
+                    backend_files = [
+                        "main.py",
+                        "src/mp_parser.py", "src/xfr_parser.py", "src/dml_parser.py",
+                        "src/cobol_parser.py", "src/plan_parser.py", "src/accuracy.py",
+                        "src/refactor_engine.py", "src/dag/builder.py",
+                        "src/validator/semantic.py",
+                        "src/codegen/glue_codegen.py", "src/codegen/spark_codegen.py",
+                        "src/codegen/flink_codegen.py", "src/codegen/stepfunctions_codegen.py",
+                        "src/codegen/terraform_codegen.py", "src/codegen/airflow_codegen.py",
+                        "api/server.py", "lambda/handler.py",
+                    ]
+                    for f in backend_files:
+                        fp = os.path.join(src_dir, f)
+                        if os.path.exists(fp):
+                            zf.write(fp, f"bnx-backend/{f}")
+
+                    # Sample files
+                    for pattern in ["graphs/test_mega/*", "samples/refactor/*", "e2e/*", "cobol/*"]:
+                        for fp in glob.glob(os.path.join(src_dir, pattern)):
+                            rel = os.path.relpath(fp, src_dir)
+                            if os.path.isfile(fp):
+                                zf.write(fp, f"bnx-backend/{rel}")
+
+                    # README
+                    readme_path = os.path.join(src_dir, "README.md")
+                    if os.path.exists(readme_path):
+                        zf.write(readme_path, "bnx-backend/README.md")
+
+                    # Requirements
+                    zf.writestr("bnx-backend/requirements.txt", "fastapi\nuvicorn\npython-multipart\n")
+                    zf.writestr("bnx-backend/run.sh", "#!/bin/bash\npython3 main.py --project graphs/test_mega/ingest.mp --target glue --output output.py\necho 'Done! Check output.py'\n")
+                    # Init files
+                    zf.writestr("bnx-backend/src/__init__.py", "")
+                    zf.writestr("bnx-backend/src/dag/__init__.py", "")
+                    zf.writestr("bnx-backend/src/validator/__init__.py", "")
+                    zf.writestr("bnx-backend/src/codegen/__init__.py", "")
+
+                if pack in ("frontend", "all"):
+                    # Frontend — just the src files (not node_modules)
+                    ui_dir = os.path.join(src_dir, "ui")
+                    fe_files = [
+                        "package.json", "vite.config.js", "index.html",
+                        "src/App.jsx", "src/config.js", "src/index.css", "src/main.jsx",
+                    ]
+                    # Components
+                    comp_dir = os.path.join(ui_dir, "src", "components")
+                    if os.path.isdir(comp_dir):
+                        for cf in os.listdir(comp_dir):
+                            if cf.endswith(".jsx") or cf.endswith(".js"):
+                                fe_files.append(f"src/components/{cf}")
+
+                    for f in fe_files:
+                        fp = os.path.join(ui_dir, f)
+                        if os.path.exists(fp):
+                            zf.write(fp, f"bnx-frontend/{f}")
+
+                    zf.writestr("bnx-frontend/install.sh", "#!/bin/bash\nnpm install\nnpm run dev\necho 'Open http://localhost:3000'\n")
+
+            zip_bytes = zip_buffer.getvalue()
+            return {
+                "statusCode": 200,
+                "headers": {
+                    "Content-Type": "application/zip",
+                    "Content-Disposition": f"attachment; filename=bnx-{pack}.zip",
+                },
+                "body": base64.b64encode(zip_bytes).decode(),
+                "isBase64Encoded": True,
+            }
+
         # --- /refactor endpoint ---
         if "/refactor" in path:
             if "code" not in files:

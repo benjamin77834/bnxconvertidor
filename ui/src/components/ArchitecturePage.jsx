@@ -778,72 +778,51 @@ export default function ArchitecturePage({ theme }) {
         {adminMode && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 }}>
             <span style={{ fontSize: 10, color: '#22c55e', textAlign: 'center' }}>🔓 Admin mode</span>
-            <button onClick={() => {
-              let txt = '# ═══════════════════════════════════════\n'
-              txt += '# BNX CONVERTIDOR — BACKEND COMPLETO\n'
-              txt += '# ═══════════════════════════════════════\n\n'
-              const backendKeys = ['MAIN_CLI','MP_PARSER','DAG_BUILDER','VALIDATOR','ACCURACY','GLUE_CODEGEN','SPARK_CODEGEN','FLINK_CODEGEN','LAMBDA','FASTAPI']
-              backendKeys.forEach(k => {
-                const ex = CODE_EXAMPLES[k]
-                if (!ex) return
-                txt += `\n${'#'.repeat(50)}\n# ${ex.file}\n${'#'.repeat(50)}\n\n`
-                txt += ex.code + '\n\n'
-                txt += `# --- USO BATCH ---\n${ex.batch}\n\n`
-              })
-              const inputKeys = ['MP_FILE','XFR_FILE','DML_FILE','COBOL_FILE']
-              txt += '\n# ═══════════════════════════════════════\n# FORMATOS DE ARCHIVO\n# ═══════════════════════════════════════\n\n'
-              inputKeys.forEach(k => {
-                const ex = CODE_EXAMPLES[k]
-                if (!ex) return
-                txt += `\n# --- ${ex.file} ---\n${ex.code}\n\n${ex.batch}\n\n`
-              })
-              const blob = new Blob([txt], { type: 'text/plain' })
-              const url = URL.createObjectURL(blob)
-              const a = document.createElement('a')
-              a.href = url; a.download = 'bnx_backend_full.txt'; a.click()
-              URL.revokeObjectURL(url)
+            <button onClick={async () => {
+              try {
+                const url = (import.meta.env.VITE_API_URL || '') + '/download?pack=backend'
+                const res = await fetch(url, { method: 'POST', body: new FormData() })
+                const blob = await res.blob()
+                const a = document.createElement('a')
+                a.href = URL.createObjectURL(blob)
+                a.download = 'bnx-backend.zip'
+                a.click()
+                URL.revokeObjectURL(a.href)
+              } catch(e) { alert('Error: ' + e.message) }
             }} style={{
               padding: '5px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 11,
               background: '#6366f120', border: '1px solid #6366f140', color: '#818cf8', width: '100%',
-            }}>📥 Descargar Backend Completo</button>
-            <button onClick={() => {
-              let txt = '# ═══════════════════════════════════════\n'
-              txt += '# BNX CONVERTIDOR — FRONTEND COMPLETO\n'
-              txt += '# ═══════════════════════════════════════\n\n'
-              const feKeys = ['COMPILER_UI']
-              feKeys.forEach(k => {
-                const ex = CODE_EXAMPLES[k]
-                if (!ex) return
-                txt += `\n# --- ${ex.file} ---\n${ex.code}\n\n${ex.batch}\n\n`
-              })
-              txt += '\n# ═══════════════════════════════════════\n# COMPONENTES REACT\n# ═══════════════════════════════════════\n\n'
-              txt += '# App.jsx — App principal (6 tabs, compilador, uploads)\n'
-              txt += '# ExecutivePage.jsx — Resumen C-level, pipeline F1/F2/F3\n'
-              txt += '# DagViewer.jsx — Visualizador DAG con ReactFlow\n'
-              txt += '# DesignerPage.jsx — Editor visual drag & drop\n'
-              txt += '# BankingModelPage.jsx — Modelo operativo bancario\n'
-              txt += '# GovernancePage.jsx — DAMA + 55 políticas\n'
-              txt += '# ArchitecturePage.jsx — Diagrama + Glosario + Admin\n'
-              txt += '# MetricsPage.jsx — Horas-hombre, estimaciones\n'
-              txt += '# FileUpload.jsx — Upload .mp/.xfr/.dml\n'
-              txt += '# config.js — Lambda URL\n\n'
-              txt += '# Stack: React 18 + Vite 4 + ReactFlow\n'
-              txt += '# Hosting: AWS Amplify (auto-deploy desde Git)\n\n'
-              txt += '# Desarrollo local:\n'
-              txt += '# cd ui && npm install && npm run dev\n'
-              txt += '# Abre http://localhost:3000\n\n'
-              txt += '# Build producción:\n'
-              txt += '# cd ui && npm run build\n'
-              txt += '# git push → Amplify auto-deploys\n'
-              const blob = new Blob([txt], { type: 'text/plain' })
-              const url = URL.createObjectURL(blob)
-              const a = document.createElement('a')
-              a.href = url; a.download = 'bnx_frontend_full.txt'; a.click()
-              URL.revokeObjectURL(url)
+            }}>📦 Descargar Backend (.zip)</button>
+            <button onClick={async () => {
+              try {
+                const url = (import.meta.env.VITE_API_URL || '') + '/download?pack=frontend'
+                const res = await fetch(url, { method: 'POST', body: new FormData() })
+                const blob = await res.blob()
+                const a = document.createElement('a')
+                a.href = URL.createObjectURL(blob)
+                a.download = 'bnx-frontend.zip'
+                a.click()
+                URL.revokeObjectURL(a.href)
+              } catch(e) { alert('Error: ' + e.message) }
             }} style={{
               padding: '5px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 11,
               background: '#a855f720', border: '1px solid #a855f740', color: '#a855f7', width: '100%',
-            }}>📥 Descargar Frontend Completo</button>
+            }}>📦 Descargar Frontend (.zip)</button>
+            <button onClick={async () => {
+              try {
+                const url = (import.meta.env.VITE_API_URL || '') + '/download?pack=all'
+                const res = await fetch(url, { method: 'POST', body: new FormData() })
+                const blob = await res.blob()
+                const a = document.createElement('a')
+                a.href = URL.createObjectURL(blob)
+                a.download = 'bnx-completo.zip'
+                a.click()
+                URL.revokeObjectURL(a.href)
+              } catch(e) { alert('Error: ' + e.message) }
+            }} style={{
+              padding: '5px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 11,
+              background: '#22c55e20', border: '1px solid #22c55e40', color: '#22c55e', width: '100%',
+            }}>📦 Descargar Todo (.zip)</button>
             <button onClick={() => {
               let txt = '# ═══════════════════════════════════════\n'
               txt += '# BNX CONVERTIDOR — GLOSARIO COMPLETO\n'
