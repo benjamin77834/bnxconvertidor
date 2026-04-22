@@ -518,9 +518,6 @@ curl -X POST LAMBDA_URL/refactor \\
     code: `# Servidor local para desarrollo
 # Mismos endpoints que Lambda
 
-# Iniciar:
-# cd api && uvicorn server:app --reload --port 8000
-
 # Endpoints:
 # POST /compile  — compilar grafo
 # POST /cobol    — convertir COBOL
@@ -534,6 +531,49 @@ uvicorn api.server:app --reload --port 8000
 curl -X POST http://localhost:8000/compile \\
   -F "mp=@graph.mp" \\
   -F "target=glue"`,
+  },
+  MAIN_CLI: {
+    file: 'main.py',
+    code: `# CLI principal del BNX Convertidor
+# Compila grafos .mp a código ejecutable
+
+# Argumentos:
+#   --project  archivo .mp (requerido)
+#   --xfr      archivo .xfr (opcional)
+#   --dml      archivo .dml (opcional)
+#   --target   glue | spark | flink (default: glue)
+#   --output   archivo de salida .py (requerido)
+
+# Flujo:
+# 1. Parsea .mp → AST
+# 2. Construye DAG (topological sort)
+# 3. Parsea .xfr y .dml
+# 4. Valida semánticamente
+# 5. Genera código según target
+# 6. Imprime accuracy report`,
+    batch: `# Compilar a Glue
+python3 main.py --project graph.mp --xfr rules.xfr --target glue --output glue_job.py
+
+# Compilar a PySpark
+python3 main.py --project graph.mp --xfr rules.xfr --target spark --output spark_job.py
+
+# Compilar a Flink
+python3 main.py --project graph.mp --xfr rules.xfr --target flink --output flink_job.py
+
+# Con schema DML
+python3 main.py --project graph.mp --xfr rules.xfr --dml schema.dml --target glue --output job.py
+
+# Solo validar (sin output)
+python3 -c "
+from src.mp_parser import parse_mp_ast
+from src.dag.builder import build_dag
+from src.xfr_parser import parse_xfr
+from src.validator.semantic import validate
+dag = build_dag(parse_mp_ast('graph.mp'))
+xfr = parse_xfr('rules.xfr')
+errors, warnings = validate(dag, xfr)
+print(f'Errors: {len(errors)}, Warnings: {len(warnings)}')
+"`,
   },
   COMPILER_UI: {
     file: 'ui/src/App.jsx',
@@ -590,8 +630,9 @@ const COMPONENTS = [
   { id: 'AF_CODEGEN', label: 'Airflow DAG\n(airflow.py)', x: 660, y: 340, group: 'codegen', desc: 'Genera Apache Airflow DAG con GlueJobOperator. Orquestación alternativa a Step Functions' },
 
   // API Layer
-  { id: 'FASTAPI', label: 'FastAPI Server\n(api/server.py)', x: 660, y: 280, group: 'api', desc: 'Endpoints: POST /compile (mp+xfr+dml), POST /cobol. Multipart upload, target selector' },
-  { id: 'LAMBDA', label: 'AWS Lambda\n(lambda/handler.py)', x: 660, y: 370, group: 'api', desc: 'Handler serverless. Parsea multipart, rutas /compile y /cobol. Function URL con CORS' },
+  { id: 'FASTAPI', label: 'FastAPI Server\n(api/server.py)', x: 660, y: 280, group: 'api', desc: 'Endpoints: POST /compile, /cobol, /plan, /refactor. Multipart upload, target selector' },
+  { id: 'LAMBDA', label: 'AWS Lambda\n(lambda/handler.py)', x: 660, y: 370, group: 'api', desc: 'Handler serverless. Parsea multipart, rutas /compile, /cobol, /plan, /refactor. Function URL con CORS' },
+  { id: 'MAIN_CLI', label: '🖥️ main.py\n(CLI Batch)', x: 660, y: 460, group: 'api', desc: 'Compilador por línea de comandos. Acepta --project, --xfr, --dml, --target (glue/spark/flink), --output. Imprime accuracy report.' },
 
   // UI Layer
   { id: 'COMPILER_UI', label: '🔧 Compiler\n(App.jsx)', x: 900, y: 0, group: 'ui', desc: 'Upload .mp/.xfr/.dml, selecciona target Glue/Spark, visualiza DAG con ReactFlow, descarga código' },
@@ -625,6 +666,8 @@ const EDGES_DEF = [
   ['GLUE_CODEGEN', 'LAMBDA'], ['SPARK_CODEGEN', 'LAMBDA'],
   ['SF_CODEGEN', 'LAMBDA'], ['TF_CODEGEN', 'LAMBDA'], ['AF_CODEGEN', 'LAMBDA'],
   ['ACCURACY', 'LAMBDA'],
+  // Core → CLI
+  ['GLUE_CODEGEN', 'MAIN_CLI'], ['SPARK_CODEGEN', 'MAIN_CLI'], ['ACCURACY', 'MAIN_CLI'],
   // API → UI
   ['FASTAPI', 'COMPILER_UI'], ['FASTAPI', 'DESIGNER_UI'],
   ['LAMBDA', 'COMPILER_UI'], ['LAMBDA', 'DESIGNER_UI'],
@@ -739,7 +782,7 @@ export default function ArchitecturePage({ theme }) {
               let txt = '# ═══════════════════════════════════════\n'
               txt += '# BNX CONVERTIDOR — BACKEND COMPLETO\n'
               txt += '# ═══════════════════════════════════════\n\n'
-              const backendKeys = ['MP_PARSER','DAG_BUILDER','VALIDATOR','ACCURACY','GLUE_CODEGEN','SPARK_CODEGEN','FLINK_CODEGEN','LAMBDA','FASTAPI']
+              const backendKeys = ['MAIN_CLI','MP_PARSER','DAG_BUILDER','VALIDATOR','ACCURACY','GLUE_CODEGEN','SPARK_CODEGEN','FLINK_CODEGEN','LAMBDA','FASTAPI']
               backendKeys.forEach(k => {
                 const ex = CODE_EXAMPLES[k]
                 if (!ex) return
