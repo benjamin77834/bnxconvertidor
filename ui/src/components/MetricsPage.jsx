@@ -515,7 +515,7 @@ export default function MetricsPage({ theme }) {
           </div>
           {[
             { label: 'LeapLogic', license: '$50K-$200K', infra: '$2K-$10K/mes', total: '$74K-$320K/año', color: '#06b6d4', icon: '🔵' },
-            { label: 'Ab Initio Cloud', license: 'Licencia existente', infra: '$2K-$10K/mes', total: '$24K-$120K/año', color: '#f59e0b', icon: '🟡' },
+            { label: 'Ab Initio Cloud', license: '$100K-$500K+/año', infra: '$2K-$10K/mes', total: '$124K-$620K/año', color: '#f59e0b', icon: '🟡' },
             { label: 'BNX Convertidor', license: '$0 (open source)', infra: '$5-$20/mes', total: '$60-$240/año', color: '#22c55e', icon: '🟢' },
           ].map(c => (
             <div key={c.label} style={{
@@ -619,7 +619,7 @@ export default function MetricsPage({ theme }) {
                 {
                   criteria: '💰 Modelo de costo',
                   leap: 'Licencia SaaS: $50K-$200K+ USD/año según volumen de jobs',
-                  abinitio: 'Licencia Ab Initio existente + costo EKS (~$2K-$10K/mes según cluster)',
+                  abinitio: 'Licencia Ab Initio: $100K-$500K+/año + costo EKS (~$2K-$10K/mes según cluster)',
                   bnx: 'Open source. Solo costo de infraestructura AWS: ~$5-20/mes (Lambda + Amplify)',
                   leapColor: '#06b6d4', abiColor: '#f59e0b', bnxColor: '#22c55e',
                   highlight: true,
