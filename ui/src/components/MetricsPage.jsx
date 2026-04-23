@@ -743,7 +743,16 @@ export default function MetricsPage({ theme }) {
             { week: 'Sesión 5', task: 'COBOL Parser + PySpark Codegen + Deploy Lambda/Amplify', status: '✅', color: '#22c55e' },
             { week: 'Sesión 6', task: 'Designer Visual (drag & drop) + Editor de nodos + Code modal', status: '✅', color: '#22c55e' },
             { week: 'Sesión 7', task: 'Connectors S3/JDBC/Kafka en SOURCE y SINK', status: '✅', color: '#22c55e' },
-            { week: 'Próximo', task: 'Parallel processing + Multi-target + Schema inference avanzado', status: '🔜', color: '#f59e0b' },
+            { week: 'Sesión 8', task: 'Executive + Banking Model + DAMA + Governance + Architecture', status: '✅', color: '#22c55e' },
+            { week: 'Sesión 9', task: 'Metrics + Estimador 40K jobs + Metodología de cálculo', status: '✅', color: '#22c55e' },
+            { week: 'Sesión 10', task: 'E2E Test AWS Glue + CSV headers fix + IAM Glue trust policy', status: '✅', color: '#22c55e' },
+            { week: 'Sesión 11', task: 'Grafo de Grafos (Mega-DAG) — multi-MP + PLAN + cross-graph edges', status: '✅', color: '#22c55e' },
+            { week: 'Sesión 12', task: 'Apache Flink codegen (PyFlink + Flink SQL + StreamTableEnvironment)', status: '✅', color: '#22c55e' },
+            { week: 'Sesión 13', task: 'Planes cíclicos (SCHEDULE: CYCLIC, MAX_ITERATIONS, CONVERGENCE)', status: '✅', color: '#22c55e' },
+            { week: 'Sesión 14', task: 'Refactorizador Spark 2→3, Python 2→3, Glue 2→4 + UI + API', status: '✅', color: '#22c55e' },
+            { week: 'Sesión 15', task: 'Glosario de mecanismos + Code viewer + Admin mode + ZIP downloads', status: '✅', color: '#22c55e' },
+            { week: 'Sesión 16', task: 'Comparativa LeapLogic vs Ab Initio vs BNX + Costos licencia vs infra', status: '✅', color: '#22c55e' },
+            { week: 'Próximo', task: 'Schema inference avanzado + más conectores + tests de carga', status: '🔜', color: '#f59e0b' },
           ].map((s, i) => (
             <div key={i} style={{ display: 'flex', gap: 12, alignItems: 'flex-start', paddingBottom: 16 }}>
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: 24 }}>
@@ -751,7 +760,7 @@ export default function MetricsPage({ theme }) {
                   width: 12, height: 12, borderRadius: '50%', background: s.color,
                   border: `2px solid ${s.color}40`,
                 }} />
-                {i < 7 && <div style={{ width: 2, height: 24, background: t.border || '#334155' }} />}
+                {i < 16 && <div style={{ width: 2, height: 24, background: t.border || '#334155' }} />}
               </div>
               <div>
                 <div style={{ fontSize: 13, fontWeight: 600, color: t.text || '#e2e8f0' }}>
