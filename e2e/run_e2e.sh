@@ -6,7 +6,7 @@ BUCKET="bnx-e2e-test"
 REGION="us-east-1"
 GLUE_ROLE="arn:aws:iam::034711235858:role/lambdarol"
 JOB_NAME="bnx-e2e-test"
-
+PATHBNX="/Users/benjamingarcia/sam/bnxconvertidor"
 echo " BNX End-to-End Test"
 echo "======================"
 
@@ -35,11 +35,12 @@ EOF
 
 # Step 3: Generate Glue code
 echo " Step 3: Generating Glue code..."
-python3 main.py --project e2e/test.mp --xfr e2e/test.xfr --target glue --output e2e/glue_job.py
+
+python3 $PATHBNX/main.py --project $PATHBNX/e2e/test.mp --xfr $PATHBNX/e2e/test.xfr --target glue --output $PATHBNX/e2e/glue_job.py
 
 # Step 4: Upload script to S3
 echo " Step 4: Uploading Glue script..."
-aws s3 cp e2e/glue_job.py s3://$BUCKET/scripts/glue_job.py
+aws s3 cp $PATHBNX/e2e/glue_job.py s3://$BUCKET/scripts/glue_job.py
 
 # Step 5: Create or update Glue job
 echo " Step 5: Creating Glue job..."

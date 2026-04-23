@@ -435,6 +435,149 @@ export default function MetricsPage({ theme }) {
         ))}
       </div>
 
+      {/* Comparativa LeapLogic vs Ab Initio vs BNX */}
+      <div style={card}>
+        <h3 style={{ fontSize: 16, fontWeight: 600, color: t.text || '#e2e8f0', marginBottom: 4 }}>
+          🔬 Comparativa de Tecnología: LeapLogic vs Ab Initio Cloud vs BNX Convertidor
+        </h3>
+        <p style={{ fontSize: 13, color: t.dim || '#64748b', marginBottom: 20 }}>
+          Entradas, salidas, tecnología y diferenciadores de cada plataforma de migración
+        </p>
+
+        {/* Technology comparison table */}
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 700 }}>
+            <thead>
+              <tr style={{ background: (t.bg || '#0f1117') + '80' }}>
+                <th style={{ padding: '10px 14px', textAlign: 'left', color: t.dim || '#64748b', borderBottom: `2px solid ${t.border || '#334155'}`, width: '18%' }}>Criterio</th>
+                <th style={{ padding: '10px 14px', textAlign: 'center', color: '#06b6d4', borderBottom: `2px solid #06b6d440`, width: '27%' }}>
+                  🔵 LeapLogic (Impetus)
+                </th>
+                <th style={{ padding: '10px 14px', textAlign: 'center', color: '#f59e0b', borderBottom: `2px solid #f59e0b40`, width: '27%' }}>
+                  🟡 Ab Initio Cloud (EKS)
+                </th>
+                <th style={{ padding: '10px 14px', textAlign: 'center', color: '#22c55e', borderBottom: `2px solid #22c55e40`, width: '28%' }}>
+                  🟢 BNX Convertidor
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {[
+                {
+                  criteria: '🏗️ Tecnología base',
+                  leap: 'Plataforma SaaS propietaria. Motor de análisis estático de código Ab Initio. Reglas de transformación predefinidas.',
+                  abinitio: 'Ab Initio GDE + Co>Operating System migrado a Kubernetes (EKS). Misma plataforma, diferente infraestructura.',
+                  bnx: 'Python 3.11 open source. Parsers propios (.mp/.xfr/.dml). DAG Builder + Semantic Validator + Codegen multi-target.',
+                  leapColor: '#06b6d4', abiColor: '#f59e0b', bnxColor: '#22c55e',
+                },
+                {
+                  criteria: '📥 Entradas',
+                  leap: '• Grafos Ab Initio (.mp, .xfr, .dml)\n• COBOL (.cbl)\n• Hive/Teradata SQL\n• Informatica mappings\n• DataStage jobs',
+                  abinitio: '• Grafos Ab Initio nativos (.mp, .xfr, .dml, .pset)\n• PLAN files\n• Parámetros PSET\n• Sandbox Ab Initio existente',
+                  bnx: '• Grafos Ab Initio (.mp, .xfr, .dml)\n• COBOL (.cbl) con EBCDIC/COMP-3\n• PLAN + PSET (Grafo de Grafos)\n• Código Spark 2/Python 2 (refactorización)\n• Diseño visual (drag & drop)',
+                  leapColor: '#06b6d4', abiColor: '#f59e0b', bnxColor: '#22c55e',
+                },
+                {
+                  criteria: '📤 Salidas',
+                  leap: '• PySpark (Databricks/EMR)\n• Hive SQL\n• Teradata SQL\n• Reporte de migración\n• Documentación automática',
+                  abinitio: '• Grafos Ab Initio ejecutándose en EKS\n• Misma lógica, diferente infraestructura\n• Sin cambio de código',
+                  bnx: '• AWS Glue (PySpark + GlueContext)\n• PySpark puro (SparkSession)\n• Apache Flink (PyFlink + Flink SQL)\n• Step Functions (JSON)\n• Terraform (.tf)\n• Airflow (Python DAG)\n• Código refactorizado Spark 3/Python 3',
+                  leapColor: '#06b6d4', abiColor: '#f59e0b', bnxColor: '#22c55e',
+                },
+                {
+                  criteria: '🎯 Targets cloud',
+                  leap: 'Databricks, AWS EMR, Azure HDInsight, Google Dataproc',
+                  abinitio: 'AWS EKS, Azure AKS, GCP GKE (Kubernetes)',
+                  bnx: 'AWS Glue, AWS Lambda, Apache Flink, cualquier cluster Spark',
+                  leapColor: '#06b6d4', abiColor: '#f59e0b', bnxColor: '#22c55e',
+                },
+                {
+                  criteria: '🔄 Tipos de nodo soportados',
+                  leap: 'Reformat, Rollup, Join, Dedup, Normalize, Lookup, Concatenate, Gather, Partition, Filter, Read, Write + 50+ componentes Ab Initio',
+                  abinitio: 'Todos los componentes Ab Initio nativos (100% compatibilidad)',
+                  bnx: 'SOURCE, TRANSFORM, JOIN, DEDUP, NORMALIZE, LOOKUP, CONCATENATE, GATHER, PARTITION, FILTER, SINK (11 tipos)',
+                  leapColor: '#06b6d4', abiColor: '#f59e0b', bnxColor: '#22c55e',
+                },
+                {
+                  criteria: '🔗 Conectores',
+                  leap: 'S3, HDFS, JDBC (Oracle/MySQL/PG), Kafka, Hive, Teradata, Snowflake',
+                  abinitio: 'Todos los conectores Ab Initio nativos: MFS, Oracle, DB2, Teradata, SAP, mainframe',
+                  bnx: 'S3/filesystem (CSV/Parquet/JSON/Avro), Apache Kafka, JDBC (MySQL/PG/Oracle)',
+                  leapColor: '#06b6d4', abiColor: '#f59e0b', bnxColor: '#22c55e',
+                },
+                {
+                  criteria: '🔄 Planes cíclicos',
+                  leap: 'Soportado via Databricks workflows con retry logic',
+                  abinitio: 'Nativo — SCHEDULE: CYCLIC, MAX_ITERATIONS, CONVERGENCE en PLAN/PSET',
+                  bnx: 'Soportado — SCHEDULE: CYCLIC, MAX_ITERATIONS, CONVERGENCE en PLAN/PSET. Genera iteration loop con checkpoint/staging.',
+                  leapColor: '#06b6d4', abiColor: '#f59e0b', bnxColor: '#22c55e',
+                },
+                {
+                  criteria: '🏗️ Grafo de Grafos',
+                  leap: 'Soportado — migra PLANs con múltiples grafos como workflows',
+                  abinitio: 'Nativo — PLAN orquesta múltiples grafos con DEPENDS',
+                  bnx: 'Soportado — PLAN + múltiples .mp → Mega-DAG unificado con cross-graph edges y namespacing',
+                  leapColor: '#06b6d4', abiColor: '#f59e0b', bnxColor: '#22c55e',
+                },
+                {
+                  criteria: '💰 Modelo de costo',
+                  leap: 'Licencia SaaS: $50K-$200K+ USD/año según volumen de jobs',
+                  abinitio: 'Licencia Ab Initio existente + costo EKS (~$2K-$10K/mes según cluster)',
+                  bnx: 'Open source. Solo costo de infraestructura AWS: ~$5-20/mes (Lambda + Amplify)',
+                  leapColor: '#06b6d4', abiColor: '#f59e0b', bnxColor: '#22c55e',
+                },
+                {
+                  criteria: '⚡ Velocidad de migración',
+                  leap: '~2-4h por job complejo. Requiere revisión manual del output.',
+                  abinitio: 'Lift & shift — sin reescritura. Días/semanas para configurar EKS.',
+                  bnx: '0.5-4h por job según complejidad. Compilación automática en segundos.',
+                  leapColor: '#06b6d4', abiColor: '#f59e0b', bnxColor: '#22c55e',
+                },
+                {
+                  criteria: '🎨 UI / Experiencia',
+                  leap: 'UI web propietaria. Visualización de grafos. Reportes de migración.',
+                  abinitio: 'GDE (Graphical Development Environment) — IDE propietario de Ab Initio',
+                  bnx: 'React UI con DAG viewer interactivo, Designer drag & drop, modo batch CLI, Architecture + Glosario',
+                  leapColor: '#06b6d4', abiColor: '#f59e0b', bnxColor: '#22c55e',
+                },
+                {
+                  criteria: '🔓 Open Source',
+                  leap: '❌ Propietario (Impetus Technologies)',
+                  abinitio: '❌ Propietario (Ab Initio Software)',
+                  bnx: '✅ Código abierto. Python + React. Extensible.',
+                  leapColor: '#06b6d4', abiColor: '#f59e0b', bnxColor: '#22c55e',
+                },
+              ].map((row, i) => (
+                <tr key={i} style={{ borderBottom: `1px solid ${t.border || '#334155'}20`, verticalAlign: 'top' }}>
+                  <td style={{ padding: '10px 14px', color: t.text || '#e2e8f0', fontWeight: 600, fontSize: 12 }}>{row.criteria}</td>
+                  <td style={{ padding: '10px 14px', color: t.muted || '#94a3b8', fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-line', background: '#06b6d408' }}>{row.leap}</td>
+                  <td style={{ padding: '10px 14px', color: t.muted || '#94a3b8', fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-line', background: '#f59e0b08' }}>{row.abinitio}</td>
+                  <td style={{ padding: '10px 14px', color: t.muted || '#94a3b8', fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-line', background: '#22c55e08' }}>{row.bnx}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Summary badges */}
+        <div style={{ display: 'flex', gap: 12, marginTop: 20, flexWrap: 'wrap' }}>
+          {[
+            { label: 'LeapLogic', tag: 'SaaS propietario', sub: 'Mejor para migración masiva multi-plataforma', color: '#06b6d4' },
+            { label: 'Ab Initio Cloud', tag: 'Lift & shift a EKS', sub: 'Mejor para preservar lógica Ab Initio sin reescribir', color: '#f59e0b' },
+            { label: 'BNX Convertidor', tag: 'Open source + multi-target', sub: 'Mejor para AWS Glue/Flink con control total del código', color: '#22c55e' },
+          ].map(b => (
+            <div key={b.label} style={{
+              flex: '1 1 200px', padding: '12px 16px', borderRadius: 8,
+              background: b.color + '10', border: `1px solid ${b.color}30`,
+            }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: b.color }}>{b.label}</div>
+              <div style={{ fontSize: 12, color: t.text || '#e2e8f0', fontWeight: 600, marginTop: 4 }}>{b.tag}</div>
+              <div style={{ fontSize: 11, color: t.dim || '#64748b', marginTop: 4 }}>{b.sub}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
       {/* Estimación migración masiva */}
       <div style={card}>
         <h3 style={{ fontSize: 16, fontWeight: 600, color: t.text || '#e2e8f0', marginBottom: 16 }}>
