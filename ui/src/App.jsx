@@ -69,8 +69,10 @@ export default function App() {
   const refactorRef             = useRef(null)
   const [refactorResult, setRefactorResult] = useState(null)
   const [showEditor, setShowEditor] = useState(false)
+  const [editorTab, setEditorTab] = useState('mp')
   const [editorMp, setEditorMp] = useState('')
   const [editorXfr, setEditorXfr] = useState('')
+  const [editorPset, setEditorPset] = useState('')
 
   const t = isDark ? dark : light
 
@@ -351,7 +353,7 @@ export default function App() {
         }}>
           <FileUpload files={files} setFiles={setFiles} onCompile={compile} loading={loading} theme={t} />
 
-          {/* Inline MP Editor */}
+          {/* Inline Editor */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ fontSize: 14, color: t.muted, textTransform: 'uppercase', letterSpacing: 1 }}>✏️ Editor</span>
@@ -364,29 +366,69 @@ export default function App() {
             </div>
             {showEditor && (
               <>
-                <span style={{ fontSize: 11, color: t.dim }}>Escribe o pega un .mp directamente</span>
-                <textarea
-                  value={editorMp}
-                  onChange={e => setEditorMp(e.target.value)}
-                  placeholder={`NODE ReadCSV : SOURCE\nNODE Transform : TRANSFORM\nNODE WriteOut : SINK\n\nReadCSV -> Transform\nTransform -> WriteOut`}
-                  style={{
-                    width: '100%', minHeight: 120, maxHeight: 250, padding: 10, borderRadius: 8,
-                    background: t.codeBg || '#081220', border: `1px solid ${t.border}`,
-                    color: t.text, fontSize: 12, fontFamily: 'monospace', lineHeight: 1.5,
-                    resize: 'vertical', outline: 'none',
-                  }}
-                />
-                <textarea
-                  value={editorXfr}
-                  onChange={e => setEditorXfr(e.target.value)}
-                  placeholder={`# XFR rules (opcional)\nReadCSV:\n  source_type s3\n  path s3://bucket/data\n  format csv`}
-                  style={{
-                    width: '100%', minHeight: 60, maxHeight: 150, padding: 10, borderRadius: 8,
-                    background: t.codeBg || '#081220', border: `1px solid ${t.border}`,
-                    color: '#6366f1', fontSize: 11, fontFamily: 'monospace', lineHeight: 1.5,
-                    resize: 'vertical', outline: 'none',
-                  }}
-                />
+                <span style={{ fontSize: 11, color: t.dim }}>Pega o escribe .mp, .xfr, .pset directamente</span>
+                {/* Tab selector */}
+                <div style={{ display: 'flex', gap: 4 }}>
+                  {[
+                    { id: 'mp', label: '📄 .mp', color: '#22c55e' },
+                    { id: 'xfr', label: '🔄 .xfr', color: '#6366f1' },
+                    { id: 'pset', label: '⚙️ .pset', color: '#f59e0b' },
+                  ].map(tab => (
+                    <button key={tab.id} onClick={() => setEditorTab(tab.id)} style={{
+                      flex: 1, padding: '4px 8px', borderRadius: 6, cursor: 'pointer', fontSize: 11,
+                      background: editorTab === tab.id ? tab.color + '20' : 'transparent',
+                      border: `1px solid ${editorTab === tab.id ? tab.color : t.border}`,
+                      color: editorTab === tab.id ? tab.color : t.dim, fontWeight: editorTab === tab.id ? 600 : 400,
+                    }}>{tab.label}</button>
+                  ))}
+                </div>
+                {/* Editor area */}
+                {editorTab === 'mp' && (
+                  <textarea
+                    value={editorMp}
+                    onChange={e => setEditorMp(e.target.value)}
+                    placeholder={`NODE ReadCSV : SOURCE\nNODE Transform : TRANSFORM\nNODE WriteOut : SINK\n\nReadCSV -> Transform\nTransform -> WriteOut\n\n# También soporta formato nativo Ab Initio:\n# {timestamp|XXGpvertex|id|...|name|...}`}
+                    style={{
+                      width: '100%', minHeight: 140, maxHeight: 300, padding: 10, borderRadius: 8,
+                      background: t.codeBg || '#081220', border: `1px solid #22c55e40`,
+                      color: '#22c55e', fontSize: 12, fontFamily: 'monospace', lineHeight: 1.5,
+                      resize: 'vertical', outline: 'none',
+                    }}
+                  />
+                )}
+                {editorTab === 'xfr' && (
+                  <textarea
+                    value={editorXfr}
+                    onChange={e => setEditorXfr(e.target.value)}
+                    placeholder={`ReadCSV:\n  source_type s3\n  path s3://bucket/data\n  format csv\n\nTransform:\n  select id, name, amount\n  where amount > 0\n\nWriteOut:\n  sink_type s3\n  path s3://output\n  format parquet`}
+                    style={{
+                      width: '100%', minHeight: 140, maxHeight: 300, padding: 10, borderRadius: 8,
+                      background: t.codeBg || '#081220', border: `1px solid #6366f140`,
+                      color: '#6366f1', fontSize: 12, fontFamily: 'monospace', lineHeight: 1.5,
+                      resize: 'vertical', outline: 'none',
+                    }}
+                  />
+                )}
+                {editorTab === 'pset' && (
+                  <textarea
+                    value={editorPset}
+                    onChange={e => setEditorPset(e.target.value)}
+                    placeholder={`# Formato simple:\nS3_INPUT = s3://datalake/raw\nS3_OUTPUT = s3://datalake/curated\n\n# O formato nativo Ab Initio:\n# !prototype|P|||path\n# KEY||||VALUE`}
+                    style={{
+                      width: '100%', minHeight: 140, maxHeight: 300, padding: 10, borderRadius: 8,
+                      background: t.codeBg || '#081220', border: `1px solid #f59e0b40`,
+                      color: '#f59e0b', fontSize: 12, fontFamily: 'monospace', lineHeight: 1.5,
+                      resize: 'vertical', outline: 'none',
+                    }}
+                  />
+                )}
+                {/* Status indicators */}
+                <div style={{ display: 'flex', gap: 8, fontSize: 10, color: t.dim }}>
+                  {editorMp.trim() && <span style={{ color: '#22c55e' }}>✅ MP ({editorMp.split('\n').length} líneas)</span>}
+                  {editorXfr.trim() && <span style={{ color: '#6366f1' }}>✅ XFR</span>}
+                  {editorPset.trim() && <span style={{ color: '#f59e0b' }}>✅ PSET</span>}
+                  {!editorMp.trim() && <span style={{ color: '#ef4444' }}>⚠️ MP requerido</span>}
+                </div>
                 <button
                   onClick={() => {
                     if (!editorMp.trim()) return
