@@ -68,6 +68,9 @@ export default function App() {
   const mpFilesData             = useRef([])  // Persist mp files across re-renders
   const refactorRef             = useRef(null)
   const [refactorResult, setRefactorResult] = useState(null)
+  const [showEditor, setShowEditor] = useState(false)
+  const [editorMp, setEditorMp] = useState('')
+  const [editorXfr, setEditorXfr] = useState('')
 
   const t = isDark ? dark : light
 
@@ -347,6 +350,68 @@ export default function App() {
           flexDirection: 'column', gap: 20, overflowY: 'auto',
         }}>
           <FileUpload files={files} setFiles={setFiles} onCompile={compile} loading={loading} theme={t} />
+
+          {/* Inline MP Editor */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 14, color: t.muted, textTransform: 'uppercase', letterSpacing: 1 }}>✏️ Editor</span>
+              <button onClick={() => setShowEditor(e => !e)} style={{
+                padding: '2px 8px', borderRadius: 4, fontSize: 11, cursor: 'pointer',
+                background: showEditor ? t.accent + '20' : 'transparent',
+                border: `1px solid ${showEditor ? t.accent : t.border}`,
+                color: showEditor ? t.accent : t.dim,
+              }}>{showEditor ? 'Cerrar' : 'Abrir'}</button>
+            </div>
+            {showEditor && (
+              <>
+                <span style={{ fontSize: 11, color: t.dim }}>Escribe o pega un .mp directamente</span>
+                <textarea
+                  value={editorMp}
+                  onChange={e => setEditorMp(e.target.value)}
+                  placeholder={`NODE ReadCSV : SOURCE\nNODE Transform : TRANSFORM\nNODE WriteOut : SINK\n\nReadCSV -> Transform\nTransform -> WriteOut`}
+                  style={{
+                    width: '100%', minHeight: 120, maxHeight: 250, padding: 10, borderRadius: 8,
+                    background: t.codeBg || '#081220', border: `1px solid ${t.border}`,
+                    color: t.text, fontSize: 12, fontFamily: 'monospace', lineHeight: 1.5,
+                    resize: 'vertical', outline: 'none',
+                  }}
+                />
+                <textarea
+                  value={editorXfr}
+                  onChange={e => setEditorXfr(e.target.value)}
+                  placeholder={`# XFR rules (opcional)\nReadCSV:\n  source_type s3\n  path s3://bucket/data\n  format csv`}
+                  style={{
+                    width: '100%', minHeight: 60, maxHeight: 150, padding: 10, borderRadius: 8,
+                    background: t.codeBg || '#081220', border: `1px solid ${t.border}`,
+                    color: '#6366f1', fontSize: 11, fontFamily: 'monospace', lineHeight: 1.5,
+                    resize: 'vertical', outline: 'none',
+                  }}
+                />
+                <button
+                  onClick={() => {
+                    if (!editorMp.trim()) return
+                    setLoading(true)
+                    const startTime = Date.now()
+                    const form = new FormData()
+                    form.append('mp', new File([editorMp], 'editor.mp'))
+                    if (editorXfr.trim()) form.append('xfr', new File([editorXfr], 'editor.xfr'))
+                    form.append('target', target)
+                    fetch(COMPILE_URL, { method: 'POST', body: form })
+                      .then(res => res.json())
+                      .then(data => { setCompileTime(Date.now() - startTime); setResult(data); if (data.code) setCodeOpen(true) })
+                      .catch(e => { setCompileTime(Date.now() - startTime); setResult({ errors: [`Error: ${e.message}`], warnings: [], nodes: [], edges: [] }) })
+                      .finally(() => setLoading(false))
+                  }}
+                  disabled={!editorMp.trim() || loading}
+                  style={{
+                    padding: '8px 16px', borderRadius: 8, cursor: editorMp.trim() ? 'pointer' : 'not-allowed',
+                    background: editorMp.trim() ? t.accent : t.border,
+                    color: '#fff', border: 'none', fontSize: 13, fontWeight: 600,
+                  }}
+                >{loading ? '⏳...' : '🚀 Compile Editor'}</button>
+              </>
+            )}
+          </div>
 
           {/* Target selector */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
