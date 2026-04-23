@@ -1,0 +1,10 @@
+PLAN fraud_detection_pipeline
+VERSION 2.0
+
+GRAPH fraud_detection
+  MP: fraud_detection.mp
+  PRIORITY: HIGH
+
+GRAPH monster_banking
+  MP: monster_banking.mp
+  DEPENDS: fraud_detection
