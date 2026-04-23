@@ -505,6 +505,42 @@ export default function MetricsPage({ theme }) {
           )
         })()}
 
+        {/* Cost comparison highlight */}
+        <div style={{
+          display: 'flex', gap: 12, marginBottom: 20, flexWrap: 'wrap',
+          padding: 16, borderRadius: 10, background: '#f59e0b08', border: `1px solid #f59e0b20`,
+        }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: t.text || '#e2e8f0', width: '100%', marginBottom: 4 }}>
+            💰 Costo Anual: Licencia + Infraestructura
+          </div>
+          {[
+            { label: 'LeapLogic', license: '$50K-$200K', infra: '$2K-$10K/mes', total: '$74K-$320K/año', color: '#06b6d4', icon: '🔵' },
+            { label: 'Ab Initio Cloud', license: 'Licencia existente', infra: '$2K-$10K/mes', total: '$24K-$120K/año', color: '#f59e0b', icon: '🟡' },
+            { label: 'BNX Convertidor', license: '$0 (open source)', infra: '$5-$20/mes', total: '$60-$240/año', color: '#22c55e', icon: '🟢' },
+          ].map(c => (
+            <div key={c.label} style={{
+              flex: '1 1 180px', padding: '12px 14px', borderRadius: 8,
+              background: c.color + '10', border: `2px solid ${c.color}30`,
+            }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: c.color }}>{c.icon} {c.label}</div>
+              <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: 11, color: t.dim || '#64748b' }}>Licencia</span>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: t.text || '#e2e8f0' }}>{c.license}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: 11, color: t.dim || '#64748b' }}>Infra</span>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: t.text || '#e2e8f0' }}>{c.infra}</span>
+                </div>
+                <div style={{ borderTop: `1px solid ${c.color}30`, paddingTop: 4, marginTop: 4, display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: 11, fontWeight: 600, color: c.color }}>Total/año</span>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: c.color }}>{c.total}</span>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+
         {/* Technology comparison table */}
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 700 }}>
@@ -610,11 +646,14 @@ export default function MetricsPage({ theme }) {
                   leapColor: '#06b6d4', abiColor: '#f59e0b', bnxColor: '#22c55e',
                 },
               ].map((row, i) => (
-                <tr key={i} style={{ borderBottom: `1px solid ${t.border || '#334155'}20`, verticalAlign: 'top' }}>
+                <tr key={i} style={{
+                  borderBottom: `1px solid ${t.border || '#334155'}20`, verticalAlign: 'top',
+                  background: row.highlight ? '#f59e0b10' : 'transparent',
+                }}>
                   <td style={{ padding: '10px 14px', color: t.text || '#e2e8f0', fontWeight: 600, fontSize: 12 }}>{row.criteria}</td>
-                  <td style={{ padding: '10px 14px', color: t.muted || '#94a3b8', fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-line', background: '#06b6d408' }}>{row.leap}</td>
-                  <td style={{ padding: '10px 14px', color: t.muted || '#94a3b8', fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-line', background: '#f59e0b08' }}>{row.abinitio}</td>
-                  <td style={{ padding: '10px 14px', color: t.muted || '#94a3b8', fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-line', background: '#22c55e08' }}>{row.bnx}</td>
+                  <td style={{ padding: '10px 14px', color: row.highlight ? '#ef4444' : (t.muted || '#94a3b8'), fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-line', background: row.highlight ? '#ef444415' : '#06b6d408', fontWeight: row.highlight ? 600 : 400 }}>{row.leap}</td>
+                  <td style={{ padding: '10px 14px', color: row.highlight ? '#f59e0b' : (t.muted || '#94a3b8'), fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-line', background: row.highlight ? '#f59e0b15' : '#f59e0b08', fontWeight: row.highlight ? 600 : 400 }}>{row.abinitio}</td>
+                  <td style={{ padding: '10px 14px', color: row.highlight ? '#22c55e' : (t.muted || '#94a3b8'), fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-line', background: row.highlight ? '#22c55e15' : '#22c55e08', fontWeight: row.highlight ? 600 : 400 }}>{row.bnx}</td>
                 </tr>
               ))}
             </tbody>
