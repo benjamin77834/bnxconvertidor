@@ -89,17 +89,46 @@ def parse_plan(path):
 
 
 def parse_pset(path):
-    """Parse a .pset file into key-value parameters."""
+    """Parse a .pset file into key-value parameters.
+    Supports both formats:
+    - BNX simple: KEY = VALUE
+    - Ab Initio native: KEY||||VALUE
+    """
     params = {}
 
     with open(path, "r") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
+        content = f.read()
 
+    # Auto-detect format
+    is_native = "||||" in content or content.strip().startswith("!prototype")
+
+    for line in content.split("\n"):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        if is_native:
+            # Skip prototype header
+            if line.startswith("!prototype"):
+                continue
+            # Native Ab Initio format: KEY||||VALUE
+            m = re.match(r"(\w+)\|{3,4}(.*)", line)
+            if m:
+                key = m.group(1).strip()
+                val = m.group(2).strip()
+                # Resolve simple ${VAR} references but keep $[pdl...] as-is
+                if val and not val.startswith("$["):
+                    params[key] = val
+                elif val.startswith("$["):
+                    # Store PDL expressions as comments for reference
+                    params[key] = val
+                continue
+        else:
+            # BNX simple format: KEY = VALUE
             m = re.match(r"(\w+)\s*=\s*(.+)", line)
             if m:
+                params[m.group(1)] = m.group(2).strip()
+                continue
                 params[m.group(1)] = m.group(2).strip()
 
     return params

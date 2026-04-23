@@ -1,0 +1,14 @@
+!prototype|P|||C:\Users\JV21157\Documents\Citi projects\Ingesta 2026\FRAUDS DETECTION\uif_ingestion_proto_frauds_ftracct
+SOURCE_ATTRIBUTE_PATH_LOC||||${EAP_DIR}/uif_datasets/fraudsdetection
+PROCESS_ID||||ing_hive_a_rskmgr_oprk_ftet_ftracct_trx_m
+SOURCE||||hive_a_rskmgr_oprk_ftet_ftracct_trx_m
+SOURCE_DML||||$[pdl_resolve_to_string(aiblk_stddef_utils.get_attrib( SOURCE_ATTRIBUTES_PATH, "record_format"))]
+TARGET0_ATTRIBUTE_PATH_LOC||||${EAP_DIR}/uif_datasets/fraudsdetection
+TARGET0||||mongo_collection_acct_level_output
+T0_DML||||$[pdl_resolve_to_string(aiblk_stddef_utils.get_attrib_quiet( TARGET0_ATTRIBUTES_PATH, "record_format"))]
+TARGET0_XFR||||$EAP_XFR/frauds_detection/xfr_a_rskmgr_oprk_ftet_ftracct_trx_m.xfr
+SOURCE0||||$[pdl_resolve_to_string(aiblk_stddef_utils.get_attrib_quiet( SOURCE_ATTRIBUTES_PATH, "hive_warehouse_dir"))]
+SOURCE1||||$[pdl_resolve_to_string(aiblk_stddef_utils.get_attrib_quiet( SOURCE_ATTRIBUTES_PATH, "hive_db"))]
+SOURCE2||||$[pdl_resolve_to_string(aiblk_stddef_utils.get_attrib_quiet( SOURCE_ATTRIBUTES_PATH, "table"))]
+SOURCE3||||$[pdl_resolve_to_string(aiblk_stddef_utils.get_attrib_quiet( SOURCE_ATTRIBUTES_PATH, "hive_layout"))]
+SOURCE4||||$[pdl_resolve_to_string(aiblk_stddef_utils.get_attrib_quiet( SOURCE_ATTRIBUTES_PATH, "project_dir"))]
