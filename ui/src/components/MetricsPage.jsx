@@ -444,6 +444,67 @@ export default function MetricsPage({ theme }) {
           Entradas, salidas, tecnología y diferenciadores de cada plataforma de migración
         </p>
 
+        {/* Speed & Impact Chart */}
+        {(() => {
+          const metrics = [
+            { label: 'Velocidad\nmigración', leap: 65, abi: 40, bnx: 95 },
+            { label: 'Costo\n(inverso)', leap: 30, abi: 25, bnx: 98 },
+            { label: 'Targets\ncloud', leap: 80, abi: 50, bnx: 90 },
+            { label: 'Open\nSource', leap: 0, abi: 0, bnx: 100 },
+            { label: 'Soporte\nCOBOL', leap: 85, abi: 70, bnx: 80 },
+            { label: 'Multi-\ntarget', leap: 75, abi: 30, bnx: 95 },
+            { label: 'Planes\ncíclicos', leap: 60, abi: 100, bnx: 85 },
+            { label: 'Grafo\nde Grafos', leap: 70, abi: 100, bnx: 90 },
+          ]
+          const barH = 22
+          const gap = 10
+          const labelW = 70
+          const chartW = 420
+          const colors = { leap: '#06b6d4', abi: '#f59e0b', bnx: '#22c55e' }
+
+          return (
+            <div style={{ marginBottom: 24 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: t.text || '#e2e8f0', marginBottom: 12 }}>
+                📊 Índice de Capacidades (0–100)
+              </div>
+              <div style={{ display: 'flex', gap: 16, marginBottom: 12 }}>
+                {[['LeapLogic', colors.leap], ['Ab Initio Cloud', colors.abi], ['BNX Convertidor', colors.bnx]].map(([name, color]) => (
+                  <div key={name} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <div style={{ width: 12, height: 12, borderRadius: 2, background: color }} />
+                    <span style={{ fontSize: 12, color: t.muted || '#94a3b8' }}>{name}</span>
+                  </div>
+                ))}
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: gap }}>
+                {metrics.map((m, i) => (
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <div style={{ width: labelW, fontSize: 11, color: t.dim || '#64748b', textAlign: 'right', whiteSpace: 'pre-line', lineHeight: 1.3 }}>{m.label}</div>
+                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 3 }}>
+                      {[['leap', m.leap], ['abi', m.abi], ['bnx', m.bnx]].map(([key, val]) => (
+                        <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <div style={{ flex: 1, height: barH, background: (t.bg || '#0f1117') + '80', borderRadius: 4, overflow: 'hidden', position: 'relative' }}>
+                            <div style={{
+                              width: `${val}%`, height: '100%', borderRadius: 4,
+                              background: colors[key] + (key === 'bnx' ? 'cc' : '80'),
+                              transition: 'width 0.6s ease',
+                              display: 'flex', alignItems: 'center', paddingLeft: 8,
+                            }}>
+                              {val > 15 && <span style={{ fontSize: 10, color: '#fff', fontWeight: 600 }}>{val}</span>}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div style={{ marginTop: 12, fontSize: 11, color: t.dim || '#64748b', fontStyle: 'italic' }}>
+                * Índice estimado basado en capacidades documentadas públicamente. Costo (inverso) = 100 - costo relativo normalizado.
+              </div>
+            </div>
+          )
+        })()}
+
         {/* Technology comparison table */}
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 700 }}>
