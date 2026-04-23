@@ -586,6 +586,7 @@ export default function MetricsPage({ theme }) {
                   abinitio: 'Licencia Ab Initio existente + costo EKS (~$2K-$10K/mes según cluster)',
                   bnx: 'Open source. Solo costo de infraestructura AWS: ~$5-20/mes (Lambda + Amplify)',
                   leapColor: '#06b6d4', abiColor: '#f59e0b', bnxColor: '#22c55e',
+                  highlight: true,
                 },
                 {
                   criteria: '⚡ Velocidad de migración',
