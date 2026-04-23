@@ -588,6 +588,7 @@ export default function MetricsPage({ theme }) {
                   abinitio: 'AWS EKS, Azure AKS, GCP GKE (Kubernetes)',
                   bnx: 'AWS Glue, AWS Lambda, Apache Flink, cualquier cluster Spark',
                   leapColor: '#06b6d4', abiColor: '#f59e0b', bnxColor: '#22c55e',
+                  highlight: true,
                 },
                 {
                   criteria: '🔄 Tipos de nodo soportados',
