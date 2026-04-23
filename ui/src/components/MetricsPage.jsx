@@ -566,6 +566,7 @@ export default function MetricsPage({ theme }) {
                   abinitio: 'Ab Initio GDE + Co>Operating System migrado a Kubernetes (EKS). Misma plataforma, diferente infraestructura.',
                   bnx: 'Python 3.11 open source. Parsers propios (.mp/.xfr/.dml). DAG Builder + Semantic Validator + Codegen multi-target.',
                   leapColor: '#06b6d4', abiColor: '#f59e0b', bnxColor: '#22c55e',
+                  highlight: true,
                 },
                 {
                   criteria: '📥 Entradas',
