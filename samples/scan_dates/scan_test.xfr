@@ -1,0 +1,34 @@
+ScanTransactions:
+  source_type s3
+  path s3://datalake/raw/transactions
+  format parquet
+  scan_year 2026
+  scan_month 10
+
+ScanCustomers:
+  source_type s3
+  path s3://datalake/raw/customers
+  format csv
+  partition_filter region = 'MX'
+
+CleanDates:
+  select customer_id, amount, date_to_string(tx_date, "yyyy-MM-dd") as tx_str, year_of(tx_date) as tx_year, month_of(tx_date) as tx_month, date_diff(today(), tx_date) as days_ago
+  where amount > 0
+
+JoinData:
+  join_key customer_id
+  join_type inner
+
+AggMonthly:
+  group_by customer_id, tx_year, tx_month
+  select SUM(amount) as total_spent, COUNT(customer_id) as tx_count
+
+PartByRegion:
+  partition_keys region, tx_year
+  num_partitions 8
+
+WriteReport:
+  sink_type s3
+  path s3://datalake/curated/monthly_report
+  format parquet
+  mode overwrite
