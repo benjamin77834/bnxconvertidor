@@ -7,10 +7,37 @@ import re
 from datetime import datetime
 
 
+def _map_date_functions(expr):
+    """Map Ab Initio date functions to Spark SQL equivalents."""
+    if not expr:
+        return expr
+    expr = re.sub(r'date_to_string\(', 'date_format(', expr)
+    expr = re.sub(r'string_to_date\(', 'to_date(', expr)
+    expr = re.sub(r'string_to_datetime\(', 'to_timestamp(', expr)
+    expr = re.sub(r'datetime_to_string\(', 'date_format(', expr)
+    expr = re.sub(r'date_diff\(', 'datediff(', expr)
+    expr = re.sub(r'date_add_days\(', 'date_add(', expr)
+    expr = re.sub(r'date_sub_days\(', 'date_sub(', expr)
+    expr = re.sub(r'\btoday\(\)', 'current_date()', expr)
+    expr = re.sub(r'\bnow\(\)', 'current_timestamp()', expr)
+    expr = re.sub(r'year_of\(', 'year(', expr)
+    expr = re.sub(r'month_of\(', 'month(', expr)
+    expr = re.sub(r'day_of\(', 'dayofmonth(', expr)
+    expr = re.sub(r'truncate_date\(([^,]+),\s*"MONTH"\)', r'trunc(\1, "MM")', expr)
+    expr = re.sub(r'truncate_date\(([^,]+),\s*"YEAR"\)', r'trunc(\1, "yyyy")', expr)
+    expr = re.sub(r'last_day_of_month\(', 'last_day(', expr)
+    return expr
+
+
 def _build_transform(var_id, src_df, rule):
     select = rule.get("select", "*")
     where = rule.get("where")
     group_by = rule.get("group_by")
+
+    # Map Ab Initio date functions to Spark
+    select = _map_date_functions(select)
+    if where:
+        where = _map_date_functions(where)
 
     if group_by:
         keys = ", ".join(f'"{k}"' for k in group_by)
@@ -93,6 +120,17 @@ def generate_spark(dag, output_path, xfr_rules=None):
                         f.write(f'{var_id}_df = spark.read.json("{path}")\n')
                     else:
                         f.write(f'{var_id}_df = spark.read.parquet("{path}")\n')
+                # Partition filter (Scan with date filter)
+                partition_filter = rule.get("partition_filter") if rule else None
+                scan_year = rule.get("scan_year") if rule else None
+                scan_month = rule.get("scan_month") if rule else None
+                if partition_filter:
+                    f.write(f'{var_id}_df = {var_id}_df.where("{partition_filter}")\n')
+                elif scan_year or scan_month:
+                    filters = []
+                    if scan_year: filters.append(f'year = {scan_year}')
+                    if scan_month: filters.append(f'month = {scan_month}')
+                    f.write(f'{var_id}_df = {var_id}_df.where("{" AND ".join(filters)}")\n')
                 f.write(f'print("📂 SOURCE: {log_name}")\n\n')
 
             elif ntype in ("TRANSFORM", "XFR"):
