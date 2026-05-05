@@ -1,7 +1,16 @@
+# BNX Convertidor — Python Dependencies
+# Backend has minimal dependencies (mostly stdlib)
 
----
+# API (development only)
+fastapi==0.104.1
+uvicorn==0.24.0
+python-multipart==0.0.6
 
-# 📦 3. requirements.txt
-
-```text
-pyspark
+# No other external dependencies required for core engine
+# All parsers, codegen, and validators use Python stdlib only:
+# - re (regex)
+# - os, sys, tempfile (filesystem)
+# - json (serialization)
+# - dataclasses (data structures)
+# - datetime (timestamps)
+# - io, base64 (Lambda handler)

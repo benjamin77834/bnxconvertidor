@@ -1,6 +1,31 @@
+# Dependencies
+node_modules/
 __pycache__/
 *.pyc
-venv/
-output/
+.env
+
+# Build
+dist/
+build/
+*.egg-info/
+
+# IDE
 .vscode/
+.idea/
+*.swp
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Lambda package
+lambda_package.zip
+
+# Coverage
+coverage.xml
+.coverage
+htmlcov/
+ui/coverage/
+
+# Temp
+*.tmp
