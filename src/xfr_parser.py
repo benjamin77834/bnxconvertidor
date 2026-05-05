@@ -91,7 +91,7 @@ def parse_xfr(path):
                 continue
 
             # SOURCE/SINK directives
-            for directive in ["source_type", "sink_type", "path", "format", "topic", "table", "connection", "mode", "partition_keys", "num_partitions"]:
+            for directive in ["source_type", "sink_type", "path", "format", "topic", "table", "connection", "mode", "partition_keys", "num_partitions", "partition_filter", "scan_year", "scan_month", "window_size"]:
                 m = re.match(rf"(?i)^{directive}\s+(.+)$", stripped)
                 if m:
                     xfr_map[current][directive] = m.group(1).strip()

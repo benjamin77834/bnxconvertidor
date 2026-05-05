@@ -2,11 +2,52 @@
 import re
 from datetime import datetime
 
+
+def _map_date_functions(expr):
+    """Map Ab Initio date functions to Spark SQL equivalents."""
+    if not expr:
+        return expr
+    # date_to_string(date, format) → date_format(date, format)
+    expr = re.sub(r'date_to_string\(', 'date_format(', expr)
+    # string_to_date(str, format) → to_date(str, format)
+    expr = re.sub(r'string_to_date\(', 'to_date(', expr)
+    # string_to_datetime(str, format) → to_timestamp(str, format)
+    expr = re.sub(r'string_to_datetime\(', 'to_timestamp(', expr)
+    # datetime_to_string(dt, format) → date_format(dt, format)
+    expr = re.sub(r'datetime_to_string\(', 'date_format(', expr)
+    # date_diff(d1, d2) → datediff(d1, d2)
+    expr = re.sub(r'date_diff\(', 'datediff(', expr)
+    # date_add_days(date, n) → date_add(date, n)
+    expr = re.sub(r'date_add_days\(', 'date_add(', expr)
+    # date_sub_days(date, n) → date_sub(date, n)
+    expr = re.sub(r'date_sub_days\(', 'date_sub(', expr)
+    # today() → current_date()
+    expr = re.sub(r'\btoday\(\)', 'current_date()', expr)
+    # now() → current_timestamp()
+    expr = re.sub(r'\bnow\(\)', 'current_timestamp()', expr)
+    # year_of(date) → year(date)
+    expr = re.sub(r'year_of\(', 'year(', expr)
+    # month_of(date) → month(date)
+    expr = re.sub(r'month_of\(', 'month(', expr)
+    # day_of(date) → dayofmonth(date)
+    expr = re.sub(r'day_of\(', 'dayofmonth(', expr)
+    # truncate_date(date, "MONTH") → trunc(date, "MM")
+    expr = re.sub(r'truncate_date\(([^,]+),\s*"MONTH"\)', r'trunc(\1, "MM")', expr)
+    expr = re.sub(r'truncate_date\(([^,]+),\s*"YEAR"\)', r'trunc(\1, "yyyy")', expr)
+    # last_day_of_month(date) → last_day(date)
+    expr = re.sub(r'last_day_of_month\(', 'last_day(', expr)
+    return expr
+
 def _build_transform(var_id, src_df, rule):
     """Genera código PySpark a partir de una regla XFR { select, where, group_by }"""
     select = rule.get("select", "*")
     where = rule.get("where")
     group_by = rule.get("group_by")
+
+    # Map Ab Initio date functions to Spark
+    select = _map_date_functions(select)
+    if where:
+        where = _map_date_functions(where)
 
     if group_by:
         # Genera groupBy().agg() para agregaciones
@@ -93,6 +134,17 @@ def generate_glue(dag, output_path, xfr_rules=None):
                         f.write(f'{var_id}_df = spark.read.format("csv").option("header", "true").option("inferSchema", "true").load("{path}")\n')
                     else:
                         f.write(f'{var_id}_df = spark.read.format("{fmt}").load("{path}")\n')
+                # Partition filter (Scan with date filter)
+                partition_filter = rule.get("partition_filter") if rule else None
+                scan_year = rule.get("scan_year") if rule else None
+                scan_month = rule.get("scan_month") if rule else None
+                if partition_filter:
+                    f.write(f'{var_id}_df = {var_id}_df.where("{partition_filter}")\n')
+                elif scan_year or scan_month:
+                    filters = []
+                    if scan_year: filters.append(f'year = {scan_year}')
+                    if scan_month: filters.append(f'month = {scan_month}')
+                    f.write(f'{var_id}_df = {var_id}_df.where("{" AND ".join(filters)}")\n')
                 f.write(f'print("📂 SOURCE: {log_name}")\n\n')
 
             # TRANSFORM / XFR
