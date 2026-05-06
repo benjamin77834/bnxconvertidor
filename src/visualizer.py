@@ -16,9 +16,9 @@ TYPE_COLOR = {
 }
 
 TYPE_ICON = {
-    'SOURCE': '📂', 'TRANSFORM': '🔄', 'JOIN': '🔗', 'DEDUP': '🧹',
-    'NORMALIZE': '📐', 'LOOKUP': '🔍', 'CONCATENATE': '🔗', 'GATHER': '📥',
-    'PARTITION': '🔀', 'FILTER': '🔽', 'SINK': '💾', 'XFR': '🔄',
+    'SOURCE': 'IN', 'TRANSFORM': 'XFM', 'JOIN': 'JN', 'DEDUP': 'DD',
+    'NORMALIZE': 'NRM', 'LOOKUP': 'LKP', 'CONCATENATE': 'CAT', 'GATHER': 'GTH',
+    'PARTITION': 'PRT', 'FILTER': 'FLT', 'SINK': 'OUT', 'XFR': 'XFM',
 }
 
 
@@ -56,6 +56,7 @@ def visualize_dag(dag, output_path="dag_view.html", xfr_rules=None, target="glue
     html = f"""<!DOCTYPE html>
 <html>
 <head>
+<meta charset="UTF-8">
 <title>BNX DAG Viewer — {len(nodes)} nodes</title>
 <style>
 body {{ margin: 0; background: #0a1628; color: #e8edf5; font-family: -apple-system, sans-serif; }}
@@ -81,11 +82,11 @@ svg {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-e
 </head>
 <body>
 <div class="header">
-  <h1>🚀 BNX DAG Viewer</h1>
+  <h1>BNX DAG Viewer</h1>
   <span class="badge">V54</span>
   <span class="badge">{len(nodes)} nodes · {sum(len(n.children) for n in nodes)} edges</span>
   <span class="target-badge" style="background: {'#22c55e20' if target == 'glue' else '#6366f120' if target == 'spark' else '#06b6d420'}; color: {'#22c55e' if target == 'glue' else '#6366f1' if target == 'spark' else '#06b6d4'};">
-    {'🔧 Glue' if target == 'glue' else '⚡ Spark' if target == 'spark' else '🌊 Flink'}
+    {'Glue' if target == 'glue' else 'Spark' if target == 'spark' else 'Flink'}
   </span>
   <span class="badge">Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}</span>
 </div>
@@ -120,7 +121,7 @@ svg {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-e
     # Sidebar — execution order + code snippet
     html += '  <div class="sidebar">\n'
     html += '    <div class="section">\n'
-    html += '      <div class="section-title">📊 Execution Order</div>\n'
+    html += '      <div class="section-title">EXECUTION ORDER</div>\n'
     
     for i, node in enumerate(nodes, 1):
         color = TYPE_COLOR.get(node.type.upper(), '#64748b')
@@ -142,7 +143,7 @@ svg {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-e
 
     # Code flow section
     html += '    <div class="section">\n'
-    html += f'      <div class="section-title">🔧 Flow in {target.upper()}</div>\n'
+    html += f'      <div class="section-title">FLOW IN {target.upper()}</div>\n'
     html += '      <div class="code-block">'
     
     for node in nodes:

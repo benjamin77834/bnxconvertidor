@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
+<meta charset="UTF-8">
 <title>BNX DAG Viewer — 6 nodes</title>
 <style>
 body { margin: 0; background: #0a1628; color: #e8edf5; font-family: -apple-system, sans-serif; }
@@ -26,13 +27,13 @@ svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-ev
 </head>
 <body>
 <div class="header">
-  <h1>🚀 BNX DAG Viewer</h1>
+  <h1>BNX DAG Viewer</h1>
   <span class="badge">V54</span>
   <span class="badge">6 nodes · 5 edges</span>
   <span class="target-badge" style="background: #22c55e20; color: #22c55e;">
-    🔧 Glue
+    Glue
   </span>
-  <span class="badge">Generated: 2026-05-06 17:17</span>
+  <span class="badge">Generated: 2026-05-06 17:26</span>
 </div>
 <div class="container">
   <div class="canvas">
@@ -45,60 +46,60 @@ svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-ev
       <line class="edge" x1="860" y1="220" x2="1050" y2="220" stroke="#475569"/>
     </svg>
     <div class="node" style="left:50px; top:150px; background:#22c55e22; border:2px solid #22c55e; color:#22c55e;">
-      <div class="node-type">📂 SOURCE</div>
+      <div class="node-type">IN SOURCE</div>
       <div class="node-name" style="color:#e8edf5;">RawOrders</div>
     </div>
     <div class="node" style="left:50px; top:250px; background:#22c55e22; border:2px solid #22c55e; color:#22c55e;">
-      <div class="node-type">📂 SOURCE</div>
+      <div class="node-type">IN SOURCE</div>
       <div class="node-name" style="color:#e8edf5;">RawCustomers</div>
     </div>
     <div class="node" style="left:300px; top:200px; background:#6366f122; border:2px solid #6366f1; color:#6366f1;">
-      <div class="node-type">🔄 TRANSFORM</div>
+      <div class="node-type">XFM TRANSFORM</div>
       <div class="node-name" style="color:#e8edf5;">CleanOrders</div>
     </div>
     <div class="node" style="left:550px; top:200px; background:#f59e0b22; border:2px solid #f59e0b; color:#f59e0b;">
-      <div class="node-type">🔗 JOIN</div>
+      <div class="node-type">JN JOIN</div>
       <div class="node-name" style="color:#e8edf5;">OrderJoin</div>
     </div>
     <div class="node" style="left:800px; top:200px; background:#6366f122; border:2px solid #6366f1; color:#6366f1;">
-      <div class="node-type">🔄 TRANSFORM</div>
+      <div class="node-type">XFM TRANSFORM</div>
       <div class="node-name" style="color:#e8edf5;">TotalSpend</div>
     </div>
     <div class="node" style="left:1050px; top:200px; background:#ef444422; border:2px solid #ef4444; color:#ef4444;">
-      <div class="node-type">💾 SINK</div>
+      <div class="node-type">OUT SINK</div>
       <div class="node-name" style="color:#e8edf5;">WriteReport</div>
     </div>
   </div>
   <div class="sidebar">
     <div class="section">
-      <div class="section-title">📊 Execution Order</div>
+      <div class="section-title">EXECUTION ORDER</div>
       <div class="exec-item" style="background:#22c55e15; border:1px solid #22c55e30;">
         <div class="exec-num" style="background:#22c55e; color:#fff;">1</div>
-        <div><span style="color:#22c55e; font-weight:600;">📂 RawOrders</span><br/><span style="color:#5a7399; font-size:11px;">SOURCE → S3</span></div>
+        <div><span style="color:#22c55e; font-weight:600;">IN RawOrders</span><br/><span style="color:#5a7399; font-size:11px;">SOURCE → S3</span></div>
       </div>
       <div class="exec-item" style="background:#22c55e15; border:1px solid #22c55e30;">
         <div class="exec-num" style="background:#22c55e; color:#fff;">2</div>
-        <div><span style="color:#22c55e; font-weight:600;">📂 RawCustomers</span><br/><span style="color:#5a7399; font-size:11px;">SOURCE → S3</span></div>
+        <div><span style="color:#22c55e; font-weight:600;">IN RawCustomers</span><br/><span style="color:#5a7399; font-size:11px;">SOURCE → S3</span></div>
       </div>
       <div class="exec-item" style="background:#6366f115; border:1px solid #6366f130;">
         <div class="exec-num" style="background:#6366f1; color:#fff;">3</div>
-        <div><span style="color:#6366f1; font-weight:600;">🔄 CleanOrders</span><br/><span style="color:#5a7399; font-size:11px;">TRANSFORM → SELECT order_id, customer_id, amount, status, o</span></div>
+        <div><span style="color:#6366f1; font-weight:600;">XFM CleanOrders</span><br/><span style="color:#5a7399; font-size:11px;">TRANSFORM → SELECT order_id, customer_id, amount, status, o</span></div>
       </div>
       <div class="exec-item" style="background:#f59e0b15; border:1px solid #f59e0b30;">
         <div class="exec-num" style="background:#f59e0b; color:#fff;">4</div>
-        <div><span style="color:#f59e0b; font-weight:600;">🔗 OrderJoin</span><br/><span style="color:#5a7399; font-size:11px;">JOIN → JOIN ON customer_id</span></div>
+        <div><span style="color:#f59e0b; font-weight:600;">JN OrderJoin</span><br/><span style="color:#5a7399; font-size:11px;">JOIN → JOIN ON customer_id</span></div>
       </div>
       <div class="exec-item" style="background:#6366f115; border:1px solid #6366f130;">
         <div class="exec-num" style="background:#6366f1; color:#fff;">5</div>
-        <div><span style="color:#6366f1; font-weight:600;">🔄 TotalSpend</span><br/><span style="color:#5a7399; font-size:11px;">TRANSFORM → SELECT SUM(amount) as total_spent, COUNT(order_</span></div>
+        <div><span style="color:#6366f1; font-weight:600;">XFM TotalSpend</span><br/><span style="color:#5a7399; font-size:11px;">TRANSFORM → SELECT SUM(amount) as total_spent, COUNT(order_</span></div>
       </div>
       <div class="exec-item" style="background:#ef444415; border:1px solid #ef444430;">
         <div class="exec-num" style="background:#ef4444; color:#fff;">6</div>
-        <div><span style="color:#ef4444; font-weight:600;">💾 WriteReport</span><br/><span style="color:#5a7399; font-size:11px;">SINK</span></div>
+        <div><span style="color:#ef4444; font-weight:600;">OUT WriteReport</span><br/><span style="color:#5a7399; font-size:11px;">SINK</span></div>
       </div>
     </div>
     <div class="section">
-      <div class="section-title">🔧 Flow in GLUE</div>
+      <div class="section-title">FLOW IN GLUE</div>
       <div class="code-block">RawOrders_df = spark.read.format("parquet").load("s3://...")
 RawCustomers_df = spark.read.format("parquet").load("s3://...")
 CleanOrders_df = RawOrders_df.selectExpr("*")
