@@ -8,6 +8,25 @@ shift
 
 case "$CMD" in
 
+  # ── Visualizar grafo ──────────────────────────────────────
+  view)
+    echo "🖼️ Generating DAG visualization..."
+    python3 -c "
+import sys; sys.path.insert(0, '.')
+from src.mp_parser import parse_mp_ast
+from src.dag.builder import build_dag
+from src.xfr_parser import parse_xfr
+from src.visualizer import visualize_dag
+ast = parse_mp_ast('$1')
+dag = build_dag(ast)
+xfr = parse_xfr('$2') if '$2' else {}
+out = visualize_dag(dag, '${3:-dag_view.html}', xfr, '${4:-glue}')
+print(f'✅ Generated: {out}')
+print('Open in browser: open ' + out)
+"
+    open "${3:-dag_view.html}" 2>/dev/null || echo "Open ${3:-dag_view.html} in your browser"
+    ;;
+
   # ── Compilar grafos ──────────────────────────────────────
   glue)
     echo "🔧 Compiling to AWS Glue..."
@@ -86,6 +105,9 @@ case "$CMD" in
     echo "  ./bnx.sh spark graph.mp rules.xfr [output.py]"
     echo "  ./bnx.sh flink graph.mp rules.xfr [output.py]"
     echo "  ./bnx.sh full graph.mp rules.xfr schema.dml [target] [output.py]"
+    echo ""
+    echo "VISUALIZAR:"
+    echo "  ./bnx.sh view graph.mp [rules.xfr] [output.html] [target]"
     echo ""
     echo "SAMPLES:"
     echo "  ./bnx.sh test [glue|spark|flink]     — e2e test graph"
