@@ -22,6 +22,7 @@ zip -r "$OUTPUT" \
   src/plan_parser.py \
   src/accuracy.py \
   src/refactor_engine.py \
+  src/visualizer.py \
   src/dag/builder.py \
   src/dag/__init__.py \
   src/validator/semantic.py \
