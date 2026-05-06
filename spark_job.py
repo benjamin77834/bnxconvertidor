@@ -1,29 +1,23 @@
 """
-🚀 BNX V54 GENERATED GLUE JOB
-📅 Generated at: 2026-05-06 16:37:24.956447
+🚀 BNX V54 GENERATED PYSPARK JOB
+📅 Generated at: 2026-05-06 16:47:58.909726
 """
 
-from awsglue.context import GlueContext
-from pyspark.context import SparkContext
+from pyspark.sql import SparkSession
 from pyspark.sql.functions import *
+from pyspark.sql.window import Window
 
-sc = SparkContext()
-glueContext = GlueContext(sc)
-spark = glueContext.spark_session
+spark = SparkSession.builder.appName("BNX_Pipeline").getOrCreate()
 
-print("🚀 BNX Glue Job V54 Started")
-
-# =========================
-# DAG EXECUTION V54
-# =========================
+print("🚀 BNX PySpark Job Started")
 
 # 🟢 SOURCE: ScanTransactions
-ScanTransactions_df = spark.read.format("parquet").load("s3://datalake/raw/transactions")
+ScanTransactions_df = spark.read.parquet("s3://datalake/raw/transactions")
 ScanTransactions_df = ScanTransactions_df.where("year = 2026 AND month = 10")
 print("📂 SOURCE: ScanTransactions")
 
 # 🟢 SOURCE: ScanCustomers
-ScanCustomers_df = spark.read.format("csv").option("header", "true").option("inferSchema", "true").load("s3://datalake/raw/customers")
+ScanCustomers_df = spark.read.option("header", "true").option("inferSchema", "true").csv("s3://datalake/raw/customers")
 ScanCustomers_df = ScanCustomers_df.where("region = 'MX'")
 print("📂 SOURCE: ScanCustomers")
 
@@ -39,12 +33,13 @@ print("🔗 JOIN: JoinData")
 AggMonthly_df = JoinData_df.groupBy("customer_id", "tx_year", "tx_month").agg(sum("amount").alias("total_spent"), count("customer_id").alias("tx_count"))
 print("🔄 TRANSFORM: AggMonthly")
 
-# 🔀 PARTITION: PartByRegion
-PartByRegion_df = AggMonthly_df.repartition(8, "region, tx_year")
-print("🔀 PARTITION: PartByRegion")
+# 🔹 PARTITION: PartByRegion
+PartByRegion_df = AggMonthly_df.selectExpr("*")
+print("🔄 PARTITION: PartByRegion")
 
 # 🏁 SINK: WriteReport
-PartByRegion_df.write.mode("overwrite").format("parquet").save("s3://datalake/curated/monthly_report")
+PartByRegion_df.write.mode("overwrite").parquet("s3://datalake/curated/monthly_report")
 print("💾 SINK: WriteReport")
 
-print("✅ BNX Glue Job V54 Finished")
+spark.stop()
+print("✅ BNX PySpark Job Finished")
