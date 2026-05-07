@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>BNX DAG Viewer — 45 nodes</title>
+<style>
+body { margin: 0; background: #0a1628; color: #e8edf5; font-family: -apple-system, sans-serif; }
+.header { padding: 16px 24px; background: #122448; border-bottom: 1px solid #1e3a6e; display: flex; align-items: center; gap: 16px; }
+.header h1 { margin: 0; font-size: 20px; }
+.badge { font-size: 12px; padding: 3px 10px; border-radius: 99px; background: #1a73e820; color: #1a73e8; border: 1px solid #1a73e840; }
+.container { display: flex; height: calc(100vh - 60px); }
+.canvas { flex: 1; position: relative; overflow: auto; }
+.sidebar { width: 350px; background: #0f1f3d; border-left: 1px solid #1e3a6e; overflow-y: auto; padding: 16px; }
+.node { position: absolute; padding: 10px 16px; border-radius: 8px; text-align: center; cursor: pointer; min-width: 120px; font-size: 13px; transition: transform 0.2s; }
+.node:hover { transform: scale(1.05); z-index: 10; }
+.node-name { font-weight: 600; margin-top: 4px; }
+.node-type { font-size: 10px; font-weight: 600; opacity: 0.8; }
+svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+.edge { stroke-width: 2; fill: none; marker-end: url(#arrow); }
+.section { margin-bottom: 20px; }
+.section-title { font-size: 13px; color: #8fa3c4; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+.exec-item { padding: 8px 10px; border-radius: 6px; margin-bottom: 4px; font-size: 12px; display: flex; align-items: center; gap: 8px; }
+.exec-num { width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; }
+.code-block { background: #081220; border: 1px solid #1e3a6e; border-radius: 8px; padding: 12px; font-family: monospace; font-size: 11px; white-space: pre-wrap; overflow-x: auto; color: #8fa3c4; max-height: 300px; overflow-y: auto; }
+.target-badge { padding: 4px 12px; border-radius: 6px; font-size: 12px; font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>BNX DAG Viewer</h1>
+  <span class="badge">V54</span>
+  <span class="badge">45 nodes · 47 edges</span>
+  <span class="target-badge" style="background: #06b6d420; color: #06b6d4;">
+    Flink
+  </span>
+  <span class="badge">Generated: 2026-05-06 23:29</span>
+</div>
+<div class="container">
+  <div class="canvas">
+    <svg>
+      <defs><marker id="arrow" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#475569"/></marker></defs>
+      <line class="edge" x1="110" y1="-130" x2="300" y2="220" stroke="#475569"/>
+      <line class="edge" x1="110" y1="-30" x2="1550" y2="170" stroke="#475569"/>
+      <line class="edge" x1="110" y1="70" x2="1800" y2="220" stroke="#475569"/>
+      <line class="edge" x1="110" y1="170" x2="2050" y2="220" stroke="#475569"/>
+      <line class="edge" x1="110" y1="270" x2="2300" y2="220" stroke="#475569"/>
+      <line class="edge" x1="110" y1="370" x2="2550" y2="220" stroke="#475569"/>
+      <line class="edge" x1="110" y1="470" x2="2800" y2="220" stroke="#475569"/>
+      <line class="edge" x1="110" y1="570" x2="3050" y2="220" stroke="#475569"/>
+      <line class="edge" x1="360" y1="220" x2="550" y2="220" stroke="#475569"/>
+      <line class="edge" x1="610" y1="220" x2="800" y2="170" stroke="#475569"/>
+      <line class="edge" x1="610" y1="220" x2="800" y2="270" stroke="#475569"/>
+      <line class="edge" x1="860" y1="170" x2="1050" y2="120" stroke="#475569"/>
+      <line class="edge" x1="860" y1="270" x2="1050" y2="220" stroke="#475569"/>
+      <line class="edge" x1="860" y1="270" x2="1050" y2="320" stroke="#475569"/>
+      <line class="edge" x1="1110" y1="120" x2="1300" y2="170" stroke="#475569"/>
+      <line class="edge" x1="1360" y1="170" x2="1550" y2="170" stroke="#475569"/>
+      <line class="edge" x1="1360" y1="170" x2="1550" y2="270" stroke="#475569"/>
+      <line class="edge" x1="1610" y1="170" x2="1800" y2="220" stroke="#475569"/>
+      <line class="edge" x1="1860" y1="220" x2="2050" y2="220" stroke="#475569"/>
+      <line class="edge" x1="2110" y1="220" x2="2300" y2="220" stroke="#475569"/>
+      <line class="edge" x1="2360" y1="220" x2="2550" y2="220" stroke="#475569"/>
+      <line class="edge" x1="2610" y1="220" x2="2800" y2="220" stroke="#475569"/>
+      <line class="edge" x1="2860" y1="220" x2="3050" y2="220" stroke="#475569"/>
+      <line class="edge" x1="3110" y1="220" x2="3300" y2="170" stroke="#475569"/>
+      <line class="edge" x1="3110" y1="220" x2="3300" y2="270" stroke="#475569"/>
+      <line class="edge" x1="3360" y1="170" x2="3550" y2="220" stroke="#475569"/>
+      <line class="edge" x1="3610" y1="220" x2="3800" y2="220" stroke="#475569"/>
+      <line class="edge" x1="3860" y1="220" x2="4050" y2="220" stroke="#475569"/>
+      <line class="edge" x1="4110" y1="220" x2="4300" y2="220" stroke="#475569"/>
+      <line class="edge" x1="4360" y1="220" x2="4550" y2="70" stroke="#475569"/>
+      <line class="edge" x1="4360" y1="220" x2="4550" y2="170" stroke="#475569"/>
+      <line class="edge" x1="4360" y1="220" x2="4550" y2="270" stroke="#475569"/>
+      <line class="edge" x1="4360" y1="220" x2="4550" y2="370" stroke="#475569"/>
+      <line class="edge" x1="4610" y1="70" x2="4800" y2="120" stroke="#475569"/>
+      <line class="edge" x1="4610" y1="70" x2="4800" y2="220" stroke="#475569"/>
+      <line class="edge" x1="4610" y1="170" x2="4800" y2="320" stroke="#475569"/>
+      <line class="edge" x1="4610" y1="270" x2="4800" y2="320" stroke="#475569"/>
+      <line class="edge" x1="4860" y1="120" x2="5050" y2="70" stroke="#475569"/>
+      <line class="edge" x1="4860" y1="120" x2="5050" y2="270" stroke="#475569"/>
+      <line class="edge" x1="1110" y1="220" x2="5050" y2="70" stroke="#475569"/>
+      <line class="edge" x1="1110" y1="220" x2="1300" y2="270" stroke="#475569"/>
+      <line class="edge" x1="1110" y1="320" x2="5050" y2="170" stroke="#475569"/>
+      <line class="edge" x1="4860" y1="220" x2="5050" y2="170" stroke="#475569"/>
+      <line class="edge" x1="5110" y1="70" x2="5300" y2="170" stroke="#475569"/>
+      <line class="edge" x1="5110" y1="170" x2="5300" y2="270" stroke="#475569"/>
+      <line class="edge" x1="5360" y1="170" x2="5550" y2="220" stroke="#475569"/>
+      <line class="edge" x1="4860" y1="320" x2="5050" y2="370" stroke="#475569"/>
+    </svg>
+    <div class="node" style="left:50px; top:-150px; background:#22c55e22; border:2px solid #22c55e; color:#22c55e;">
+      <div class="node-type">IN SOURCE</div>
+      <div class="node-name" style="color:#e8edf5;">Read_Transactions_Raw</div>
+    </div>
+    <div class="node" style="left:50px; top:-50px; background:#22c55e22; border:2px solid #22c55e; color:#22c55e;">
+      <div class="node-type">IN SOURCE</div>
+      <div class="node-name" style="color:#e8edf5;">Read_Customer_Master</div>
+    </div>
+    <div class="node" style="left:50px; top:50px; background:#22c55e22; border:2px solid #22c55e; color:#22c55e;">
+      <div class="node-type">IN SOURCE</div>
+      <div class="node-name" style="color:#e8edf5;">Read_Account_Balances</div>
+    </div>
+    <div class="node" style="left:50px; top:150px; background:#22c55e22; border:2px solid #22c55e; color:#22c55e;">
+      <div class="node-type">IN SOURCE</div>
+      <div class="node-name" style="color:#e8edf5;">Read_Exchange_Rates</div>
+    </div>
+    <div class="node" style="left:50px; top:250px; background:#22c55e22; border:2px solid #22c55e; color:#22c55e;">
+      <div class="node-type">IN SOURCE</div>
+      <div class="node-name" style="color:#e8edf5;">Read_Branch_Reference</div>
+    </div>
+    <div class="node" style="left:50px; top:350px; background:#22c55e22; border:2px solid #22c55e; color:#22c55e;">
+      <div class="node-type">IN SOURCE</div>
+      <div class="node-name" style="color:#e8edf5;">Read_Product_Catalog</div>
+    </div>
+    <div class="node" style="left:50px; top:450px; background:#22c55e22; border:2px solid #22c55e; color:#22c55e;">
+      <div class="node-type">IN SOURCE</div>
+      <div class="node-name" style="color:#e8edf5;">Read_Blacklist</div>
+    </div>
+    <div class="node" style="left:50px; top:550px; background:#22c55e22; border:2px solid #22c55e; color:#22c55e;">
+      <div class="node-type">IN SOURCE</div>
+      <div class="node-name" style="color:#e8edf5;">Read_Historical_Fraud</div>
+    </div>
+    <div class="node" style="left:300px; top:200px; background:#6366f122; border:2px solid #6366f1; color:#6366f1;">
+      <div class="node-type">XFM TRANSFORM</div>
+      <div class="node-name" style="color:#e8edf5;">Reformat_Clean_Transactions</div>
+    </div>
+    <div class="node" style="left:550px; top:200px; background:#6366f122; border:2px solid #6366f1; color:#6366f1;">
+      <div class="node-type">XFM TRANSFORM</div>
+      <div class="node-name" style="color:#e8edf5;">Reformat_Normalize_Amounts</div>
+    </div>
+    <div class="node" style="left:800px; top:150px; background:#6366f122; border:2px solid #6366f1; color:#6366f1;">
+      <div class="node-type">XFM TRANSFORM</div>
+      <div class="node-name" style="color:#e8edf5;">Sort_by_Customer_ID</div>
+    </div>
+    <div class="node" style="left:800px; top:250px; background:#6366f122; border:2px solid #6366f1; color:#6366f1;">
+      <div class="node-type">XFM TRANSFORM</div>
+      <div class="node-name" style="color:#e8edf5;">Sort_by_Account_Number</div>
+    </div>
+    <div class="node" style="left:1050px; top:100px; background:#6366f122; border:2px solid #6366f1; color:#6366f1;">
+      <div class="node-type">XFM TRANSFORM</div>
+      <div class="node-name" style="color:#e8edf5;">Sort_by_Transaction_Date</div>
+    </div>
+    <div class="node" style="left:1300px; top:150px; background:#06b6d422; border:2px solid #06b6d4; color:#06b6d4;">
+      <div class="node-type">DD DEDUP</div>
+      <div class="node-name" style="color:#e8edf5;">Dedup_Remove_Duplicates</div>
+    </div>
+    <div class="node" style="left:1550px; top:150px; background:#f59e0b22; border:2px solid #f59e0b; color:#f59e0b;">
+      <div class="node-type">JN JOIN</div>
+      <div class="node-name" style="color:#e8edf5;">Merge_Customer_Data</div>
+    </div>
+    <div class="node" style="left:1800px; top:200px; background:#f59e0b22; border:2px solid #f59e0b; color:#f59e0b;">
+      <div class="node-type">JN JOIN</div>
+      <div class="node-name" style="color:#e8edf5;">Join_Account_Balances</div>
+    </div>
+    <div class="node" style="left:2050px; top:200px; background:#f59e0b22; border:2px solid #f59e0b; color:#f59e0b;">
+      <div class="node-type">JN JOIN</div>
+      <div class="node-name" style="color:#e8edf5;">Lookup_Exchange_Rate</div>
+    </div>
+    <div class="node" style="left:2300px; top:200px; background:#f59e0b22; border:2px solid #f59e0b; color:#f59e0b;">
+      <div class="node-type">JN JOIN</div>
+      <div class="node-name" style="color:#e8edf5;">Lookup_Branch_Info</div>
+    </div>
+    <div class="node" style="left:2550px; top:200px; background:#f59e0b22; border:2px solid #f59e0b; color:#f59e0b;">
+      <div class="node-type">JN JOIN</div>
+      <div class="node-name" style="color:#e8edf5;">Lookup_Product_Details</div>
+    </div>
+    <div class="node" style="left:2800px; top:200px; background:#f59e0b22; border:2px solid #f59e0b; color:#f59e0b;">
+      <div class="node-type">JN JOIN</div>
+      <div class="node-name" style="color:#e8edf5;">Join_Blacklist_Check</div>
+    </div>
+    <div class="node" style="left:3050px; top:200px; background:#f59e0b22; border:2px solid #f59e0b; color:#f59e0b;">
+      <div class="node-type">JN JOIN</div>
+      <div class="node-name" style="color:#e8edf5;">Join_Historical_Patterns</div>
+    </div>
+    <div class="node" style="left:3300px; top:150px; background:#6366f122; border:2px solid #6366f1; color:#6366f1;">
+      <div class="node-type">XFM TRANSFORM</div>
+      <div class="node-name" style="color:#e8edf5;">Reformat_Calculate_Risk_Score</div>
+    </div>
+    <div class="node" style="left:3550px; top:200px; background:#6366f122; border:2px solid #6366f1; color:#6366f1;">
+      <div class="node-type">XFM TRANSFORM</div>
+      <div class="node-name" style="color:#e8edf5;">Reformat_Currency_Conversion</div>
+    </div>
+    <div class="node" style="left:3800px; top:200px; background:#6366f122; border:2px solid #6366f1; color:#6366f1;">
+      <div class="node-type">XFM TRANSFORM</div>
+      <div class="node-name" style="color:#e8edf5;">Reformat_Enrich_Metadata</div>
+    </div>
+    <div class="node" style="left:4050px; top:200px; background:#6366f122; border:2px solid #6366f1; color:#6366f1;">
+      <div class="node-type">XFM TRANSFORM</div>
+      <div class="node-name" style="color:#e8edf5;">Reformat_Compute_Velocity</div>
+    </div>
+    <div class="node" style="left:4300px; top:200px; background:#6366f122; border:2px solid #6366f1; color:#6366f1;">
+      <div class="node-type">XFM TRANSFORM</div>
+      <div class="node-name" style="color:#e8edf5;">Reformat_Flag_Anomalies</div>
+    </div>
+    <div class="node" style="left:4550px; top:50px; background:#eab30822; border:2px solid #eab308; color:#eab308;">
+      <div class="node-type">FLT FILTER</div>
+      <div class="node-name" style="color:#e8edf5;">Filter_High_Risk_Transactions</div>
+    </div>
+    <div class="node" style="left:4550px; top:150px; background:#eab30822; border:2px solid #eab308; color:#eab308;">
+      <div class="node-type">FLT FILTER</div>
+      <div class="node-name" style="color:#e8edf5;">Filter_Blacklisted_Accounts</div>
+    </div>
+    <div class="node" style="left:4550px; top:250px; background:#eab30822; border:2px solid #eab308; color:#eab308;">
+      <div class="node-type">FLT FILTER</div>
+      <div class="node-name" style="color:#e8edf5;">Filter_International_Transfers</div>
+    </div>
+    <div class="node" style="left:4800px; top:100px; background:#6366f122; border:2px solid #6366f1; color:#6366f1;">
+      <div class="node-type">XFM TRANSFORM</div>
+      <div class="node-name" style="color:#e8edf5;">Rollup_Daily_Totals_by_Customer</div>
+    </div>
+    <div class="node" style="left:1050px; top:200px; background:#6366f122; border:2px solid #6366f1; color:#6366f1;">
+      <div class="node-type">XFM TRANSFORM</div>
+      <div class="node-name" style="color:#e8edf5;">Rollup_Monthly_Totals_by_Branch</div>
+    </div>
+    <div class="node" style="left:1050px; top:300px; background:#6366f122; border:2px solid #6366f1; color:#6366f1;">
+      <div class="node-type">XFM TRANSFORM</div>
+      <div class="node-name" style="color:#e8edf5;">Rollup_Risk_Summary_by_Region</div>
+    </div>
+    <div class="node" style="left:4800px; top:200px; background:#6366f122; border:2px solid #6366f1; color:#6366f1;">
+      <div class="node-type">XFM TRANSFORM</div>
+      <div class="node-name" style="color:#e8edf5;">Rollup_Fraud_Counts_by_Type</div>
+    </div>
+    <div class="node" style="left:5050px; top:50px; background:#f9731622; border:2px solid #f97316; color:#f97316;">
+      <div class="node-type">PRT PARTITION</div>
+      <div class="node-name" style="color:#e8edf5;">Partition_by_Region</div>
+    </div>
+    <div class="node" style="left:5050px; top:150px; background:#f9731622; border:2px solid #f97316; color:#f97316;">
+      <div class="node-type">PRT PARTITION</div>
+      <div class="node-name" style="color:#e8edf5;">Partition_by_Risk_Level</div>
+    </div>
+    <div class="node" style="left:5300px; top:150px; background:#6366f122; border:2px solid #6366f1; color:#6366f1;">
+      <div class="node-type">XFM TRANSFORM</div>
+      <div class="node-name" style="color:#e8edf5;">Sort_within_Groups_Final</div>
+    </div>
+    <div class="node" style="left:4800px; top:300px; background:#14b8a622; border:2px solid #14b8a6; color:#14b8a6;">
+      <div class="node-type">CAT CONCATENATE</div>
+      <div class="node-name" style="color:#e8edf5;">Concatenate_Alert_Streams</div>
+    </div>
+    <div class="node" style="left:5550px; top:200px; background:#ef444422; border:2px solid #ef4444; color:#ef4444;">
+      <div class="node-type">OUT SINK</div>
+      <div class="node-name" style="color:#e8edf5;">Write_Fraud_Alerts</div>
+    </div>
+    <div class="node" style="left:5300px; top:250px; background:#ef444422; border:2px solid #ef4444; color:#ef4444;">
+      <div class="node-type">OUT SINK</div>
+      <div class="node-name" style="color:#e8edf5;">Write_Risk_Report</div>
+    </div>
+    <div class="node" style="left:4550px; top:350px; background:#ef444422; border:2px solid #ef4444; color:#ef4444;">
+      <div class="node-type">OUT SINK</div>
+      <div class="node-name" style="color:#e8edf5;">Write_Clean_Transactions</div>
+    </div>
+    <div class="node" style="left:5050px; top:250px; background:#ef444422; border:2px solid #ef4444; color:#ef4444;">
+      <div class="node-type">OUT SINK</div>
+      <div class="node-name" style="color:#e8edf5;">Write_Daily_Summary</div>
+    </div>
+    <div class="node" style="left:1300px; top:250px; background:#ef444422; border:2px solid #ef4444; color:#ef4444;">
+      <div class="node-type">OUT SINK</div>
+      <div class="node-name" style="color:#e8edf5;">Write_Monthly_Report</div>
+    </div>
+    <div class="node" style="left:5050px; top:350px; background:#ef444422; border:2px solid #ef4444; color:#ef4444;">
+      <div class="node-type">OUT SINK</div>
+      <div class="node-name" style="color:#e8edf5;">Write_Blacklist_Matches</div>
+    </div>
+    <div class="node" style="left:3300px; top:250px; background:#ef444422; border:2px solid #ef4444; color:#ef4444;">
+      <div class="node-type">OUT SINK</div>
+      <div class="node-name" style="color:#e8edf5;">Write_Audit_Log</div>
+    </div>
+    <div class="node" style="left:1550px; top:250px; background:#ef444422; border:2px solid #ef4444; color:#ef4444;">
+      <div class="node-type">OUT SINK</div>
+      <div class="node-name" style="color:#e8edf5;">Write_Error_Records</div>
+    </div>
+  </div>
+  <div class="sidebar">
+    <div class="section">
+      <div class="section-title">EXECUTION ORDER</div>
+      <div class="exec-item" style="background:#22c55e15; border:1px solid #22c55e30;">
+        <div class="exec-num" style="background:#22c55e; color:#fff;">1</div>
+        <div><span style="color:#22c55e; font-weight:600;">IN Read_Transactions_Raw</span><br/><span style="color:#5a7399; font-size:11px;">SOURCE</span></div>
+      </div>
+      <div class="exec-item" style="background:#22c55e15; border:1px solid #22c55e30;">
+        <div class="exec-num" style="background:#22c55e; color:#fff;">2</div>
+        <div><span style="color:#22c55e; font-weight:600;">IN Read_Customer_Master</span><br/><span style="color:#5a7399; font-size:11px;">SOURCE</span></div>
+      </div>
+      <div class="exec-item" style="background:#22c55e15; border:1px solid #22c55e30;">
+        <div class="exec-num" style="background:#22c55e; color:#fff;">3</div>
+        <div><span style="color:#22c55e; font-weight:600;">IN Read_Account_Balances</span><br/><span style="color:#5a7399; font-size:11px;">SOURCE</span></div>
+      </div>
+      <div class="exec-item" style="background:#22c55e15; border:1px solid #22c55e30;">
+        <div class="exec-num" style="background:#22c55e; color:#fff;">4</div>
+        <div><span style="color:#22c55e; font-weight:600;">IN Read_Exchange_Rates</span><br/><span style="color:#5a7399; font-size:11px;">SOURCE</span></div>
+      </div>
+      <div class="exec-item" style="background:#22c55e15; border:1px solid #22c55e30;">
+        <div class="exec-num" style="background:#22c55e; color:#fff;">5</div>
+        <div><span style="color:#22c55e; font-weight:600;">IN Read_Branch_Reference</span><br/><span style="color:#5a7399; font-size:11px;">SOURCE</span></div>
+      </div>
+      <div class="exec-item" style="background:#22c55e15; border:1px solid #22c55e30;">
+        <div class="exec-num" style="background:#22c55e; color:#fff;">6</div>
+        <div><span style="color:#22c55e; font-weight:600;">IN Read_Product_Catalog</span><br/><span style="color:#5a7399; font-size:11px;">SOURCE</span></div>
+      </div>
+      <div class="exec-item" style="background:#22c55e15; border:1px solid #22c55e30;">
+        <div class="exec-num" style="background:#22c55e; color:#fff;">7</div>
+        <div><span style="color:#22c55e; font-weight:600;">IN Read_Blacklist</span><br/><span style="color:#5a7399; font-size:11px;">SOURCE</span></div>
+      </div>
+      <div class="exec-item" style="background:#22c55e15; border:1px solid #22c55e30;">
+        <div class="exec-num" style="background:#22c55e; color:#fff;">8</div>
+        <div><span style="color:#22c55e; font-weight:600;">IN Read_Historical_Fraud</span><br/><span style="color:#5a7399; font-size:11px;">SOURCE</span></div>
+      </div>
+      <div class="exec-item" style="background:#6366f115; border:1px solid #6366f130;">
+        <div class="exec-num" style="background:#6366f1; color:#fff;">9</div>
+        <div><span style="color:#6366f1; font-weight:600;">XFM Reformat_Clean_Transactions</span><br/><span style="color:#5a7399; font-size:11px;">TRANSFORM</span></div>
+      </div>
+      <div class="exec-item" style="background:#6366f115; border:1px solid #6366f130;">
+        <div class="exec-num" style="background:#6366f1; color:#fff;">10</div>
+        <div><span style="color:#6366f1; font-weight:600;">XFM Reformat_Normalize_Amounts</span><br/><span style="color:#5a7399; font-size:11px;">TRANSFORM</span></div>
+      </div>
+      <div class="exec-item" style="background:#6366f115; border:1px solid #6366f130;">
+        <div class="exec-num" style="background:#6366f1; color:#fff;">11</div>
+        <div><span style="color:#6366f1; font-weight:600;">XFM Sort_by_Customer_ID</span><br/><span style="color:#5a7399; font-size:11px;">TRANSFORM</span></div>
+      </div>
+      <div class="exec-item" style="background:#6366f115; border:1px solid #6366f130;">
+        <div class="exec-num" style="background:#6366f1; color:#fff;">12</div>
+        <div><span style="color:#6366f1; font-weight:600;">XFM Sort_by_Account_Number</span><br/><span style="color:#5a7399; font-size:11px;">TRANSFORM</span></div>
+      </div>
+      <div class="exec-item" style="background:#6366f115; border:1px solid #6366f130;">
+        <div class="exec-num" style="background:#6366f1; color:#fff;">13</div>
+        <div><span style="color:#6366f1; font-weight:600;">XFM Sort_by_Transaction_Date</span><br/><span style="color:#5a7399; font-size:11px;">TRANSFORM</span></div>
+      </div>
+      <div class="exec-item" style="background:#06b6d415; border:1px solid #06b6d430;">
+        <div class="exec-num" style="background:#06b6d4; color:#fff;">14</div>
+        <div><span style="color:#06b6d4; font-weight:600;">DD Dedup_Remove_Duplicates</span><br/><span style="color:#5a7399; font-size:11px;">DEDUP</span></div>
+      </div>
+      <div class="exec-item" style="background:#f59e0b15; border:1px solid #f59e0b30;">
+        <div class="exec-num" style="background:#f59e0b; color:#fff;">15</div>
+        <div><span style="color:#f59e0b; font-weight:600;">JN Merge_Customer_Data</span><br/><span style="color:#5a7399; font-size:11px;">JOIN</span></div>
+      </div>
+      <div class="exec-item" style="background:#f59e0b15; border:1px solid #f59e0b30;">
+        <div class="exec-num" style="background:#f59e0b; color:#fff;">16</div>
+        <div><span style="color:#f59e0b; font-weight:600;">JN Join_Account_Balances</span><br/><span style="color:#5a7399; font-size:11px;">JOIN</span></div>
+      </div>
+      <div class="exec-item" style="background:#f59e0b15; border:1px solid #f59e0b30;">
+        <div class="exec-num" style="background:#f59e0b; color:#fff;">17</div>
+        <div><span style="color:#f59e0b; font-weight:600;">JN Lookup_Exchange_Rate</span><br/><span style="color:#5a7399; font-size:11px;">JOIN</span></div>
+      </div>
+      <div class="exec-item" style="background:#f59e0b15; border:1px solid #f59e0b30;">
+        <div class="exec-num" style="background:#f59e0b; color:#fff;">18</div>
+        <div><span style="color:#f59e0b; font-weight:600;">JN Lookup_Branch_Info</span><br/><span style="color:#5a7399; font-size:11px;">JOIN</span></div>
+      </div>
+      <div class="exec-item" style="background:#f59e0b15; border:1px solid #f59e0b30;">
+        <div class="exec-num" style="background:#f59e0b; color:#fff;">19</div>
+        <div><span style="color:#f59e0b; font-weight:600;">JN Lookup_Product_Details</span><br/><span style="color:#5a7399; font-size:11px;">JOIN</span></div>
+      </div>
+      <div class="exec-item" style="background:#f59e0b15; border:1px solid #f59e0b30;">
+        <div class="exec-num" style="background:#f59e0b; color:#fff;">20</div>
+        <div><span style="color:#f59e0b; font-weight:600;">JN Join_Blacklist_Check</span><br/><span style="color:#5a7399; font-size:11px;">JOIN</span></div>
+      </div>
+      <div class="exec-item" style="background:#f59e0b15; border:1px solid #f59e0b30;">
+        <div class="exec-num" style="background:#f59e0b; color:#fff;">21</div>
+        <div><span style="color:#f59e0b; font-weight:600;">JN Join_Historical_Patterns</span><br/><span style="color:#5a7399; font-size:11px;">JOIN</span></div>
+      </div>
+      <div class="exec-item" style="background:#6366f115; border:1px solid #6366f130;">
+        <div class="exec-num" style="background:#6366f1; color:#fff;">22</div>
+        <div><span style="color:#6366f1; font-weight:600;">XFM Reformat_Calculate_Risk_Score</span><br/><span style="color:#5a7399; font-size:11px;">TRANSFORM</span></div>
+      </div>
+      <div class="exec-item" style="background:#6366f115; border:1px solid #6366f130;">
+        <div class="exec-num" style="background:#6366f1; color:#fff;">23</div>
+        <div><span style="color:#6366f1; font-weight:600;">XFM Reformat_Currency_Conversion</span><br/><span style="color:#5a7399; font-size:11px;">TRANSFORM</span></div>
+      </div>
+      <div class="exec-item" style="background:#6366f115; border:1px solid #6366f130;">
+        <div class="exec-num" style="background:#6366f1; color:#fff;">24</div>
+        <div><span style="color:#6366f1; font-weight:600;">XFM Reformat_Enrich_Metadata</span><br/><span style="color:#5a7399; font-size:11px;">TRANSFORM</span></div>
+      </div>
+      <div class="exec-item" style="background:#6366f115; border:1px solid #6366f130;">
+        <div class="exec-num" style="background:#6366f1; color:#fff;">25</div>
+        <div><span style="color:#6366f1; font-weight:600;">XFM Reformat_Compute_Velocity</span><br/><span style="color:#5a7399; font-size:11px;">TRANSFORM</span></div>
+      </div>
+      <div class="exec-item" style="background:#6366f115; border:1px solid #6366f130;">
+        <div class="exec-num" style="background:#6366f1; color:#fff;">26</div>
+        <div><span style="color:#6366f1; font-weight:600;">XFM Reformat_Flag_Anomalies</span><br/><span style="color:#5a7399; font-size:11px;">TRANSFORM</span></div>
+      </div>
+      <div class="exec-item" style="background:#eab30815; border:1px solid #eab30830;">
+        <div class="exec-num" style="background:#eab308; color:#fff;">27</div>
+        <div><span style="color:#eab308; font-weight:600;">FLT Filter_High_Risk_Transactions</span><br/><span style="color:#5a7399; font-size:11px;">FILTER</span></div>
+      </div>
+      <div class="exec-item" style="background:#eab30815; border:1px solid #eab30830;">
+        <div class="exec-num" style="background:#eab308; color:#fff;">28</div>
+        <div><span style="color:#eab308; font-weight:600;">FLT Filter_Blacklisted_Accounts</span><br/><span style="color:#5a7399; font-size:11px;">FILTER</span></div>
+      </div>
+      <div class="exec-item" style="background:#eab30815; border:1px solid #eab30830;">
+        <div class="exec-num" style="background:#eab308; color:#fff;">29</div>
+        <div><span style="color:#eab308; font-weight:600;">FLT Filter_International_Transfers</span><br/><span style="color:#5a7399; font-size:11px;">FILTER</span></div>
+      </div>
+      <div class="exec-item" style="background:#6366f115; border:1px solid #6366f130;">
+        <div class="exec-num" style="background:#6366f1; color:#fff;">30</div>
+        <div><span style="color:#6366f1; font-weight:600;">XFM Rollup_Daily_Totals_by_Customer</span><br/><span style="color:#5a7399; font-size:11px;">TRANSFORM</span></div>
+      </div>
+      <div class="exec-item" style="background:#6366f115; border:1px solid #6366f130;">
+        <div class="exec-num" style="background:#6366f1; color:#fff;">31</div>
+        <div><span style="color:#6366f1; font-weight:600;">XFM Rollup_Monthly_Totals_by_Branch</span><br/><span style="color:#5a7399; font-size:11px;">TRANSFORM</span></div>
+      </div>
+      <div class="exec-item" style="background:#6366f115; border:1px solid #6366f130;">
+        <div class="exec-num" style="background:#6366f1; color:#fff;">32</div>
+        <div><span style="color:#6366f1; font-weight:600;">XFM Rollup_Risk_Summary_by_Region</span><br/><span style="color:#5a7399; font-size:11px;">TRANSFORM</span></div>
+      </div>
+      <div class="exec-item" style="background:#6366f115; border:1px solid #6366f130;">
+        <div class="exec-num" style="background:#6366f1; color:#fff;">33</div>
+        <div><span style="color:#6366f1; font-weight:600;">XFM Rollup_Fraud_Counts_by_Type</span><br/><span style="color:#5a7399; font-size:11px;">TRANSFORM</span></div>
+      </div>
+      <div class="exec-item" style="background:#f9731615; border:1px solid #f9731630;">
+        <div class="exec-num" style="background:#f97316; color:#fff;">34</div>
+        <div><span style="color:#f97316; font-weight:600;">PRT Partition_by_Region</span><br/><span style="color:#5a7399; font-size:11px;">PARTITION</span></div>
+      </div>
+      <div class="exec-item" style="background:#f9731615; border:1px solid #f9731630;">
+        <div class="exec-num" style="background:#f97316; color:#fff;">35</div>
+        <div><span style="color:#f97316; font-weight:600;">PRT Partition_by_Risk_Level</span><br/><span style="color:#5a7399; font-size:11px;">PARTITION</span></div>
+      </div>
+      <div class="exec-item" style="background:#6366f115; border:1px solid #6366f130;">
+        <div class="exec-num" style="background:#6366f1; color:#fff;">36</div>
+        <div><span style="color:#6366f1; font-weight:600;">XFM Sort_within_Groups_Final</span><br/><span style="color:#5a7399; font-size:11px;">TRANSFORM</span></div>
+      </div>
+      <div class="exec-item" style="background:#14b8a615; border:1px solid #14b8a630;">
+        <div class="exec-num" style="background:#14b8a6; color:#fff;">37</div>
+        <div><span style="color:#14b8a6; font-weight:600;">CAT Concatenate_Alert_Streams</span><br/><span style="color:#5a7399; font-size:11px;">CONCATENATE</span></div>
+      </div>
+      <div class="exec-item" style="background:#ef444415; border:1px solid #ef444430;">
+        <div class="exec-num" style="background:#ef4444; color:#fff;">38</div>
+        <div><span style="color:#ef4444; font-weight:600;">OUT Write_Fraud_Alerts</span><br/><span style="color:#5a7399; font-size:11px;">SINK</span></div>
+      </div>
+      <div class="exec-item" style="background:#ef444415; border:1px solid #ef444430;">
+        <div class="exec-num" style="background:#ef4444; color:#fff;">39</div>
+        <div><span style="color:#ef4444; font-weight:600;">OUT Write_Risk_Report</span><br/><span style="color:#5a7399; font-size:11px;">SINK</span></div>
+      </div>
+      <div class="exec-item" style="background:#ef444415; border:1px solid #ef444430;">
+        <div class="exec-num" style="background:#ef4444; color:#fff;">40</div>
+        <div><span style="color:#ef4444; font-weight:600;">OUT Write_Clean_Transactions</span><br/><span style="color:#5a7399; font-size:11px;">SINK</span></div>
+      </div>
+      <div class="exec-item" style="background:#ef444415; border:1px solid #ef444430;">
+        <div class="exec-num" style="background:#ef4444; color:#fff;">41</div>
+        <div><span style="color:#ef4444; font-weight:600;">OUT Write_Daily_Summary</span><br/><span style="color:#5a7399; font-size:11px;">SINK</span></div>
+      </div>
+      <div class="exec-item" style="background:#ef444415; border:1px solid #ef444430;">
+        <div class="exec-num" style="background:#ef4444; color:#fff;">42</div>
+        <div><span style="color:#ef4444; font-weight:600;">OUT Write_Monthly_Report</span><br/><span style="color:#5a7399; font-size:11px;">SINK</span></div>
+      </div>
+      <div class="exec-item" style="background:#ef444415; border:1px solid #ef444430;">
+        <div class="exec-num" style="background:#ef4444; color:#fff;">43</div>
+        <div><span style="color:#ef4444; font-weight:600;">OUT Write_Blacklist_Matches</span><br/><span style="color:#5a7399; font-size:11px;">SINK</span></div>
+      </div>
+      <div class="exec-item" style="background:#ef444415; border:1px solid #ef444430;">
+        <div class="exec-num" style="background:#ef4444; color:#fff;">44</div>
+        <div><span style="color:#ef4444; font-weight:600;">OUT Write_Audit_Log</span><br/><span style="color:#5a7399; font-size:11px;">SINK</span></div>
+      </div>
+      <div class="exec-item" style="background:#ef444415; border:1px solid #ef444430;">
+        <div class="exec-num" style="background:#ef4444; color:#fff;">45</div>
+        <div><span style="color:#ef4444; font-weight:600;">OUT Write_Error_Records</span><br/><span style="color:#5a7399; font-size:11px;">SINK</span></div>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-title">FLOW IN FLINK</div>
+      <div class="code-block">CREATE TABLE `Read_Transactions_Raw` WITH ('connector'='filesystem')
+CREATE TABLE `Read_Customer_Master` WITH ('connector'='filesystem')
+CREATE TABLE `Read_Account_Balances` WITH ('connector'='filesystem')
+CREATE TABLE `Read_Exchange_Rates` WITH ('connector'='filesystem')
+CREATE TABLE `Read_Branch_Reference` WITH ('connector'='filesystem')
+CREATE TABLE `Read_Product_Catalog` WITH ('connector'='filesystem')
+CREATE TABLE `Read_Blacklist` WITH ('connector'='filesystem')
+CREATE TABLE `Read_Historical_Fraud` WITH ('connector'='filesystem')
+CREATE TEMPORARY VIEW `Reformat_Clean_Transactions` AS SELECT * FROM `Read_Transactions_Raw`
+CREATE TEMPORARY VIEW `Reformat_Normalize_Amounts` AS SELECT * FROM `Reformat_Clean_Transactions`
+CREATE TEMPORARY VIEW `Sort_by_Customer_ID` AS SELECT * FROM `Reformat_Normalize_Amounts`
+CREATE TEMPORARY VIEW `Sort_by_Account_Number` AS SELECT * FROM `Reformat_Normalize_Amounts`
+CREATE TEMPORARY VIEW `Sort_by_Transaction_Date` AS SELECT * FROM `Sort_by_Customer_ID`
+-- DEDUP: Dedup_Remove_Duplicates
+CREATE TEMPORARY VIEW `Merge_Customer_Data` AS SELECT * FROM `Dedup_Remove_Duplicates` JOIN `Read_Customer_Master`
+CREATE TEMPORARY VIEW `Join_Account_Balances` AS SELECT * FROM `Merge_Customer_Data` JOIN `Read_Account_Balances`
+CREATE TEMPORARY VIEW `Lookup_Exchange_Rate` AS SELECT * FROM `Join_Account_Balances` JOIN `Read_Exchange_Rates`
+CREATE TEMPORARY VIEW `Lookup_Branch_Info` AS SELECT * FROM `Lookup_Exchange_Rate` JOIN `Read_Branch_Reference`
+CREATE TEMPORARY VIEW `Lookup_Product_Details` AS SELECT * FROM `Lookup_Branch_Info` JOIN `Read_Product_Catalog`
+CREATE TEMPORARY VIEW `Join_Blacklist_Check` AS SELECT * FROM `Lookup_Product_Details` JOIN `Read_Blacklist`
+CREATE TEMPORARY VIEW `Join_Historical_Patterns` AS SELECT * FROM `Join_Blacklist_Check` JOIN `Read_Historical_Fraud`
+CREATE TEMPORARY VIEW `Reformat_Calculate_Risk_Score` AS SELECT * FROM `Join_Historical_Patterns`
+CREATE TEMPORARY VIEW `Reformat_Currency_Conversion` AS SELECT * FROM `Reformat_Calculate_Risk_Score`
+CREATE TEMPORARY VIEW `Reformat_Enrich_Metadata` AS SELECT * FROM `Reformat_Currency_Conversion`
+CREATE TEMPORARY VIEW `Reformat_Compute_Velocity` AS SELECT * FROM `Reformat_Enrich_Metadata`
+CREATE TEMPORARY VIEW `Reformat_Flag_Anomalies` AS SELECT * FROM `Reformat_Compute_Velocity`
+-- FILTER: Filter_High_Risk_Transactions
+-- FILTER: Filter_Blacklisted_Accounts
+-- FILTER: Filter_International_Transfers
+CREATE TEMPORARY VIEW `Rollup_Daily_Totals_by_Customer` AS SELECT * FROM `Filter_High_Risk_Transactions`
+CREATE TEMPORARY VIEW `Rollup_Monthly_Totals_by_Branch` AS SELECT * FROM `Sort_by_Account_Number`
+CREATE TEMPORARY VIEW `Rollup_Risk_Summary_by_Region` AS SELECT * FROM `Sort_by_Account_Number`
+CREATE TEMPORARY VIEW `Rollup_Fraud_Counts_by_Type` AS SELECT * FROM `Filter_High_Risk_Transactions`
+-- PARTITION: Partition_by_Region
+-- PARTITION: Partition_by_Risk_Level
+CREATE TEMPORARY VIEW `Sort_within_Groups_Final` AS SELECT * FROM `Partition_by_Region`
+-- CONCATENATE: Concatenate_Alert_Streams
+INSERT INTO `Write_Fraud_Alerts_sink` SELECT * FROM `Sort_within_Groups_Final`
+INSERT INTO `Write_Risk_Report_sink` SELECT * FROM `Partition_by_Risk_Level`
+INSERT INTO `Write_Clean_Transactions_sink` SELECT * FROM `Reformat_Flag_Anomalies`
+INSERT INTO `Write_Daily_Summary_sink` SELECT * FROM `Rollup_Daily_Totals_by_Customer`
+INSERT INTO `Write_Monthly_Report_sink` SELECT * FROM `Rollup_Monthly_Totals_by_Branch`
+INSERT INTO `Write_Blacklist_Matches_sink` SELECT * FROM `Concatenate_Alert_Streams`
+INSERT INTO `Write_Audit_Log_sink` SELECT * FROM `Join_Historical_Patterns`
+INSERT INTO `Write_Error_Records_sink` SELECT * FROM `Dedup_Remove_Duplicates`
+</div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

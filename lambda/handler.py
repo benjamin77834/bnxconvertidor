@@ -28,6 +28,7 @@ from src.plan_parser import parse_plan, parse_pset, plan_to_graph
 from src.plan_parser import resolve_graph_references, merge_asts, detect_retrocesos, pretty_print_mega_dag
 from src.accuracy import compute_accuracy
 from src.refactor_engine import refactor_code
+from src.ocr_engine import extract_text_from_image, parse_extracted_text, text_to_mp
 
 
 def _parse_multipart(event):
@@ -245,6 +246,35 @@ def handler(event, context):
                 "body": base64.b64encode(zip_bytes).decode(),
                 "isBase64Encoded": True,
             }
+
+        # --- /ocr endpoint ---
+        if "/ocr" in path:
+            if "image" in files:
+                # OCR from image
+                image_bytes = files["image"]
+                text = extract_text_from_image(image_bytes)
+                if text and not text.startswith("ERROR"):
+                    parsed = parse_extracted_text(text)
+                    mp_content = text_to_mp(parsed)
+                    return _response(200, {
+                        "extracted_text": text,
+                        "parsed": parsed,
+                        "generated_mp": mp_content,
+                    })
+                else:
+                    return _response(200, {"error": text or "OCR failed — boto3 not available", "tip": "Paste text directly instead"})
+            elif "text" in fields:
+                # Direct text paste (no OCR needed)
+                text = fields["text"]
+                parsed = parse_extracted_text(text)
+                mp_content = text_to_mp(parsed)
+                return _response(200, {
+                    "extracted_text": text,
+                    "parsed": parsed,
+                    "generated_mp": mp_content,
+                })
+            else:
+                return _response(400, {"error": "image or text field required"})
 
         # --- /refactor endpoint ---
         if "/refactor" in path:
