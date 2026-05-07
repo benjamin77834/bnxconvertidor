@@ -3,6 +3,7 @@ import FileUpload from './components/FileUpload'
 import DagViewer from './components/DagViewer'
 import MetricsPage from './components/MetricsPage'
 import DesignerPage from './components/DesignerPage'
+import OcrPage from './components/OcrPage'
 import BankingModelPage from './components/BankingModelPage'
 import GovernancePage from './components/GovernancePage'
 import ArchitecturePage from './components/ArchitecturePage'
@@ -296,6 +297,7 @@ export default function App() {
             { id: 'executive', label: '🎯 Executive' },
             { id: 'compiler', label: '🔧 Compiler' },
             { id: 'designer', label: '🎨 Designer' },
+            { id: 'ocr', label: '📷 OCR' },
             { id: 'banking', label: '🏦 Banking' },
             { id: 'architecture', label: '🏗️ Architecture' },
             { id: 'metrics', label: '📊 Metrics' },
@@ -339,6 +341,8 @@ export default function App() {
           <MetricsPage theme={t} />
         ) : page === 'designer' ? (
           <DesignerPage theme={t} />
+        ) : page === 'ocr' ? (
+          <OcrPage theme={t} />
         ) : page === 'banking' ? (
           <BankingModelPage theme={t} />
         ) : page === 'architecture' ? (
