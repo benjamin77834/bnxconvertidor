@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { COMPILE_URL } from '../config'
 
 export default function OcrPage({ theme }) {
@@ -13,6 +13,27 @@ export default function OcrPage({ theme }) {
   const [target, setTarget] = useState('glue')
   const fileRef = useRef(null)
 
+  // Listen for paste events (Cmd+V with image from clipboard)
+  useEffect(() => {
+    const handlePaste = (e) => {
+      const items = e.clipboardData?.items
+      if (!items) return
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].type.startsWith('image/')) {
+          e.preventDefault()
+          const file = items[i].getAsFile()
+          setImage(file)
+          const reader = new FileReader()
+          reader.onload = (ev) => setImagePreview(ev.target.result)
+          reader.readAsDataURL(file)
+          break
+        }
+      }
+    }
+    document.addEventListener('paste', handlePaste)
+    return () => document.removeEventListener('paste', handlePaste)
+  }, [])
+
   const handleImageUpload = (e) => {
     const file = e.target.files[0]
     if (!file) return
@@ -21,6 +42,23 @@ export default function OcrPage({ theme }) {
     reader.onload = (ev) => setImagePreview(ev.target.result)
     reader.readAsDataURL(file)
     e.target.value = ''
+  }
+
+  // Paste from clipboard (Cmd+V)
+  const handlePaste = (e) => {
+    const items = e.clipboardData?.items
+    if (!items) return
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.startsWith('image/')) {
+        e.preventDefault()
+        const file = items[i].getAsFile()
+        setImage(file)
+        const reader = new FileReader()
+        reader.onload = (ev) => setImagePreview(ev.target.result)
+        reader.readAsDataURL(file)
+        return
+      }
+    }
   }
 
   const extractFromImage = async () => {
@@ -79,7 +117,7 @@ export default function OcrPage({ theme }) {
   }
 
   return (
-    <div style={{ display: 'flex', height: '100%', overflow: 'hidden' }}>
+    <div style={{ display: 'flex', height: '100%', overflow: 'hidden' }} onPaste={handlePaste} tabIndex={0}>
       {/* Left panel — Image + Text */}
       <div style={{
         width: 420, padding: 20, background: t.sidebar || '#0f1f3d',
@@ -106,7 +144,7 @@ export default function OcrPage({ theme }) {
             border: `2px dashed ${imagePreview ? '#22c55e' : (t.border || '#1e3a6e')}`,
             color: imagePreview ? '#22c55e' : (t.muted || '#8fa3c4'), fontSize: 13,
           }}>
-            {imagePreview ? 'Imagen cargada - click para cambiar' : 'Click para subir screenshot (.png/.jpg)'}
+            {imagePreview ? 'Imagen cargada - click para cambiar' : 'Click para subir o Cmd+V para pegar screenshot'}
           </button>
           <input ref={fileRef} type="file" accept="image/*" hidden onChange={handleImageUpload} />
           
