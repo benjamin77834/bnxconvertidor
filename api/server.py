@@ -26,6 +26,7 @@ from src.plan_parser import parse_plan, parse_pset, plan_to_graph
 from src.plan_parser import resolve_graph_references, merge_asts, detect_retrocesos, pretty_print_mega_dag
 from src.accuracy import compute_accuracy
 from src.refactor_engine import refactor_code
+from src.ocr_engine import extract_text_from_image, parse_extracted_text, text_to_mp
 
 app = FastAPI(title="BNX Compiler API")
 
@@ -231,6 +232,31 @@ async def convert_cobol(
         for p in [cobol_path, mp_tmp.name, xfr_tmp.name, dml_tmp.name]:
             if p and os.path.exists(p):
                 os.unlink(p)
+
+
+@app.post("/ocr")
+async def ocr_extract(
+    image: Optional[UploadFile] = File(None),
+    text: str = "",
+):
+    """Extract Ab Initio graph structure from image (OCR) or pasted text."""
+    if image and image.filename:
+        image_bytes = await image.read()
+        extracted = extract_text_from_image(image_bytes)
+        if not extracted or extracted.startswith("ERROR"):
+            return {"error": extracted or "OCR failed", "tip": "Paste text directly instead"}
+    elif text:
+        extracted = text
+    else:
+        return {"error": "image or text required"}
+
+    parsed = parse_extracted_text(extracted)
+    mp_content = text_to_mp(parsed)
+    return {
+        "extracted_text": extracted,
+        "parsed": parsed,
+        "generated_mp": mp_content,
+    }
 
 
 @app.post("/refactor")
