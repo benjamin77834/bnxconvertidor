@@ -5,6 +5,7 @@ export default function OcrPage({ theme }) {
   const t = theme || {}
   const [image, setImage] = useState(null)
   const [imagePreview, setImagePreview] = useState(null)
+  const [images, setImages] = useState([])  // Queue of pasted images
   const [extractedText, setExtractedText] = useState('')
   const [parsed, setParsed] = useState(null)
   const [generatedMp, setGeneratedMp] = useState('')
@@ -24,8 +25,25 @@ export default function OcrPage({ theme }) {
           const file = items[i].getAsFile()
           setImage(file)
           const reader = new FileReader()
-          reader.onload = (ev) => setImagePreview(ev.target.result)
+          reader.onload = (ev) => {
+            setImagePreview(ev.target.result)
+            setImages(prev => [...prev, { preview: ev.target.result, file }])
+          }
           reader.readAsDataURL(file)
+          // Auto-extract OCR
+          const form = new FormData()
+          form.append('image', file)
+          setLoading(true)
+          fetch(COMPILE_URL.replace('/compile', '/ocr'), { method: 'POST', body: form })
+            .then(res => res.json())
+            .then(data => {
+              if (data.extracted_text && !data.error) {
+                setExtractedText(prev => prev + (prev ? '\n' : '') + data.extracted_text)
+                setParsed(data.parsed)
+                setGeneratedMp(data.generated_mp || '')
+              }
+            })
+            .finally(() => setLoading(false))
           break
         }
       }
@@ -153,6 +171,20 @@ export default function OcrPage({ theme }) {
               width: '100%', marginTop: 8, borderRadius: 6, border: `1px solid ${t.border || '#1e3a6e'}`,
               maxHeight: 200, objectFit: 'contain', background: '#000',
             }} />
+          )}
+
+          {images.length > 1 && (
+            <div style={{ display: 'flex', gap: 4, marginTop: 8, flexWrap: 'wrap' }}>
+              {images.map((img, i) => (
+                <img key={i} src={img.preview} alt={`img-${i}`} style={{
+                  width: 60, height: 40, objectFit: 'cover', borderRadius: 4,
+                  border: `1px solid ${t.border || '#1e3a6e'}`, opacity: 0.7,
+                }} />
+              ))}
+              <span style={{ fontSize: 10, color: t.dim || '#5a7399', alignSelf: 'center' }}>
+                {images.length} imagenes pegadas
+              </span>
+            </div>
           )}
 
           {imagePreview && (
