@@ -681,6 +681,87 @@ export default function MetricsPage({ theme }) {
         </div>
       </div>
 
+      {/* Decision Matrix */}
+      <div style={card}>
+        <h3 style={{ fontSize: 16, fontWeight: 600, color: t.text || '#e2e8f0', marginBottom: 4 }}>
+          🎯 Cuadro de Decisión — ¿Qué camino tomar?
+        </h3>
+        <p style={{ fontSize: 12, color: t.dim || '#64748b', marginBottom: 16 }}>
+          Basado en reunión con Ab Initio (2025) y análisis de costos reales
+        </p>
+
+        {/* Decision cards */}
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 20 }}>
+          {[
+            {
+              option: 'Opción A: Quedarse con Ab Initio (on-premise)',
+              verdict: '❌ NO RECOMENDADO',
+              verdictColor: '#ef4444',
+              pros: ['Sin esfuerzo de migración', 'Equipo ya conoce la herramienta'],
+              cons: ['Licencia $100K-$500K/año (sigue pagando)', 'Tecnología legacy sin evolución', 'Sin aprovechamiento de cloud', 'Vendor lock-in total', 'Sin streaming nativo', 'Talento Ab Initio escaso y caro'],
+              cost5y: '$500K - $2.5M',
+            },
+            {
+              option: 'Opción B: Ab Initio Cloud (lift & shift a EKS)',
+              verdict: '⚠️ RIESGO ALTO',
+              verdictColor: '#f59e0b',
+              pros: ['Misma lógica sin reescribir', 'Ab Initio dice "par de horas"', 'Compatibilidad 100% con grafos existentes'],
+              cons: ['Licencia Ab Initio sigue ($100K-$500K/año)', 'Costo EKS adicional ($2K-$10K/mes)', 'Tecnología vieja corriendo en cloud = mismo problema', 'No hay modernización real', 'Ajustes post-migración no definidos', 'Sin estrategia clara de su lado (reunión 2025)', 'Sigues dependiendo de Ab Initio para todo'],
+              cost5y: '$620K - $3.1M',
+            },
+            {
+              option: 'Opción C: BNX Convertidor → Spark/Glue/Flink',
+              verdict: '✅ RECOMENDADO',
+              verdictColor: '#22c55e',
+              pros: ['$0 licencia (open source)', 'Infra AWS: $5-$20/mes', 'Multi-target: Glue, Spark, Flink', 'Código moderno y mantenible', 'Sin vendor lock-in', 'Streaming nativo con Flink', 'Talento Spark/Python abundante', 'Refactorización automática incluida'],
+              cons: ['Requiere esfuerzo de conversión inicial', 'Validación manual de lógica compleja', 'Curva de aprendizaje del equipo en Spark'],
+              cost5y: '$300 - $1,200',
+            },
+          ].map(opt => (
+            <div key={opt.option} style={{
+              flex: '1 1 280px', padding: 16, borderRadius: 10,
+              background: opt.verdictColor + '08', border: `2px solid ${opt.verdictColor}30`,
+            }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: t.text || '#e2e8f0', marginBottom: 4 }}>{opt.option}</div>
+              <div style={{
+                fontSize: 14, fontWeight: 700, color: opt.verdictColor,
+                padding: '4px 10px', borderRadius: 6, background: opt.verdictColor + '20',
+                display: 'inline-block', marginBottom: 12,
+              }}>{opt.verdict}</div>
+
+              <div style={{ fontSize: 12, color: '#22c55e', fontWeight: 600, marginBottom: 4 }}>Pros:</div>
+              {opt.pros.map((p, i) => (
+                <div key={i} style={{ fontSize: 11, color: t.muted || '#8fa3c4', paddingLeft: 8, marginBottom: 2 }}>+ {p}</div>
+              ))}
+
+              <div style={{ fontSize: 12, color: '#ef4444', fontWeight: 600, marginTop: 8, marginBottom: 4 }}>Contras:</div>
+              {opt.cons.map((c, i) => (
+                <div key={i} style={{ fontSize: 11, color: t.muted || '#8fa3c4', paddingLeft: 8, marginBottom: 2 }}>- {c}</div>
+              ))}
+
+              <div style={{ marginTop: 12, paddingTop: 8, borderTop: `1px solid ${opt.verdictColor}20` }}>
+                <span style={{ fontSize: 11, color: t.dim || '#5a7399' }}>Costo total 5 años:</span>
+                <div style={{ fontSize: 18, fontWeight: 700, color: opt.verdictColor }}>{opt.cost5y}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Conclusion */}
+        <div style={{
+          padding: 16, borderRadius: 10, background: '#22c55e10', border: '2px solid #22c55e30',
+        }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: '#22c55e', marginBottom: 8 }}>
+            📋 Conclusión Ejecutiva
+          </div>
+          <div style={{ fontSize: 13, color: t.muted || '#8fa3c4', lineHeight: 1.8 }}>
+            <div><strong style={{ color: t.text || '#e8edf5' }}>Ab Initio no tiene estrategia de modernización.</strong> Su propuesta es "lift & shift" — mover lo mismo a cloud sin cambiar nada. Esto resulta en pagar licencia + infraestructura cloud sin beneficio real.</div>
+            <div style={{ marginTop: 8 }}><strong style={{ color: t.text || '#e8edf5' }}>BNX Convertidor elimina la dependencia de Ab Initio</strong> convirtiendo los grafos a código Spark/Glue/Flink estándar que cualquier desarrollador puede mantener, sin licencias propietarias.</div>
+            <div style={{ marginTop: 8 }}><strong style={{ color: '#22c55e' }}>Ahorro en 5 años: $500K - $3M USD</strong> comparado con mantener Ab Initio (on-premise o cloud).</div>
+          </div>
+        </div>
+      </div>
+
       {/* Estimación migración masiva */}
       <div style={card}>
         <h3 style={{ fontSize: 16, fontWeight: 600, color: t.text || '#e2e8f0', marginBottom: 16 }}>
