@@ -745,8 +745,19 @@ export default function ArchitecturePage({ theme }) {
             }}>{v}</span>
           ))}
         </div>
+        {/* Layer labels */}
+        <div style={{ marginTop: 10, padding: 8, borderRadius: 6, background: (t.bg || '#0a1628') + '80', border: `1px solid ${t.border || '#334155'}30`, fontSize: 11, lineHeight: 1.6 }}>
+          <div style={{ color: '#22c55e', fontWeight: 600 }}>CORE (esencial): mp_parser + dag/builder + validator + codegen</div>
+          <div style={{ color: '#ec4899', fontWeight: 600 }}>BACKEND: api/server.py + lambda/handler.py + main.py</div>
+          <div style={{ color: '#a855f7', fontWeight: 600 }}>FRONTEND: ui/src/ (React + ReactFlow + Vite)</div>
+        </div>
+        <button onClick={() => window.print()} style={{
+          marginTop: 8, padding: '6px 14px', borderRadius: 6, cursor: 'pointer', fontSize: 12,
+          background: (t.accent || '#6366f1') + '20', border: `1px solid ${t.accent || '#6366f1'}40`,
+          color: t.accent || '#6366f1', fontWeight: 600, width: '100%',
+        }}>📄 Exportar PDF</button>
         <button onClick={() => setShowGlossary(g => !g)} style={{
-          marginTop: 10, padding: '6px 14px', borderRadius: 6, cursor: 'pointer', fontSize: 12,
+          marginTop: 4, padding: '6px 14px', borderRadius: 6, cursor: 'pointer', fontSize: 12,
           background: showGlossary ? '#6366f120' : (t.card || '#1e2433'),
           border: `1px solid ${showGlossary ? '#6366f1' : (t.border || '#334155')}`,
           color: showGlossary ? '#818cf8' : (t.muted || '#94a3b8'), fontWeight: 600, width: '100%',
