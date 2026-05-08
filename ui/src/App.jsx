@@ -19,11 +19,11 @@ const dark = {
   flowBg: '#0f1f3d',
 }
 const light = {
-  bg: '#c8d5e0', sidebar: '#d4dfe8', header: '#d4dfe8',
-  card: '#bccad8', border: '#94adc4', text: '#0a1628',
-  muted: '#2d4a6e', dim: '#4a6a8e', codeBg: '#c8d5e0',
-  accent: '#1a73e8', accentBg: '#1a73e818', accentBorder: '#1a73e830',
-  flowBg: '#bccad8',
+  bg: '#f5f0e8', sidebar: '#fdf6e3', header: '#1B5E20',
+  card: '#ffffff', border: '#2E7D32', text: '#1a1a1a',
+  muted: '#2d4a2e', dim: '#5a7a5c', codeBg: '#f9f9f5',
+  accent: '#2E7D32', accentBg: '#2E7D3218', accentBorder: '#2E7D3230',
+  flowBg: '#f5f0e8',
 }
 
 const LEGEND = [
