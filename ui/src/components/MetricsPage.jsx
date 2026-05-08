@@ -80,6 +80,195 @@ function BarChart({ data, theme }) {
   )
 }
 
+// ── Cloud Cost Estimator ─────────────────────────────────────
+function CloudCostEstimator({ theme }) {
+  const t = theme || {}
+  const [jobs, setJobs] = useState(5000)
+
+  // Cost models (monthly)
+  // Ab Initio EKS: license + EKS cluster scaled by jobs
+  const abiLicense = 100000 / 12  // $100K/year = $8.3K/month base
+  const abiEksBase = 2000  // base EKS cost
+  const abiEksPerJob = 0.15  // per job/month (nodes scale)
+  const abiTotal = Math.round(abiLicense + abiEksBase + jobs * abiEksPerJob)
+
+  // LeapLogic: SaaS license scaled by volume + Databricks/EMR
+  const leapBase = 50000 / 12  // $50K/year = $4.2K/month base
+  const leapPerJob = 0.08  // per job processing
+  const leapInfra = 1500 + jobs * 0.05  // EMR/Databricks
+  const leapTotal = Math.round(leapBase + jobs * leapPerJob + leapInfra)
+
+  // BNX: AWS Glue/Lambda (serverless, pay per use)
+  const bnxLambda = 5  // Lambda base
+  const bnxGluePerJob = 0.44  // $0.44 per DPU-hour, ~1 DPU per simple job
+  const bnxS3 = 10 + jobs * 0.001  // S3 storage
+  const bnxTotal = Math.round(bnxLambda + jobs * bnxGluePerJob * 0.1 + bnxS3)  // 0.1 = avg 6min per job
+
+  const maxCost = Math.max(abiTotal, leapTotal, bnxTotal)
+
+  const bar = (value, color, label) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+      <span style={{ width: 120, fontSize: 11, color: t.muted || '#8fa3c4', textAlign: 'right' }}>{label}</span>
+      <div style={{ flex: 1, height: 28, background: (t.bg || '#0a1628') + '80', borderRadius: 6, overflow: 'hidden', position: 'relative' }}>
+        <div style={{
+          width: `${(value / maxCost) * 100}%`, height: '100%', borderRadius: 6,
+          background: color, display: 'flex', alignItems: 'center', paddingLeft: 10,
+          transition: 'width 0.3s ease',
+        }}>
+          <span style={{ fontSize: 12, color: '#fff', fontWeight: 700 }}>${value.toLocaleString()}/mes</span>
+        </div>
+      </div>
+    </div>
+  )
+
+  return (
+    <div>
+      {/* Slider */}
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+          <span style={{ fontSize: 12, color: t.dim || '#5a7399' }}>1,000 jobs</span>
+          <span style={{ fontSize: 16, fontWeight: 700, color: t.text || '#e8edf5' }}>{jobs.toLocaleString()} jobs/mes</span>
+          <span style={{ fontSize: 12, color: t.dim || '#5a7399' }}>40,000 jobs</span>
+        </div>
+        <input type="range" min="1000" max="40000" step="1000" value={jobs}
+          onChange={e => setJobs(Number(e.target.value))}
+          style={{ width: '100%', cursor: 'pointer' }}
+        />
+      </div>
+
+      {/* Bars */}
+      {bar(abiTotal, '#f59e0b', 'Ab Initio EKS')}
+      {bar(leapTotal, '#06b6d4', 'LeapLogic + EMR')}
+      {bar(bnxTotal, '#22c55e', 'BNX + Glue')}
+
+      {/* Breakdown */}
+      <div style={{ display: 'flex', gap: 12, marginTop: 16, flexWrap: 'wrap' }}>
+        <div style={{ flex: '1 1 180px', padding: 10, borderRadius: 8, background: '#f59e0b10', border: '1px solid #f59e0b30', fontSize: 11 }}>
+          <div style={{ fontWeight: 700, color: '#f59e0b', marginBottom: 4 }}>Ab Initio EKS</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>Licencia: ${Math.round(abiLicense).toLocaleString()}/mes</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>EKS cluster: ${Math.round(abiEksBase + jobs * abiEksPerJob).toLocaleString()}/mes</div>
+          <div style={{ color: '#f59e0b', fontWeight: 600, marginTop: 4 }}>Anual: ${(abiTotal * 12).toLocaleString()}</div>
+        </div>
+        <div style={{ flex: '1 1 180px', padding: 10, borderRadius: 8, background: '#06b6d410', border: '1px solid #06b6d430', fontSize: 11 }}>
+          <div style={{ fontWeight: 700, color: '#06b6d4', marginBottom: 4 }}>LeapLogic + EMR</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>Licencia SaaS: ${Math.round(leapBase).toLocaleString()}/mes</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>Processing: ${Math.round(jobs * leapPerJob).toLocaleString()}/mes</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>Infra EMR: ${Math.round(leapInfra).toLocaleString()}/mes</div>
+          <div style={{ color: '#06b6d4', fontWeight: 600, marginTop: 4 }}>Anual: ${(leapTotal * 12).toLocaleString()}</div>
+        </div>
+        <div style={{ flex: '1 1 180px', padding: 10, borderRadius: 8, background: '#22c55e10', border: '1px solid #22c55e30', fontSize: 11 }}>
+          <div style={{ fontWeight: 700, color: '#22c55e', marginBottom: 4 }}>BNX + AWS Glue</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>Lambda: $5/mes</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>Glue (serverless): ${Math.round(jobs * bnxGluePerJob * 0.1).toLocaleString()}/mes</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>S3: ${Math.round(bnxS3).toLocaleString()}/mes</div>
+          <div style={{ color: '#22c55e', fontWeight: 600, marginTop: 4 }}>Anual: ${(bnxTotal * 12).toLocaleString()}</div>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 12, fontSize: 11, color: t.dim || '#5a7399', fontStyle: 'italic' }}>
+        * Estimación basada en precios públicos AWS (us-east-1). Glue: $0.44/DPU-hour, promedio 6 min/job. EKS: m5.xlarge nodes escalando con carga.
+      </div>
+    </div>
+  )
+}
+
+// ── Cloud Cost Estimator ─────────────────────────────────────
+function CloudCostEstimator({ theme }) {
+  const t = theme || {}
+  const [jobs, setJobs] = useState(5000)
+
+  // Cost models (monthly)
+  // Ab Initio EKS: license + EKS cluster scaled by jobs
+  const abiLicense = 100000 / 12  // $100K/year = $8.3K/month base
+  const abiEksBase = 2000  // base EKS cost
+  const abiEksPerJob = 0.15  // per job/month (nodes scale)
+  const abiTotal = Math.round(abiLicense + abiEksBase + jobs * abiEksPerJob)
+
+  // LeapLogic: SaaS license scaled by volume
+  const leapBase = 50000 / 12  // $50K/year = $4.2K/month base
+  const leapPerJob = 0.08  // per job processing
+  const leapInfra = 1500 + jobs * 0.05  // Databricks/EMR
+  const leapTotal = Math.round(leapBase + leapPerJob * jobs + leapInfra)
+
+  // BNX + AWS Glue/Spark: serverless, pay per use
+  const bnxLicense = 0
+  const bnxGluePerJob = 0.44  // ~$0.44 per DPU-hour, avg 1 DPU per job
+  const bnxLambda = 20  // Lambda API cost
+  const bnxS3 = 50 + jobs * 0.001  // S3 storage
+  const bnxTotal = Math.round(bnxLambda + bnxS3 + jobs * bnxGluePerJob * 0.5)  // 50% jobs run daily
+
+  const maxCost = Math.max(abiTotal, leapTotal, bnxTotal)
+
+  const bar = (value, color, label) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+      <span style={{ width: 120, fontSize: 11, color: t.muted || '#8fa3c4', textAlign: 'right' }}>{label}</span>
+      <div style={{ flex: 1, height: 28, background: (t.bg || '#0a1628') + '80', borderRadius: 6, overflow: 'hidden', position: 'relative' }}>
+        <div style={{
+          width: `${(value / maxCost) * 100}%`, height: '100%', borderRadius: 6,
+          background: color, display: 'flex', alignItems: 'center', paddingLeft: 10,
+          transition: 'width 0.3s ease',
+        }}>
+          <span style={{ fontSize: 12, color: '#fff', fontWeight: 700 }}>${value.toLocaleString()}/mes</span>
+        </div>
+      </div>
+    </div>
+  )
+
+  return (
+    <div>
+      {/* Slider */}
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <span style={{ fontSize: 13, color: t.muted || '#8fa3c4' }}>Número de jobs:</span>
+          <span style={{ fontSize: 20, fontWeight: 700, color: t.accent || '#1a73e8' }}>{jobs.toLocaleString()}</span>
+        </div>
+        <input type="range" min="1000" max="40000" step="1000" value={jobs}
+          onChange={e => setJobs(Number(e.target.value))}
+          style={{ width: '100%', cursor: 'pointer' }}
+        />
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: t.dim || '#5a7399' }}>
+          <span>1,000</span><span>10,000</span><span>20,000</span><span>30,000</span><span>40,000</span>
+        </div>
+      </div>
+
+      {/* Bars */}
+      {bar(abiTotal, '#f59e0b', 'Ab Initio EKS')}
+      {bar(leapTotal, '#06b6d4', 'LeapLogic')}
+      {bar(bnxTotal, '#22c55e', 'BNX + Glue')}
+
+      {/* Breakdown */}
+      <div style={{ display: 'flex', gap: 12, marginTop: 16, flexWrap: 'wrap' }}>
+        <div style={{ flex: '1 1 180px', padding: 10, borderRadius: 8, background: '#f59e0b10', border: '1px solid #f59e0b30', fontSize: 11 }}>
+          <div style={{ fontWeight: 700, color: '#f59e0b', marginBottom: 4 }}>Ab Initio EKS</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>Licencia: ${Math.round(abiLicense).toLocaleString()}/mes</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>EKS cluster: ${Math.round(abiEksBase + jobs * abiEksPerJob).toLocaleString()}/mes</div>
+          <div style={{ color: '#f59e0b', fontWeight: 600, marginTop: 4 }}>Anual: ${(abiTotal * 12).toLocaleString()}</div>
+        </div>
+        <div style={{ flex: '1 1 180px', padding: 10, borderRadius: 8, background: '#06b6d410', border: '1px solid #06b6d430', fontSize: 11 }}>
+          <div style={{ fontWeight: 700, color: '#06b6d4', marginBottom: 4 }}>LeapLogic</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>Licencia SaaS: ${Math.round(leapBase).toLocaleString()}/mes</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>Infra (Databricks): ${Math.round(leapInfra).toLocaleString()}/mes</div>
+          <div style={{ color: '#06b6d4', fontWeight: 600, marginTop: 4 }}>Anual: ${(leapTotal * 12).toLocaleString()}</div>
+        </div>
+        <div style={{ flex: '1 1 180px', padding: 10, borderRadius: 8, background: '#22c55e10', border: '1px solid #22c55e30', fontSize: 11 }}>
+          <div style={{ fontWeight: 700, color: '#22c55e', marginBottom: 4 }}>BNX + AWS Glue</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>Licencia: $0</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>Glue (serverless): ${Math.round(jobs * bnxGluePerJob * 0.5).toLocaleString()}/mes</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>Lambda + S3: ${Math.round(bnxLambda + bnxS3).toLocaleString()}/mes</div>
+          <div style={{ color: '#22c55e', fontWeight: 600, marginTop: 4 }}>Anual: ${(bnxTotal * 12).toLocaleString()}</div>
+        </div>
+      </div>
+
+      {/* Savings highlight */}
+      <div style={{ marginTop: 16, padding: 10, borderRadius: 8, background: '#22c55e10', border: '1px solid #22c55e30', textAlign: 'center' }}>
+        <span style={{ fontSize: 12, color: t.muted || '#8fa3c4' }}>Ahorro mensual con BNX vs Ab Initio: </span>
+        <span style={{ fontSize: 18, fontWeight: 700, color: '#22c55e' }}>${(abiTotal - bnxTotal).toLocaleString()}/mes</span>
+        <span style={{ fontSize: 12, color: t.dim || '#5a7399' }}> ({Math.round((1 - bnxTotal / abiTotal) * 100)}% menos)</span>
+      </div>
+    </div>
+  )
+}
+
 // ── Migration Estimator ─────────────────────────────────────
 function MigrationEstimator({ theme }) {
   const t = theme || {}
@@ -800,6 +989,28 @@ export default function MetricsPage({ theme }) {
             </div>
           </div>
         </div>
+      </div>
+
+      {/* Cloud Cost Estimator by Jobs */}
+      <div style={card}>
+        <h3 style={{ fontSize: 16, fontWeight: 600, color: t.text || '#e2e8f0', marginBottom: 4 }}>
+          ☁️ Estimador de Costos Cloud por Volumen de Jobs
+        </h3>
+        <p style={{ fontSize: 12, color: t.dim || '#64748b', marginBottom: 16 }}>
+          Costo mensual de infraestructura según número de jobs (1,000 a 40,000)
+        </p>
+        <CloudCostEstimator theme={t} />
+      </div>
+
+      {/* Cloud Operations Cost Estimator */}
+      <div style={card}>
+        <h3 style={{ fontSize: 16, fontWeight: 600, color: t.text || '#e2e8f0', marginBottom: 4 }}>
+          ☁️ Estimador de Costos Operativos en Cloud (por número de jobs)
+        </h3>
+        <p style={{ fontSize: 12, color: t.dim || '#64748b', marginBottom: 16 }}>
+          Costo mensual estimado de operación según cantidad de jobs
+        </p>
+        <CloudCostEstimator theme={t} />
       </div>
 
       {/* Estimación migración masiva */}
