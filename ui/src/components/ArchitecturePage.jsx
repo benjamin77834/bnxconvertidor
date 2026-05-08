@@ -288,6 +288,8 @@ const MECHANISMS = [
     ]
   },
 ]
+
+const CODE_EXAMPLES = {
   MP_FILE: {
     file: 'graph.mp',
     code: `NODE ReadCSV    : SOURCE
