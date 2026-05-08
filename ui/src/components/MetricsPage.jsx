@@ -721,7 +721,7 @@ export default function MetricsPage({ theme }) {
               verdict: '⚠️ COSTO ALTO',
               verdictColor: '#06b6d4',
               pros: ['Migración automatizada multi-plataforma', 'Soporta Informatica, DataStage, Ab Initio', 'Output a Databricks/EMR/HDInsight', 'Documentación automática'],
-              cons: ['Licencia SaaS: $50K-$200K+/año', 'Requiere revisión manual del output', 'Otro vendor lock-in (Impetus)', 'No genera Flink ni Step Functions', 'Sin control del código fuente'],
+              cons: ['Licencia SaaS: $50K-$200K+/año', 'Requiere revisión manual del output', 'Otro vendor lock-in (Impetus)', 'Sin servicios de orquestación nativos (Flink, Step Functions, Airflow)', 'Sin control del código fuente'],
               cost5y: '$250K - $1M',
             },
             {
