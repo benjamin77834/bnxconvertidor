@@ -410,13 +410,20 @@ export default function MetricsPage({ theme }) {
       display: 'flex', flexDirection: 'column', gap: 28,
     }}>
       {/* Header */}
-      <div>
-        <h2 style={{ fontSize: 22, fontWeight: 700, color: t.text || '#e2e8f0', margin: 0 }}>
-          📊 BNX Project Metrics
-        </h2>
-        <p style={{ fontSize: 14, color: t.dim || '#64748b', marginTop: 4 }}>
-          Comparativa de esfuerzo, infraestructura y costos
-        </p>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <div>
+          <h2 style={{ fontSize: 22, fontWeight: 700, color: t.text || '#e2e8f0', margin: 0 }}>
+            📊 BNX Project Metrics
+          </h2>
+          <p style={{ fontSize: 14, color: t.dim || '#64748b', marginTop: 4 }}>
+            Comparativa de esfuerzo, infraestructura y costos
+          </p>
+        </div>
+        <button onClick={() => window.print()} style={{
+          padding: '8px 16px', borderRadius: 8, cursor: 'pointer', fontSize: 13,
+          background: (t.accent || '#6366f1') + '20', border: `1px solid ${t.accent || '#6366f1'}40`,
+          color: t.accent || '#6366f1', fontWeight: 600,
+        }}>📄 Exportar PDF</button>
       </div>
 
       {/* Summary cards */}
