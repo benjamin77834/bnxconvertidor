@@ -710,12 +710,20 @@ export default function MetricsPage({ theme }) {
               cost5y: '$620K - $3.1M',
             },
             {
-              option: 'Opción C: BNX Convertidor → Spark/Glue/Flink',
+              option: 'Opción C: LeapLogic (Impetus)',
+              verdict: '⚠️ COSTO ALTO',
+              verdictColor: '#06b6d4',
+              pros: ['Migración automatizada multi-plataforma', 'Soporta Informatica, DataStage, Ab Initio', 'Output a Databricks/EMR/HDInsight', 'Documentación automática'],
+              cons: ['Licencia SaaS: $50K-$200K+/año', 'Requiere revisión manual del output', 'Otro vendor lock-in (Impetus)', 'No genera Flink ni Step Functions', 'Sin control del código fuente'],
+              cost5y: '$250K - $1M',
+            },
+            {
+              option: 'Opción D: BNX Convertidor → Spark/Glue/Flink',
               verdict: '✅ RECOMENDADO',
               verdictColor: '#22c55e',
-              pros: ['$0 licencia (open source)', 'Infra AWS: $5-$20/mes', 'Multi-target: Glue, Spark, Flink', 'Código moderno y mantenible', 'Sin vendor lock-in', 'Streaming nativo con Flink', 'Talento Spark/Python abundante', 'Refactorización automática incluida'],
+              pros: ['$0 licencia (open source)', 'Infra AWS: $5-$20/mes', 'Multi-target: Glue, Spark, Flink', 'Código moderno y mantenible', 'Sin vendor lock-in', 'Streaming nativo con Flink', 'Talento Spark/Python abundante', 'Refactorización automática incluida', 'Control total del código'],
               cons: ['Requiere esfuerzo de conversión inicial', 'Validación manual de lógica compleja', 'Curva de aprendizaje del equipo en Spark'],
-              cost5y: '$300 - $1,200',
+              cost5y: '$5K - $16K',
             },
           ].map(opt => (
             <div key={opt.option} style={{
@@ -758,6 +766,30 @@ export default function MetricsPage({ theme }) {
             <div><strong style={{ color: t.text || '#e8edf5' }}>Ab Initio no tiene estrategia de modernización.</strong> Su propuesta es "lift & shift" — mover lo mismo a cloud sin cambiar nada. Esto resulta en pagar licencia + infraestructura cloud sin beneficio real.</div>
             <div style={{ marginTop: 8 }}><strong style={{ color: t.text || '#e8edf5' }}>BNX Convertidor elimina la dependencia de Ab Initio</strong> convirtiendo los grafos a código Spark/Glue/Flink estándar que cualquier desarrollador puede mantener, sin licencias propietarias.</div>
             <div style={{ marginTop: 8 }}><strong style={{ color: '#22c55e' }}>Ahorro en 5 años: $500K - $3M USD</strong> comparado con mantener Ab Initio (on-premise o cloud).</div>
+          </div>
+
+          {/* Cálculo del ahorro */}
+          <div style={{ marginTop: 16, padding: 12, borderRadius: 8, background: (t.bg || '#0a1628') + '80', border: `1px solid ${t.border || '#1e3a6e'}30` }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: t.text || '#e8edf5', marginBottom: 8 }}>
+              🧮 ¿Cómo se calcula el ahorro?
+            </div>
+            <div style={{ fontSize: 12, color: t.muted || '#8fa3c4', lineHeight: 1.8 }}>
+              <div style={{ fontWeight: 600, color: '#ef4444' }}>Costo Ab Initio (5 años):</div>
+              <div style={{ paddingLeft: 12 }}>• Licencia: $100K-$500K/año × 5 = <strong>$500K - $2.5M</strong></div>
+              <div style={{ paddingLeft: 12 }}>• Infra cloud (EKS): $2K-$10K/mes × 60 = <strong>$120K - $600K</strong></div>
+              <div style={{ paddingLeft: 12 }}>• Total Ab Initio Cloud: <strong style={{ color: '#ef4444' }}>$620K - $3.1M</strong></div>
+              <div style={{ marginTop: 8, fontWeight: 600, color: '#22c55e' }}>Costo BNX (5 años):</div>
+              <div style={{ paddingLeft: 12 }}>• Licencia: $0 (open source)</div>
+              <div style={{ paddingLeft: 12 }}>• Infra AWS (Lambda + Amplify): $5-$20/mes × 60 = <strong>$300 - $1,200</strong></div>
+              <div style={{ paddingLeft: 12 }}>• Migración inicial (una vez): ~$5K-$15K (horas de conversión)</div>
+              <div style={{ paddingLeft: 12 }}>• Total BNX: <strong style={{ color: '#22c55e' }}>$5.3K - $16.2K</strong></div>
+              <div style={{ marginTop: 8, fontWeight: 600, color: '#6366f1' }}>Ahorro neto:</div>
+              <div style={{ paddingLeft: 12 }}>• Mínimo: $620K - $16.2K = <strong style={{ color: '#22c55e' }}>$604K</strong></div>
+              <div style={{ paddingLeft: 12 }}>• Máximo: $3.1M - $5.3K = <strong style={{ color: '#22c55e' }}>$3.09M</strong></div>
+              <div style={{ marginTop: 8, padding: '6px 10px', borderRadius: 6, background: '#22c55e15', border: '1px solid #22c55e30', fontWeight: 600, color: '#22c55e' }}>
+                Ahorro estimado: $600K - $3M USD en 5 años
+              </div>
+            </div>
           </div>
         </div>
       </div>
