@@ -19,11 +19,11 @@ const dark = {
   flowBg: '#0f1f3d',
 }
 const light = {
-  bg: '#f5f0e8', sidebar: '#fdf6e3', header: '#1B5E20',
-  card: '#ffffff', border: '#2E7D32', text: '#1a1a1a',
+  bg: '#f5f0e8', sidebar: '#fdf6e3', header: '#2E7D32',
+  card: '#ffffff', border: '#4CAF50', text: '#1a1a1a',
   muted: '#2d4a2e', dim: '#5a7a5c', codeBg: '#f9f9f5',
-  accent: '#2E7D32', accentBg: '#2E7D3218', accentBorder: '#2E7D3230',
-  flowBg: '#f5f0e8',
+  accent: '#1B5E20', accentBg: '#1B5E2018', accentBorder: '#1B5E2030',
+  flowBg: '#f5f0e8', headerText: '#ffffff',
 }
 
 const LEGEND = [
@@ -276,7 +276,7 @@ export default function App() {
         padding: '12px 24px', background: t.header, borderBottom: `1px solid ${t.border}`,
         display: 'flex', alignItems: 'center', gap: 16,
       }}>
-        <span style={{ fontSize: 20, fontWeight: 700 }}>🚀 BNX Compiler</span>
+        <span style={{ fontSize: 20, fontWeight: 700, color: t.headerText || t.text }}>🚀 BNX Compiler</span>
         <span style={{
           fontSize: 13, padding: '3px 10px', borderRadius: 99,
           background: t.accentBg, color: t.accent, border: `1px solid ${t.accentBorder}`,
@@ -308,7 +308,7 @@ export default function App() {
                 padding: '6px 14px', borderRadius: 6, cursor: 'pointer', fontSize: 13,
                 background: page === tab.id ? t.accent + '20' : 'transparent',
                 border: `1px solid ${page === tab.id ? t.accent : 'transparent'}`,
-                color: page === tab.id ? t.accent : t.muted,
+                color: page === tab.id ? (t.headerText || t.accent) : (t.headerText || t.muted),
                 fontWeight: page === tab.id ? 600 : 400,
               }}
             >{tab.label}</button>
