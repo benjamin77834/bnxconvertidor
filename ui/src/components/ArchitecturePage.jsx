@@ -257,9 +257,37 @@ const MECHANISMS = [
       { name: 'SINK', color: '#ef4444', desc: 'Escritura final de datos. Escribe a S3 (Parquet/CSV/JSON), Kafka (streaming) o JDBC (bases de datos). Soporta mode overwrite/append. En Glue/Spark: df.write.format(). En Flink: INSERT INTO tabla_sink. Equivale a Write en Ab Initio.' },
     ]
   },
+  {
+    category: '🖥️ Setup Mínimo — Backend',
+    items: [
+      { name: 'Requisitos', desc: 'Python 3.11+ (solo stdlib, sin dependencias externas). Funciona en Mac, Linux, Windows.' },
+      { name: 'Archivos necesarios', desc: 'main.py + src/ (mp_parser, xfr_parser, dml_parser, cobol_parser, plan_parser, accuracy, refactor_engine, dag/builder, validator/semantic, codegen/*)' },
+      { name: 'Comando', desc: 'python3 main.py --project graph.mp --xfr rules.xfr --target glue --output job.py' },
+      { name: 'Deploy Lambda', desc: 'zip -r lambda_package.zip lambda/handler.py src/ && aws lambda update-function-code --function-name bnx-compiler --zip-file fileb://lambda_package.zip' },
+      { name: 'API local', desc: 'pip install fastapi uvicorn python-multipart && uvicorn api.server:app --port 8000' },
+    ]
+  },
+  {
+    category: '🎨 Setup Mínimo — Frontend',
+    items: [
+      { name: 'Requisitos', desc: 'Node.js 18+ y npm. React 18 + Vite 4 + ReactFlow.' },
+      { name: 'Archivos necesarios', desc: 'ui/ (package.json, vite.config.js, index.html, src/App.jsx, src/components/*, src/config.js)' },
+      { name: 'Desarrollo local', desc: 'cd ui && npm install && npm run dev → http://localhost:3000' },
+      { name: 'Build producción', desc: 'cd ui && npm run build → dist/ (archivos estáticos)' },
+      { name: 'Deploy Amplify', desc: 'git push → Amplify auto-builds y deploys desde el branch configurado' },
+    ]
+  },
+  {
+    category: '⚡ Separación Backend / Frontend',
+    items: [
+      { name: 'Backend independiente', desc: 'El backend (src/ + main.py) funciona 100% sin frontend. Compila grafos por CLI o API REST. No necesita Node.js ni React.' },
+      { name: 'Frontend independiente', desc: 'El frontend (ui/) se conecta a cualquier URL de API. Cambia VITE_API_URL en .env para apuntar a Lambda, servidor local, o cualquier backend.' },
+      { name: 'Comunicación', desc: 'Frontend → POST multipart/form-data → Backend. Endpoints: /compile, /cobol, /plan, /refactor, /ocr, /download.' },
+      { name: 'Sin frontend', desc: 'Usa ./bnx.sh o python3 main.py directamente. Todo funciona por CLI sin browser.' },
+      { name: 'Sin backend local', desc: 'El frontend apunta a la Lambda URL en producción. No necesitas correr Python localmente.' },
+    ]
+  },
 ]
-
-const CODE_EXAMPLES = {
   MP_FILE: {
     file: 'graph.mp',
     code: `NODE ReadCSV    : SOURCE
