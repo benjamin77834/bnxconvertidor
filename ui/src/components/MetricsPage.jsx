@@ -771,8 +771,9 @@ export default function MetricsPage({ theme }) {
           </div>
           <div style={{ fontSize: 13, color: t.muted || '#8fa3c4', lineHeight: 1.8 }}>
             <div><strong style={{ color: t.text || '#e8edf5' }}>Ab Initio no tiene estrategia de modernización.</strong> Su propuesta es "lift & shift" — mover lo mismo a cloud sin cambiar nada. Esto resulta en pagar licencia + infraestructura cloud sin beneficio real.</div>
+            <div style={{ marginTop: 8 }}><strong style={{ color: t.text || '#e8edf5' }}>LeapLogic (Impetus)</strong> ofrece migración automatizada pero con licencia SaaS de $50K-$200K+/año, otro vendor lock-in, y sin generar Flink ni Step Functions. Reduce esfuerzo pero no elimina costos de licencia.</div>
             <div style={{ marginTop: 8 }}><strong style={{ color: t.text || '#e8edf5' }}>BNX Convertidor elimina la dependencia de Ab Initio</strong> convirtiendo los grafos a código Spark/Glue/Flink estándar que cualquier desarrollador puede mantener, sin licencias propietarias.</div>
-            <div style={{ marginTop: 8 }}><strong style={{ color: '#22c55e' }}>Ahorro en 5 años: $500K - $3M USD</strong> comparado con mantener Ab Initio (on-premise o cloud).</div>
+            <div style={{ marginTop: 8 }}><strong style={{ color: '#22c55e' }}>Ahorro en 5 años: $600K - $3M USD</strong> comparado con mantener Ab Initio (on-premise o cloud).</div>
           </div>
 
           {/* Cálculo del ahorro */}
