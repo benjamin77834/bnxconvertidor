@@ -86,11 +86,17 @@ function CloudCostEstimator({ theme }) {
   const [jobs, setJobs] = useState(5000)
 
   // Cost models (monthly)
-  // Ab Initio EKS: license + EKS cluster scaled by jobs
-  const abiLicense = 100000 / 12  // $100K/year = $8.3K/month base
-  const abiEksBase = 2000  // base EKS cost
-  const abiEksPerJob = 0.15  // per job/month (nodes scale)
-  const abiTotal = Math.round(abiLicense + abiEksBase + jobs * abiEksPerJob)
+  // Ab Initio EKS: license (scales with volume) + EKS cluster for 1.4TB+ transformation
+  // License tiers: 40K jobs = enterprise tier ($300K-$500K/year)
+  const abiLicenseBase = 150000 / 12  // $150K/year base
+  const abiLicenseScale = jobs > 10000 ? (jobs - 10000) * 0.50 : 0  // enterprise scaling above 10K
+  const abiLicense = abiLicenseBase + abiLicenseScale
+  // EKS: 1.4TB transformation requires r5.2xlarge/r5.4xlarge nodes, persistent cluster
+  const abiEksBase = 4500  // base EKS (control plane + minimum nodes)
+  const abiEksPerJob = 0.35  // per job (heavy memory/compute for 1.4TB data volume)
+  const abiEksStorage = jobs * 0.02 + 500  // EBS/EFS for staging data
+  const abiSupport = 2000  // Ab Initio support contract
+  const abiTotal = Math.round(abiLicense + abiEksBase + jobs * abiEksPerJob + abiEksStorage + abiSupport)
 
   // LeapLogic: SaaS license scaled by volume + Databricks/EMR
   const leapBase = 50000 / 12  // $50K/year = $4.2K/month base
@@ -147,6 +153,8 @@ function CloudCostEstimator({ theme }) {
           <div style={{ fontWeight: 700, color: '#f59e0b', marginBottom: 4 }}>Ab Initio EKS</div>
           <div style={{ color: t.muted || '#8fa3c4' }}>Licencia: ${Math.round(abiLicense).toLocaleString()}/mes</div>
           <div style={{ color: t.muted || '#8fa3c4' }}>EKS cluster: ${Math.round(abiEksBase + jobs * abiEksPerJob).toLocaleString()}/mes</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>Storage (EBS/EFS): ${Math.round(abiEksStorage).toLocaleString()}/mes</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>Soporte: ${abiSupport.toLocaleString()}/mes</div>
           <div style={{ color: '#f59e0b', fontWeight: 600, marginTop: 4 }}>Anual: ${(abiTotal * 12).toLocaleString()}</div>
         </div>
         <div style={{ flex: '1 1 180px', padding: 10, borderRadius: 8, background: '#06b6d410', border: '1px solid #06b6d430', fontSize: 11 }}>
@@ -166,7 +174,7 @@ function CloudCostEstimator({ theme }) {
       </div>
 
       <div style={{ marginTop: 12, fontSize: 11, color: t.dim || '#5a7399', fontStyle: 'italic' }}>
-        * Estimación basada en precios públicos AWS (us-east-1). Glue: $0.44/DPU-hour, promedio 6 min/job. EKS: m5.xlarge nodes escalando con carga.
+        * Estimación basada en precios públicos AWS (us-east-1) para volumen de 1.4TB de transformación. Ab Initio: licencia enterprise escala con volumen de jobs + cluster EKS con nodos r5.2xlarge/r5.4xlarge para procesamiento pesado. Glue: $0.44/DPU-hour, promedio 6 min/job. EKS: nodos de alta memoria escalando con carga.
       </div>
     </div>
   )
