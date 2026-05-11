@@ -123,15 +123,21 @@ function CloudCostEstimator({ theme }) {
   const leapEmrStorage = jobs * 0.015 + 200  // HDFS + S3 staging
   const leapTotal = Math.round(leapBase + leapLicenseScale + jobs * leapPerJob + leapEmrBase + jobs * leapEmrPerJobWeighted + leapEmrStorage)
 
-  // ── BNX + AWS Glue (serverless) ────────────────────────────
-  // Glue pricing: $0.44/DPU-hour
-  // Simple: 2 DPU × 3 min = $0.044/job
-  // Medio: 4 DPU × 20 min = $0.587/job
-  // Complejo: 8 DPU × 180 min = $10.56/job
-  const bnxCostSimple = 0.44 * 2 * (3 / 60)    // $0.044/job
-  const bnxCostMedio = 0.44 * 4 * (20 / 60)    // $0.587/job
-  const bnxCostComplejo = 0.44 * 8 * (180 / 60) // $10.56/job
-  const bnxGlueCostPerJob = pctSimple * bnxCostSimple + pctMedio * bnxCostMedio + pctComplejo * bnxCostComplejo  // $2.36/job avg
+  // ── BNX + AWS Glue + EMR Serverless (estrategia híbrida) ───
+  // Simple/Medio → Glue (setup rápido, serverless)
+  // Complejo → EMR Serverless (más barato en larga duración, mejor auto-scaling)
+  // Glue pricing: $0.44/DPU-hour (1 DPU = 4 vCPU, 16GB)
+  // EMR Serverless: $0.052624/vCPU-hr + $0.0057567/GB-hr ≈ $0.30/hr equiv a 1 DPU (~32% más barato)
+  // Simple (Glue): 2 DPU × 3 min = $0.044/job
+  const bnxCostSimple = 0.44 * 2 * (3 / 60)    // $0.044/job (Glue)
+  // Medio (Glue): 4 DPU × 20 min = $0.587/job
+  const bnxCostMedio = 0.44 * 4 * (20 / 60)    // $0.587/job (Glue)
+  // Complejo (EMR Serverless): 8 workers (4 vCPU + 16GB each) × 180 min
+  // = 32 vCPU × 3hr × $0.052624 + 128GB × 3hr × $0.0057567 = $5.05 + $2.21 = $7.26/job
+  const emrVcpuHr = 0.052624
+  const emrGbHr = 0.0057567
+  const bnxCostComplejo = (32 * 3 * emrVcpuHr) + (128 * 3 * emrGbHr)  // $7.26/job (EMR Serverless)
+  const bnxGlueCostPerJob = pctSimple * bnxCostSimple + pctMedio * bnxCostMedio + pctComplejo * bnxCostComplejo  // ~$1.70/job avg
   const bnxS3Storage = 50 + jobs * 0.003  // S3 storage for 1.4TB + intermediate data
   const bnxCloudWatch = 20 + jobs * 0.001  // monitoring & logs
   const bnxStepFunctions = jobs * 0.025 * 0.001  // Step Functions state transitions
@@ -185,7 +191,7 @@ function CloudCostEstimator({ theme }) {
       {/* Bars */}
       {bar(abiTotal, '#f59e0b', 'Ab Initio EKS')}
       {bar(leapTotal, '#06b6d4', 'LeapLogic + EMR')}
-      {bar(bnxTotal, '#22c55e', 'BNX + Glue')}
+      {bar(bnxTotal, '#22c55e', 'BNX + Glue/EMR-S')}
 
       {/* Breakdown */}
       <div style={{ display: 'flex', gap: 12, marginTop: 16, flexWrap: 'wrap' }}>
@@ -207,17 +213,17 @@ function CloudCostEstimator({ theme }) {
           <div style={{ color: '#06b6d4', fontWeight: 600, marginTop: 4 }}>Anual: ${(leapTotal * 12).toLocaleString()}</div>
         </div>
         <div style={{ flex: '1 1 180px', padding: 10, borderRadius: 8, background: '#22c55e10', border: '1px solid #22c55e30', fontSize: 11 }}>
-          <div style={{ fontWeight: 700, color: '#22c55e', marginBottom: 4 }}>BNX + AWS Glue</div>
-          <div style={{ color: t.muted || '#8fa3c4' }}>Simple (40%): ${Math.round(jobs * pctSimple * bnxCostSimple).toLocaleString()}/mes</div>
-          <div style={{ color: t.muted || '#8fa3c4' }}>Medio (40%): ${Math.round(jobs * pctMedio * bnxCostMedio).toLocaleString()}/mes</div>
-          <div style={{ color: t.muted || '#8fa3c4' }}>Complejo (20%): ${Math.round(jobs * pctComplejo * bnxCostComplejo).toLocaleString()}/mes</div>
+          <div style={{ fontWeight: 700, color: '#22c55e', marginBottom: 4 }}>BNX + Glue + EMR Serverless</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>Glue simple (40%): ${Math.round(jobs * pctSimple * bnxCostSimple).toLocaleString()}/mes</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>Glue medio (40%): ${Math.round(jobs * pctMedio * bnxCostMedio).toLocaleString()}/mes</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>EMR Serverless (20%): ${Math.round(jobs * pctComplejo * bnxCostComplejo).toLocaleString()}/mes</div>
           <div style={{ color: t.muted || '#8fa3c4' }}>S3 + CloudWatch: ${Math.round(bnxS3Storage + bnxCloudWatch).toLocaleString()}/mes</div>
           <div style={{ color: '#22c55e', fontWeight: 600, marginTop: 4 }}>Anual: ${(bnxTotal * 12).toLocaleString()}</div>
         </div>
       </div>
 
       <div style={{ marginTop: 12, fontSize: 11, color: t.dim || '#5a7399', fontStyle: 'italic' }}>
-        * Estimación basada en precios públicos AWS (us-east-1) para 1.4TB de transformación. Distribución: 40% simple (2-5 min), 40% medio (15-30 min), 20% complejo (2-4 hrs). EBS: gp3 $0.08/GB-mes + io2 $0.125/GB-mes + IOPS $0.065/IOPS-mes. Glue: $0.44/DPU-hour. EMR: m5.4xlarge $0.768/hr + r5.2xlarge $0.504/hr.
+        * Estimación basada en precios públicos AWS (us-east-1) para 1.4TB de transformación. Distribución: 40% simple (2-5 min), 40% medio (15-30 min), 20% complejo (2-4 hrs). Estrategia BNX híbrida: Glue para jobs simples/medios ($0.44/DPU-hr), EMR Serverless para complejos ($0.052624/vCPU-hr + $0.0057567/GB-hr, ~32% más barato que Glue en larga duración). EBS: gp3 $0.08/GB + io2 $0.125/GB + IOPS $0.065/IOPS.
       </div>
     </div>
   )
