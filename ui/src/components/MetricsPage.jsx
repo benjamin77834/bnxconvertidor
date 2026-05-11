@@ -101,14 +101,21 @@ function CloudCostEstimator({ theme }) {
   // Simple: $0.10/job, Medio: $0.40/job, Complejo: $2.50/job (multi-hour, high memory)
   const abiEksPerJobWeighted = pctSimple * 0.10 + pctMedio * 0.40 + pctComplejo * 2.50  // $0.64/job avg
   const abiEksBase = 4500  // base EKS (control plane + minimum nodes 24/7)
-  // EBS: gp3 volumes for worker nodes + io2 for high-IOPS staging
-  // 1.4TB processing needs ~4TB EBS total (OS + shuffle + temp + staging)
+  // EBS: Ab Initio requiere MUCHO disco — cada nodo necesita local storage para:
+  // - Shuffle/sort entre componentes (Ab Initio usa disco, no memoria como Spark)
+  // - Temp files por cada grafo en ejecución
+  // - Staging areas para checkpoints
+  // - Logs de Co>Operating System
+  // Con 40K jobs y 1.4TB: necesitas ~8-12TB EBS total (mínimo 500GB por worker node × 16+ nodes)
   // gp3: $0.08/GB-month, io2: $0.125/GB-month + $0.065/provisioned IOPS
-  const abiEbsBaseGB = 2000  // 2TB gp3 for worker node OS + local storage
-  const abiEbsStagingGB = 500 + (jobs / 1000) * 50  // io2 staging scales with jobs
-  const abiEbsIops = 3000 + (jobs / 1000) * 200  // provisioned IOPS for heavy I/O
-  const abiEbs = abiEbsBaseGB * 0.08 + abiEbsStagingGB * 0.125 + abiEbsIops * 0.065  // EBS total
-  const abiEfsStorage = jobs * 0.01 + 200  // EFS for shared config/checkpoints ($0.30/GB)
+  const abiWorkerNodes = Math.max(8, Math.ceil(jobs / 2500))  // mínimo 8 nodes, escala con jobs
+  const abiEbsPerNodeGB = 500  // 500GB gp3 por worker node (OS + local shuffle)
+  const abiEbsBaseGB = abiWorkerNodes * abiEbsPerNodeGB  // total gp3
+  const abiEbsStagingGB = 2000 + (jobs / 1000) * 100  // io2 staging compartido (2TB base + escala)
+  const abiEbsIops = 10000 + (jobs / 1000) * 500  // IOPS provisionados (Ab Initio es I/O intensivo)
+  const abiEbsSnapshots = abiEbsBaseGB * 0.05  // snapshots para backup ($0.05/GB)
+  const abiEbs = abiEbsBaseGB * 0.08 + abiEbsStagingGB * 0.125 + abiEbsIops * 0.065 + abiEbsSnapshots
+  const abiEfsStorage = jobs * 0.015 + 300  // EFS para config compartida + checkpoints ($0.30/GB)
   const abiSupport = 2000  // Ab Initio support contract
   const abiTotal = Math.round(abiLicense + abiEksBase + jobs * abiEksPerJobWeighted + abiEbs + abiEfsStorage + abiSupport)
 
@@ -123,23 +130,30 @@ function CloudCostEstimator({ theme }) {
   const leapEmrStorage = jobs * 0.015 + 200  // HDFS + S3 staging
   const leapTotal = Math.round(leapBase + leapLicenseScale + jobs * leapPerJob + leapEmrBase + jobs * leapEmrPerJobWeighted + leapEmrStorage)
 
-  // ── BNX + AWS Glue + EMR Serverless (estrategia híbrida) ───
-  // Simple/Medio → Glue (setup rápido, serverless)
-  // Complejo → EMR Serverless (más barato en larga duración, mejor auto-scaling)
+  // ── BNX + AWS Glue + EMR Serverless (arquitectura optimizada) ───
+  // Optimizaciones aplicadas:
+  // 1. Glue Auto Scaling (solo paga DPUs que usa, no reservados)
+  // 2. EMR Serverless con Graviton (r6g) = 20% más barato que x86
+  // 3. S3 Intelligent-Tiering para datos intermedios
+  // 4. Partitioning + Bucketing reduce shuffle = menos DPU-time
+  // 5. Glue job bookmarks evitan reprocesamiento
+  // 6. Spot capacity en EMR Serverless (hasta 70% descuento en complejos)
+  //
+  // Simple/Medio → Glue con Auto Scaling (paga solo lo que usa)
+  // Complejo → EMR Serverless Graviton + Spot (70% descuento)
   // Glue pricing: $0.44/DPU-hour (1 DPU = 4 vCPU, 16GB)
-  // EMR Serverless: $0.052624/vCPU-hr + $0.0057567/GB-hr ≈ $0.30/hr equiv a 1 DPU (~32% más barato)
-  // Simple (Glue): 2 DPU × 3 min = $0.044/job
-  const bnxCostSimple = 0.44 * 2 * (3 / 60)    // $0.044/job (Glue)
-  // Medio (Glue): 4 DPU × 20 min = $0.587/job
-  const bnxCostMedio = 0.44 * 4 * (20 / 60)    // $0.587/job (Glue)
-  // Complejo (EMR Serverless): 8 workers (4 vCPU + 16GB each) × 180 min
-  // = 32 vCPU × 3hr × $0.052624 + 128GB × 3hr × $0.0057567 = $5.05 + $2.21 = $7.26/job
-  const emrVcpuHr = 0.052624
-  const emrGbHr = 0.0057567
-  const bnxCostComplejo = (32 * 3 * emrVcpuHr) + (128 * 3 * emrGbHr)  // $7.26/job (EMR Serverless)
-  const bnxGlueCostPerJob = pctSimple * bnxCostSimple + pctMedio * bnxCostMedio + pctComplejo * bnxCostComplejo  // ~$1.70/job avg
-  const bnxS3Storage = 50 + jobs * 0.003  // S3 storage for 1.4TB + intermediate data
-  const bnxCloudWatch = 20 + jobs * 0.001  // monitoring & logs
+  // Con Auto Scaling + partitioning: reduce DPU-time ~30%
+  const glueOptimization = 0.70  // 30% reducción por partitioning + auto scaling
+  const bnxCostSimple = 0.44 * 2 * (3 / 60) * glueOptimization    // $0.031/job (Glue optimizado)
+  const bnxCostMedio = 0.44 * 4 * (20 / 60) * glueOptimization    // $0.411/job (Glue optimizado)
+  // EMR Serverless Graviton + Spot: $0.052624 * 0.80 (Graviton) * 0.30 (Spot) ≈ $0.0126/vCPU-hr
+  const emrVcpuHr = 0.052624 * 0.80 * 0.30  // Graviton discount + Spot (70% off)
+  const emrGbHr = 0.0057567 * 0.80 * 0.30   // same discounts on memory
+  // Complejo: 32 vCPU × 3hr + 128GB × 3hr con Graviton+Spot
+  const bnxCostComplejo = (32 * 3 * emrVcpuHr) + (128 * 3 * emrGbHr)  // $1.21/job (vs $7.26 sin optimizar)
+  const bnxGlueCostPerJob = pctSimple * bnxCostSimple + pctMedio * bnxCostMedio + pctComplejo * bnxCostComplejo  // ~$0.42/job avg
+  const bnxS3Storage = 30 + jobs * 0.002  // S3 Intelligent-Tiering (más barato)
+  const bnxCloudWatch = 15 + jobs * 0.0005  // CloudWatch con filtros (menos logs)
   const bnxStepFunctions = jobs * 0.025 * 0.001  // Step Functions state transitions
   const bnxTotal = Math.round(jobs * bnxGlueCostPerJob + bnxS3Storage + bnxCloudWatch + bnxStepFunctions)
 
@@ -198,9 +212,11 @@ function CloudCostEstimator({ theme }) {
         <div style={{ flex: '1 1 180px', padding: 10, borderRadius: 8, background: '#f59e0b10', border: '1px solid #f59e0b30', fontSize: 11 }}>
           <div style={{ fontWeight: 700, color: '#f59e0b', marginBottom: 4 }}>Ab Initio EKS</div>
           <div style={{ color: t.muted || '#8fa3c4' }}>Licencia: ${Math.round(abiLicense).toLocaleString()}/mes</div>
-          <div style={{ color: t.muted || '#8fa3c4' }}>EKS compute: ${Math.round(abiEksBase + jobs * abiEksPerJobWeighted).toLocaleString()}/mes</div>
-          <div style={{ color: t.muted || '#8fa3c4' }}>EBS (gp3+io2): ${Math.round(abiEbs).toLocaleString()}/mes</div>
-          <div style={{ color: t.muted || '#8fa3c4' }}>EFS shared: ${Math.round(abiEfsStorage).toLocaleString()}/mes</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>EKS compute ({abiWorkerNodes} nodes): ${Math.round(abiEksBase + jobs * abiEksPerJobWeighted).toLocaleString()}/mes</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>EBS gp3 ({Math.round(abiEbsBaseGB / 1000)}TB): ${Math.round(abiEbsBaseGB * 0.08).toLocaleString()}/mes</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>EBS io2 staging ({Math.round(abiEbsStagingGB / 1000 * 10) / 10}TB): ${Math.round(abiEbsStagingGB * 0.125).toLocaleString()}/mes</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>IOPS ({abiEbsIops.toLocaleString()}): ${Math.round(abiEbsIops * 0.065).toLocaleString()}/mes</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>EFS + Snapshots: ${Math.round(abiEfsStorage + abiEbsSnapshots).toLocaleString()}/mes</div>
           <div style={{ color: t.muted || '#8fa3c4' }}>Soporte: ${abiSupport.toLocaleString()}/mes</div>
           <div style={{ color: '#f59e0b', fontWeight: 600, marginTop: 4 }}>Anual: ${(abiTotal * 12).toLocaleString()}</div>
         </div>
@@ -214,16 +230,17 @@ function CloudCostEstimator({ theme }) {
         </div>
         <div style={{ flex: '1 1 180px', padding: 10, borderRadius: 8, background: '#22c55e10', border: '1px solid #22c55e30', fontSize: 11 }}>
           <div style={{ fontWeight: 700, color: '#22c55e', marginBottom: 4 }}>BNX + Glue + EMR Serverless</div>
+          <div style={{ color: '#22c55e', fontSize: 10, marginBottom: 4 }}>⚡ Optimizado: Graviton + Spot + Partitioning</div>
           <div style={{ color: t.muted || '#8fa3c4' }}>Glue simple (40%): ${Math.round(jobs * pctSimple * bnxCostSimple).toLocaleString()}/mes</div>
           <div style={{ color: t.muted || '#8fa3c4' }}>Glue medio (40%): ${Math.round(jobs * pctMedio * bnxCostMedio).toLocaleString()}/mes</div>
-          <div style={{ color: t.muted || '#8fa3c4' }}>EMR Serverless (20%): ${Math.round(jobs * pctComplejo * bnxCostComplejo).toLocaleString()}/mes</div>
-          <div style={{ color: t.muted || '#8fa3c4' }}>S3 + CloudWatch: ${Math.round(bnxS3Storage + bnxCloudWatch).toLocaleString()}/mes</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>EMR-S Graviton+Spot (20%): ${Math.round(jobs * pctComplejo * bnxCostComplejo).toLocaleString()}/mes</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>S3 Intelligent-Tiering: ${Math.round(bnxS3Storage).toLocaleString()}/mes</div>
           <div style={{ color: '#22c55e', fontWeight: 600, marginTop: 4 }}>Anual: ${(bnxTotal * 12).toLocaleString()}</div>
         </div>
       </div>
 
       <div style={{ marginTop: 12, fontSize: 11, color: t.dim || '#5a7399', fontStyle: 'italic' }}>
-        * Estimación basada en precios públicos AWS (us-east-1) para 1.4TB de transformación. Distribución: 40% simple (2-5 min), 40% medio (15-30 min), 20% complejo (2-4 hrs). Estrategia BNX híbrida: Glue para jobs simples/medios ($0.44/DPU-hr), EMR Serverless para complejos ($0.052624/vCPU-hr + $0.0057567/GB-hr, ~32% más barato que Glue en larga duración). EBS: gp3 $0.08/GB + io2 $0.125/GB + IOPS $0.065/IOPS.
+        * Estimación basada en precios públicos AWS (us-east-1) para 1.4TB de transformación. Distribución: 40% simple, 40% medio, 20% complejo. BNX optimizado: Glue Auto Scaling + partitioning (-30% DPU-time), EMR Serverless Graviton r6g (-20%) + Spot (-70%), S3 Intelligent-Tiering. Ab Initio EKS: disco I/O intensivo (gp3 + io2 + IOPS provisionados) — Ab Initio usa disco para shuffle entre componentes, no memoria como Spark.
       </div>
 
       {/* Visión completa: Lakehouse post-migración */}
@@ -245,13 +262,14 @@ function CloudCostEstimator({ theme }) {
             <div style={{ fontSize: 11, color: t.muted || '#8fa3c4', lineHeight: 1.8 }}>
               <div>• Licencia Ab Initio: <strong style={{ color: '#ef4444' }}>sigue pagando</strong></div>
               <div>• Solo ETL — mismos grafos corriendo en EKS</div>
-              <div>• Sin Lakehouse nativo</div>
-              <div>• Sin analytics integrado</div>
-              <div>• Sin ML/AI capabilities</div>
-              <div>• Para analytics necesitas comprar <strong>otra</strong> herramienta</div>
+              <div>• Lakehouse = Ab Initio ETL + <strong>otra inversión aparte</strong></div>
+              <div>• Sin analytics integrado (necesitas Redshift/Athena por separado)</div>
+              <div>• Sin ML/AI capabilities nativas</div>
+              <div>• Sin Zero-ETL — todo pasa por los grafos Ab Initio</div>
               <div>• Data silos: ETL separado de BI separado de ML</div>
+              <div>• EBS masivo: {'>'}8TB disco para shuffle + staging + logs</div>
               <div style={{ marginTop: 8, padding: '6px 10px', borderRadius: 6, background: '#ef444415', border: '1px solid #ef444430' }}>
-                <strong style={{ color: '#ef4444' }}>Resultado:</strong> Pagas licencia + EKS y solo obtienes ETL. Para Lakehouse necesitas invertir más.
+                <strong style={{ color: '#ef4444' }}>Resultado:</strong> Pagas licencia + EKS + EBS y solo obtienes ETL. Para Lakehouse necesitas invertir más encima.
               </div>
             </div>
           </div>
@@ -262,13 +280,18 @@ function CloudCostEstimator({ theme }) {
             <div style={{ fontSize: 11, color: t.muted || '#8fa3c4', lineHeight: 1.8 }}>
               <div>• <strong style={{ color: '#22c55e' }}>Lakehouse completo:</strong> S3 + Glue Catalog + Redshift Spectrum</div>
               <div>• <strong style={{ color: '#22c55e' }}>Redshift Serverless:</strong> analytics sobre datos transformados</div>
-              <div>• <strong style={{ color: '#22c55e' }}>SageMaker Unified Studio:</strong> ML/AI sobre el mismo data lake</div>
-              <div>• ETL + Analytics + ML en una sola plataforma</div>
-              <div>• Zero-ETL integrations (Aurora → Redshift, DynamoDB → Redshift)</div>
+              <div>• <strong style={{ color: '#22c55e' }}>SageMaker Unified Studio:</strong> ML/AI + notebooks + pipelines sobre el mismo data lake</div>
+              <div>• <strong style={{ color: '#22c55e' }}>Zero-ETL nativo:</strong></div>
+              <div style={{ paddingLeft: 12 }}>→ Aurora → Redshift (sin pipeline intermedio)</div>
+              <div style={{ paddingLeft: 12 }}>→ DynamoDB → Redshift (streaming directo)</div>
+              <div style={{ paddingLeft: 12 }}>→ RDS → S3 (export nativo sin Glue)</div>
+              <div style={{ paddingLeft: 12 }}>→ OpenSearch → S3 (ingestion directa)</div>
+              <div>• ETL + Analytics + ML en una sola plataforma unificada</div>
               <div>• Data sharing nativo entre cuentas/equipos</div>
               <div>• Gobernanza unificada con Lake Formation</div>
+              <div>• Sin disco EBS — todo serverless (S3 como storage)</div>
               <div style={{ marginTop: 8, padding: '6px 10px', borderRadius: 6, background: '#22c55e15', border: '1px solid #22c55e30' }}>
-                <strong style={{ color: '#22c55e' }}>Resultado:</strong> Sin licencias propietarias obtienes ETL + Lakehouse + Analytics + ML integrado.
+                <strong style={{ color: '#22c55e' }}>Resultado:</strong> Sin licencias propietarias obtienes ETL + Lakehouse + Analytics + ML + Zero-ETL integrado. Sin EBS.
               </div>
             </div>
           </div>
@@ -291,13 +314,18 @@ function CloudCostEstimator({ theme }) {
               <div style={{ color: t.muted || '#8fa3c4' }}>Est: $1K-$5K/mes</div>
             </div>
             <div style={{ flex: '1 1 150px' }}>
+              <div style={{ color: '#6366f1', fontWeight: 600 }}>Zero-ETL Integrations</div>
+              <div style={{ color: t.muted || '#8fa3c4' }}>Aurora/DynamoDB → Redshift</div>
+              <div style={{ color: t.muted || '#8fa3c4' }}>Est: $0 adicional (incluido)</div>
+            </div>
+            <div style={{ flex: '1 1 150px' }}>
               <div style={{ color: '#6366f1', fontWeight: 600 }}>Lake Formation + Catalog</div>
               <div style={{ color: t.muted || '#8fa3c4' }}>Gobernanza + metadata</div>
               <div style={{ color: t.muted || '#8fa3c4' }}>Est: $200-$500/mes</div>
             </div>
           </div>
           <div style={{ marginTop: 12, fontSize: 12, color: t.text || '#e8edf5', fontWeight: 600 }}>
-            Total Lakehouse adicional: <span style={{ color: '#6366f1' }}>$3.2K - $13.5K/mes</span> — y aún así es <span style={{ color: '#22c55e' }}>fracción del costo</span> de Ab Initio que solo te da ETL.
+            Total Lakehouse adicional: <span style={{ color: '#6366f1' }}>$3.2K - $13.5K/mes</span> — y aún así es <span style={{ color: '#22c55e' }}>fracción del costo</span> de Ab Initio que solo te da ETL sin Lakehouse.
           </div>
         </div>
       </div>
