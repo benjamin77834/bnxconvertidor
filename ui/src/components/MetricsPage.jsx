@@ -85,30 +85,57 @@ function CloudCostEstimator({ theme }) {
   const t = theme || {}
   const [jobs, setJobs] = useState(5000)
 
-  // Cost models (monthly)
-  // Ab Initio EKS: license (scales with volume) + EKS cluster for 1.4TB+ transformation
+  // ── Job Complexity Distribution ──────────────────────────────
+  // 40% Simple (2-5 min, 1-2 DPUs) — filtros, lookups, transforms básicos
+  // 40% Medio (15-30 min, 3-4 DPUs) — joins, aggregations, multi-step
+  // 20% Complejo (2-4 hrs, 6-10 DPUs) — reconciliaciones, cross-joins, ML prep
+  const pctSimple = 0.40, pctMedio = 0.40, pctComplejo = 0.20
+
+  // Cost models (monthly) — 1.4TB total transformation volume
+  // ── Ab Initio EKS ──────────────────────────────────────────
   // License tiers: 40K jobs = enterprise tier ($300K-$500K/year)
   const abiLicenseBase = 150000 / 12  // $150K/year base
   const abiLicenseScale = jobs > 10000 ? (jobs - 10000) * 0.50 : 0  // enterprise scaling above 10K
   const abiLicense = abiLicenseBase + abiLicenseScale
-  // EKS: 1.4TB transformation requires r5.2xlarge/r5.4xlarge nodes, persistent cluster
-  const abiEksBase = 4500  // base EKS (control plane + minimum nodes)
-  const abiEksPerJob = 0.35  // per job (heavy memory/compute for 1.4TB data volume)
-  const abiEksStorage = jobs * 0.02 + 500  // EBS/EFS for staging data
+  // EKS compute: weighted by complexity (r5.2xlarge/r5.4xlarge nodes)
+  // Simple: $0.10/job, Medio: $0.40/job, Complejo: $2.50/job (multi-hour, high memory)
+  const abiEksPerJobWeighted = pctSimple * 0.10 + pctMedio * 0.40 + pctComplejo * 2.50  // $0.64/job avg
+  const abiEksBase = 4500  // base EKS (control plane + minimum nodes 24/7)
+  // EBS: gp3 volumes for worker nodes + io2 for high-IOPS staging
+  // 1.4TB processing needs ~4TB EBS total (OS + shuffle + temp + staging)
+  // gp3: $0.08/GB-month, io2: $0.125/GB-month + $0.065/provisioned IOPS
+  const abiEbsBaseGB = 2000  // 2TB gp3 for worker node OS + local storage
+  const abiEbsStagingGB = 500 + (jobs / 1000) * 50  // io2 staging scales with jobs
+  const abiEbsIops = 3000 + (jobs / 1000) * 200  // provisioned IOPS for heavy I/O
+  const abiEbs = abiEbsBaseGB * 0.08 + abiEbsStagingGB * 0.125 + abiEbsIops * 0.065  // EBS total
+  const abiEfsStorage = jobs * 0.01 + 200  // EFS for shared config/checkpoints ($0.30/GB)
   const abiSupport = 2000  // Ab Initio support contract
-  const abiTotal = Math.round(abiLicense + abiEksBase + jobs * abiEksPerJob + abiEksStorage + abiSupport)
+  const abiTotal = Math.round(abiLicense + abiEksBase + jobs * abiEksPerJobWeighted + abiEbs + abiEfsStorage + abiSupport)
 
-  // LeapLogic: SaaS license scaled by volume + Databricks/EMR
-  const leapBase = 50000 / 12  // $50K/year = $4.2K/month base
-  const leapPerJob = 0.08  // per job processing
-  const leapInfra = 1500 + jobs * 0.05  // EMR/Databricks
-  const leapTotal = Math.round(leapBase + jobs * leapPerJob + leapInfra)
+  // ── LeapLogic + EMR ────────────────────────────────────────
+  // EMR cluster: m5.4xlarge core nodes ($0.768/hr) + r5.2xlarge task nodes ($0.504/hr)
+  const leapBase = 75000 / 12  // $75K/year SaaS license
+  const leapLicenseScale = jobs > 10000 ? (jobs - 10000) * 0.20 : 0  // volume tier pricing
+  const leapPerJob = 0.12  // per job processing fee
+  // EMR compute weighted: Simple: $0.05, Medio: $0.15, Complejo: $1.20/job
+  const leapEmrPerJobWeighted = pctSimple * 0.05 + pctMedio * 0.15 + pctComplejo * 1.20  // $0.32/job avg
+  const leapEmrBase = 3500  // base EMR cluster (3x m5.4xlarge core = 24/7)
+  const leapEmrStorage = jobs * 0.015 + 200  // HDFS + S3 staging
+  const leapTotal = Math.round(leapBase + leapLicenseScale + jobs * leapPerJob + leapEmrBase + jobs * leapEmrPerJobWeighted + leapEmrStorage)
 
-  // BNX: AWS Glue/Lambda (serverless, pay per use)
-  const bnxLambda = 5  // Lambda base
-  const bnxGluePerJob = 0.44  // $0.44 per DPU-hour, ~1 DPU per simple job
-  const bnxS3 = 10 + jobs * 0.001  // S3 storage
-  const bnxTotal = Math.round(bnxLambda + jobs * bnxGluePerJob * 0.1 + bnxS3)  // 0.1 = avg 6min per job
+  // ── BNX + AWS Glue (serverless) ────────────────────────────
+  // Glue pricing: $0.44/DPU-hour
+  // Simple: 2 DPU × 3 min = $0.044/job
+  // Medio: 4 DPU × 20 min = $0.587/job
+  // Complejo: 8 DPU × 180 min = $10.56/job
+  const bnxCostSimple = 0.44 * 2 * (3 / 60)    // $0.044/job
+  const bnxCostMedio = 0.44 * 4 * (20 / 60)    // $0.587/job
+  const bnxCostComplejo = 0.44 * 8 * (180 / 60) // $10.56/job
+  const bnxGlueCostPerJob = pctSimple * bnxCostSimple + pctMedio * bnxCostMedio + pctComplejo * bnxCostComplejo  // $2.36/job avg
+  const bnxS3Storage = 50 + jobs * 0.003  // S3 storage for 1.4TB + intermediate data
+  const bnxCloudWatch = 20 + jobs * 0.001  // monitoring & logs
+  const bnxStepFunctions = jobs * 0.025 * 0.001  // Step Functions state transitions
+  const bnxTotal = Math.round(jobs * bnxGlueCostPerJob + bnxS3Storage + bnxCloudWatch + bnxStepFunctions)
 
   const maxCost = Math.max(abiTotal, leapTotal, bnxTotal)
 
@@ -142,6 +169,19 @@ function CloudCostEstimator({ theme }) {
         />
       </div>
 
+      {/* Complexity distribution */}
+      <div style={{
+        display: 'flex', gap: 10, marginBottom: 16, padding: '10px 14px', borderRadius: 8,
+        background: (t.bg || '#0a1628') + '60', border: `1px solid ${t.border || '#334155'}40`,
+      }}>
+        <div style={{ fontSize: 12, color: t.text || '#e8edf5', fontWeight: 600, whiteSpace: 'nowrap' }}>📊 Distribución:</div>
+        <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 11, color: t.muted || '#8fa3c4' }}>
+          <span><strong style={{ color: '#22c55e' }}>40% Simple</strong> (2-5 min, 1-2 DPUs — filtros, lookups)</span>
+          <span><strong style={{ color: '#f59e0b' }}>40% Medio</strong> (15-30 min, 3-4 DPUs — joins, aggregations)</span>
+          <span><strong style={{ color: '#ef4444' }}>20% Complejo</strong> (2-4 hrs, 6-10 DPUs — reconciliaciones, cross-joins)</span>
+        </div>
+      </div>
+
       {/* Bars */}
       {bar(abiTotal, '#f59e0b', 'Ab Initio EKS')}
       {bar(leapTotal, '#06b6d4', 'LeapLogic + EMR')}
@@ -152,29 +192,32 @@ function CloudCostEstimator({ theme }) {
         <div style={{ flex: '1 1 180px', padding: 10, borderRadius: 8, background: '#f59e0b10', border: '1px solid #f59e0b30', fontSize: 11 }}>
           <div style={{ fontWeight: 700, color: '#f59e0b', marginBottom: 4 }}>Ab Initio EKS</div>
           <div style={{ color: t.muted || '#8fa3c4' }}>Licencia: ${Math.round(abiLicense).toLocaleString()}/mes</div>
-          <div style={{ color: t.muted || '#8fa3c4' }}>EKS cluster: ${Math.round(abiEksBase + jobs * abiEksPerJob).toLocaleString()}/mes</div>
-          <div style={{ color: t.muted || '#8fa3c4' }}>Storage (EBS/EFS): ${Math.round(abiEksStorage).toLocaleString()}/mes</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>EKS compute: ${Math.round(abiEksBase + jobs * abiEksPerJobWeighted).toLocaleString()}/mes</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>EBS (gp3+io2): ${Math.round(abiEbs).toLocaleString()}/mes</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>EFS shared: ${Math.round(abiEfsStorage).toLocaleString()}/mes</div>
           <div style={{ color: t.muted || '#8fa3c4' }}>Soporte: ${abiSupport.toLocaleString()}/mes</div>
           <div style={{ color: '#f59e0b', fontWeight: 600, marginTop: 4 }}>Anual: ${(abiTotal * 12).toLocaleString()}</div>
         </div>
         <div style={{ flex: '1 1 180px', padding: 10, borderRadius: 8, background: '#06b6d410', border: '1px solid #06b6d430', fontSize: 11 }}>
           <div style={{ fontWeight: 700, color: '#06b6d4', marginBottom: 4 }}>LeapLogic + EMR</div>
-          <div style={{ color: t.muted || '#8fa3c4' }}>Licencia SaaS: ${Math.round(leapBase).toLocaleString()}/mes</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>Licencia SaaS: ${Math.round(leapBase + leapLicenseScale).toLocaleString()}/mes</div>
           <div style={{ color: t.muted || '#8fa3c4' }}>Processing: ${Math.round(jobs * leapPerJob).toLocaleString()}/mes</div>
-          <div style={{ color: t.muted || '#8fa3c4' }}>Infra EMR: ${Math.round(leapInfra).toLocaleString()}/mes</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>EMR compute: ${Math.round(leapEmrBase + jobs * leapEmrPerJobWeighted).toLocaleString()}/mes</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>Storage HDFS/S3: ${Math.round(leapEmrStorage).toLocaleString()}/mes</div>
           <div style={{ color: '#06b6d4', fontWeight: 600, marginTop: 4 }}>Anual: ${(leapTotal * 12).toLocaleString()}</div>
         </div>
         <div style={{ flex: '1 1 180px', padding: 10, borderRadius: 8, background: '#22c55e10', border: '1px solid #22c55e30', fontSize: 11 }}>
           <div style={{ fontWeight: 700, color: '#22c55e', marginBottom: 4 }}>BNX + AWS Glue</div>
-          <div style={{ color: t.muted || '#8fa3c4' }}>Lambda: $5/mes</div>
-          <div style={{ color: t.muted || '#8fa3c4' }}>Glue (serverless): ${Math.round(jobs * bnxGluePerJob * 0.1).toLocaleString()}/mes</div>
-          <div style={{ color: t.muted || '#8fa3c4' }}>S3: ${Math.round(bnxS3).toLocaleString()}/mes</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>Simple (40%): ${Math.round(jobs * pctSimple * bnxCostSimple).toLocaleString()}/mes</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>Medio (40%): ${Math.round(jobs * pctMedio * bnxCostMedio).toLocaleString()}/mes</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>Complejo (20%): ${Math.round(jobs * pctComplejo * bnxCostComplejo).toLocaleString()}/mes</div>
+          <div style={{ color: t.muted || '#8fa3c4' }}>S3 + CloudWatch: ${Math.round(bnxS3Storage + bnxCloudWatch).toLocaleString()}/mes</div>
           <div style={{ color: '#22c55e', fontWeight: 600, marginTop: 4 }}>Anual: ${(bnxTotal * 12).toLocaleString()}</div>
         </div>
       </div>
 
       <div style={{ marginTop: 12, fontSize: 11, color: t.dim || '#5a7399', fontStyle: 'italic' }}>
-        * Estimación basada en precios públicos AWS (us-east-1) para volumen de 1.4TB de transformación. Ab Initio: licencia enterprise escala con volumen de jobs + cluster EKS con nodos r5.2xlarge/r5.4xlarge para procesamiento pesado. Glue: $0.44/DPU-hour, promedio 6 min/job. EKS: nodos de alta memoria escalando con carga.
+        * Estimación basada en precios públicos AWS (us-east-1) para 1.4TB de transformación. Distribución: 40% simple (2-5 min), 40% medio (15-30 min), 20% complejo (2-4 hrs). EBS: gp3 $0.08/GB-mes + io2 $0.125/GB-mes + IOPS $0.065/IOPS-mes. Glue: $0.44/DPU-hour. EMR: m5.4xlarge $0.768/hr + r5.2xlarge $0.504/hr.
       </div>
     </div>
   )
