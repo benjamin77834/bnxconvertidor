@@ -58,34 +58,62 @@ function BarChart({ data, theme }) {
   const t = theme || {}
   const maxVal = Math.max(...data.map(d => d.traditional))
 
+  const months = [
+    { id: 1, label: '🗓️ Mes 1 — Core Engine (Sesiones 1-6)', color: '#6366f1' },
+    { id: 2, label: '🗓️ Mes 2 — Multi-target + Orquestación (Sesiones 7-11)', color: '#06b6d4' },
+    { id: 3, label: '🗓️ Mes 3 — Enterprise + Governance (Sesiones 12-16)', color: '#f59e0b' },
+  ]
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      {data.map(d => {
-        const pctTraditional = (d.traditional / maxVal) * 100
-        const pctBnx = (d.bnx / maxVal) * 100
-        const savings = Math.round((1 - d.bnx / d.traditional) * 100)
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      {months.map(month => {
+        const monthData = data.filter(d => d.month === month.id)
+        const monthTraditional = monthData.reduce((s, d) => s + d.traditional, 0)
+        const monthBnx = monthData.reduce((s, d) => s + d.bnx, 0)
         return (
-          <div key={d.phase} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: 13, color: t.text || '#e2e8f0', fontWeight: 500 }}>{d.phase}</span>
-              <span style={{
-                fontSize: 11, padding: '1px 6px', borderRadius: 4,
-                background: '#22c55e20', color: '#22c55e', fontWeight: 600,
-              }}>-{savings}%</span>
-            </div>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <span style={{ fontSize: 11, color: t.dim || '#64748b', width: 90 }}>Tradicional</span>
-              <div style={{ flex: 1, height: 14, background: t.bg || '#0f1117', borderRadius: 4, overflow: 'hidden' }}>
-                <div style={{ width: `${pctTraditional}%`, height: '100%', background: '#ef4444', borderRadius: 4 }} />
+          <div key={month.id}>
+            <div style={{
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              marginBottom: 10, paddingBottom: 6, borderBottom: `2px solid ${month.color}40`,
+            }}>
+              <span style={{ fontSize: 14, fontWeight: 700, color: month.color }}>{month.label}</span>
+              <div style={{ display: 'flex', gap: 12, fontSize: 11 }}>
+                <span style={{ color: '#ef4444' }}>Tradicional: <strong>{monthTraditional}h</strong> (~{Math.round(monthTraditional / 8)} días)</span>
+                <span style={{ color: '#22c55e' }}>BNX: <strong>{monthBnx}h</strong> (~{Math.round(monthBnx / 8)} días)</span>
+                <span style={{ color: month.color, fontWeight: 700 }}>-{Math.round((1 - monthBnx / monthTraditional) * 100)}%</span>
               </div>
-              <span style={{ fontSize: 12, color: t.muted || '#94a3b8', width: 40, textAlign: 'right' }}>{d.traditional}h</span>
             </div>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <span style={{ fontSize: 11, color: t.dim || '#64748b', width: 90 }}>BNX</span>
-              <div style={{ flex: 1, height: 14, background: t.bg || '#0f1117', borderRadius: 4, overflow: 'hidden' }}>
-                <div style={{ width: `${pctBnx}%`, height: '100%', background: '#22c55e', borderRadius: 4 }} />
-              </div>
-              <span style={{ fontSize: 12, color: t.muted || '#94a3b8', width: 40, textAlign: 'right' }}>{d.bnx}h</span>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {monthData.map(d => {
+                const pctTraditional = (d.traditional / maxVal) * 100
+                const pctBnx = (d.bnx / maxVal) * 100
+                const savings = Math.round((1 - d.bnx / d.traditional) * 100)
+                return (
+                  <div key={d.phase} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: 12, color: t.text || '#e2e8f0', fontWeight: 500 }}>{d.phase}</span>
+                      <span style={{
+                        fontSize: 11, padding: '1px 6px', borderRadius: 4,
+                        background: '#22c55e20', color: '#22c55e', fontWeight: 600,
+                      }}>-{savings}%</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <span style={{ fontSize: 11, color: t.dim || '#64748b', width: 90 }}>Tradicional</span>
+                      <div style={{ flex: 1, height: 14, background: t.bg || '#0f1117', borderRadius: 4, overflow: 'hidden' }}>
+                        <div style={{ width: `${pctTraditional}%`, height: '100%', background: '#ef4444', borderRadius: 4 }} />
+                      </div>
+                      <span style={{ fontSize: 12, color: t.muted || '#94a3b8', width: 40, textAlign: 'right' }}>{d.traditional}h</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <span style={{ fontSize: 11, color: t.dim || '#64748b', width: 90 }}>BNX</span>
+                      <div style={{ flex: 1, height: 14, background: t.bg || '#0f1117', borderRadius: 4, overflow: 'hidden' }}>
+                        <div style={{ width: `${pctBnx}%`, height: '100%', background: '#22c55e', borderRadius: 4 }} />
+                      </div>
+                      <span style={{ fontSize: 12, color: t.muted || '#94a3b8', width: 40, textAlign: 'right' }}>{d.bnx}h</span>
+                    </div>
+                  </div>
+                )
+              })}
             </div>
           </div>
         )
