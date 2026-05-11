@@ -1003,14 +1003,6 @@ export default function MetricsPage({ theme }) {
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 20 }}>
           {[
             {
-              option: 'Opción A: Quedarse con Ab Initio (on-premise)',
-              verdict: '❌ NO RECOMENDADO',
-              verdictColor: '#ef4444',
-              pros: ['Sin esfuerzo de migración', 'Equipo ya conoce la herramienta'],
-              cons: ['Licencia $100K-$500K/año (sigue pagando)', 'Tecnología legacy sin evolución', 'Sin aprovechamiento de cloud', 'Vendor lock-in total', 'Sin streaming nativo', 'Talento Ab Initio escaso y caro'],
-              cost5y: '$500K - $2.5M',
-            },
-            {
               option: 'Opción B: Ab Initio Cloud (lift & shift a EKS)',
               verdict: '⚠️ RIESGO ALTO',
               verdictColor: '#f59e0b',
