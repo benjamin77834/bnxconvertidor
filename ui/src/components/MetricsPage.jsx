@@ -788,6 +788,13 @@ export default function MetricsPage({ theme }) {
         <p style={{ fontSize: 12, color: t.dim || '#64748b', marginBottom: 16 }}>
           Basado en reunión con Ab Initio (2025) y análisis de costos reales
         </p>
+        <div style={{
+          padding: '10px 14px', borderRadius: 8, marginBottom: 16,
+          background: '#f59e0b10', border: '1px solid #f59e0b30',
+          fontSize: 13, color: '#f59e0b', fontWeight: 600,
+        }}>
+          ⚠️ Nota: En todos los escenarios con licenciamiento propietario, se debe negociar el licenciamiento antes de tomar una decisión.
+        </div>
 
         {/* Decision cards */}
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 20 }}>
@@ -901,17 +908,6 @@ export default function MetricsPage({ theme }) {
         </h3>
         <p style={{ fontSize: 12, color: t.dim || '#64748b', marginBottom: 16 }}>
           Costo mensual de infraestructura según número de jobs (1,000 a 40,000)
-        </p>
-        <CloudCostEstimator theme={t} />
-      </div>
-
-      {/* Cloud Operations Cost Estimator */}
-      <div style={card}>
-        <h3 style={{ fontSize: 16, fontWeight: 600, color: t.text || '#e2e8f0', marginBottom: 4 }}>
-          ☁️ Estimador de Costos Operativos en Cloud (por número de jobs)
-        </h3>
-        <p style={{ fontSize: 12, color: t.dim || '#64748b', marginBottom: 16 }}>
-          Costo mensual estimado de operación según cantidad de jobs
         </p>
         <CloudCostEstimator theme={t} />
       </div>
