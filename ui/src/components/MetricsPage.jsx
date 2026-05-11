@@ -225,6 +225,82 @@ function CloudCostEstimator({ theme }) {
       <div style={{ marginTop: 12, fontSize: 11, color: t.dim || '#5a7399', fontStyle: 'italic' }}>
         * Estimación basada en precios públicos AWS (us-east-1) para 1.4TB de transformación. Distribución: 40% simple (2-5 min), 40% medio (15-30 min), 20% complejo (2-4 hrs). Estrategia BNX híbrida: Glue para jobs simples/medios ($0.44/DPU-hr), EMR Serverless para complejos ($0.052624/vCPU-hr + $0.0057567/GB-hr, ~32% más barato que Glue en larga duración). EBS: gp3 $0.08/GB + io2 $0.125/GB + IOPS $0.065/IOPS.
       </div>
+
+      {/* Visión completa: Lakehouse post-migración */}
+      <div style={{
+        marginTop: 24, padding: 16, borderRadius: 10,
+        background: '#6366f110', border: '2px solid #6366f130',
+      }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: '#6366f1', marginBottom: 8 }}>
+          🏗️ Visión Completa: ¿Qué obtienes al migrar los 40K jobs?
+        </div>
+        <div style={{ fontSize: 12, color: t.muted || '#8fa3c4', marginBottom: 16, lineHeight: 1.6 }}>
+          Al completar la migración de 40K jobs, no solo se eliminan las licencias propietarias — se construye un <strong style={{ color: t.text || '#e8edf5' }}>Lakehouse moderno</strong> con capacidades de analytics y ML que Ab Initio no ofrece.
+        </div>
+
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+          {/* Ab Initio: solo ETL */}
+          <div style={{ flex: '1 1 280px', padding: 14, borderRadius: 8, background: '#f59e0b08', border: '1px solid #f59e0b30' }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#f59e0b', marginBottom: 8 }}>🟡 Ab Initio (post-migración a EKS)</div>
+            <div style={{ fontSize: 11, color: t.muted || '#8fa3c4', lineHeight: 1.8 }}>
+              <div>• Licencia Ab Initio: <strong style={{ color: '#ef4444' }}>sigue pagando</strong></div>
+              <div>• Solo ETL — mismos grafos corriendo en EKS</div>
+              <div>• Sin Lakehouse nativo</div>
+              <div>• Sin analytics integrado</div>
+              <div>• Sin ML/AI capabilities</div>
+              <div>• Para analytics necesitas comprar <strong>otra</strong> herramienta</div>
+              <div>• Data silos: ETL separado de BI separado de ML</div>
+              <div style={{ marginTop: 8, padding: '6px 10px', borderRadius: 6, background: '#ef444415', border: '1px solid #ef444430' }}>
+                <strong style={{ color: '#ef4444' }}>Resultado:</strong> Pagas licencia + EKS y solo obtienes ETL. Para Lakehouse necesitas invertir más.
+              </div>
+            </div>
+          </div>
+
+          {/* BNX: Lakehouse completo */}
+          <div style={{ flex: '1 1 280px', padding: 14, borderRadius: 8, background: '#22c55e08', border: '1px solid #22c55e30' }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#22c55e', marginBottom: 8 }}>🟢 BNX → AWS Lakehouse + SageMaker Unified Studio</div>
+            <div style={{ fontSize: 11, color: t.muted || '#8fa3c4', lineHeight: 1.8 }}>
+              <div>• <strong style={{ color: '#22c55e' }}>Lakehouse completo:</strong> S3 + Glue Catalog + Redshift Spectrum</div>
+              <div>• <strong style={{ color: '#22c55e' }}>Redshift Serverless:</strong> analytics sobre datos transformados</div>
+              <div>• <strong style={{ color: '#22c55e' }}>SageMaker Unified Studio:</strong> ML/AI sobre el mismo data lake</div>
+              <div>• ETL + Analytics + ML en una sola plataforma</div>
+              <div>• Zero-ETL integrations (Aurora → Redshift, DynamoDB → Redshift)</div>
+              <div>• Data sharing nativo entre cuentas/equipos</div>
+              <div>• Gobernanza unificada con Lake Formation</div>
+              <div style={{ marginTop: 8, padding: '6px 10px', borderRadius: 6, background: '#22c55e15', border: '1px solid #22c55e30' }}>
+                <strong style={{ color: '#22c55e' }}>Resultado:</strong> Sin licencias propietarias obtienes ETL + Lakehouse + Analytics + ML integrado.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Costo adicional Lakehouse */}
+        <div style={{ marginTop: 16, padding: 12, borderRadius: 8, background: (t.bg || '#0a1628') + '80', border: `1px solid ${t.border || '#334155'}30` }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: t.text || '#e8edf5', marginBottom: 8 }}>
+            💰 Costo estimado del Lakehouse completo (adicional al ETL)
+          </div>
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 11 }}>
+            <div style={{ flex: '1 1 150px' }}>
+              <div style={{ color: '#6366f1', fontWeight: 600 }}>Redshift Serverless</div>
+              <div style={{ color: t.muted || '#8fa3c4' }}>~$3-8/RPU-hr × uso real</div>
+              <div style={{ color: t.muted || '#8fa3c4' }}>Est: $2K-$8K/mes</div>
+            </div>
+            <div style={{ flex: '1 1 150px' }}>
+              <div style={{ color: '#6366f1', fontWeight: 600 }}>SageMaker Unified Studio</div>
+              <div style={{ color: t.muted || '#8fa3c4' }}>Notebooks + Training + Endpoints</div>
+              <div style={{ color: t.muted || '#8fa3c4' }}>Est: $1K-$5K/mes</div>
+            </div>
+            <div style={{ flex: '1 1 150px' }}>
+              <div style={{ color: '#6366f1', fontWeight: 600 }}>Lake Formation + Catalog</div>
+              <div style={{ color: t.muted || '#8fa3c4' }}>Gobernanza + metadata</div>
+              <div style={{ color: t.muted || '#8fa3c4' }}>Est: $200-$500/mes</div>
+            </div>
+          </div>
+          <div style={{ marginTop: 12, fontSize: 12, color: t.text || '#e8edf5', fontWeight: 600 }}>
+            Total Lakehouse adicional: <span style={{ color: '#6366f1' }}>$3.2K - $13.5K/mes</span> — y aún así es <span style={{ color: '#22c55e' }}>fracción del costo</span> de Ab Initio que solo te da ETL.
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
