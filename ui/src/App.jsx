@@ -8,6 +8,7 @@ import BankingModelPage from './components/BankingModelPage'
 import GovernancePage from './components/GovernancePage'
 import ArchitecturePage from './components/ArchitecturePage'
 import ExecutivePage from './components/ExecutivePage'
+import RoadmapPage from './components/RoadmapPage'
 import { COMPILE_URL } from './config'
 
 // ── Themes ──────────────────────────────────────────────────
@@ -301,6 +302,7 @@ export default function App() {
             { id: 'banking', label: '🏦 Banking' },
             { id: 'architecture', label: '🏗️ Architecture' },
             { id: 'metrics', label: '📊 Metrics' },
+            { id: 'roadmap', label: '🗺️ Roadmap' },
           ].map(tab => (
             <button key={tab.id}
               onClick={() => setPage(tab.id)}
@@ -339,6 +341,8 @@ export default function App() {
           <ExecutivePage theme={t} />
         ) : page === 'metrics' ? (
           <MetricsPage theme={t} />
+        ) : page === 'roadmap' ? (
+          <RoadmapPage theme={t} />
         ) : page === 'designer' ? (
           <DesignerPage theme={t} />
         ) : page === 'ocr' ? (

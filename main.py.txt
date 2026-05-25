@@ -140,18 +140,28 @@ def _parse_gde_native(content):
         
         # Vertex output port: {2010212001|XXGvertex_oport|17|0|34|0|{0|out|}17|18|}
         if "|XXGvertex_oport|" in line:
-            # Pattern: {0|out|}VERTEX_ID|PORT_ID|} or {0|out0|}VERTEX_ID|PORT_ID|}
-            m = re.search(r'\{0\|out\d*\|(\d+)\|(\d+)\|', line)
-            if m:
-                vertex_id = m.group(1)
-                port_id = m.group(2)
-                oport_to_vertex[port_id] = vertex_id
-                vertex_ids.add(vertex_id)
+            # The vertex_id and port_id are the last two numbers before |}
+            # Pattern: ...|VERTEX_ID|PORT_ID|}  at end of line
+            nums = re.findall(r'(\d+)', line)
+            if len(nums) >= 2:
+                # Last two numbers are vertex_id and port_id
+                # But we need to find them after the {0|out part
+                m = re.search(r'out\d*\|\}?(\d+)\|(\d+)\|', line)
+                if not m:
+                    # Try: the last two pipe-separated numbers
+                    m = re.search(r'\|(\d+)\|(\d+)\|\}?\s*$', line)
+                if m:
+                    vertex_id = m.group(1)
+                    port_id = m.group(2)
+                    oport_to_vertex[port_id] = vertex_id
+                    vertex_ids.add(vertex_id)
             continue
         
         # Vertex input port: {2010211001|XXGvertex_iport|19|0|37|0|{0|in|}17|19|}
         if "|XXGvertex_iport|" in line:
-            m = re.search(r'\{0\|in\d*\|(\d+)\|(\d+)\|', line)
+            m = re.search(r'in\d*\|\}?(\d+)\|(\d+)\|', line)
+            if not m:
+                m = re.search(r'\|(\d+)\|(\d+)\|\}?\s*$', line)
             if m:
                 vertex_id = m.group(1)
                 port_id = m.group(2)
