@@ -71,7 +71,7 @@ def parse_extracted_text(text):
         if not line:
             continue
 
-        # XXGgraph — graph definition
+        # XXGgraph ? graph definition
         m = re.search(r'XXGgraph.*\|([^|]+)\|', line)
         if m and not result["graph_name"]:
             # Try to extract graph name
@@ -86,7 +86,7 @@ def parse_extracted_text(text):
         if m and not result["graph_name"]:
             result["graph_name"] = m.group(1) if m.group(1) else m.group(0)
 
-        # XXGpvertex — node
+        # XXGpvertex ? node
         m = re.match(r'\{[^|]*\|XXGpvertex\|(\d+)\|', line)
         if m:
             vid = m.group(1)
@@ -95,7 +95,7 @@ def parse_extracted_text(text):
             result["nodes"].append({"id": vid, "name": name, "raw": line[:100]})
             continue
 
-        # XXGflow — edge/flow
+        # XXGflow ? edge/flow
         m = re.match(r'\{[^|]*\|XXGflow\|(\d+)\|(\d+)\|(\d+)\|', line)
         if m:
             flow_id = m.group(1)
@@ -103,7 +103,7 @@ def parse_extracted_text(text):
             result["flows"].append({"id": flow_id, "raw": line[:100]})
             continue
 
-        # XXGedge — direct edge
+        # XXGedge ? direct edge
         m = re.match(r'\{[^|]*\|XXGedge\|(\d+)\|(\d+)\|', line)
         if m:
             result["edges"].append({"from": m.group(1), "to": m.group(2)})
@@ -126,7 +126,7 @@ def parse_extracted_text(text):
             continue
 
         # Execution metadata
-        if "Ejecuci" in line or "iniciada" in line or "completó" in line:
+        if "Ejecuci" in line or "iniciada" in line or "complet?" in line:
             if "iniciada" in line:
                 result["metadata"]["start_time"] = line
             elif "complet" in line:

@@ -2,7 +2,7 @@ class DAGEngine:
 
     def sort(self, ir):
 
-        # 🔥 soporta IRGraph tipo dict container
+        # ? soporta IRGraph tipo dict container
         if hasattr(ir, "nodes"):
             nodes = ir.nodes
         else:
@@ -14,10 +14,10 @@ class DAGEngine:
         else:
             node_list = list(nodes)
 
-        print("🧪 DAG ENGINE DEBUG")
+        print("? DAG ENGINE DEBUG")
         print("NODES INPUT:", len(node_list))
 
-        # 🟢 MVP: no ordenar aún, solo pasar limpio
+        # [+] MVP: no ordenar a?n, solo pasar limpio
         class DAG:
             def __init__(self, nodes):
                 self.nodes = {n.id: n for n in node_list}

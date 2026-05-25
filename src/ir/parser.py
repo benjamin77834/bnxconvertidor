@@ -14,7 +14,7 @@ class IR:
 
 def build_ir(nodes, edges):
 
-    print("\n🧬 IR BUILDER STARTED")
+    print("\n? IR BUILDER STARTED")
 
     ir = IR()
 
@@ -32,7 +32,7 @@ def build_ir(nodes, edges):
 
     ir.edges = edges
 
-    print(f"✔ IR NODES: {len(ir.nodes)}")
-    print(f"✔ IR EDGES: {len(ir.edges)}")
+    print(f"? IR NODES: {len(ir.nodes)}")
+    print(f"? IR EDGES: {len(ir.edges)}")
 
     return ir

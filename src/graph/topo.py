@@ -30,7 +30,7 @@ def topo(nodes, edges):
             if indeg[nxt] == 0:
                 q.append(nxt)
 
-    # 🔥 safety: append missing nodes
+    # ? safety: append missing nodes
     for n in all_nodes:
         if n not in order:
             order.append(n)

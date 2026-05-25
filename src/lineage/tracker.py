@@ -1,10 +1,10 @@
 def build_lineage(nodes, edges):
 
-    print("🧬 LINEAGE TRACE")
+    print("? LINEAGE TRACE")
 
     lineage = {}
 
-    # ✅ correcto: src -> dst
+    # [ok] correcto: src -> dst
     for src, dst in edges:
 
         if dst not in lineage:
@@ -13,6 +13,6 @@ def build_lineage(nodes, edges):
         lineage[dst].append(src)
 
     for k, v in lineage.items():
-        print(f"🔗 {k} <- {v}")
+        print(f"[~] {k} <- {v}")
 
     return lineage

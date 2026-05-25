@@ -47,12 +47,12 @@ def normalize_edges(edges):
         s = clean_name(s)
         d = clean_name(d)
 
-        # 🔥 FIX CLAVE
+        # ? FIX CLAVE
         if not s or not d:
             continue
 
         if s == d:
-            continue  # ❌ elimina ciclos tipo A -> A
+            continue  # ? elimina ciclos tipo A -> A
 
         normalized.append((s, d))
 

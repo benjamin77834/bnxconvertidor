@@ -10,7 +10,7 @@ class DAG:
     def __init__(self):
         self.nodes = {}
         self.edges = []
-        self.lineage = {}   # 🔥 FIX ADDED
+        self.lineage = {}   # ? FIX ADDED
 
     def add_node(self, node):
         self.nodes[node.name] = node

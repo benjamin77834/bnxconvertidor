@@ -43,7 +43,7 @@ def parse_cobol(path):
 
 
 def _parse_file_section(lines):
-    """Extract SELECT ... ASSIGN TO statements → source/sink files."""
+    """Extract SELECT ... ASSIGN TO statements ? source/sink files."""
     files = {}
     for line in lines:
         m = re.match(r"\s+SELECT\s+([\w-]+)\s+ASSIGN\s+TO\s+'(\w+)'", line, re.I)
@@ -55,7 +55,7 @@ def _parse_file_section(lines):
 
 
 def _parse_fields(lines):
-    """Extract FD + 05 level fields → schema per file. Handles COMP-3, COMP, FILLER."""
+    """Extract FD + 05 level fields ? schema per file. Handles COMP-3, COMP, FILLER."""
     schemas = {}
     current_fd = None
 
@@ -88,7 +88,7 @@ def _pic_to_type(pic):
     """Convert COBOL PIC to simple type. Handles COMP-3 (packed), COMP (binary), REDEFINES."""
     pic = pic.upper().strip()
 
-    # COMP-3 (packed decimal) — always numeric
+    # COMP-3 (packed decimal) ? always numeric
     if "COMP-3" in pic:
         if "V" in pic:
             return "decimal"  # packed decimal with decimals
@@ -111,7 +111,7 @@ def _pic_to_type(pic):
 
 
 def _parse_procedures(lines):
-    """Extract PERFORM statements → processing steps."""
+    """Extract PERFORM statements ? processing steps."""
     procs = []
     for line in lines:
         m = re.match(r"\s+PERFORM\s+([\w-]+)", line, re.I)
@@ -121,7 +121,7 @@ def _parse_procedures(lines):
 
 
 def _parse_filters(lines):
-    """Extract IF conditions → WHERE clauses."""
+    """Extract IF conditions ? WHERE clauses."""
     filters = {}
     current_para = None
 
@@ -145,7 +145,7 @@ def _parse_filters(lines):
 
 
 def _parse_joins(lines):
-    """Extract IF field = field patterns → join keys."""
+    """Extract IF field = field patterns ? join keys."""
     joins = {}
     current_para = None
 
@@ -167,7 +167,7 @@ def _parse_joins(lines):
 
 
 def _parse_computes(lines):
-    """Extract ADD/COMPUTE statements → aggregation logic."""
+    """Extract ADD/COMPUTE statements ? aggregation logic."""
     computes = {}
     current_para = None
 
@@ -257,7 +257,7 @@ def cobol_to_graph(parsed):
         for f in input_list:
             mp_lines.append(f"Clean_{f} -> {proc_nodes[0]}")
 
-        # Chain process nodes — JOINs get 2 parents (prev + a clean source)
+        # Chain process nodes ? JOINs get 2 parents (prev + a clean source)
         clean_idx = 0
         for i in range(len(proc_nodes) - 1):
             mp_lines.append(f"{proc_nodes[i]} -> {proc_nodes[i+1]}")

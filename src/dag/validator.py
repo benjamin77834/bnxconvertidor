@@ -10,4 +10,4 @@ def validate_dag(nodes, edges):
         if d not in node_names:
             raise Exception(f"Missing target: {d}")
 
-    print("✅ DAG VALID")
+    print("[ok] DAG VALID")

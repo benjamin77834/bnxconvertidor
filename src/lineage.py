@@ -1,6 +1,6 @@
 def build_lineage(dag):
 
-    print("🧬 Building lineage...")
+    print("? Building lineage...")
 
     lineage = {}
 

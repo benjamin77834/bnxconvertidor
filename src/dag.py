@@ -34,6 +34,6 @@ def topological_sort(dag):
                 q.append(neigh)
 
     if len(order) != len(nodes):
-        raise Exception("❌ Cycle detected in DAG")
+        raise Exception("? Cycle detected in DAG")
 
     return order

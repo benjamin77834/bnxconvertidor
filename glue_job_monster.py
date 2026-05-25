@@ -1,6 +1,6 @@
 """
-🚀 BNX V54 GENERATED GLUE JOB
-📅 Generated at: 2026-03-26 17:22:20.135879
+? BNX V54 GENERATED GLUE JOB
+? Generated at: 2026-03-26 17:22:20.135879
 """
 
 from awsglue.context import GlueContext
@@ -11,400 +11,400 @@ sc = SparkContext()
 glueContext = GlueContext(sc)
 spark = glueContext.spark_session
 
-print("🚀 BNX Glue Job V54 Started")
+print("? BNX Glue Job V54 Started")
 
 # =========================
 # DAG EXECUTION V54
 # =========================
 
-# 🟢 SOURCE: RawOrders
+# ? SOURCE: RawOrders
 RawOrders_df = spark.read.format("parquet").load("s3://bnx/raw/raworders")
-print("📂 SOURCE: RawOrders")
+print("? SOURCE: RawOrders")
 
-# 🟢 SOURCE: RawCustomers
+# ? SOURCE: RawCustomers
 RawCustomers_df = spark.read.format("parquet").load("s3://bnx/raw/rawcustomers")
-print("📂 SOURCE: RawCustomers")
+print("? SOURCE: RawCustomers")
 
-# 🟢 SOURCE: RawProducts
+# ? SOURCE: RawProducts
 RawProducts_df = spark.read.format("parquet").load("s3://bnx/raw/rawproducts")
-print("📂 SOURCE: RawProducts")
+print("? SOURCE: RawProducts")
 
-# 🟢 SOURCE: RawPayments
+# ? SOURCE: RawPayments
 RawPayments_df = spark.read.format("parquet").load("s3://bnx/raw/rawpayments")
-print("📂 SOURCE: RawPayments")
+print("? SOURCE: RawPayments")
 
-# 🟢 SOURCE: RawReturns
+# ? SOURCE: RawReturns
 RawReturns_df = spark.read.format("parquet").load("s3://bnx/raw/rawreturns")
-print("📂 SOURCE: RawReturns")
+print("? SOURCE: RawReturns")
 
-# 🟢 SOURCE: RawCampaigns
+# ? SOURCE: RawCampaigns
 RawCampaigns_df = spark.read.format("parquet").load("s3://bnx/raw/rawcampaigns")
-print("📂 SOURCE: RawCampaigns")
+print("? SOURCE: RawCampaigns")
 
-# 🟢 SOURCE: RawInventory
+# ? SOURCE: RawInventory
 RawInventory_df = spark.read.format("parquet").load("s3://bnx/raw/rawinventory")
-print("📂 SOURCE: RawInventory")
+print("? SOURCE: RawInventory")
 
-# 🟢 SOURCE: RawReviews
+# ? SOURCE: RawReviews
 RawReviews_df = spark.read.format("parquet").load("s3://bnx/raw/rawreviews")
-print("📂 SOURCE: RawReviews")
+print("? SOURCE: RawReviews")
 
-# 🟢 SOURCE: RawShipments
+# ? SOURCE: RawShipments
 RawShipments_df = spark.read.format("parquet").load("s3://bnx/raw/rawshipments")
-print("📂 SOURCE: RawShipments")
+print("? SOURCE: RawShipments")
 
-# 🟢 SOURCE: RawSuppliers
+# ? SOURCE: RawSuppliers
 RawSuppliers_df = spark.read.format("parquet").load("s3://bnx/raw/rawsuppliers")
-print("📂 SOURCE: RawSuppliers")
+print("? SOURCE: RawSuppliers")
 
-# 🟢 SOURCE: RawStores
+# ? SOURCE: RawStores
 RawStores_df = spark.read.format("parquet").load("s3://bnx/raw/rawstores")
-print("📂 SOURCE: RawStores")
+print("? SOURCE: RawStores")
 
-# 🟢 SOURCE: RawEmployees
+# ? SOURCE: RawEmployees
 RawEmployees_df = spark.read.format("parquet").load("s3://bnx/raw/rawemployees")
-print("📂 SOURCE: RawEmployees")
+print("? SOURCE: RawEmployees")
 
-# 🟢 SOURCE: RawWebEvents
+# ? SOURCE: RawWebEvents
 RawWebEvents_df = spark.read.format("parquet").load("s3://bnx/raw/rawwebevents")
-print("📂 SOURCE: RawWebEvents")
+print("? SOURCE: RawWebEvents")
 
-# 🟢 SOURCE: RawAppEvents
+# ? SOURCE: RawAppEvents
 RawAppEvents_df = spark.read.format("parquet").load("s3://bnx/raw/rawappevents")
-print("📂 SOURCE: RawAppEvents")
+print("? SOURCE: RawAppEvents")
 
-# 🟢 SOURCE: RawSupportTickets
+# ? SOURCE: RawSupportTickets
 RawSupportTickets_df = spark.read.format("parquet").load("s3://bnx/raw/rawsupporttickets")
-print("📂 SOURCE: RawSupportTickets")
+print("? SOURCE: RawSupportTickets")
 
-# 🟢 SOURCE: RawFraudSignals
+# ? SOURCE: RawFraudSignals
 RawFraudSignals_df = spark.read.format("parquet").load("s3://bnx/raw/rawfraudsignals")
-print("📂 SOURCE: RawFraudSignals")
+print("? SOURCE: RawFraudSignals")
 
-# 🔹 TRANSFORM: CleanOrders
+# ? TRANSFORM: CleanOrders
 CleanOrders_df = RawOrders_df.selectExpr("order_id", "customer_id", "product_id", "payment_id", "amount", "status", "order_date", "store_id").where("order_id IS NOT NULL AND amount > 0")
-print("🔄 TRANSFORM: CleanOrders")
+print("? TRANSFORM: CleanOrders")
 
-# 🔹 TRANSFORM: CleanCustomers
+# ? TRANSFORM: CleanCustomers
 CleanCustomers_df = RawCustomers_df.selectExpr("customer_id", "name", "email", "region", "segment", "created_at").where("customer_id IS NOT NULL")
-print("🔄 TRANSFORM: CleanCustomers")
+print("? TRANSFORM: CleanCustomers")
 
-# 🔹 TRANSFORM: CleanProducts
+# ? TRANSFORM: CleanProducts
 CleanProducts_df = RawProducts_df.selectExpr("product_id", "name", "category", "price", "supplier_id", "stock").where("product_id IS NOT NULL AND price > 0")
-print("🔄 TRANSFORM: CleanProducts")
+print("? TRANSFORM: CleanProducts")
 
-# 🔹 TRANSFORM: CleanPayments
+# ? TRANSFORM: CleanPayments
 CleanPayments_df = RawPayments_df.selectExpr("payment_id", "customer_id", "order_id", "amount", "method", "payment_date", "confirmed").where("confirmed = true")
-print("🔄 TRANSFORM: CleanPayments")
+print("? TRANSFORM: CleanPayments")
 
-# 🔹 TRANSFORM: CleanReturns
+# ? TRANSFORM: CleanReturns
 CleanReturns_df = RawReturns_df.selectExpr("return_id", "order_id", "product_id", "customer_id", "reason", "return_date").where("return_id IS NOT NULL")
-print("🔄 TRANSFORM: CleanReturns")
+print("? TRANSFORM: CleanReturns")
 
-# 🔹 TRANSFORM: CleanCampaigns
+# ? TRANSFORM: CleanCampaigns
 CleanCampaigns_df = RawCampaigns_df.selectExpr("campaign_id", "customer_id", "region", "active", "start_date", "end_date", "budget").where("campaign_id IS NOT NULL")
-print("🔄 TRANSFORM: CleanCampaigns")
+print("? TRANSFORM: CleanCampaigns")
 
-# 🔹 TRANSFORM: CleanInventory
+# ? TRANSFORM: CleanInventory
 CleanInventory_df = RawInventory_df.selectExpr("product_id", "warehouse_id", "stock", "reorder_level", "last_updated").where("product_id IS NOT NULL")
-print("🔄 TRANSFORM: CleanInventory")
+print("? TRANSFORM: CleanInventory")
 
-# 🔹 TRANSFORM: CleanReviews
+# ? TRANSFORM: CleanReviews
 CleanReviews_df = RawReviews_df.selectExpr("review_id", "product_id", "customer_id", "rating", "review_date").where("rating IS NOT NULL")
-print("🔄 TRANSFORM: CleanReviews")
+print("? TRANSFORM: CleanReviews")
 
-# 🔹 TRANSFORM: CleanShipments
+# ? TRANSFORM: CleanShipments
 CleanShipments_df = RawShipments_df.selectExpr("shipment_id", "order_id", "carrier", "shipped_date", "delivered_date", "status").where("shipment_id IS NOT NULL")
-print("🔄 TRANSFORM: CleanShipments")
+print("? TRANSFORM: CleanShipments")
 
-# 🔹 TRANSFORM: CleanSuppliers
+# ? TRANSFORM: CleanSuppliers
 CleanSuppliers_df = RawSuppliers_df.selectExpr("supplier_id", "name", "country", "rating", "lead_time_days").where("supplier_id IS NOT NULL")
-print("🔄 TRANSFORM: CleanSuppliers")
+print("? TRANSFORM: CleanSuppliers")
 
-# 🔹 TRANSFORM: CleanStores
+# ? TRANSFORM: CleanStores
 CleanStores_df = RawStores_df.selectExpr("store_id", "name", "region", "city", "manager_id").where("store_id IS NOT NULL")
-print("🔄 TRANSFORM: CleanStores")
+print("? TRANSFORM: CleanStores")
 
-# 🔹 TRANSFORM: CleanEmployees
+# ? TRANSFORM: CleanEmployees
 CleanEmployees_df = RawEmployees_df.selectExpr("employee_id", "name", "store_id", "role", "hire_date").where("employee_id IS NOT NULL")
-print("🔄 TRANSFORM: CleanEmployees")
+print("? TRANSFORM: CleanEmployees")
 
-# 🔹 TRANSFORM: CleanWebEvents
+# ? TRANSFORM: CleanWebEvents
 CleanWebEvents_df = RawWebEvents_df.selectExpr("event_id", "customer_id", "page", "action", "event_date").where("event_id IS NOT NULL")
-print("🔄 TRANSFORM: CleanWebEvents")
+print("? TRANSFORM: CleanWebEvents")
 
-# 🔹 TRANSFORM: CleanAppEvents
+# ? TRANSFORM: CleanAppEvents
 CleanAppEvents_df = RawAppEvents_df.selectExpr("event_id", "customer_id", "screen", "action", "event_date").where("event_id IS NOT NULL")
-print("🔄 TRANSFORM: CleanAppEvents")
+print("? TRANSFORM: CleanAppEvents")
 
-# 🔹 TRANSFORM: CleanSupportTickets
+# ? TRANSFORM: CleanSupportTickets
 CleanSupportTickets_df = RawSupportTickets_df.selectExpr("ticket_id", "customer_id", "issue_type", "status", "created_at", "resolved_at").where("ticket_id IS NOT NULL")
-print("🔄 TRANSFORM: CleanSupportTickets")
+print("? TRANSFORM: CleanSupportTickets")
 
-# 🔹 TRANSFORM: CleanFraudSignals
+# ? TRANSFORM: CleanFraudSignals
 CleanFraudSignals_df = RawFraudSignals_df.selectExpr("signal_id", "customer_id", "order_id", "score", "flagged", "detected_at").where("signal_id IS NOT NULL")
-print("🔄 TRANSFORM: CleanFraudSignals")
+print("? TRANSFORM: CleanFraudSignals")
 
-# 🔹 TRANSFORM: FilterActiveCustomers
+# ? TRANSFORM: FilterActiveCustomers
 FilterActiveCustomers_df = CleanCustomers_df.selectExpr("*").where("segment != 'inactive'")
-print("🔄 TRANSFORM: FilterActiveCustomers")
+print("? TRANSFORM: FilterActiveCustomers")
 
-# 🔹 TRANSFORM: CustomerSegment
+# ? TRANSFORM: CustomerSegment
 CustomerSegment_df = FilterActiveCustomers_df.selectExpr("*").where("segment IN ('premium', 'standard', 'new')")
-print("🔄 TRANSFORM: CustomerSegment")
+print("? TRANSFORM: CustomerSegment")
 
-# 🔹 TRANSFORM: CustomerLifetimeValue
+# ? TRANSFORM: CustomerLifetimeValue
 CustomerLifetimeValue_df = CustomerSegment_df.groupBy("customer_id").agg(sum("amount").alias("ltv"), count("order_id").alias("total_orders")).where("ltv > 0")
-print("🔄 TRANSFORM: CustomerLifetimeValue")
+print("? TRANSFORM: CustomerLifetimeValue")
 
-# 🔹 TRANSFORM: CustomerChurnScore
+# ? TRANSFORM: CustomerChurnScore
 CustomerChurnScore_df = CustomerSegment_df.groupBy("customer_id").agg(count("ticket_id").alias("support_count"), max("created_at").alias("last_contact")).where("support_count >= 0")
-print("🔄 TRANSFORM: CustomerChurnScore")
+print("? TRANSFORM: CustomerChurnScore")
 
-# 🔗 JOIN: CustomerSupportHistory
+# ? JOIN: CustomerSupportHistory
 CustomerSupportHistory_df = CleanSupportTickets_df.join(CustomerSegment_df, on="customer_id", how="left")
-print("🔗 JOIN: CustomerSupportHistory")
+print("? JOIN: CustomerSupportHistory")
 
-# 🔗 JOIN: CustomerWebBehavior
+# ? JOIN: CustomerWebBehavior
 CustomerWebBehavior_df = CleanWebEvents_df.join(CustomerSegment_df, on="customer_id", how="left")
-print("🔗 JOIN: CustomerWebBehavior")
+print("? JOIN: CustomerWebBehavior")
 
-# 🔗 JOIN: CustomerAppBehavior
+# ? JOIN: CustomerAppBehavior
 CustomerAppBehavior_df = CleanAppEvents_df.join(CustomerSegment_df, on="customer_id", how="left")
-print("🔗 JOIN: CustomerAppBehavior")
+print("? JOIN: CustomerAppBehavior")
 
-# 🔗 JOIN: CustomerProfile
+# ? JOIN: CustomerProfile
 CustomerProfile_df = CustomerLifetimeValue_df.join(CustomerChurnScore_df, on="customer_id", how="left")
 CustomerProfile_df = CustomerProfile_df.join(CustomerSupportHistory_df, on="customer_id", how="left")
 CustomerProfile_df = CustomerProfile_df.join(CustomerWebBehavior_df, on="customer_id", how="left")
 CustomerProfile_df = CustomerProfile_df.join(CustomerAppBehavior_df, on="customer_id", how="left")
-print("🔗 JOIN: CustomerProfile")
+print("? JOIN: CustomerProfile")
 
-# 🔹 TRANSFORM: FilterPaidOrders
+# ? TRANSFORM: FilterPaidOrders
 FilterPaidOrders_df = CleanOrders_df.selectExpr("*").where("status = 'paid'")
-print("🔄 TRANSFORM: FilterPaidOrders")
+print("? TRANSFORM: FilterPaidOrders")
 
-# 🔹 TRANSFORM: OrderTotals
+# ? TRANSFORM: OrderTotals
 OrderTotals_df = FilterPaidOrders_df.groupBy("customer_id", "product_id", "order_id", "store_id").agg(sum("amount").alias("total_spent"), count("order_id").alias("order_count")).where("total_spent > 0")
-print("🔄 TRANSFORM: OrderTotals")
+print("? TRANSFORM: OrderTotals")
 
-# 🔹 TRANSFORM: OrderTxCount
+# ? TRANSFORM: OrderTxCount
 OrderTxCount_df = FilterPaidOrders_df.groupBy("customer_id").agg(count("order_id").alias("tx_count"), max("order_date").alias("last_order_date"))
-print("🔄 TRANSFORM: OrderTxCount")
+print("? TRANSFORM: OrderTxCount")
 
-# 🔗 JOIN: OrderWithCustomer
+# ? JOIN: OrderWithCustomer
 OrderWithCustomer_df = OrderTotals_df.join(CustomerProfile_df, on="customer_id", how="inner")
-print("🔗 JOIN: OrderWithCustomer")
+print("? JOIN: OrderWithCustomer")
 
-# 🔗 JOIN: OrderWithProduct
+# ? JOIN: OrderWithProduct
 OrderWithProduct_df = OrderWithCustomer_df.join(CleanProducts_df, on="product_id", how="left")
-print("🔗 JOIN: OrderWithProduct")
+print("? JOIN: OrderWithProduct")
 
-# 🔗 JOIN: OrderWithPayment
+# ? JOIN: OrderWithPayment
 OrderWithPayment_df = OrderWithProduct_df.join(CleanPayments_df, on="order_id", how="left")
-print("🔗 JOIN: OrderWithPayment")
+print("? JOIN: OrderWithPayment")
 
-# 🔗 JOIN: OrderWithShipment
+# ? JOIN: OrderWithShipment
 OrderWithShipment_df = OrderWithPayment_df.join(CleanShipments_df, on="order_id", how="left")
-print("🔗 JOIN: OrderWithShipment")
+print("? JOIN: OrderWithShipment")
 
-# 🔗 JOIN: OrderFraudCheck
+# ? JOIN: OrderFraudCheck
 OrderFraudCheck_df = OrderWithShipment_df.join(CleanFraudSignals_df, on="order_id", how="left")
-print("🔗 JOIN: OrderFraudCheck")
+print("? JOIN: OrderFraudCheck")
 
-# 🔗 JOIN: OrderEnriched
+# ? JOIN: OrderEnriched
 OrderEnriched_df = OrderFraudCheck_df.join(OrderTxCount_df, on="customer_id", how="left")
-print("🔗 JOIN: OrderEnriched")
+print("? JOIN: OrderEnriched")
 
-# 🔹 TRANSFORM: FilterActiveProducts
+# ? TRANSFORM: FilterActiveProducts
 FilterActiveProducts_df = CleanProducts_df.selectExpr("*").where("stock > 0")
-print("🔄 TRANSFORM: FilterActiveProducts")
+print("? TRANSFORM: FilterActiveProducts")
 
-# 🔹 TRANSFORM: ProductRevenue
+# ? TRANSFORM: ProductRevenue
 ProductRevenue_df = FilterPaidOrders_df.groupBy("product_id", "supplier_id").agg(sum("amount").alias("revenue"), count("order_id").alias("units_sold")).where("revenue > 0")
-print("🔄 TRANSFORM: ProductRevenue")
+print("? TRANSFORM: ProductRevenue")
 
-# 🔹 TRANSFORM: FilterReturns
+# ? TRANSFORM: FilterReturns
 FilterReturns_df = CleanReturns_df.selectExpr("return_id", "order_id", "product_id", "customer_id", "reason", "return_date").where("return_date IS NOT NULL")
-print("🔄 TRANSFORM: FilterReturns")
+print("? TRANSFORM: FilterReturns")
 
-# 🔹 TRANSFORM: ProductReturnRate
+# ? TRANSFORM: ProductReturnRate
 ProductReturnRate_df = FilterReturns_df.groupBy("product_id").agg(count("return_id").alias("return_count")).where("return_count >= 0")
-print("🔄 TRANSFORM: ProductReturnRate")
+print("? TRANSFORM: ProductReturnRate")
 
-# 🔗 JOIN: ProductRating
+# ? JOIN: ProductRating
 ProductRating_df = CleanReviews_df.join(ProductRevenue_df, on="product_id", how="left")
-print("🔗 JOIN: ProductRating")
+print("? JOIN: ProductRating")
 
-# 🔗 JOIN: ProductWithSupplier
+# ? JOIN: ProductWithSupplier
 ProductWithSupplier_df = ProductRating_df.join(CleanSuppliers_df, on="supplier_id", how="left")
-print("🔗 JOIN: ProductWithSupplier")
+print("? JOIN: ProductWithSupplier")
 
-# 🔗 JOIN: ProductWithInventory
+# ? JOIN: ProductWithInventory
 ProductWithInventory_df = ProductWithSupplier_df.join(CleanInventory_df, on="product_id", how="left")
-print("🔗 JOIN: ProductWithInventory")
+print("? JOIN: ProductWithInventory")
 
-# 🔹 TRANSFORM: TopProducts
+# ? TRANSFORM: TopProducts
 TopProducts_df = ProductWithInventory_df.selectExpr("*").where("units_sold > 10")
-print("🔄 TRANSFORM: TopProducts")
+print("? TRANSFORM: TopProducts")
 
-# 🔹 TRANSFORM: LowStockAlert
+# ? TRANSFORM: LowStockAlert
 LowStockAlert_df = ProductWithInventory_df.selectExpr("*").where("stock < reorder_level")
-print("🔄 TRANSFORM: LowStockAlert")
+print("? TRANSFORM: LowStockAlert")
 
-# 🔹 TRANSFORM: ReturnRate
+# ? TRANSFORM: ReturnRate
 ReturnRate_df = FilterReturns_df.groupBy("customer_id").agg(count("return_id").alias("return_count")).where("return_count > 0")
-print("🔄 TRANSFORM: ReturnRate")
+print("? TRANSFORM: ReturnRate")
 
-# 🔗 JOIN: ReturnByProduct
+# ? JOIN: ReturnByProduct
 ReturnByProduct_df = FilterReturns_df.join(CleanProducts_df, on="product_id", how="left")
-print("🔗 JOIN: ReturnByProduct")
+print("? JOIN: ReturnByProduct")
 
-# 🔗 JOIN: ReturnByRegion
+# ? JOIN: ReturnByRegion
 ReturnByRegion_df = ReturnByProduct_df.join(CleanOrders_df, on="order_id", how="left")
-print("🔗 JOIN: ReturnByRegion")
+print("? JOIN: ReturnByRegion")
 
-# 🔹 TRANSFORM: HighReturnCustomers
+# ? TRANSFORM: HighReturnCustomers
 HighReturnCustomers_df = ReturnRate_df.selectExpr("*").where("return_count > 3")
-print("🔄 TRANSFORM: HighReturnCustomers")
+print("? TRANSFORM: HighReturnCustomers")
 
-# 🔗 JOIN: ReturnFraudFlag
+# ? JOIN: ReturnFraudFlag
 ReturnFraudFlag_df = ReturnByProduct_df.join(CleanFraudSignals_df, on="order_id", how="left")
-print("🔗 JOIN: ReturnFraudFlag")
+print("? JOIN: ReturnFraudFlag")
 
-# 🔹 TRANSFORM: FilterActiveCampaigns
+# ? TRANSFORM: FilterActiveCampaigns
 FilterActiveCampaigns_df = CleanCampaigns_df.selectExpr("*").where("active = true")
-print("🔄 TRANSFORM: FilterActiveCampaigns")
+print("? TRANSFORM: FilterActiveCampaigns")
 
-# 🔗 JOIN: CampaignWithCustomer
+# ? JOIN: CampaignWithCustomer
 CampaignWithCustomer_df = FilterActiveCampaigns_df.join(CustomerProfile_df, on="customer_id", how="inner")
-print("🔗 JOIN: CampaignWithCustomer")
+print("? JOIN: CampaignWithCustomer")
 
-# 🔗 JOIN: CampaignConversion
+# ? JOIN: CampaignConversion
 CampaignConversion_df = CampaignWithCustomer_df.join(OrderEnriched_df, on="customer_id", how="left")
-print("🔗 JOIN: CampaignConversion")
+print("? JOIN: CampaignConversion")
 
-# 🔹 TRANSFORM: CampaignROI
+# ? TRANSFORM: CampaignROI
 CampaignROI_df = CampaignConversion_df.groupBy("campaign_id", "region", "customer_id").agg(sum("total_spent").alias("campaign_revenue"), count("customer_id").alias("converted_customers")).where("campaign_revenue > 0")
-print("🔄 TRANSFORM: CampaignROI")
+print("? TRANSFORM: CampaignROI")
 
-# 🔹 TRANSFORM: RegionalCampaignCount
+# ? TRANSFORM: RegionalCampaignCount
 RegionalCampaignCount_df = CampaignConversion_df.groupBy("region").agg(count("campaign_id").alias("campaign_count"), sum("campaign_revenue").alias("regional_revenue"))
-print("🔄 TRANSFORM: RegionalCampaignCount")
+print("? TRANSFORM: RegionalCampaignCount")
 
-# 🔗 JOIN: CampaignFraudFilter
+# ? JOIN: CampaignFraudFilter
 CampaignFraudFilter_df = CampaignROI_df.join(CleanFraudSignals_df, on="customer_id", how="left")
-print("🔗 JOIN: CampaignFraudFilter")
+print("? JOIN: CampaignFraudFilter")
 
-# 🔹 TRANSFORM: ShipmentDelay
+# ? TRANSFORM: ShipmentDelay
 ShipmentDelay_df = CleanShipments_df.selectExpr("*").where("delivered_date > shipped_date AND status = 'delayed'")
-print("🔄 TRANSFORM: ShipmentDelay")
+print("? TRANSFORM: ShipmentDelay")
 
-# 🔹 TRANSFORM: SupplierPerformance
+# ? TRANSFORM: SupplierPerformance
 SupplierPerformance_df = CleanSuppliers_df.groupBy("supplier_id").agg(avg("lead_time_days").alias("avg_lead_time"), count("product_id").alias("product_count")).where("avg_lead_time > 0")
-print("🔄 TRANSFORM: SupplierPerformance")
+print("? TRANSFORM: SupplierPerformance")
 
-# 🔗 JOIN: StoreRevenue
+# ? JOIN: StoreRevenue
 StoreRevenue_df = CleanStores_df.join(OrderEnriched_df, on="store_id", how="left")
-print("🔗 JOIN: StoreRevenue")
+print("? JOIN: StoreRevenue")
 
-# 🔗 JOIN: EmployeeSales
+# ? JOIN: EmployeeSales
 EmployeeSales_df = CleanEmployees_df.join(OrderEnriched_df, on="store_id", how="left")
-print("🔗 JOIN: EmployeeSales")
+print("? JOIN: EmployeeSales")
 
-# 🔗 JOIN: OperationsReport
+# ? JOIN: OperationsReport
 OperationsReport_df = StoreRevenue_df.join(EmployeeSales_df, on="store_id", how="left")
-print("🔗 JOIN: OperationsReport")
+print("? JOIN: OperationsReport")
 
-# 🔗 JOIN: FullOrderBase
+# ? JOIN: FullOrderBase
 FullOrderBase_df = OrderEnriched_df.join(ReturnRate_df, on="customer_id", how="left")
-print("🔗 JOIN: FullOrderBase")
+print("? JOIN: FullOrderBase")
 
-# 🔗 JOIN: EnrichWithReturns
+# ? JOIN: EnrichWithReturns
 EnrichWithReturns_df = FullOrderBase_df.join(HighReturnCustomers_df, on="customer_id", how="left")
 EnrichWithReturns_df = EnrichWithReturns_df.join(ReturnFraudFlag_df, on="customer_id", how="left")
-print("🔗 JOIN: EnrichWithReturns")
+print("? JOIN: EnrichWithReturns")
 
-# 🔗 JOIN: EnrichWithCampaign
+# ? JOIN: EnrichWithCampaign
 EnrichWithCampaign_df = EnrichWithReturns_df.join(CampaignFraudFilter_df, on="customer_id", how="left")
-print("🔗 JOIN: EnrichWithCampaign")
+print("? JOIN: EnrichWithCampaign")
 
-# 🔗 JOIN: EnrichWithOperations
+# ? JOIN: EnrichWithOperations
 EnrichWithOperations_df = EnrichWithCampaign_df.join(OperationsReport_df, on="order_id", how="left")
-print("🔗 JOIN: EnrichWithOperations")
+print("? JOIN: EnrichWithOperations")
 
-# 🔗 JOIN: EnrichWithFraud
+# ? JOIN: EnrichWithFraud
 EnrichWithFraud_df = EnrichWithOperations_df.join(CleanFraudSignals_df, on="customer_id", how="left")
-print("🔗 JOIN: EnrichWithFraud")
+print("? JOIN: EnrichWithFraud")
 
-# 🔹 TRANSFORM: FlagHighValue
+# ? TRANSFORM: FlagHighValue
 FlagHighValue_df = EnrichWithFraud_df.selectExpr("*").where("total_spent > 5000")
-print("🔄 TRANSFORM: FlagHighValue")
+print("? TRANSFORM: FlagHighValue")
 
-# 🔹 TRANSFORM: FlagChurned
+# ? TRANSFORM: FlagChurned
 FlagChurned_df = EnrichWithFraud_df.selectExpr("*").where("order_count < 2 AND return_count > 2")
-print("🔄 TRANSFORM: FlagChurned")
+print("? TRANSFORM: FlagChurned")
 
-# 🔹 TRANSFORM: FlagAtRisk
+# ? TRANSFORM: FlagAtRisk
 FlagAtRisk_df = EnrichWithFraud_df.selectExpr("*").where("total_spent < 500 AND tx_count < 3")
-print("🔄 TRANSFORM: FlagAtRisk")
+print("? TRANSFORM: FlagAtRisk")
 
-# 🔹 TRANSFORM: FlagFraud
+# ? TRANSFORM: FlagFraud
 FlagFraud_df = EnrichWithFraud_df.selectExpr("*").where("score > 0.8 AND flagged = true")
-print("🔄 TRANSFORM: FlagFraud")
+print("? TRANSFORM: FlagFraud")
 
-# 🔗 JOIN: MasterReport
+# ? JOIN: MasterReport
 MasterReport_df = FlagHighValue_df.join(FlagChurned_df, on="customer_id", how="left")
 MasterReport_df = MasterReport_df.join(FlagAtRisk_df, on="customer_id", how="left")
 MasterReport_df = MasterReport_df.join(FlagFraud_df, on="customer_id", how="left")
-print("🔗 JOIN: MasterReport")
+print("? JOIN: MasterReport")
 
-# 🏁 SINK: Write_MasterReport
+# ? SINK: Write_MasterReport
 MasterReport_df.write.mode("overwrite").format("parquet").save("s3://bnx/output/write_masterreport")
-print("💾 SINK: Write_MasterReport")
+print("? SINK: Write_MasterReport")
 
-# 🏁 SINK: Write_HighValue
+# ? SINK: Write_HighValue
 FlagHighValue_df.write.mode("overwrite").format("parquet").save("s3://bnx/output/write_highvalue")
-print("💾 SINK: Write_HighValue")
+print("? SINK: Write_HighValue")
 
-# 🏁 SINK: Write_Churned
+# ? SINK: Write_Churned
 FlagChurned_df.write.mode("overwrite").format("parquet").save("s3://bnx/output/write_churned")
-print("💾 SINK: Write_Churned")
+print("? SINK: Write_Churned")
 
-# 🏁 SINK: Write_AtRisk
+# ? SINK: Write_AtRisk
 FlagAtRisk_df.write.mode("overwrite").format("parquet").save("s3://bnx/output/write_atrisk")
-print("💾 SINK: Write_AtRisk")
+print("? SINK: Write_AtRisk")
 
-# 🏁 SINK: Write_FraudAlerts
+# ? SINK: Write_FraudAlerts
 FlagFraud_df.write.mode("overwrite").format("parquet").save("s3://bnx/output/write_fraudalerts")
-print("💾 SINK: Write_FraudAlerts")
+print("? SINK: Write_FraudAlerts")
 
-# 🏁 SINK: Write_TopProducts
+# ? SINK: Write_TopProducts
 TopProducts_df.write.mode("overwrite").format("parquet").save("s3://bnx/output/write_topproducts")
-print("💾 SINK: Write_TopProducts")
+print("? SINK: Write_TopProducts")
 
-# 🏁 SINK: Write_LowStock
+# ? SINK: Write_LowStock
 LowStockAlert_df.write.mode("overwrite").format("parquet").save("s3://bnx/output/write_lowstock")
-print("💾 SINK: Write_LowStock")
+print("? SINK: Write_LowStock")
 
-# 🏁 SINK: Write_ReturnAlerts
+# ? SINK: Write_ReturnAlerts
 ReturnByProduct_df.write.mode("overwrite").format("parquet").save("s3://bnx/output/write_returnalerts")
-print("💾 SINK: Write_ReturnAlerts")
+print("? SINK: Write_ReturnAlerts")
 
-# 🏁 SINK: Write_CampaignReport
+# ? SINK: Write_CampaignReport
 CampaignFraudFilter_df.write.mode("overwrite").format("parquet").save("s3://bnx/output/write_campaignreport")
-print("💾 SINK: Write_CampaignReport")
+print("? SINK: Write_CampaignReport")
 
-# 🏁 SINK: Write_OperationsReport
+# ? SINK: Write_OperationsReport
 OperationsReport_df.write.mode("overwrite").format("parquet").save("s3://bnx/output/write_operationsreport")
-print("💾 SINK: Write_OperationsReport")
+print("? SINK: Write_OperationsReport")
 
-# 🏁 SINK: Write_ShipmentDelay
+# ? SINK: Write_ShipmentDelay
 ShipmentDelay_df.write.mode("overwrite").format("parquet").save("s3://bnx/output/write_shipmentdelay")
-print("💾 SINK: Write_ShipmentDelay")
+print("? SINK: Write_ShipmentDelay")
 
-# 🏁 SINK: Write_SupplierPerformance
+# ? SINK: Write_SupplierPerformance
 SupplierPerformance_df.write.mode("overwrite").format("parquet").save("s3://bnx/output/write_supplierperformance")
-print("💾 SINK: Write_SupplierPerformance")
+print("? SINK: Write_SupplierPerformance")
 
-print("✅ BNX Glue Job V54 Finished")
+print("? BNX Glue Job V54 Finished")

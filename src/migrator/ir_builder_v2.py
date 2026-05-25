@@ -140,7 +140,7 @@ class IRBuilderV2:
         self.graph.add_edge(r, output_name)
 
     # -------------------------
-    # VALIDATION (CRÍTICO)
+    # VALIDATION (CR?TICO)
     # -------------------------
     def validate(self):
         # 1. no duplicates already handled

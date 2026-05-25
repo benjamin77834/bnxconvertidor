@@ -2,7 +2,7 @@ class SinkResolver:
 
     def resolve(self, graph):
 
-        print("🎯 Resolving sinks...")
+        print("? Resolving sinks...")
 
         outgoing = set()
         incoming = set()

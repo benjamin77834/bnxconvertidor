@@ -1,9 +1,9 @@
 # src/refactor_engine.py
 """
 Refactoring engine for legacy code migration:
-- Spark 2.x → Spark 3.x
-- Python 2.7 → Python 3.11+
-- Glue 2.0 → Glue 4.0
+- Spark 2.x ? Spark 3.x
+- Python 2.7 ? Python 3.11+
+- Glue 2.0 ? Glue 4.0
 
 Applies regex-based transformations for known API changes,
 deprecated patterns, and syntax upgrades.
@@ -11,12 +11,12 @@ deprecated patterns, and syntax upgrades.
 import re
 
 
-# ═══════════════════════════════════════════════════════════════
-# SPARK 2 → SPARK 3 RULES
-# ═══════════════════════════════════════════════════════════════
+# ???????????????????????????????????????????????????????????????
+# SPARK 2 ? SPARK 3 RULES
+# ???????????????????????????????????????????????????????????????
 
 SPARK_RULES = [
-    # SparkContext → SparkSession
+    # SparkContext ? SparkSession
     {
         "name": "SparkContext to SparkSession",
         "pattern": r'sc\s*=\s*SparkContext\(\)',
@@ -26,7 +26,7 @@ SPARK_RULES = [
     {
         "name": "SQLContext deprecated",
         "pattern": r'sqlContext\s*=\s*SQLContext\(sc\)',
-        "replacement": '# SQLContext deprecated in Spark 3 — use SparkSession directly\n# sqlContext = SQLContext(sc)',
+        "replacement": '# SQLContext deprecated in Spark 3 ? use SparkSession directly\n# sqlContext = SQLContext(sc)',
         "desc": "SQLContext fue deprecado en Spark 2.0, removido en 3.x",
     },
     {
@@ -37,32 +37,32 @@ SPARK_RULES = [
     },
     # DataFrame API changes
     {
-        "name": "registerTempTable → createOrReplaceTempView",
+        "name": "registerTempTable ? createOrReplaceTempView",
         "pattern": r'\.registerTempTable\(',
         "replacement": '.createOrReplaceTempView(',
         "desc": "registerTempTable deprecado en Spark 2.0, removido en 3.x",
     },
     {
-        "name": "unionAll → union",
+        "name": "unionAll ? union",
         "pattern": r'\.unionAll\(',
         "replacement": '.union(',
         "desc": "unionAll renombrado a union en Spark 2.0+",
     },
     # Read/Write changes
     {
-        "name": "spark.read.json string → path",
+        "name": "spark.read.json string ? path",
         "pattern": r'sqlContext\.read\.json\(',
         "replacement": 'spark.read.json(',
         "desc": "Usar SparkSession.read en vez de SQLContext.read",
     },
     {
-        "name": "sqlContext.read → spark.read",
+        "name": "sqlContext.read ? spark.read",
         "pattern": r'sqlContext\.read\.',
         "replacement": 'spark.read.',
         "desc": "Migrar de SQLContext a SparkSession",
     },
     {
-        "name": "sqlContext.sql → spark.sql",
+        "name": "sqlContext.sql ? spark.sql",
         "pattern": r'sqlContext\.sql\(',
         "replacement": 'spark.sql(',
         "desc": "Migrar SQL queries a SparkSession",
@@ -71,14 +71,14 @@ SPARK_RULES = [
     {
         "name": "PandasUDFType deprecated",
         "pattern": r'from pyspark\.sql\.functions import PandasUDFType',
-        "replacement": '# PandasUDFType deprecated in Spark 3.0 — use type hints instead',
+        "replacement": '# PandasUDFType deprecated in Spark 3.0 ? use type hints instead',
         "desc": "Spark 3 usa type hints para Pandas UDFs",
     },
     {
         "name": "pandas_udf with PandasUDFType.SCALAR",
         "pattern": r'@pandas_udf\(([^,]+),\s*PandasUDFType\.SCALAR\)',
         "replacement": r'@pandas_udf(\1)',
-        "desc": "Spark 3: pandas_udf infiere el tipo automáticamente",
+        "desc": "Spark 3: pandas_udf infiere el tipo autom?ticamente",
     },
     # Deprecated configs
     {
@@ -92,30 +92,30 @@ SPARK_RULES = [
         "name": "spark.sql.sources.partitionColumnTypeInference.enabled",
         "pattern": r'"spark\.sql\.sources\.partitionColumnTypeInference\.enabled"',
         "replacement": '"spark.sql.sources.partitionColumnTypeInference.enabled"  # Review: behavior changed in Spark 3',
-        "desc": "Partition type inference cambió en Spark 3",
+        "desc": "Partition type inference cambi? en Spark 3",
     },
     # Timestamp changes
     {
         "name": "Timestamp rebase config",
         "pattern": r'(spark\s*=\s*SparkSession\.builder)',
         "replacement": r'\1\n    .config("spark.sql.legacy.timeParserPolicy", "LEGACY")',
-        "desc": "Spark 3 cambió el parsing de timestamps — LEGACY mantiene compatibilidad",
+        "desc": "Spark 3 cambi? el parsing de timestamps ? LEGACY mantiene compatibilidad",
         "once": True,
     },
 ]
 
 
-# ═══════════════════════════════════════════════════════════════
-# PYTHON 2 → PYTHON 3 RULES
-# ═══════════════════════════════════════════════════════════════
+# ???????????????????????????????????????????????????????????????
+# PYTHON 2 ? PYTHON 3 RULES
+# ???????????????????????????????????????????????????????????????
 
 PYTHON_RULES = [
-    # Print statement → function
+    # Print statement ? function
     {
-        "name": "print statement → print()",
+        "name": "print statement ? print()",
         "pattern": r'^(\s*)print\s+(?![\(])(.*?)$',
         "replacement": r'\1print(\2)',
-        "desc": "Python 3: print es función, no statement",
+        "desc": "Python 3: print es funci?n, no statement",
         "multiline": True,
     },
     # Division
@@ -128,7 +128,7 @@ PYTHON_RULES = [
     },
     # Unicode
     {
-        "name": "unicode() → str()",
+        "name": "unicode() ? str()",
         "pattern": r'\bunicode\(',
         "replacement": 'str(',
         "desc": "Python 3: no existe unicode(), todo es str (Unicode por defecto)",
@@ -147,39 +147,39 @@ PYTHON_RULES = [
     },
     # Dict methods
     {
-        "name": ".has_key() → in",
+        "name": ".has_key() ? in",
         "pattern": r'(\w+)\.has_key\(([^)]+)\)',
         "replacement": r'\2 in \1',
         "desc": "Python 3: dict.has_key() removido, usar 'key in dict'",
     },
     {
-        "name": ".iteritems() → .items()",
+        "name": ".iteritems() ? .items()",
         "pattern": r'\.iteritems\(\)',
         "replacement": '.items()',
         "desc": "Python 3: dict.iteritems() removido, .items() retorna view",
     },
     {
-        "name": ".itervalues() → .values()",
+        "name": ".itervalues() ? .values()",
         "pattern": r'\.itervalues\(\)',
         "replacement": '.values()',
         "desc": "Python 3: dict.itervalues() removido",
     },
     {
-        "name": ".iterkeys() → .keys()",
+        "name": ".iterkeys() ? .keys()",
         "pattern": r'\.iterkeys\(\)',
         "replacement": '.keys()',
         "desc": "Python 3: dict.iterkeys() removido",
     },
     # Exceptions
     {
-        "name": "except Exception, e → except Exception as e",
+        "name": "except Exception, e ? except Exception as e",
         "pattern": r'except\s+(\w+)\s*,\s*(\w+)',
         "replacement": r'except \1 as \2',
         "desc": "Python 3: usar 'as' en vez de coma para capturar excepciones",
     },
     # Range
     {
-        "name": "xrange → range",
+        "name": "xrange ? range",
         "pattern": r'\bxrange\(',
         "replacement": 'range(',
         "desc": "Python 3: xrange removido, range() es lazy por defecto",
@@ -193,14 +193,14 @@ PYTHON_RULES = [
     },
     # Raw input
     {
-        "name": "raw_input → input",
+        "name": "raw_input ? input",
         "pattern": r'\braw_input\(',
         "replacement": 'input(',
         "desc": "Python 3: raw_input() renombrado a input()",
     },
     # Long type
     {
-        "name": "long → int",
+        "name": "long ? int",
         "pattern": r'\blong\(',
         "replacement": 'int(',
         "desc": "Python 3: long removido, int maneja enteros arbitrarios",
@@ -223,13 +223,13 @@ PYTHON_RULES = [
 ]
 
 
-# ═══════════════════════════════════════════════════════════════
-# GLUE 2.0 → GLUE 4.0 RULES
-# ═══════════════════════════════════════════════════════════════
+# ???????????????????????????????????????????????????????????????
+# GLUE 2.0 ? GLUE 4.0 RULES
+# ???????????????????????????????????????????????????????????????
 
 GLUE_RULES = [
     {
-        "name": "GlueVersion 2.0 → 4.0",
+        "name": "GlueVersion 2.0 ? 4.0",
         "pattern": r'GlueVersion.*["\']2\.0["\']',
         "replacement": 'GlueVersion: "4.0"',
         "desc": "Glue 4.0 usa Spark 3.3 + Python 3.10",
@@ -284,7 +284,7 @@ def refactor_code(code, source_version="spark2", target_version="spark3"):
                     "name": rule["name"],
                     "desc": rule["desc"],
                     "count": len(matches),
-                    "action": "⚠️ WARNING — review manually",
+                    "action": "[!] WARNING ? review manually",
                 })
             continue
 
@@ -300,7 +300,7 @@ def refactor_code(code, source_version="spark2", target_version="spark3"):
                 "name": rule["name"],
                 "desc": rule["desc"],
                 "count": count,
-                "action": "✅ APPLIED",
+                "action": "[ok] APPLIED",
             })
             result = new_result
 

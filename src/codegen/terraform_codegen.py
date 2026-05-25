@@ -31,7 +31,7 @@ def generate_terraform(dag, output_path, xfr_rules=None):
     lines.append('')
 
     # Variables
-    lines.append('# ── Variables ──────────────────────────────────')
+    lines.append('# ?? Variables ??????????????????????????????????')
     lines.append('variable "aws_region" {')
     lines.append('  default = "us-east-1"')
     lines.append('}')
@@ -44,7 +44,7 @@ def generate_terraform(dag, output_path, xfr_rules=None):
     lines.append('')
 
     # S3 Buckets
-    lines.append('# ── S3 Data Lake ─────────────────────────────')
+    lines.append('# ?? S3 Data Lake ?????????????????????????????')
     for bucket in ['raw', 'curated', 'scripts', 'logs']:
         lines.append(f'resource "aws_s3_bucket" "{bucket}" {{')
         lines.append(f'  bucket = "${{var.project_name}}-{bucket}-${{var.environment}}"')
@@ -66,7 +66,7 @@ def generate_terraform(dag, output_path, xfr_rules=None):
         lines.append('')
 
     # IAM Role for Glue
-    lines.append('# ── IAM Role for Glue ────────────────────────')
+    lines.append('# ?? IAM Role for Glue ????????????????????????')
     lines.append('resource "aws_iam_role" "glue_role" {')
     lines.append('  name = "${var.project_name}-glue-role"')
     lines.append('  assume_role_policy = jsonencode({')
@@ -104,14 +104,14 @@ def generate_terraform(dag, output_path, xfr_rules=None):
     lines.append('')
 
     # Glue Catalog Database
-    lines.append('# ── Glue Catalog ─────────────────────────────')
+    lines.append('# ?? Glue Catalog ?????????????????????????????')
     lines.append('resource "aws_glue_catalog_database" "main" {')
     lines.append('  name = "${var.project_name}_${var.environment}"')
     lines.append('}')
     lines.append('')
 
-    # Glue Jobs — one per node that is not SOURCE or SINK
-    lines.append('# ── Glue Jobs ──────────────────────────────────')
+    # Glue Jobs ? one per node that is not SOURCE or SINK
+    lines.append('# ?? Glue Jobs ??????????????????????????????????')
     graph_boundaries = getattr(dag, 'graph_boundaries', {})
     node_to_graph = {}
     for gname, nids in graph_boundaries.items():
@@ -155,14 +155,14 @@ def generate_terraform(dag, output_path, xfr_rules=None):
         lines.append('')
 
     # CloudWatch Alarms
-    lines.append('# ── CloudWatch Alarms ────────────────────────')
+    lines.append('# ?? CloudWatch Alarms ????????????????????????')
     lines.append('resource "aws_sns_topic" "alerts" {')
     lines.append('  name = "${var.project_name}-alerts"')
     lines.append('}')
     lines.append('')
 
     # Outputs
-    lines.append('# ── Outputs ──────────────────────────────────')
+    lines.append('# ?? Outputs ??????????????????????????????????')
     lines.append('output "raw_bucket" { value = aws_s3_bucket.raw.bucket }')
     lines.append('output "curated_bucket" { value = aws_s3_bucket.curated.bucket }')
     lines.append('output "glue_role_arn" { value = aws_iam_role.glue_role.arn }')

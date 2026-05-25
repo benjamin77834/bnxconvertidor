@@ -15,7 +15,7 @@ def compile_spark(ir):
 
     code.append("")
 
-    # 🔥 REAL JOIN LOGIC
+    # ? REAL JOIN LOGIC
     if ast["joins"]:
 
         left = ast["from"]

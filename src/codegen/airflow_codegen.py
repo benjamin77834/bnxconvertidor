@@ -26,9 +26,9 @@ def generate_airflow(dag, output_path, xfr_rules=None):
 
     with open(output_path, "w") as f:
         f.write(f'"""\n')
-        f.write(f'🚀 BNX Generated Airflow DAG\n')
-        f.write(f'📅 Generated at: {datetime.now()}\n')
-        f.write(f'📊 Nodes: {len(dag.execution_order)}\n')
+        f.write(f'[*] BNX Generated Airflow DAG\n')
+        f.write(f'? Generated at: {datetime.now()}\n')
+        f.write(f'[>] Nodes: {len(dag.execution_order)}\n')
         f.write(f'"""\n\n')
 
         f.write('from datetime import datetime, timedelta\n')
@@ -105,7 +105,7 @@ def generate_airflow(dag, output_path, xfr_rules=None):
                 f.write(f'    )\n\n')
 
         # Dependencies
-        f.write('    # ── Dependencies ──────────────────────────\n')
+        f.write('    # ?? Dependencies ??????????????????????????\n')
         roots = [n for n in dag.execution_order if not n.parents]
         leaves = [n for n in dag.execution_order if not n.children]
 

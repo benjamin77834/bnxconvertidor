@@ -5,7 +5,7 @@ def parse_sql(sql):
 
     sql = sql.lower()
 
-    # 🔥 MUY SIMPLE (puedes extender)
+    # ? MUY SIMPLE (puedes extender)
     select_part = sql.split("from")[0].replace("select", "").strip()
     from_part = sql.split("from")[1]
 

@@ -2,7 +2,7 @@ class DAGValidator:
 
     def validate(self, graph):
 
-        print("🔍 Validating DAG...")
+        print("[?] Validating DAG...")
 
         errors = []
 
@@ -44,7 +44,7 @@ class DAGValidator:
 
         if errors:
             for e in errors:
-                print("❌", e)
+                print("?", e)
             raise Exception("DAG validation failed")
 
-        print("✅ DAG valid")
+        print("[ok] DAG valid")

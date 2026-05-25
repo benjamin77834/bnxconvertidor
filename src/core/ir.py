@@ -6,7 +6,7 @@ class GraphIR:
     def add_node(self, node):
         self.nodes[node.id] = node
 
-    # 🔥 TOPOLOGICAL SORT (CRÍTICO BNX v9)
+    # ? TOPOLOGICAL SORT (CR?TICO BNX v9)
     def topological_sort(self):
 
         visited = set()
@@ -31,7 +31,7 @@ class GraphIR:
 
         return order
 
-    # 🔥 EDGES (LINEAGE GRAPH)
+    # ? EDGES (LINEAGE GRAPH)
     def build_edges(self):
         return [
             (i, n.id)
@@ -39,7 +39,7 @@ class GraphIR:
             for i in n.inputs
         ]
 
-    # 🔥 LINEAGE PRINT
+    # ? LINEAGE PRINT
     def print_lineage(self, edges):
 
         lineage = {}
@@ -48,4 +48,4 @@ class GraphIR:
             lineage.setdefault(d, []).append(s)
 
         for k, v in lineage.items():
-            print(f"🔗 {k} <- {v}")
+            print(f"[~] {k} <- {v}")

@@ -11,7 +11,7 @@ def parse_mp(path):
             if not line or line.startswith("#"):
                 continue
 
-            # 🔹 NODE formats supported:
+            # [.] NODE formats supported:
             # NODE name input
             # name:input
             node_match = re.match(r"NODE\s+(\w+)\s+(\w+)", line)
@@ -25,7 +25,7 @@ def parse_mp(path):
                 name, ntype = alt_node_match.groups()
                 nodes[name] = {"type": ntype}
 
-            # 🔹 EDGE formats supported:
+            # [.] EDGE formats supported:
             # EDGE a b
             # a -> b
             edge_match = re.match(r"EDGE\s+(\w+)\s+(\w+)", line)

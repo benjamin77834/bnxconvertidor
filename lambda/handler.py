@@ -29,6 +29,7 @@ from src.plan_parser import resolve_graph_references, merge_asts, detect_retroce
 from src.accuracy import compute_accuracy
 from src.refactor_engine import refactor_code
 from src.ocr_engine import extract_text_from_image, parse_extracted_text, text_to_mp
+from main import parse_project
 
 
 def _parse_multipart(event):
@@ -216,7 +217,7 @@ def handler(event, context):
                     zf.writestr("bnx-backend/src/codegen/__init__.py", "")
 
                 if pack in ("frontend", "all"):
-                    # Frontend — just the src files (not node_modules)
+                    # Frontend ? just the src files (not node_modules)
                     ui_dir = os.path.join(src_dir, "ui")
                     fe_files = [
                         "package.json", "vite.config.js", "index.html",
@@ -262,7 +263,7 @@ def handler(event, context):
                         "generated_mp": mp_content,
                     })
                 else:
-                    return _response(200, {"error": text or "OCR failed — boto3 not available", "tip": "Paste text directly instead"})
+                    return _response(200, {"error": text or "OCR failed ? boto3 not available", "tip": "Paste text directly instead"})
             elif "text" in fields:
                 # Direct text paste (no OCR needed)
                 text = fields["text"]
@@ -424,7 +425,7 @@ def handler(event, context):
         dml_path = _save_bytes(files["dml"], ".dml") if "dml" in files else None
 
         try:
-            ast = parse_mp_ast(mp_path)
+            ast = parse_project(mp_path)
             dag = build_dag(ast)
             xfr_rules = parse_xfr(xfr_path) if xfr_path else {}
             dml_data = parse_dml(dml_path) if dml_path else {}

@@ -13,11 +13,11 @@ def resolve_path(p: str):
         return p
 
     if PROJECT_ROOT is None:
-        raise Exception("❌ PROJECT_ROOT not initialized")
+        raise Exception("? PROJECT_ROOT not initialized")
 
     full = os.path.join(PROJECT_ROOT, p)
 
     if os.path.exists(full):
         return full
 
-    raise FileNotFoundError(f"❌ NOT FOUND: {full}")
+    raise FileNotFoundError(f"? NOT FOUND: {full}")

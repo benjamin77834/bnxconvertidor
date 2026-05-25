@@ -1,6 +1,6 @@
 def optimize(ir, edges):
 
-    print("🧠 OPTIMIZER STARTED")
+    print("? OPTIMIZER STARTED")
 
     optimized_edges = []
     seen = set()
@@ -12,6 +12,6 @@ def optimize(ir, edges):
             seen.add(e)
 
     # 2. fusion simple chain
-    # A → B → C = collapse possible chains later
+    # A ? B ? C = collapse possible chains later
 
     return ir, optimized_edges

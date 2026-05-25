@@ -1,11 +1,11 @@
 # src/validator/semantic.py
 """
-Validación semántica del DAG antes de codegen.
-Detecta errores de join key, nodos huérfanos, ciclos, etc.
+Validaci?n sem?ntica del DAG antes de codegen.
+Detecta errores de join key, nodos hu?rfanos, ciclos, etc.
 """
 
-# Columnas conocidas por tipo de nodo según su schema inferido
-# Se construye propagando los campos a través del DAG
+# Columnas conocidas por tipo de nodo seg?n su schema inferido
+# Se construye propagando los campos a trav?s del DAG
 
 def _infer_columns(node, dag, xfr_rules, col_cache, dml_schema=None):
     """Infiere las columnas disponibles en un nodo dado su tipo y padres."""
@@ -105,7 +105,7 @@ def _infer_columns(node, dag, xfr_rules, col_cache, dml_schema=None):
 
 def validate(dag, xfr_rules, dml_schema=None):
     """
-    Valida el DAG semánticamente.
+    Valida el DAG sem?nticamente.
     Retorna lista de errores encontrados.
     Supports Mega-DAG cross-graph validation.
     """
@@ -122,9 +122,9 @@ def validate(dag, xfr_rules, dml_schema=None):
         from_id = cge.get("from", "")
         to_id = cge.get("to", "")
         if from_id not in dag.nodes:
-            errors.append(f"❌ Cross-graph edge: source node '{from_id}' not found in graph '{cge.get('source_graph', '?')}'")
+            errors.append(f"? Cross-graph edge: source node '{from_id}' not found in graph '{cge.get('source_graph', '?')}'")
         if to_id not in dag.nodes:
-            errors.append(f"❌ Cross-graph edge: target node '{to_id}' not found in graph '{cge.get('target_graph', '?')}'")
+            errors.append(f"? Cross-graph edge: target node '{to_id}' not found in graph '{cge.get('target_graph', '?')}'")
 
     for re_edge in retroceso_edges:
         from_id = re_edge.get("from", "")
@@ -134,14 +134,14 @@ def validate(dag, xfr_rules, dml_schema=None):
         # Retrocesos must cross graph boundaries
         if src_graph == tgt_graph:
             errors.append(
-                f"❌ Retroceso edge '{from_id}' → '{to_id}' is within graph '{src_graph}'. "
+                f"? Retroceso edge '{from_id}' ? '{to_id}' is within graph '{src_graph}'. "
                 f"Retrocesos must cross graph boundaries."
             )
-        # Validate SINK→SOURCE
+        # Validate SINK?SOURCE
         if from_id in dag.nodes and dag.nodes[from_id].type.upper() != "SINK":
-            warnings.append(f"⚠️  Retroceso source '{from_id}' is not a SINK node")
+            warnings.append(f"[!]  Retroceso source '{from_id}' is not a SINK node")
         if to_id in dag.nodes and dag.nodes[to_id].type.upper() != "SOURCE":
-            warnings.append(f"⚠️  Retroceso target '{to_id}' is not a SOURCE node")
+            warnings.append(f"[!]  Retroceso target '{to_id}' is not a SOURCE node")
 
     for node in dag.execution_order:
         ntype = node.type.upper()
@@ -151,7 +151,7 @@ def validate(dag, xfr_rules, dml_schema=None):
         if ntype == "JOIN":
             join_key = rule.get("join_key")
             if not join_key:
-                warnings.append(f"⚠️  JOIN '{node.name}' has no join_key — defaulting to 'id'")
+                warnings.append(f"[w] JOIN '{node.name}' has no join_key - defaulting to 'id'")
             else:
                 # Verificar que la join_key existe en los padres
                 for pid in node.parents:
@@ -160,38 +160,38 @@ def validate(dag, xfr_rules, dml_schema=None):
                     parent_cols = _infer_columns(dag.nodes[pid], dag, xfr_rules, col_cache, dml_schema)
                     if parent_cols and join_key not in parent_cols:
                         errors.append(
-                            f"❌ JOIN '{node.name}': join_key '{join_key}' not found in parent '{pid}' "
+                            f"[!] JOIN '{node.name}': join_key '{join_key}' not found in parent '{pid}' "
                             f"(available: {sorted(parent_cols)})"
                         )
 
         # 2. TRANSFORM sin padre
         if ntype in ("TRANSFORM", "XFR") and not node.parents:
-            errors.append(f"❌ TRANSFORM '{node.name}' has no parent node")
+            errors.append(f"[w] TRANSFORM '{node.name}' has no parent node")
 
         # 3. SINK sin padre
         if ntype == "SINK" and not node.parents:
-            errors.append(f"❌ SINK '{node.name}' has no parent — nothing to write")
+            errors.append(f"[!] SINK '{node.name}' has no parent - nothing to write")
 
         # 3b. DEDUP sin padre o sin dedup_keys
         if ntype == "DEDUP":
             if not node.parents:
-                errors.append(f"❌ DEDUP '{node.name}' has no parent node")
+                errors.append(f"[w] DEDUP '{node.name}' has no parent node")
             elif not rule.get("dedup_keys"):
-                warnings.append(f"⚠️  DEDUP '{node.name}' has no dedup_keys — using default ['id']")
+                warnings.append(f"[w] DEDUP '{node.name}' has no dedup_keys - using default ['id']")
 
         # 3c. NORMALIZE sin padre o sin config
         if ntype == "NORMALIZE":
             if not node.parents:
-                errors.append(f"❌ NORMALIZE '{node.name}' has no parent node")
+                errors.append(f"[w] NORMALIZE '{node.name}' has no parent node")
             elif not rule.get("explode_col") and not rule.get("split_col"):
-                warnings.append(f"⚠️  NORMALIZE '{node.name}' has no explode_col or split_col")
+                warnings.append(f"[w] NORMALIZE '{node.name}' has no explode_col or split_col")
 
         # 3d. LOOKUP sin 2 padres o sin lookup_key
         if ntype == "LOOKUP":
             if len(node.parents) < 2:
-                errors.append(f"❌ LOOKUP '{node.name}' needs 2 parents (main + reference), has {len(node.parents)}")
+                errors.append(f"[!] LOOKUP '{node.name}' needs 2 parents (main + reference), has {len(node.parents)}")
             elif not rule.get("lookup_key"):
-                warnings.append(f"⚠️  LOOKUP '{node.name}' has no lookup_key — using default 'id'")
+                warnings.append(f"[w] LOOKUP '{node.name}' has no lookup_key - using default 'id'")
 
         # 4. TRANSFORM referencia columna en where que no existe
         if ntype in ("TRANSFORM", "XFR") and node.parents:
@@ -203,7 +203,7 @@ def validate(dag, xfr_rules, dml_schema=None):
             select = rule.get("select", "*")
             if where and parent_cols:
                 import re
-                # Aliases generados por este mismo nodo (no existen en el padre, se crean aquí)
+                # Aliases generados por este mismo nodo (no existen en el padre, se crean aqu?)
                 self_aliases = set()
                 for col in select.split(","):
                     col = col.strip()
@@ -227,7 +227,7 @@ def validate(dag, xfr_rules, dml_schema=None):
                         continue
                     if rc not in parent_cols:
                         warnings.append(
-                            f"⚠️  TRANSFORM '{node.name}': column '{rc}' in where clause "
+                            f"[!]  TRANSFORM '{node.name}': column '{rc}' in where clause "
                             f"may not exist in parent '{node.parents[0]}'"
                         )
 

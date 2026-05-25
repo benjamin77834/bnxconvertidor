@@ -5,22 +5,22 @@ def run_engine(plan, xfr):
 
     data_store = {}
 
-    print("\n🚀 EXECUTING DATA PIPELINE\n")
+    print("\n[*] EXECUTING DATA PIPELINE\n")
 
     for node in plan:
 
         node_id = node["id"]
 
-        print(f"⚡ Running: {node_id}")
+        print(f"[>] Running: {node_id}")
 
-        # 🔥 INPUT NODES (mock data)
+        # ? INPUT NODES (mock data)
         if node["type"] == "input":
 
             data_store[node_id] = pd.DataFrame([
                 {"id": 1, "name": "demo", "amount": 100}
             ])
 
-        # 🔥 TRANSFORM NODES
+        # ? TRANSFORM NODES
         else:
 
             # buscar XFR asociado
@@ -44,6 +44,6 @@ def run_engine(plan, xfr):
 
                     data_store[node_id] = df
 
-        print(f"✔ Done: {node_id}")
+        print(f"? Done: {node_id}")
 
     return data_store

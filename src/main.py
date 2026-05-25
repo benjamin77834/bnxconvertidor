@@ -3,7 +3,7 @@ from graph_engine import run
 
 
 def main():
-    print("🚀 BNX STARTED")
+    print("[*] BNX STARTED")
 
     parser = argparse.ArgumentParser()
 
@@ -14,20 +14,20 @@ def main():
 
     args = parser.parse_args()
 
-    # ❌ NO SQL HERE
+    # ? NO SQL HERE
     code, lineage = run(args.mp, args.xfr, args.dml)
 
     with open(args.output, "w") as f:
         f.write(code)
 
-    print("🚀 GRAPH MODE (MP/XFR/DML)")
-    print("🧬 lineage built")
+    print("[*] GRAPH MODE (MP/XFR/DML)")
+    print("? lineage built")
 
     for k, v in lineage.items():
-        print(f"{k} ← {v}")
+        print(f"{k} ? {v}")
 
-    print(f"✅ Generated: {args.output}")
-    print("🏁 DONE")
+    print(f"[ok] Generated: {args.output}")
+    print("[*] DONE")
 
 
 if __name__ == "__main__":

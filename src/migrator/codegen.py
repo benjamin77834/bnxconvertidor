@@ -41,7 +41,7 @@ def infer_join_key():
 # ----------------------------
 def generate_glue_job(ir_graph):
 
-    print("⚙️ BNX v6 Enterprise Optimizer running...")
+    print("?? BNX v6 Enterprise Optimizer running...")
 
     # ----------------------------
     # OPTIMIZER STEP

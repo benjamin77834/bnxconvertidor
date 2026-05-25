@@ -16,7 +16,7 @@ def _build_transform_sql(var_id, src_table, rule, is_streaming=False):
 
     if group_by:
         keys = ", ".join(group_by)
-        # Parse aggregation expressions: SUM(amount) as total → SUM(amount) AS total
+        # Parse aggregation expressions: SUM(amount) as total ? SUM(amount) AS total
         agg_parts = []
         for col in select.split(","):
             col = col.strip()
@@ -80,9 +80,9 @@ def generate_flink(dag, output_path, xfr_rules=None):
 
     with open(output_path, "w") as f:
         # Header
-        f.write(f'"""\n🌊 BNX V54 GENERATED PYFLINK JOB\n')
-        f.write(f'📅 Generated at: {datetime.now()}\n')
-        f.write(f'📊 Nodes: {len(dag.execution_order)}\n')
+        f.write(f'"""\n[>] BNX V54 GENERATED PYFLINK JOB\n')
+        f.write(f'? Generated at: {datetime.now()}\n')
+        f.write(f'[>] Nodes: {len(dag.execution_order)}\n')
         f.write(f'"""\n\n')
 
         f.write('from pyflink.table import EnvironmentSettings, TableEnvironment\n')
@@ -92,8 +92,8 @@ def generate_flink(dag, output_path, xfr_rules=None):
         f.write('# Initialize Flink environment\n')
         f.write('env = StreamExecutionEnvironment.get_execution_environment()\n')
         f.write('t_env = StreamTableEnvironment.create(env)\n\n')
-        f.write('print("🌊 BNX PyFlink Job Started")\n\n')
-        f.write('# =========================\n# DAG EXECUTION V54 — FLINK\n# =========================\n\n')
+        f.write('print("[>] BNX PyFlink Job Started")\n\n')
+        f.write('# =========================\n# DAG EXECUTION V54 ? FLINK\n# =========================\n\n')
 
         # Graph boundaries for Mega-DAG
         graph_boundaries = getattr(dag, 'graph_boundaries', {})
@@ -118,9 +118,9 @@ def generate_flink(dag, output_path, xfr_rules=None):
             parents = node.parents
             rule = xfr_rules.get(var_id.lower()) or xfr_rules.get(log_name.lower())
 
-            # ── SOURCE ──
+            # ?? SOURCE ??
             if ntype == "SOURCE":
-                f.write(f'# 🟢 SOURCE: {log_name}\n')
+                f.write(f'# [+] SOURCE: {log_name}\n')
                 src_type = rule.get("source_type", "s3") if rule else "s3"
                 path = rule.get("path", f"s3://bnx/raw/{var_id.lower()}") if rule else f"s3://bnx/raw/{var_id.lower()}"
                 fmt = rule.get("format", "parquet") if rule else "parquet"
@@ -174,11 +174,11 @@ def generate_flink(dag, output_path, xfr_rules=None):
                     f.write(f'""")\n')
                     f.write(f'{var_id} = t_env.from_path("`{var_id}_source`")\n')
                     f.write(f't_env.create_temporary_view("`{var_id}`", {var_id})\n')
-                f.write(f'print("📂 SOURCE: {log_name}")\n\n')
+                f.write(f'print("[>] SOURCE: {log_name}")\n\n')
 
-            # ── TRANSFORM ──
+            # ?? TRANSFORM ??
             elif ntype in ("TRANSFORM", "XFR"):
-                f.write(f'# 🔹 TRANSFORM: {log_name}\n')
+                f.write(f'# [.] TRANSFORM: {log_name}\n')
                 if parents:
                     src_table = parents[0]
                     if rule:
@@ -189,11 +189,11 @@ def generate_flink(dag, output_path, xfr_rules=None):
                         f.write(f't_env.execute_sql("""CREATE TEMPORARY VIEW `{var_id}` AS SELECT * FROM `{src_table}`""")\n')
                 else:
                     f.write(f'{var_id} = None  # no parent\n')
-                f.write(f'print("🔄 TRANSFORM: {log_name}")\n\n')
+                f.write(f'print("[~] TRANSFORM: {log_name}")\n\n')
 
-            # ── JOIN ──
+            # ?? JOIN ??
             elif ntype == "JOIN":
-                f.write(f'# 🔗 JOIN: {log_name}\n')
+                f.write(f'# [~] JOIN: {log_name}\n')
                 if len(parents) >= 2:
                     jk = rule.get("join_key", "id") if rule else "id"
                     jt = rule.get("join_type", "inner").upper() if rule else "INNER"
@@ -217,11 +217,11 @@ def generate_flink(dag, output_path, xfr_rules=None):
                     f.write(f't_env.execute_sql("""CREATE TEMPORARY VIEW `{var_id}` AS SELECT * FROM `{parents[0]}`""")\n')
                 else:
                     f.write(f'{var_id} = None  # no parents\n')
-                f.write(f'print("🔗 JOIN: {log_name}")\n\n')
+                f.write(f'print("[~] JOIN: {log_name}")\n\n')
 
-            # ── DEDUP ──
+            # ?? DEDUP ??
             elif ntype == "DEDUP":
-                f.write(f'# 🧹 DEDUP: {log_name}\n')
+                f.write(f'# [-] DEDUP: {log_name}\n')
                 if parents:
                     src_table = parents[0]
                     dk = rule.get("dedup_keys", ["id"]) if rule else ["id"]
@@ -239,11 +239,11 @@ def generate_flink(dag, output_path, xfr_rules=None):
                     f.write(f't_env.execute_sql("""\n  {sql}\n""")\n')
                 else:
                     f.write(f'{var_id} = None  # no parent\n')
-                f.write(f'print("🧹 DEDUP: {log_name}")\n\n')
+                f.write(f'print("[-] DEDUP: {log_name}")\n\n')
 
-            # ── NORMALIZE ──
+            # ?? NORMALIZE ??
             elif ntype == "NORMALIZE":
-                f.write(f'# 📐 NORMALIZE: {log_name}\n')
+                f.write(f'# [=] NORMALIZE: {log_name}\n')
                 if parents:
                     src_table = parents[0]
                     ec = rule.get("explode_col") if rule else None
@@ -264,11 +264,11 @@ def generate_flink(dag, output_path, xfr_rules=None):
                     f.write(f't_env.execute_sql("""\n  {sql}\n""")\n')
                 else:
                     f.write(f'{var_id} = None  # no parent\n')
-                f.write(f'print("📐 NORMALIZE: {log_name}")\n\n')
+                f.write(f'print("[=] NORMALIZE: {log_name}")\n\n')
 
-            # ── LOOKUP ──
+            # ?? LOOKUP ??
             elif ntype == "LOOKUP":
-                f.write(f'# 🔍 LOOKUP: {log_name}\n')
+                f.write(f'# [?] LOOKUP: {log_name}\n')
                 if len(parents) >= 2:
                     lk = rule.get("lookup_key", "id") if rule else "id"
                     ls = rule.get("lookup_select") if rule else None
@@ -288,11 +288,11 @@ def generate_flink(dag, output_path, xfr_rules=None):
                     f.write(f't_env.execute_sql("""CREATE TEMPORARY VIEW `{var_id}` AS SELECT * FROM `{parents[0]}`""")\n')
                 else:
                     f.write(f'{var_id} = None  # no parents\n')
-                f.write(f'print("🔍 LOOKUP: {log_name}")\n\n')
+                f.write(f'print("[?] LOOKUP: {log_name}")\n\n')
 
-            # ── CONCATENATE ──
+            # ?? CONCATENATE ??
             elif ntype == "CONCATENATE":
-                f.write(f'# 🔗 CONCATENATE: {log_name}\n')
+                f.write(f'# [~] CONCATENATE: {log_name}\n')
                 if len(parents) >= 2:
                     unions = " UNION ALL ".join(f"SELECT * FROM `{p}`" for p in parents)
                     sql = f"CREATE TEMPORARY VIEW `{var_id}` AS\n  {unions}"
@@ -301,11 +301,11 @@ def generate_flink(dag, output_path, xfr_rules=None):
                     f.write(f't_env.execute_sql("""CREATE TEMPORARY VIEW `{var_id}` AS SELECT * FROM `{parents[0]}`""")\n')
                 else:
                     f.write(f'{var_id} = None  # no parents\n')
-                f.write(f'print("🔗 CONCATENATE: {log_name}")\n\n')
+                f.write(f'print("[~] CONCATENATE: {log_name}")\n\n')
 
-            # ── GATHER ──
+            # ?? GATHER ??
             elif ntype == "GATHER":
-                f.write(f'# 📥 GATHER: {log_name}\n')
+                f.write(f'# ? GATHER: {log_name}\n')
                 if len(parents) >= 2:
                     unions = " UNION ALL ".join(f"SELECT * FROM `{p}`" for p in parents)
                     sql = f"CREATE TEMPORARY VIEW `{var_id}` AS\n  {unions}"
@@ -314,11 +314,11 @@ def generate_flink(dag, output_path, xfr_rules=None):
                     f.write(f't_env.execute_sql("""CREATE TEMPORARY VIEW `{var_id}` AS SELECT * FROM `{parents[0]}`""")\n')
                 else:
                     f.write(f'{var_id} = None  # no parents\n')
-                f.write(f'print("📥 GATHER: {log_name}")\n\n')
+                f.write(f'print("? GATHER: {log_name}")\n\n')
 
-            # ── PARTITION ──
+            # ?? PARTITION ??
             elif ntype == "PARTITION":
-                f.write(f'# 🔀 PARTITION: {log_name}\n')
+                f.write(f'# ? PARTITION: {log_name}\n')
                 if parents:
                     src_table = parents[0]
                     pk = rule.get("partition_keys", ["id"]) if rule else ["id"]
@@ -329,11 +329,11 @@ def generate_flink(dag, output_path, xfr_rules=None):
                     f.write(f't_env.execute_sql("""CREATE TEMPORARY VIEW `{var_id}` AS SELECT * FROM `{src_table}`""")\n')
                 else:
                     f.write(f'{var_id} = None  # no parent\n')
-                f.write(f'print("🔀 PARTITION: {log_name}")\n\n')
+                f.write(f'print("? PARTITION: {log_name}")\n\n')
 
-            # ── FILTER ──
+            # ?? FILTER ??
             elif ntype == "FILTER":
-                f.write(f'# 🔽 FILTER: {log_name}\n')
+                f.write(f'# ? FILTER: {log_name}\n')
                 if parents:
                     src_table = parents[0]
                     where = rule.get("where") if rule else None
@@ -344,11 +344,11 @@ def generate_flink(dag, output_path, xfr_rules=None):
                         f.write(f't_env.execute_sql("""CREATE TEMPORARY VIEW `{var_id}` AS SELECT * FROM `{src_table}`""")\n')
                 else:
                     f.write(f'{var_id} = None  # no parent\n')
-                f.write(f'print("🔽 FILTER: {log_name}")\n\n')
+                f.write(f'print("? FILTER: {log_name}")\n\n')
 
-            # ── SINK ──
+            # ?? SINK ??
             elif ntype == "SINK":
-                f.write(f'# 🏁 SINK: {log_name}\n')
+                f.write(f'# [*] SINK: {log_name}\n')
                 if parents:
                     src_table = parents[0]
                     sink_type = rule.get("sink_type", "s3") if rule else "s3"
@@ -394,12 +394,12 @@ def generate_flink(dag, output_path, xfr_rules=None):
                         f.write(f'""")\n')
                     f.write(f't_env.execute_sql("INSERT INTO `{var_id}_sink` SELECT * FROM `{src_table}`")\n')
                 else:
-                    f.write(f'# ⚠️ SINK {log_name} has no parent — nothing to write\n')
-                f.write(f'print("💾 SINK: {log_name}")\n\n')
+                    f.write(f'# [!] SINK {log_name} has no parent ? nothing to write\n')
+                f.write(f'print("[>] SINK: {log_name}")\n\n')
 
-            # ── Generic / Unknown ──
+            # ?? Generic / Unknown ??
             else:
-                f.write(f'# 🔹 {ntype}: {log_name}\n')
+                f.write(f'# [.] {ntype}: {log_name}\n')
                 if parents:
                     src_table = parents[0]
                     if rule:
@@ -409,28 +409,28 @@ def generate_flink(dag, output_path, xfr_rules=None):
                         f.write(f't_env.execute_sql("""CREATE TEMPORARY VIEW `{var_id}` AS SELECT * FROM `{src_table}`""")\n')
                 else:
                     f.write(f'{var_id} = None  # no parents\n')
-                f.write(f'print("🔄 {ntype}: {log_name}")\n\n')
+                f.write(f'print("[~] {ntype}: {log_name}")\n\n')
 
         # Retroceso iteration logic (cyclic plans)
         retroceso_edges = getattr(dag, 'retroceso_edges', [])
         if retroceso_edges:
-            f.write('\n# =========================\n# CYCLIC PLAN — RETROCESO ITERATIONS\n# =========================\n\n')
+            f.write('\n# =========================\n# CYCLIC PLAN ? RETROCESO ITERATIONS\n# =========================\n\n')
             max_iter = max(e.get("max_iterations", 5) for e in retroceso_edges)
             convergence = next((e.get("convergence") for e in retroceso_edges if e.get("convergence")), None)
             f.write(f'MAX_ITERATIONS = {max_iter}\n')
             f.write(f'for _iteration in range(MAX_ITERATIONS):\n')
-            f.write(f'    print(f"🔄 Iteration {{_iteration + 1}}/{{MAX_ITERATIONS}}")\n')
+            f.write(f'    print(f"[~] Iteration {{_iteration + 1}}/{{MAX_ITERATIONS}}")\n')
             for re_edge in retroceso_edges:
                 sg = re_edge.get("source_graph", "unknown")
                 tg = re_edge.get("target_graph", "unknown")
-                f.write(f'    # Retroceso: {sg} → {tg}\n')
+                f.write(f'    # Retroceso: {sg} ? {tg}\n')
                 f.write(f'    # Checkpoint staging: write to intermediate path and re-read\n')
                 f.write(f'    _staging_path = f"s3://bnx-staging/{sg}_to_{tg}/iteration_{{_iteration}}"\n')
-                f.write(f'    print(f"  📦 Checkpoint: {sg} → {tg} ({{_staging_path}})")\n')
+                f.write(f'    print(f"  [>] Checkpoint: {sg} ? {tg} ({{_staging_path}})")\n')
             if convergence:
                 f.write(f'    # Convergence check: {convergence}\n')
                 f.write(f'    # if {convergence}: break\n')
-            f.write(f'    print(f"  ✅ Iteration {{_iteration + 1}} complete")\n\n')
+            f.write(f'    print(f"  [ok] Iteration {{_iteration + 1}} complete")\n\n')
 
         # Footer
-        f.write('print("✅ BNX PyFlink Job Finished")\n')
+        f.write('print("[ok] BNX PyFlink Job Finished")\n')
