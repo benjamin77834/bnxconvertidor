@@ -91,7 +91,35 @@ def _parse_gde_native(content):
     # Track vertex IDs (small numbers from port definitions)
     vertex_ids = set()
     
-    for line in content.split("\n"):
+    # Extract ports and flows using findall on entire content (file may have binary/non-standard line endings)
+    # Output ports: {2010212001|XXGvertex_oport|17|0|34|0|{0|out|}17|18|}
+    for m in re.finditer(r'XXGvertex_oport\|[^{]*\{0\|out\d*\|\}(\d+)\|(\d+)\|', content):
+        vertex_id = m.group(1)
+        port_id = m.group(2)
+        oport_to_vertex[port_id] = vertex_id
+        vertex_ids.add(vertex_id)
+    
+    # Input ports: {2010211001|XXGvertex_iport|19|0|37|0|{0|in|}17|19|}
+    for m in re.finditer(r'XXGvertex_iport\|[^{]*\{0\|in\d*\|\}(\d+)\|(\d+)\|', content):
+        vertex_id = m.group(1)
+        port_id = m.group(2)
+        iport_to_vertex[port_id] = vertex_id
+        vertex_ids.add(vertex_id)
+    
+    # Oport to flow: {2010213001|XXGoport_dst_flow|20|0|39|0|{0|}19|6|}
+    for m in re.finditer(r'XXGoport_dst_flow\|[^{]*\{0\|\}?(\d+)\|(\d+)\|', content):
+        port_id = m.group(1)
+        flow_id = m.group(2)
+        oport_to_flow[port_id] = flow_id
+    
+    # Iport from flow: {2010214001|XXGiport_src_flow|18|0|36|0|{0|}18|5|}
+    for m in re.finditer(r'XXGiport_src_flow\|[^{]*\{0\|\}?(\d+)\|(\d+)\|', content):
+        port_id = m.group(1)
+        flow_id = m.group(2)
+        iport_from_flow[port_id] = flow_id
+    
+    # Now parse line-by-line for components and parameters
+    for line in re.split(r'[\r\n]+', content):
         line = line.strip()
         if not line:
             continue
@@ -102,6 +130,15 @@ def _parse_gde_native(content):
             if len(parts) >= 3:
                 param_name = parts[2].strip()
                 params[param_name] = ""
+            continue
+        
+        # IMPORTANT: Check ports BEFORE component definitions
+        # Ports are now extracted via findall above, skip them here
+        if "|XXGvertex_oport|" in line or "|XXGvertex_iport|" in line:
+            continue
+        
+        # Flow connections also extracted above
+        if "|XXGoport_dst_flow|" in line or "|XXGiport_src_flow|" in line:
             continue
         
         # Component definition: }@1|TYPE|positions...|ID|DISPLAY_NAME|Ab Initio Software|...
@@ -140,33 +177,30 @@ def _parse_gde_native(content):
         
         # Vertex output port: {2010212001|XXGvertex_oport|17|0|34|0|{0|out|}17|18|}
         if "|XXGvertex_oport|" in line:
-            # The vertex_id and port_id are the last two numbers before |}
-            # Pattern: ...|VERTEX_ID|PORT_ID|}  at end of line
-            nums = re.findall(r'(\d+)', line)
-            if len(nums) >= 2:
-                # Last two numbers are vertex_id and port_id
-                # But we need to find them after the {0|out part
-                m = re.search(r'out\d*\|\}?(\d+)\|(\d+)\|', line)
-                if not m:
-                    # Try: the last two pipe-separated numbers
-                    m = re.search(r'\|(\d+)\|(\d+)\|\}?\s*$', line)
-                if m:
-                    vertex_id = m.group(1)
-                    port_id = m.group(2)
-                    oport_to_vertex[port_id] = vertex_id
-                    vertex_ids.add(vertex_id)
+            # Exact format: {0|out|}VERTEX_ID|PORT_ID|}
+            m = re.search(r'out\d*\|\}(\d+)\|(\d+)\|', line)
+            if m:
+                vertex_id = m.group(1)
+                port_id = m.group(2)
+                oport_to_vertex[port_id] = vertex_id
+                vertex_ids.add(vertex_id)
+            else:
+                if len(oport_to_vertex) == 0 and len(vertex_ids) == 0:
+                    # Debug: show first non-matching line
+                    print(f"  [dbg] oport NO MATCH: {line[:100]}")
             continue
         
         # Vertex input port: {2010211001|XXGvertex_iport|19|0|37|0|{0|in|}17|19|}
         if "|XXGvertex_iport|" in line:
-            m = re.search(r'in\d*\|\}?(\d+)\|(\d+)\|', line)
-            if not m:
-                m = re.search(r'\|(\d+)\|(\d+)\|\}?\s*$', line)
+            m = re.search(r'in\d*\|\}(\d+)\|(\d+)\|', line)
             if m:
                 vertex_id = m.group(1)
                 port_id = m.group(2)
                 iport_to_vertex[port_id] = vertex_id
                 vertex_ids.add(vertex_id)
+            else:
+                if len(iport_to_vertex) == 0 and len(vertex_ids) == 0:
+                    print(f"  [dbg] iport NO MATCH: {line[:100]}")
             continue
         
         # Output port to flow: {2010213001|XXGoport_dst_flow|20|0|39|0|{0|}19|6|}
