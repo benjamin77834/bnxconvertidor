@@ -32,7 +32,7 @@ def parse_dml(path):
             if not stripped or stripped.startswith("#"):
                 continue
 
-            # Detecta sección raíz: "keys:" o "schema:"
+            # Detecta secci?n ra?z: "keys:" o "schema:"
             if re.match(r"^keys\s*:$", stripped, re.I):
                 current_section = "keys"
                 current_node = None

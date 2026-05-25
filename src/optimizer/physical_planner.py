@@ -18,7 +18,7 @@ class PhysicalPlanner:
 
             elif t == "JOIN":
 
-                # 🔥 ENTERPRISE LOGIC (future cost model hook)
+                # ? ENTERPRISE LOGIC (future cost model hook)
                 strategy = "sort_merge_join"
 
                 physical.append(PhysicalNode(

@@ -239,9 +239,9 @@ def plan_to_graph(parsed_plan, parsed_pset=None):
     }
 
 
-# ═══════════════════════════════════════════════════════════════
-# GRAFO DE GRAFOS — Multi-MP support
-# ═══════════════════════════════════════════════════════════════
+# ???????????????????????????????????????????????????????????????
+# GRAFO DE GRAFOS ? Multi-MP support
+# ???????????????????????????????????????????????????????????????
 
 @dataclass
 class ResolvedGraph:
@@ -267,7 +267,7 @@ def substitute_pset_params(content, pset_params):
         if key in pset_params:
             used.add(key)
             return pset_params[key]
-        warnings.append(f"⚠️  PSET parameter '${{{key}}}' is not defined")
+        warnings.append(f"[!]  PSET parameter '${{{key}}}' is not defined")
         return m.group(0)  # leave unchanged
 
     result = re.sub(r'\$\{(\w+)\}', replacer, content)
@@ -339,7 +339,7 @@ def detect_retrocesos(parsed_plan):
             if dep in graphs and can_reach(dep, name):
                 retrocesos.append((name, dep))
 
-    # Also detect SCHEDULE: CYCLIC — self-loops (graph depends on itself implicitly)
+    # Also detect SCHEDULE: CYCLIC ? self-loops (graph depends on itself implicitly)
     for name, g in graphs.items():
         if (g.get("schedule") or "").upper() == "CYCLIC" and not any(r[0] == name for r in retrocesos):
             # A cyclic graph creates a self-loop retroceso
@@ -351,9 +351,9 @@ def detect_retrocesos(parsed_plan):
 def resolve_graph_references(parsed_plan, mp_files=None, pset_params=None, base_dir=None):
     """
     For each GRAPH in the PLAN:
-    - If it has an MP property and the file exists → parse it
-    - If MP property but file missing → error
-    - If no MP property → auto-generate with plan_to_graph logic
+    - If it has an MP property and the file exists ? parse it
+    - If MP property but file missing ? error
+    - If no MP property ? auto-generate with plan_to_graph logic
     Returns (list[ResolvedGraph], errors, warnings).
     """
     from src.mp_parser import parse_mp_ast
@@ -391,7 +391,7 @@ def resolve_graph_references(parsed_plan, mp_files=None, pset_params=None, base_
             if mp_path and os.path.exists(mp_path):
                 ast = parse_mp_ast(mp_path)
             else:
-                errors.append(f"❌ GRAPH '{name}': MP file '{mp_ref}' not found or unreadable")
+                errors.append(f"? GRAPH '{name}': MP file '{mp_ref}' not found or unreadable")
                 continue
         else:
             # Auto-generate a simple single-node graph for this GRAPH
@@ -405,7 +405,7 @@ def resolve_graph_references(parsed_plan, mp_files=None, pset_params=None, base_
             ast = parse_mp_ast(tmp.name)
             os.unlink(tmp.name)
             is_auto = True
-            warnings.append(f"⚠️  GRAPH '{name}': no MP file, auto-generating graph")
+            warnings.append(f"[!]  GRAPH '{name}': no MP file, auto-generating graph")
 
         # Namespace the AST
         ast = namespace_ast(ast, name)
@@ -436,7 +436,7 @@ def resolve_graph_references(parsed_plan, mp_files=None, pset_params=None, base_
                 xfr_rules = parse_xfr(tmp.name)
                 os.unlink(tmp.name)
             else:
-                warnings.append(f"⚠️  GRAPH '{name}': XFR file '{xfr_ref}' not found, using default rules")
+                warnings.append(f"[!]  GRAPH '{name}': XFR file '{xfr_ref}' not found, using default rules")
 
         # --- Resolve DML ---
         dml_schema = {}
@@ -453,7 +453,7 @@ def resolve_graph_references(parsed_plan, mp_files=None, pset_params=None, base_
                 dml_data = parse_dml(dml_path)
                 dml_schema = dml_data.get("schema", {})
             else:
-                warnings.append(f"⚠️  GRAPH '{name}': DML file '{dml_ref}' not found, using default schema")
+                warnings.append(f"[!]  GRAPH '{name}': DML file '{dml_ref}' not found, using default schema")
 
         resolved.append(ResolvedGraph(
             name=name,
@@ -582,7 +582,7 @@ def merge_asts(resolved_graphs, dependencies, retrocesos):
 
 def pretty_print_mega_dag(merged_ast):
     """Serialize a Mega-DAG to readable .mp format."""
-    lines = ["# Mega-DAG — Grafo de Grafos", ""]
+    lines = ["# Mega-DAG ? Grafo de Grafos", ""]
 
     subgraphs = merged_ast.get("subgraphs", {})
     nodes_by_id = {n["id"]: n for n in merged_ast["nodes"]}

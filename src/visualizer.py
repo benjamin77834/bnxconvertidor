@@ -1,8 +1,8 @@
 # src/visualizer.py
 """
 Visualizador de grafos BNX en Python puro.
-Genera un HTML interactivo con el DAG y el flujo de ejecución.
-No requiere React ni Node.js — solo Python + browser.
+Genera un HTML interactivo con el DAG y el flujo de ejecuci?n.
+No requiere React ni Node.js ? solo Python + browser.
 """
 import os
 from datetime import datetime
@@ -57,7 +57,7 @@ def visualize_dag(dag, output_path="dag_view.html", xfr_rules=None, target="glue
 <html>
 <head>
 <meta charset="UTF-8">
-<title>BNX DAG Viewer — {len(nodes)} nodes</title>
+<title>BNX DAG Viewer ? {len(nodes)} nodes</title>
 <style>
 body {{ margin: 0; background: #0a1628; color: #e8edf5; font-family: -apple-system, sans-serif; }}
 .header {{ padding: 16px 24px; background: #122448; border-bottom: 1px solid #1e3a6e; display: flex; align-items: center; gap: 16px; }}
@@ -84,7 +84,7 @@ svg {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-e
 <div class="header">
   <h1>BNX DAG Viewer</h1>
   <span class="badge">V54</span>
-  <span class="badge">{len(nodes)} nodes · {sum(len(n.children) for n in nodes)} edges</span>
+  <span class="badge">{len(nodes)} nodes ? {sum(len(n.children) for n in nodes)} edges</span>
   <span class="target-badge" style="background: {'#22c55e20' if target == 'glue' else '#6366f120' if target == 'spark' else '#06b6d420'}; color: {'#22c55e' if target == 'glue' else '#6366f1' if target == 'spark' else '#06b6d4'};">
     {'Glue' if target == 'glue' else 'Spark' if target == 'spark' else 'Flink'}
   </span>
@@ -110,7 +110,7 @@ svg {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-e
     for node in nodes:
         x, y = node_positions[node.id]
         color = TYPE_COLOR.get(node.type.upper(), '#64748b')
-        icon = TYPE_ICON.get(node.type.upper(), '📦')
+        icon = TYPE_ICON.get(node.type.upper(), '[>]')
         html += f'    <div class="node" style="left:{x}px; top:{y}px; background:{color}22; border:2px solid {color}; color:{color};">\n'
         html += f'      <div class="node-type">{icon} {node.type}</div>\n'
         html += f'      <div class="node-name" style="color:#e8edf5;">{node.name}</div>\n'
@@ -118,22 +118,22 @@ svg {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-e
 
     html += "  </div>\n"
 
-    # Sidebar — execution order + code snippet
+    # Sidebar ? execution order + code snippet
     html += '  <div class="sidebar">\n'
     html += '    <div class="section">\n'
     html += '      <div class="section-title">EXECUTION ORDER</div>\n'
     
     for i, node in enumerate(nodes, 1):
         color = TYPE_COLOR.get(node.type.upper(), '#64748b')
-        icon = TYPE_ICON.get(node.type.upper(), '📦')
+        icon = TYPE_ICON.get(node.type.upper(), '[>]')
         rule = xfr_rules.get(node.id.lower()) or xfr_rules.get(node.name.lower()) or {}
         detail = ""
         if rule.get("select") and rule["select"] != "*":
-            detail = f' → SELECT {rule["select"][:40]}'
+            detail = f' ? SELECT {rule["select"][:40]}'
         elif rule.get("join_key"):
-            detail = f' → JOIN ON {rule["join_key"]}'
+            detail = f' ? JOIN ON {rule["join_key"]}'
         elif rule.get("source_type"):
-            detail = f' → {rule["source_type"].upper()}'
+            detail = f' ? {rule["source_type"].upper()}'
         html += f'      <div class="exec-item" style="background:{color}15; border:1px solid {color}30;">\n'
         html += f'        <div class="exec-num" style="background:{color}; color:#fff;">{i}</div>\n'
         html += f'        <div><span style="color:{color}; font-weight:600;">{icon} {node.name}</span><br/><span style="color:#5a7399; font-size:11px;">{node.type}{detail}</span></div>\n'

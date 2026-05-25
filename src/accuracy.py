@@ -1,13 +1,13 @@
 # src/accuracy.py
 """
-Mide la exactitud de la transformación del grafo original al código generado.
+Mide la exactitud de la transformaci?n del grafo original al c?digo generado.
 Compara nodos, edges, reglas XFR y join keys.
 """
 
 
 def compute_accuracy(dag, xfr_rules, dml_schema=None):
     """
-    Retorna un dict con métricas de exactitud:
+    Retorna un dict con m?tricas de exactitud:
     - total_nodes, resolved_nodes, node_accuracy
     - total_edges, resolved_edges, edge_accuracy
     - total_transforms, resolved_transforms, transform_accuracy
@@ -42,9 +42,9 @@ def compute_accuracy(dag, xfr_rules, dml_schema=None):
                 resolved_transforms += 1
                 resolved_nodes += 1
             elif node.parents:
-                # Tiene padre pero sin regla → selectExpr("*")
-                issues.append("no XFR rule — passthrough")
-                resolved_nodes += 1  # funcional pero sin lógica
+                # Tiene padre pero sin regla ? selectExpr("*")
+                issues.append("no XFR rule ? passthrough")
+                resolved_nodes += 1  # funcional pero sin l?gica
             else:
                 issues.append("orphan node")
 
@@ -55,7 +55,7 @@ def compute_accuracy(dag, xfr_rules, dml_schema=None):
                     resolved_joins += 1
                     resolved_nodes += 1
                 else:
-                    issues.append("no join_key — using default 'id'")
+                    issues.append("no join_key ? using default 'id'")
                     resolved_nodes += 1  # funcional pero con default
             else:
                 issues.append(f"needs 2+ parents, has {len(node.parents)}")
@@ -64,7 +64,7 @@ def compute_accuracy(dag, xfr_rules, dml_schema=None):
             if node.parents:
                 resolved_nodes += 1
             else:
-                issues.append("no parent — nothing to write")
+                issues.append("no parent ? nothing to write")
 
         else:
             if node.parents:
@@ -78,7 +78,7 @@ def compute_accuracy(dag, xfr_rules, dml_schema=None):
             if child_id in dag.nodes:
                 resolved_edges += 1
             else:
-                issues.append(f"edge to '{child_id}' — target not found")
+                issues.append(f"edge to '{child_id}' ? target not found")
 
         if issues:
             details.append({"node": node.name, "type": ntype, "issues": issues})

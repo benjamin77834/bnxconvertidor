@@ -13,7 +13,7 @@ def generate_spark(dag):
 
     code.append("")
 
-    # simple flow (solo 1 transformación tipo reformat)
+    # simple flow (solo 1 transformaci?n tipo reformat)
     last = dag["order"][0]
 
     for n in dag["order"][1:]:

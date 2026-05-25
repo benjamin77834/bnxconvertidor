@@ -16,4 +16,4 @@ def save_dag(plan, output_file="dag"):
 
     dot.render(output_file, format="png", cleanup=True)
 
-    print(f"📊 DAG GENERATED: {output_file}.png")
+    print(f"[>] DAG GENERATED: {output_file}.png")

@@ -1,5 +1,5 @@
 def remove_redundant_filters(ir):
-    print("⚡ OPTIMIZER: remove_redundant_filters")
+    print("[>] OPTIMIZER: remove_redundant_filters")
 
     for node in ir.nodes.values():
         if node.type == "filter":
@@ -11,7 +11,7 @@ def remove_redundant_filters(ir):
 
 
 def collapse_transforms(ir):
-    print("⚡ OPTIMIZER: collapse_transforms")
+    print("[>] OPTIMIZER: collapse_transforms")
 
     for node in ir.nodes.values():
         if node.type == "transform" and not node.inputs:

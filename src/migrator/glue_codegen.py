@@ -45,7 +45,7 @@ def infer_join_key(left_schema, right_schema):
 # CODEGEN V5 (FIXED RETURN)
 # ----------------------------
 def generate_glue_job(ir_graph):
-    print("⚙️ BNX v5 DAG Compiler running...")
+    print("?? BNX v5 DAG Compiler running...")
 
     nodes = list(ir_graph.nodes.keys())
     edges = ir_graph.edges
@@ -133,5 +133,5 @@ def generate_glue_job(ir_graph):
     code.append(f"\n{sink}.write.mode('overwrite').saveAsTable('output_{sink}')")
     code.append("\nspark.stop()\n")
 
-    # ✅ FIX PRINCIPAL (3 RETURNS ALWAYS)
+    # [ok] FIX PRINCIPAL (3 RETURNS ALWAYS)
     return "\n".join(code), sink, dict(lineage)

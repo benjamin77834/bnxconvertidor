@@ -51,4 +51,4 @@ def generate_glue(order, nodes, edges, output_path):
     with open(output_path, "w") as f:
         f.write("\n".join(lines))
 
-    print(f"[CODEGEN V40 FIX] WRITTEN → {output_path}")
+    print(f"[CODEGEN V40 FIX] WRITTEN ? {output_path}")

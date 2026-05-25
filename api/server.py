@@ -58,7 +58,7 @@ async def compile_graph(
     Compila el grafo y retorna:
     - nodes: lista de nodos con tipo y subgraph
     - edges: lista de edges
-    - errors / warnings de validación
+    - errors / warnings de validaci?n
     - code: Glue job generado
     """
     mp_path  = _save_upload(mp)
@@ -74,7 +74,7 @@ async def compile_graph(
 
         errors, warnings = validate(dag, xfr_rules, dml_schema)
 
-        # Generar código según target
+        # Generar c?digo seg?n target
         code = None
         stepfunctions_json = None
         terraform_code = None
@@ -265,7 +265,7 @@ async def refactor(
     source_version: str = "all",
     target_version: str = "spark3",
 ):
-    """Refactors legacy code: Spark 2→3, Python 2→3, Glue 2→4."""
+    """Refactors legacy code: Spark 2?3, Python 2?3, Glue 2?4."""
     code_path = _save_upload(code)
     try:
         with open(code_path) as f:

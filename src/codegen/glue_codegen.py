@@ -7,39 +7,39 @@ def _map_date_functions(expr):
     """Map Ab Initio date functions to Spark SQL equivalents."""
     if not expr:
         return expr
-    # date_to_string(date, format) → date_format(date, format)
+    # date_to_string(date, format) ? date_format(date, format)
     expr = re.sub(r'date_to_string\(', 'date_format(', expr)
-    # string_to_date(str, format) → to_date(str, format)
+    # string_to_date(str, format) ? to_date(str, format)
     expr = re.sub(r'string_to_date\(', 'to_date(', expr)
-    # string_to_datetime(str, format) → to_timestamp(str, format)
+    # string_to_datetime(str, format) ? to_timestamp(str, format)
     expr = re.sub(r'string_to_datetime\(', 'to_timestamp(', expr)
-    # datetime_to_string(dt, format) → date_format(dt, format)
+    # datetime_to_string(dt, format) ? date_format(dt, format)
     expr = re.sub(r'datetime_to_string\(', 'date_format(', expr)
-    # date_diff(d1, d2) → datediff(d1, d2)
+    # date_diff(d1, d2) ? datediff(d1, d2)
     expr = re.sub(r'date_diff\(', 'datediff(', expr)
-    # date_add_days(date, n) → date_add(date, n)
+    # date_add_days(date, n) ? date_add(date, n)
     expr = re.sub(r'date_add_days\(', 'date_add(', expr)
-    # date_sub_days(date, n) → date_sub(date, n)
+    # date_sub_days(date, n) ? date_sub(date, n)
     expr = re.sub(r'date_sub_days\(', 'date_sub(', expr)
-    # today() → current_date()
+    # today() ? current_date()
     expr = re.sub(r'\btoday\(\)', 'current_date()', expr)
-    # now() → current_timestamp()
+    # now() ? current_timestamp()
     expr = re.sub(r'\bnow\(\)', 'current_timestamp()', expr)
-    # year_of(date) → year(date)
+    # year_of(date) ? year(date)
     expr = re.sub(r'year_of\(', 'year(', expr)
-    # month_of(date) → month(date)
+    # month_of(date) ? month(date)
     expr = re.sub(r'month_of\(', 'month(', expr)
-    # day_of(date) → dayofmonth(date)
+    # day_of(date) ? dayofmonth(date)
     expr = re.sub(r'day_of\(', 'dayofmonth(', expr)
-    # truncate_date(date, "MONTH") → trunc(date, "MM")
+    # truncate_date(date, "MONTH") ? trunc(date, "MM")
     expr = re.sub(r'truncate_date\(([^,]+),\s*"MONTH"\)', r'trunc(\1, "MM")', expr)
     expr = re.sub(r'truncate_date\(([^,]+),\s*"YEAR"\)', r'trunc(\1, "yyyy")', expr)
-    # last_day_of_month(date) → last_day(date)
+    # last_day_of_month(date) ? last_day(date)
     expr = re.sub(r'last_day_of_month\(', 'last_day(', expr)
     return expr
 
 def _build_transform(var_id, src_df, rule):
-    """Genera código PySpark a partir de una regla XFR { select, where, group_by }"""
+    """Genera c?digo PySpark a partir de una regla XFR { select, where, group_by }"""
     select = rule.get("select", "*")
     where = rule.get("where")
     group_by = rule.get("group_by")
@@ -52,7 +52,7 @@ def _build_transform(var_id, src_df, rule):
     if group_by:
         # Genera groupBy().agg() para agregaciones
         keys = ", ".join(f'"{k}"' for k in group_by)
-        # Convierte "SUM(amount) as total_spent" → sum("amount").alias("total_spent")
+        # Convierte "SUM(amount) as total_spent" ? sum("amount").alias("total_spent")
         agg_exprs = []
         for col in select.split(","):
             col = col.strip()
@@ -79,17 +79,17 @@ def generate_glue(dag, output_path, xfr_rules=None):
     xfr_rules = xfr_rules or {}
 
     with open(output_path, "w") as f:
-        f.write(f'"""\n🚀 BNX V54 GENERATED GLUE JOB\n📅 Generated at: {datetime.now()}\n"""\n\n')
+        f.write(f'"""\n[*] BNX V54 GENERATED GLUE JOB\n? Generated at: {datetime.now()}\n"""\n\n')
         f.write("from awsglue.context import GlueContext\n")
         f.write("from pyspark.context import SparkContext\n")
         f.write("from pyspark.sql.functions import *\n\n")
         f.write("sc = SparkContext()\nglueContext = GlueContext(sc)\nspark = glueContext.spark_session\n\n")
-        f.write('print("🚀 BNX Glue Job V54 Started")\n\n')
+        f.write('print("[*] BNX Glue Job V54 Started")\n\n')
         f.write("# =========================\n# DAG EXECUTION V54\n# =========================\n\n")
 
         # Track graph boundaries for Mega-DAG
         graph_boundaries = getattr(dag, 'graph_boundaries', {})
-        # Build reverse map: node_id → graph_name
+        # Build reverse map: node_id ? graph_name
         node_to_graph = {}
         for gname, nids in graph_boundaries.items():
             if "__" not in gname:  # only top-level graph subgraphs
@@ -112,7 +112,7 @@ def generate_glue(dag, output_path, xfr_rules=None):
 
             # SOURCE
             if ntype == "SOURCE":
-                f.write(f'# 🟢 SOURCE: {log_name}\n')
+                f.write(f'# [+] SOURCE: {log_name}\n')
                 src_type = rule.get("source_type", "s3") if rule else "s3"
                 path = rule.get("path", f"s3://bnx/raw/{var_id.lower()}") if rule else f"s3://bnx/raw/{var_id.lower()}"
                 fmt = rule.get("format", "parquet") if rule else "parquet"
@@ -145,11 +145,11 @@ def generate_glue(dag, output_path, xfr_rules=None):
                     if scan_year: filters.append(f'year = {scan_year}')
                     if scan_month: filters.append(f'month = {scan_month}')
                     f.write(f'{var_id}_df = {var_id}_df.where("{" AND ".join(filters)}")\n')
-                f.write(f'print("📂 SOURCE: {log_name}")\n\n')
+                f.write(f'print("[>] SOURCE: {log_name}")\n\n')
 
             # TRANSFORM / XFR
             elif ntype in ("TRANSFORM", "XFR"):
-                f.write(f'# 🔹 TRANSFORM: {log_name}\n')
+                f.write(f'# [.] TRANSFORM: {log_name}\n')
                 if parents:
                     src = f'{parents[0]}_df'
                     if rule:
@@ -158,11 +158,11 @@ def generate_glue(dag, output_path, xfr_rules=None):
                         f.write(f'{var_id}_df = {src}.selectExpr("*")  # no XFR rule found\n')
                 else:
                     f.write(f'{var_id}_df = None  # no parent\n')
-                f.write(f'print("🔄 TRANSFORM: {log_name}")\n\n')
+                f.write(f'print("[~] TRANSFORM: {log_name}")\n\n')
 
             # JOIN
             elif ntype == "JOIN":
-                f.write(f'# 🔗 JOIN: {log_name}\n')
+                f.write(f'# [~] JOIN: {log_name}\n')
                 if len(parents) >= 2:
                     join_key = rule.get("join_key", "id") if rule else "id"
                     join_type = rule.get("join_type", "inner") if rule else "inner"
@@ -175,18 +175,18 @@ def generate_glue(dag, output_path, xfr_rules=None):
                     f.write(f'{var_id}_df = {parents[0]}_df\n')
                 else:
                     f.write(f'{var_id}_df = None  # no parents\n')
-                f.write(f'print("🔗 JOIN: {log_name}")\n\n')
+                f.write(f'print("[~] JOIN: {log_name}")\n\n')
 
-            # DEDUP — deduplicación por key
+            # DEDUP ? deduplicaci?n por key
             elif ntype == "DEDUP":
-                f.write(f'# 🧹 DEDUP: {log_name}\n')
+                f.write(f'# [-] DEDUP: {log_name}\n')
                 if parents:
                     src = f'{parents[0]}_df'
                     dedup_keys = rule.get("dedup_keys", ["id"]) if rule else ["id"]
                     order_by = rule.get("order_by") if rule else None
                     keys_str = ", ".join(f'"{k}"' for k in dedup_keys)
                     if order_by:
-                        # Mantener el registro más reciente
+                        # Mantener el registro m?s reciente
                         f.write(f'from pyspark.sql.window import Window\n')
                         f.write(f'_w_{var_id} = Window.partitionBy({keys_str}).orderBy(col("{order_by}").desc())\n')
                         f.write(f'{var_id}_df = {src}.withColumn("_rn", row_number().over(_w_{var_id})).where("_rn = 1").drop("_rn")\n')
@@ -194,11 +194,11 @@ def generate_glue(dag, output_path, xfr_rules=None):
                         f.write(f'{var_id}_df = {src}.dropDuplicates([{keys_str}])\n')
                 else:
                     f.write(f'{var_id}_df = None  # no parent\n')
-                f.write(f'print("🧹 DEDUP: {log_name}")\n\n')
+                f.write(f'print("[-] DEDUP: {log_name}")\n\n')
 
-            # NORMALIZE — un registro → múltiples registros (explode)
+            # NORMALIZE ? un registro ? m?ltiples registros (explode)
             elif ntype == "NORMALIZE":
-                f.write(f'# 📐 NORMALIZE: {log_name}\n')
+                f.write(f'# [=] NORMALIZE: {log_name}\n')
                 if parents:
                     src = f'{parents[0]}_df'
                     explode_col = rule.get("explode_col") if rule else None
@@ -214,11 +214,11 @@ def generate_glue(dag, output_path, xfr_rules=None):
                             f.write(f'{var_id}_df = {src}  # no explode/split config\n')
                 else:
                     f.write(f'{var_id}_df = None  # no parent\n')
-                f.write(f'print("📐 NORMALIZE: {log_name}")\n\n')
+                f.write(f'print("[=] NORMALIZE: {log_name}")\n\n')
 
-            # LOOKUP — referencia a dataset externo (broadcast join)
+            # LOOKUP ? referencia a dataset externo (broadcast join)
             elif ntype == "LOOKUP":
-                f.write(f'# 🔍 LOOKUP: {log_name}\n')
+                f.write(f'# [?] LOOKUP: {log_name}\n')
                 if len(parents) >= 2:
                     main_df = f'{parents[0]}_df'
                     lookup_df = f'{parents[1]}_df'
@@ -235,11 +235,11 @@ def generate_glue(dag, output_path, xfr_rules=None):
                     f.write(f'{var_id}_df = {parents[0]}_df\n')
                 else:
                     f.write(f'{var_id}_df = None  # no parents\n')
-                f.write(f'print("🔍 LOOKUP: {log_name}")\n\n')
+                f.write(f'print("[?] LOOKUP: {log_name}")\n\n')
 
-            # CONCATENATE — union de datasets sin join key
+            # CONCATENATE ? union de datasets sin join key
             elif ntype == "CONCATENATE":
-                f.write(f'# 🔗 CONCATENATE: {log_name}\n')
+                f.write(f'# [~] CONCATENATE: {log_name}\n')
                 if len(parents) >= 2:
                     f.write(f'{var_id}_df = {parents[0]}_df.unionByName({parents[1]}_df, allowMissingColumns=True)\n')
                     for ep in parents[2:]:
@@ -248,11 +248,11 @@ def generate_glue(dag, output_path, xfr_rules=None):
                     f.write(f'{var_id}_df = {parents[0]}_df\n')
                 else:
                     f.write(f'{var_id}_df = None  # no parents\n')
-                f.write(f'print("🔗 CONCATENATE: {log_name}")\n\n')
+                f.write(f'print("[~] CONCATENATE: {log_name}")\n\n')
 
-            # GATHER — merge multiple streams into one
+            # GATHER ? merge multiple streams into one
             elif ntype == "GATHER":
-                f.write(f'# 📥 GATHER: {log_name}\n')
+                f.write(f'# ? GATHER: {log_name}\n')
                 if len(parents) >= 2:
                     f.write(f'{var_id}_df = {parents[0]}_df.unionByName({parents[1]}_df, allowMissingColumns=True)\n')
                     for ep in parents[2:]:
@@ -261,11 +261,11 @@ def generate_glue(dag, output_path, xfr_rules=None):
                     f.write(f'{var_id}_df = {parents[0]}_df\n')
                 else:
                     f.write(f'{var_id}_df = None\n')
-                f.write(f'print("📥 GATHER: {log_name}")\n\n')
+                f.write(f'print("? GATHER: {log_name}")\n\n')
 
-            # PARTITION — repartition by key
+            # PARTITION ? repartition by key
             elif ntype == "PARTITION":
-                f.write(f'# 🔀 PARTITION: {log_name}\n')
+                f.write(f'# ? PARTITION: {log_name}\n')
                 if parents:
                     src = f'{parents[0]}_df'
                     part_keys = rule.get("partition_keys", ["id"]) if rule else ["id"]
@@ -274,11 +274,11 @@ def generate_glue(dag, output_path, xfr_rules=None):
                     f.write(f'{var_id}_df = {src}.repartition({num_parts}, {keys_str})\n')
                 else:
                     f.write(f'{var_id}_df = None\n')
-                f.write(f'print("🔀 PARTITION: {log_name}")\n\n')
+                f.write(f'print("? PARTITION: {log_name}")\n\n')
 
-            # FILTER — filter with reject port
+            # FILTER ? filter with reject port
             elif ntype == "FILTER":
-                f.write(f'# 🔽 FILTER: {log_name}\n')
+                f.write(f'# ? FILTER: {log_name}\n')
                 if parents:
                     src = f'{parents[0]}_df'
                     where = rule.get("where") if rule else None
@@ -290,11 +290,11 @@ def generate_glue(dag, output_path, xfr_rules=None):
                         f.write(f'{var_id}_reject_df = spark.createDataFrame([], {src}.schema)\n')
                 else:
                     f.write(f'{var_id}_df = None\n')
-                f.write(f'print("🔽 FILTER: {log_name}")\n\n')
+                f.write(f'print("? FILTER: {log_name}")\n\n')
 
             # SINK
             elif ntype == "SINK":
-                f.write(f'# 🏁 SINK: {log_name}\n')
+                f.write(f'# [*] SINK: {log_name}\n')
                 if parents:
                     src = f'{parents[0]}_df'
                     sink_type = rule.get("sink_type", "s3") if rule else "s3"
@@ -317,12 +317,12 @@ def generate_glue(dag, output_path, xfr_rules=None):
                     else:
                         f.write(f'{src}.write.mode("{mode}").format("{fmt}").save("{path}")\n')
                 else:
-                    f.write(f'# ⚠️ SINK {log_name} has no parent\n')
-                f.write(f'print("💾 SINK: {log_name}")\n\n')
+                    f.write(f'# [!] SINK {log_name} has no parent\n')
+                f.write(f'print("[>] SINK: {log_name}")\n\n')
 
-            # DML genérico
+            # DML gen?rico
             else:
-                f.write(f'# 🔹 DML ({ntype}): {log_name}\n')
+                f.write(f'# [.] DML ({ntype}): {log_name}\n')
                 if parents:
                     src = f'{parents[0]}_df'
                     if rule:
@@ -331,31 +331,31 @@ def generate_glue(dag, output_path, xfr_rules=None):
                         f.write(f'{var_id}_df = {src}  # no rule for {ntype}\n')
                 else:
                     f.write(f'{var_id}_df = None  # no parents\n')
-                f.write(f'print("🔄 DML: {log_name}")\n\n')
+                f.write(f'print("[~] DML: {log_name}")\n\n')
 
         # Retroceso iteration logic (cyclic plans)
         retroceso_edges = getattr(dag, 'retroceso_edges', [])
         if retroceso_edges:
-            f.write('\n# =========================\n# CYCLIC PLAN — RETROCESO ITERATIONS\n# =========================\n\n')
+            f.write('\n# =========================\n# CYCLIC PLAN ? RETROCESO ITERATIONS\n# =========================\n\n')
             max_iter = max(e.get("max_iterations", 5) for e in retroceso_edges)
             convergence = next((e.get("convergence") for e in retroceso_edges if e.get("convergence")), None)
             f.write(f'MAX_ITERATIONS = {max_iter}\n')
             f.write(f'for _iteration in range(MAX_ITERATIONS):\n')
-            f.write(f'    print(f"🔄 Iteration {{_iteration + 1}}/{{MAX_ITERATIONS}}")\n')
+            f.write(f'    print(f"[~] Iteration {{_iteration + 1}}/{{MAX_ITERATIONS}}")\n')
             for re_edge in retroceso_edges:
                 src_id = re_edge["from"]
                 tgt_id = re_edge["to"]
                 sg = re_edge.get("source_graph", "unknown")
                 tg = re_edge.get("target_graph", "unknown")
-                f.write(f'    # Retroceso: {sg} → {tg}\n')
+                f.write(f'    # Retroceso: {sg} ? {tg}\n')
                 f.write(f'    _staging_path = f"s3://bnx-staging/{sg}_to_{tg}/iteration_{{_iteration}}"\n')
                 f.write(f'    {src_id}_df.write.mode("overwrite").parquet(_staging_path)\n')
                 f.write(f'    {tgt_id}_df = spark.read.parquet(_staging_path)\n')
-                f.write(f'    print(f"  📦 Checkpoint: {sg} → {tg} ({{_staging_path}})")\n')
+                f.write(f'    print(f"  [>] Checkpoint: {sg} ? {tg} ({{_staging_path}})")\n')
             if convergence:
                 f.write(f'    # Convergence check: {convergence}\n')
                 f.write(f'    # _delta = compute_delta(...)  # implement convergence logic\n')
                 f.write(f'    # if {convergence}: break\n')
-            f.write(f'    print(f"  ✅ Iteration {{_iteration + 1}} complete")\n\n')
+            f.write(f'    print(f"  [ok] Iteration {{_iteration + 1}} complete")\n\n')
 
-        f.write('print("✅ BNX Glue Job V54 Finished")\n')
+        f.write('print("[ok] BNX Glue Job V54 Finished")\n')

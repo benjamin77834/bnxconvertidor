@@ -5,7 +5,7 @@ class CatalystVM:
 
     def execute(self, physical_plan):
 
-        print("\n🚀 EXECUTING PHYSICAL PLAN...\n")
+        print("\n[*] EXECUTING PHYSICAL PLAN...\n")
 
         for node in physical_plan:
-            print(f"▶ Executing {node}")
+            print(f"? Executing {node}")

@@ -3,7 +3,7 @@ class XfrEngine:
     def eval_expr(self, expr, input_alias="df"):
 
         """
-        Convierte XFR simple → Spark expressions
+        Convierte XFR simple ? Spark expressions
         """
 
         if expr.startswith("UPPER"):

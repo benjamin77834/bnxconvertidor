@@ -27,11 +27,11 @@ def topo_sort(nodes, edges):
             if indegree[neigh] == 0:
                 queue.append(neigh)
 
-    # 🔥 FIX: agregar nodos perdidos (por ciclos)
+    # ? FIX: agregar nodos perdidos (por ciclos)
     missing = [n["id"] for n in nodes if n["id"] not in visited]
 
     if missing:
-        print(f"⚠️ Nodos fuera de DAG (posible ciclo): {missing}")
+        print(f"[!] Nodos fuera de DAG (posible ciclo): {missing}")
         order.extend(missing)
 
     return order

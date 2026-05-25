@@ -1,6 +1,6 @@
 def parse_mp_file(path):
 
-    print("\n🔥 PARSER STARTED")
+    print("\n? PARSER STARTED")
 
     nodes = {}
     edges = []
@@ -8,7 +8,7 @@ def parse_mp_file(path):
     with open(path, "r") as f:
         lines = [l.strip() for l in f.readlines() if l.strip()]
 
-    print(f"📄 LINES: {len(lines)}")
+    print(f"? LINES: {len(lines)}")
 
     for line in lines:
 
@@ -67,7 +67,7 @@ def parse_mp_file(path):
                     "props": {}
                 }
 
-    print(f"🔗 EDGES: {len(edges)}")
-    print(f"🧠 NODES: {len(nodes)}")
+    print(f"[~] EDGES: {len(edges)}")
+    print(f"? NODES: {len(nodes)}")
 
     return nodes, edges

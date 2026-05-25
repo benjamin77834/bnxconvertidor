@@ -42,7 +42,7 @@ def _parse_native_abinitio(content):
     nodes = []
     edges = []
     params = {}
-    node_map = {}  # vertex_id → node info
+    node_map = {}  # vertex_id ? node info
 
     for line in content.split("\n"):
         line = line.strip()
@@ -53,7 +53,7 @@ def _parse_native_abinitio(content):
         m = re.match(r'\{[^|]*\|XXGpvertex\|(\d+)\|', line)
         if m:
             vid = m.group(1)
-            # Extract component name — it's after @1| in the line
+            # Extract component name ? it's after @1| in the line
             name_match = re.search(r'@1\|([^|]+)\|', line)
             if name_match:
                 comp_name = name_match.group(1).strip()

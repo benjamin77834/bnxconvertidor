@@ -66,12 +66,12 @@ def generate_spark(dag, output_path, xfr_rules=None):
     xfr_rules = xfr_rules or {}
 
     with open(output_path, "w") as f:
-        f.write(f'"""\n🚀 BNX V54 GENERATED PYSPARK JOB\n📅 Generated at: {datetime.now()}\n"""\n\n')
+        f.write(f'"""\n[*] BNX V54 GENERATED PYSPARK JOB\n? Generated at: {datetime.now()}\n"""\n\n')
         f.write("from pyspark.sql import SparkSession\n")
         f.write("from pyspark.sql.functions import *\n")
         f.write("from pyspark.sql.window import Window\n\n")
         f.write('spark = SparkSession.builder.appName("BNX_Pipeline").getOrCreate()\n\n')
-        f.write('print("🚀 BNX PySpark Job Started")\n\n')
+        f.write('print("[*] BNX PySpark Job Started")\n\n')
 
         # Track graph boundaries for Mega-DAG
         graph_boundaries = getattr(dag, 'graph_boundaries', {})
@@ -96,7 +96,7 @@ def generate_spark(dag, output_path, xfr_rules=None):
             rule = xfr_rules.get(var_id.lower()) or xfr_rules.get(log_name.lower())
 
             if ntype == "SOURCE":
-                f.write(f'# 🟢 SOURCE: {log_name}\n')
+                f.write(f'# [+] SOURCE: {log_name}\n')
                 src_type = rule.get("source_type", "s3") if rule else "s3"
                 path = rule.get("path", f"s3a://bnx/raw/{var_id.lower()}") if rule else f"s3a://bnx/raw/{var_id.lower()}"
                 fmt = rule.get("format", "parquet") if rule else "parquet"
@@ -131,10 +131,10 @@ def generate_spark(dag, output_path, xfr_rules=None):
                     if scan_year: filters.append(f'year = {scan_year}')
                     if scan_month: filters.append(f'month = {scan_month}')
                     f.write(f'{var_id}_df = {var_id}_df.where("{" AND ".join(filters)}")\n')
-                f.write(f'print("📂 SOURCE: {log_name}")\n\n')
+                f.write(f'print("[>] SOURCE: {log_name}")\n\n')
 
             elif ntype in ("TRANSFORM", "XFR"):
-                f.write(f'# 🔹 TRANSFORM: {log_name}\n')
+                f.write(f'# [.] TRANSFORM: {log_name}\n')
                 if parents:
                     src = f'{parents[0]}_df'
                     if rule:
@@ -143,10 +143,10 @@ def generate_spark(dag, output_path, xfr_rules=None):
                         f.write(f'{var_id}_df = {src}.selectExpr("*")\n')
                 else:
                     f.write(f'{var_id}_df = None\n')
-                f.write(f'print("🔄 TRANSFORM: {log_name}")\n\n')
+                f.write(f'print("[~] TRANSFORM: {log_name}")\n\n')
 
             elif ntype == "JOIN":
-                f.write(f'# 🔗 JOIN: {log_name}\n')
+                f.write(f'# [~] JOIN: {log_name}\n')
                 if len(parents) >= 2:
                     jk = rule.get("join_key", "id") if rule else "id"
                     jt = rule.get("join_type", "inner") if rule else "inner"
@@ -157,10 +157,10 @@ def generate_spark(dag, output_path, xfr_rules=None):
                     f.write(f'{var_id}_df = {parents[0]}_df\n')
                 else:
                     f.write(f'{var_id}_df = None\n')
-                f.write(f'print("🔗 JOIN: {log_name}")\n\n')
+                f.write(f'print("[~] JOIN: {log_name}")\n\n')
 
             elif ntype == "DEDUP":
-                f.write(f'# 🧹 DEDUP: {log_name}\n')
+                f.write(f'# [-] DEDUP: {log_name}\n')
                 if parents:
                     src = f'{parents[0]}_df'
                     dk = rule.get("dedup_keys", ["id"]) if rule else ["id"]
@@ -173,10 +173,10 @@ def generate_spark(dag, output_path, xfr_rules=None):
                         f.write(f'{var_id}_df = {src}.dropDuplicates([{ks}])\n')
                 else:
                     f.write(f'{var_id}_df = None\n')
-                f.write(f'print("🧹 DEDUP: {log_name}")\n\n')
+                f.write(f'print("[-] DEDUP: {log_name}")\n\n')
 
             elif ntype == "NORMALIZE":
-                f.write(f'# 📐 NORMALIZE: {log_name}\n')
+                f.write(f'# [=] NORMALIZE: {log_name}\n')
                 if parents:
                     src = f'{parents[0]}_df'
                     ec = rule.get("explode_col") if rule else None
@@ -190,10 +190,10 @@ def generate_spark(dag, output_path, xfr_rules=None):
                         f.write(f'{var_id}_df = {src}\n')
                 else:
                     f.write(f'{var_id}_df = None\n')
-                f.write(f'print("📐 NORMALIZE: {log_name}")\n\n')
+                f.write(f'print("[=] NORMALIZE: {log_name}")\n\n')
 
             elif ntype == "LOOKUP":
-                f.write(f'# 🔍 LOOKUP: {log_name}\n')
+                f.write(f'# [?] LOOKUP: {log_name}\n')
                 if len(parents) >= 2:
                     lk = rule.get("lookup_key", "id") if rule else "id"
                     ls = rule.get("lookup_select") if rule else None
@@ -205,10 +205,10 @@ def generate_spark(dag, output_path, xfr_rules=None):
                     f.write(f'{var_id}_df = {parents[0]}_df.join(_lkp_{var_id}, on="{lk}", how="left")\n')
                 else:
                     f.write(f'{var_id}_df = None\n')
-                f.write(f'print("🔍 LOOKUP: {log_name}")\n\n')
+                f.write(f'print("[?] LOOKUP: {log_name}")\n\n')
 
             elif ntype == "SINK":
-                f.write(f'# 🏁 SINK: {log_name}\n')
+                f.write(f'# [*] SINK: {log_name}\n')
                 if parents:
                     src = f'{parents[0]}_df'
                     sink_type = rule.get("sink_type", "s3") if rule else "s3"
@@ -229,10 +229,10 @@ def generate_spark(dag, output_path, xfr_rules=None):
                         f.write(f'.option("dbtable", "{table or var_id.lower()}").save()\n')
                     else:
                         f.write(f'{src}.write.mode("{mode}").parquet("{path}")\n')
-                f.write(f'print("💾 SINK: {log_name}")\n\n')
+                f.write(f'print("[>] SINK: {log_name}")\n\n')
 
             else:
-                f.write(f'# 🔹 {ntype}: {log_name}\n')
+                f.write(f'# [.] {ntype}: {log_name}\n')
                 if parents:
                     if rule:
                         f.write(_build_transform(var_id, f'{parents[0]}_df', rule) + "\n")
@@ -240,32 +240,32 @@ def generate_spark(dag, output_path, xfr_rules=None):
                         f.write(f'{var_id}_df = {parents[0]}_df\n')
                 else:
                     f.write(f'{var_id}_df = None\n')
-                f.write(f'print("🔄 {ntype}: {log_name}")\n\n')
+                f.write(f'print("[~] {ntype}: {log_name}")\n\n')
 
         # Retroceso iteration logic (cyclic plans)
         retroceso_edges = getattr(dag, 'retroceso_edges', [])
         if retroceso_edges:
-            f.write('\n# =========================\n# CYCLIC PLAN — RETROCESO ITERATIONS\n# =========================\n\n')
+            f.write('\n# =========================\n# CYCLIC PLAN ? RETROCESO ITERATIONS\n# =========================\n\n')
             max_iter = max(e.get("max_iterations", 5) for e in retroceso_edges)
             convergence = next((e.get("convergence") for e in retroceso_edges if e.get("convergence")), None)
             f.write(f'MAX_ITERATIONS = {max_iter}\n')
             f.write(f'for _iteration in range(MAX_ITERATIONS):\n')
-            f.write(f'    print(f"🔄 Iteration {{_iteration + 1}}/{{MAX_ITERATIONS}}")\n')
+            f.write(f'    print(f"[~] Iteration {{_iteration + 1}}/{{MAX_ITERATIONS}}")\n')
             for re_edge in retroceso_edges:
                 src_id = re_edge["from"]
                 tgt_id = re_edge["to"]
                 sg = re_edge.get("source_graph", "unknown")
                 tg = re_edge.get("target_graph", "unknown")
-                f.write(f'    # Retroceso: {sg} → {tg}\n')
+                f.write(f'    # Retroceso: {sg} ? {tg}\n')
                 f.write(f'    _staging_path = f"s3a://bnx-staging/{sg}_to_{tg}/iteration_{{_iteration}}"\n')
                 f.write(f'    {src_id}_df.write.mode("overwrite").parquet(_staging_path)\n')
                 f.write(f'    {tgt_id}_df = spark.read.parquet(_staging_path)\n')
-                f.write(f'    print(f"  📦 Checkpoint: {sg} → {tg} ({{_staging_path}})")\n')
+                f.write(f'    print(f"  [>] Checkpoint: {sg} ? {tg} ({{_staging_path}})")\n')
             if convergence:
                 f.write(f'    # Convergence check: {convergence}\n')
                 f.write(f'    # _delta = compute_delta(...)\n')
                 f.write(f'    # if {convergence}: break\n')
-            f.write(f'    print(f"  ✅ Iteration {{_iteration + 1}} complete")\n\n')
+            f.write(f'    print(f"  [ok] Iteration {{_iteration + 1}} complete")\n\n')
 
         f.write('spark.stop()\n')
-        f.write('print("✅ BNX PySpark Job Finished")\n')
+        f.write('print("[ok] BNX PySpark Job Finished")\n')

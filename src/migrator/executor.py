@@ -6,7 +6,7 @@ from migrator.optimizer import DAGOptimizer
 
 def generate(ir):
 
-    print("⚙️ BNX v7.1 COMPILER START")
+    print("?? BNX v7.1 COMPILER START")
 
     optimizer = DAGOptimizer(ir.nodes, ir.edges)
     edges = optimizer.prune()

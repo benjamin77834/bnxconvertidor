@@ -9,7 +9,7 @@ TYPE_STYLE = {
     "TRANSFORM": {"shape": "box",       "color": "#ADD8E6"},  # azul
     "XFR":       {"shape": "box",       "color": "#ADD8E6"},  # azul
     "JOIN":      {"shape": "diamond",   "color": "#FFD700"},  # amarillo
-    "SINK":      {"shape": "ellipse",   "color": "#FFA07A"},  # salmón
+    "SINK":      {"shape": "ellipse",   "color": "#FFA07A"},  # salm?n
 }
 DEFAULT_STYLE = {"shape": "box", "color": "#EEEEEE"}
 
@@ -85,7 +85,7 @@ def build_visual(mp_path, output_file):
             dot.edge(node.id, child_id)
 
     dot.render(output_file, view=True)
-    print(f"✅ DAG generado: {output_file}.png")
+    print(f"? DAG generado: {output_file}.png")
     print(f"   Nodos : {len(dag.nodes)}")
     print(f"   Edges : {sum(len(n.children) for n in dag.execution_order)}")
     print(f"   Clusters: {list(subgraphs.keys())}")

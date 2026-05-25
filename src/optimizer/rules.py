@@ -2,9 +2,9 @@
 
 def optimize(dag):
 
-    print("⚡ OPTIMIZER START")
+    print("[>] OPTIMIZER START")
 
-    # aquí puedes meter pushdown, pruning, etc.
+    # aqu? puedes meter pushdown, pruning, etc.
     # por ahora passthrough seguro
 
     return dag

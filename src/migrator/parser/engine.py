@@ -9,35 +9,35 @@ from src.core.spark_compiler import generate_spark
 
 
 def compile_sql(sql, output):
-    print("🧠 Parsing SQL...")
+    print("? Parsing SQL...")
     ast = parse_sql(sql)
 
-    print("🧠 Building IR...")
+    print("? Building IR...")
     ir = build_ir(ast)
 
-    print("⚙️ Optimizing...")
+    print("?? Optimizing...")
     ir = optimize(ir)
 
-    print("📊 Building DAG...")
+    print("[>] Building DAG...")
     dag = build_dag(ir)
 
-    print("🧬 Building lineage...")
+    print("? Building lineage...")
     build_lineage(dag)
 
-    print("⚡ Generating Spark...")
+    print("[>] Generating Spark...")
     code = generate_spark(dag)
 
     with open(output, "w") as f:
         f.write(code)
 
-    print(f"✅ Generated: {output}")
+    print(f"[ok] Generated: {output}")
 
 
 def compile_graph(sql=None, mp=None, xfr=None, dml=None, output="glue_job.py"):
     if sql:
         return compile_sql(sql, output)
 
-    print("🚀 GRAPH MODE (MP/XFR/DML)")
+    print("[*] GRAPH MODE (MP/XFR/DML)")
 
     ast = {
         "mp": mp,
@@ -54,4 +54,4 @@ def compile_graph(sql=None, mp=None, xfr=None, dml=None, output="glue_job.py"):
     with open(output, "w") as f:
         f.write(code)
 
-    print(f"✅ Generated: {output}")
+    print(f"[ok] Generated: {output}")

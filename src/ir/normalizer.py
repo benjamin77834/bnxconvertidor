@@ -3,7 +3,7 @@ from src.ir.node import Node
 
 def normalize(graph):
     """
-    Convierte dict / mixed input → strict Node IR
+    Convierte dict / mixed input ? strict Node IR
     """
 
     normalized = []

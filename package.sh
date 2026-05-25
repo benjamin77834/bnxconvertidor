@@ -1,61 +1,55 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════
-# BNX Convertidor — Empaquetador portable
-# Genera un ZIP instalable en cualquier carpeta/máquina
+# BNX Convertidor — Empaquetador portable (7z)
+# Genera un .7z con toda la estructura lista para ejecutar
 # ═══════════════════════════════════════════════════════════
 
-OUTPUT="bnx-convertidor-portable.zip"
+OUTPUT="bnx-convertidor-portable.7z"
+
 echo "📦 Empaquetando BNX Convertidor..."
+
+# Verificar que 7z está instalado
+if ! command -v 7z &> /dev/null; then
+  echo "❌ 7-Zip no encontrado."
+  if command -v brew &> /dev/null; then
+    brew install p7zip
+  else
+    echo "Instala 7-Zip manualmente: brew install p7zip"
+    exit 1
+  fi
+fi
 
 # Clean previous
 rm -f "$OUTPUT"
 
-zip -r "$OUTPUT" \
+# Comprimir directamente (sin renombrar, sin temp)
+# Incluye todo src/, api/, lambda/, main.py, grafos, samples
+7z a -t7z "$OUTPUT" \
   main.py \
   bnx.sh \
   requirements.txt \
   README.md \
-  src/mp_parser.py \
-  src/xfr_parser.py \
-  src/dml_parser.py \
-  src/cobol_parser.py \
-  src/plan_parser.py \
-  src/accuracy.py \
-  src/refactor_engine.py \
-  src/visualizer.py \
-  src/dag/builder.py \
-  src/dag/__init__.py \
-  src/validator/semantic.py \
-  src/validator/__init__.py \
-  src/codegen/glue_codegen.py \
-  src/codegen/spark_codegen.py \
-  src/codegen/flink_codegen.py \
-  src/codegen/stepfunctions_codegen.py \
-  src/codegen/terraform_codegen.py \
-  src/codegen/airflow_codegen.py \
-  src/codegen/__init__.py \
-  src/__init__.py \
-  api/server.py \
-  lambda/handler.py \
-  e2e/test.mp \
-  e2e/test.xfr \
-  samples/scan_dates/ \
-  samples/abinitio_native/ \
-  samples/refactor/ \
-  graphs/test_mega/ \
+  src/ \
+  api/ \
+  lambda/ \
+  e2e/ \
+  samples/ \
+  graphs/ \
   cobol/ \
-  -x "**/__pycache__/*" "**/.DS_Store"
-
-# Add init files if missing
-zip -j "$OUTPUT" /dev/null 2>/dev/null || true
+  abinitio/ \
+  dml/ \
+  -xr'!__pycache__' \
+  -xr'!.DS_Store' \
+  -xr'!*.egg-info' \
+  -xr'!*.pyc'
 
 echo ""
 echo "✅ Empaquetado: $OUTPUT ($(du -h $OUTPUT | cut -f1))"
 echo ""
-echo "Para instalar en otra carpeta:"
-echo "  1. unzip $OUTPUT -d /ruta/destino"
+echo "Para instalar en destino (Linux/Mac):"
+echo "  1. 7z x $OUTPUT -o/ruta/destino"
 echo "  2. cd /ruta/destino"
 echo "  3. chmod +x bnx.sh"
-echo "  4. ./bnx.sh test"
+echo "  4. python3 main.py --project gr1.mp --target glue --output job.py"
 echo ""
-echo "Requisitos: Python 3.11+ (sin dependencias externas)"
+echo "Requisitos: Python 3.11+"

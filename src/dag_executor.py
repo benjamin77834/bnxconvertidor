@@ -25,9 +25,9 @@ def execute_dag(plan):
 
     order = topological_sort(plan)
 
-    print("\n🚀 EXECUTION ORDER:")
+    print("\n[*] EXECUTION ORDER:")
 
     for node in order:
-        print(f"⚡ Running node: {node}")
+        print(f"[>] Running node: {node}")
 
     return order
