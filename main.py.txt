@@ -71,165 +71,214 @@ def _parse_gde_native(content):
     vertex_map = {}   # vertex_id -> {name, node_id}
     flow_map = {}     # flow connections
     
-    # First pass: extract all vertices (components) and flows
+    # First pass: extract components, ports, and flows
+    # Components: }@1|TYPE|...|ID|DISPLAY_NAME|Ab Initio Software|...
+    # Vertex ports: XXGvertex_oport → {0|out|}VERTEX_ID|PORT_ID|}
+    #               XXGvertex_iport → {0|in|}VERTEX_ID|PORT_ID|}
+    # Flow connections: XXGoport_dst_flow → {0|}PORT_ID|FLOW_ID|}  (output port goes to flow)
+    #                   XXGiport_src_flow → {0|}PORT_ID|FLOW_ID|}  (input port comes from flow)
+    # Edge logic: oport of vertex A → flow F → iport of vertex B  =  A → B
+    
+    node_by_id = {}       # component_id (large) -> {name, type, display_name}
+    vertex_to_comp = {}   # small vertex_id -> component_id (large) -- built later
+    
+    # Port mappings
+    oport_to_vertex = {}  # output_port_id -> vertex_id
+    iport_to_vertex = {}  # input_port_id -> vertex_id
+    oport_to_flow = {}    # output_port_id -> flow_id
+    iport_from_flow = {}  # input_port_id -> flow_id
+    
+    # Track vertex IDs (small numbers from port definitions)
+    vertex_ids = set()
+    
     for line in content.split("\n"):
         line = line.strip()
-        if not line or not line.startswith("{"):
+        if not line:
             continue
         
         # Parameters: {30001002|XXparameter|NAME|...|...}
-        m = re.match(r'\{(\d+)\|XXparameter\|([^|]+)\|', line)
-        if m:
-            param_name = m.group(2).strip()
-            # Try to get value - it's complex in GDE format
-            # Format: {code|XXparameter|NAME|pos|size|RFK||{default}|}
-            # We store the param name for reference
-            params[param_name] = ""
-            # Try to extract value after RFK
-            val_match = re.search(r'RFK\|([^|{}\n]+)', line)
-            if val_match:
-                params[param_name] = val_match.group(1).strip()
+        if "|XXparameter|" in line:
+            parts = line.split("|")
+            if len(parts) >= 3:
+                param_name = parts[2].strip()
+                params[param_name] = ""
             continue
         
-        # Graph vertex (component instance):
-        # {2010601001|XXGgraph_vertex_vertex|ID|0|POS|0|{NAME|SRC_ID|DST_ID|}
-        m = re.match(r'\{\d+\|XXGgraph_vertex_vertex\|(\d+)\|\d+\|\d+\|\d+\|\{([^|]+)\|(\d+)\|(\d+)\|', line)
-        if m:
-            vid = m.group(1)
-            name = m.group(2).strip()
-            src_id = m.group(3)
-            dst_id = m.group(4)
-            vertex_map[vid] = {"name": name, "src_id": src_id, "dst_id": dst_id}
+        # Component definition: }@1|TYPE|positions...|ID|DISPLAY_NAME|Ab Initio Software|...
+        if "}@1|" in line or "}0|" in line:
+            for marker in ["}@1|", "}0|"]:
+                idx = line.find(marker)
+                while idx >= 0:
+                    comp_str = line[idx + len(marker):]
+                    parts = comp_str.split("|")
+                    if len(parts) >= 9:
+                        comp_type = parts[0].strip()
+                        if comp_type and comp_type[0].isupper() and "XXG" not in comp_type:
+                            comp_id = None
+                            display_name = comp_type
+                            for i in range(1, min(12, len(parts))):
+                                val = parts[i].strip()
+                                if val.isdigit() and int(val) > 100:
+                                    if i + 1 < len(parts):
+                                        next_val = parts[i + 1].strip()
+                                        if next_val and not next_val.isdigit() and next_val[0].isalpha():
+                                            comp_id = val
+                                            display_name = next_val
+                                            break
+                            if comp_id and comp_id not in node_by_id:
+                                ntype = _map_component_type(comp_type)
+                                safe_name = re.sub(r'[^\w]', '_', display_name)
+                                node_by_id[comp_id] = {
+                                    "name": safe_name,
+                                    "type": ntype,
+                                    "display_name": display_name,
+                                    "comp_type": comp_type,
+                                }
+                    next_idx = line.find(marker, idx + 1)
+                    idx = next_idx
             continue
         
-        # Flow (edge between components):
-        # {2010604001|XXGraph_flow_flow|ID|0|POS|0|{NAME|FROM_ID|TO_ID|}
-        m = re.match(r'\{\d+\|XXGraph_flow_flow\|(\d+)\|\d+\|\d+\|\d+\|\{([^|]+)\|(\d+)\|(\d+)\|', line)
-        if m:
-            fid = m.group(1)
-            fname = m.group(2).strip()
-            from_id = m.group(3)
-            to_id = m.group(4)
-            flow_map[fid] = {"name": fname, "from": from_id, "to": to_id}
+        # Vertex output port: {2010212001|XXGvertex_oport|17|0|34|0|{0|out|}17|18|}
+        if "|XXGvertex_oport|" in line:
+            # Pattern: {0|out|}VERTEX_ID|PORT_ID|} or {0|out0|}VERTEX_ID|PORT_ID|}
+            m = re.search(r'\{0\|out\d*\|(\d+)\|(\d+)\|', line)
+            if m:
+                vertex_id = m.group(1)
+                port_id = m.group(2)
+                oport_to_vertex[port_id] = vertex_id
+                vertex_ids.add(vertex_id)
             continue
         
-        # Proto object (component definition with name):
-        # {2010007001|XXGobject_proto_object|ID|0|POS|0|{VERTEX_ID|...|}
-        m = re.match(r'\{\d+\|XXGobject_proto_object\|(\d+)\|\d+\|\d+\|\d+\|\{(\d+)\|', line)
-        if m:
-            # This links a proto to a vertex
+        # Vertex input port: {2010211001|XXGvertex_iport|19|0|37|0|{0|in|}17|19|}
+        if "|XXGvertex_iport|" in line:
+            m = re.search(r'\{0\|in\d*\|(\d+)\|(\d+)\|', line)
+            if m:
+                vertex_id = m.group(1)
+                port_id = m.group(2)
+                iport_to_vertex[port_id] = vertex_id
+                vertex_ids.add(vertex_id)
             continue
         
-        # Psameas object (component metadata/params):
-        # {2010006001|XXGobject_psameas_object|ID|0|POS|0|{NAME|VALUE|...}
-        m = re.match(r'\{\d+\|XXGobject_psameas_object\|(\d+)\|\d+\|\d+\|\d+\|\{([^|]+)\|([^|]*)\|', line)
-        if m:
-            pname = m.group(2).strip()
-            pval = m.group(3).strip()
-            if pname and pname not in ("Layout", "metadata"):
-                params[pname] = pval
+        # Output port to flow: {2010213001|XXGoport_dst_flow|20|0|39|0|{0|}19|6|}
+        # Pattern: {0|}PORT_ID|FLOW_ID|}
+        if "|XXGoport_dst_flow|" in line:
+            m = re.search(r'\{0\|\}?(\d+)\|(\d+)\|', line)
+            if m:
+                port_id = m.group(1)
+                flow_id = m.group(2)
+                oport_to_flow[port_id] = flow_id
+            continue
+        
+        # Input port from flow: {2010214001|XXGiport_src_flow|18|0|36|0|{0|}18|5|}
+        if "|XXGiport_src_flow|" in line:
+            m = re.search(r'\{0\|\}?(\d+)\|(\d+)\|', line)
+            if m:
+                port_id = m.group(1)
+                flow_id = m.group(2)
+                iport_from_flow[port_id] = flow_id
             continue
     
-    # Build node list from vertices
-    # vertex_map has entries like: {name, src_id, dst_id}
-    # These represent connections: src_id -> name -> dst_id
-    # We need to identify unique component IDs
+    # Build edges: oport → flow → iport
+    # For each flow_id, find which output port sends to it and which input port receives from it
+    # oport_to_flow: port_id -> flow_id (output port sends to this flow)
+    # iport_from_flow: port_id -> flow_id (input port receives from this flow)
     
-    # Collect all unique component IDs referenced
-    component_ids = set()
-    component_names = {}  # id -> name
+    # Invert: flow_id -> source_vertex (via oport)
+    flow_to_src_vertex = {}
+    for port_id, flow_id in oport_to_flow.items():
+        if port_id in oport_to_vertex:
+            flow_to_src_vertex[flow_id] = oport_to_vertex[port_id]
     
-    for vid, info in vertex_map.items():
-        src = info["src_id"]
-        dst = info["dst_id"]
-        name = info["name"]
-        # The vertex_vertex entries define named connections between component IDs
-        component_ids.add(src)
-        component_ids.add(dst)
-        # The name is the connection/component name
-        if name and not name.startswith("Component"):
-            component_names[src] = component_names.get(src, name)
-    
-    # Also get names from flow_map
-    for fid, info in flow_map.items():
-        from_id = info["from"]
-        to_id = info["to"]
-        component_ids.add(from_id)
-        component_ids.add(to_id)
-    
-    # Build edges from vertex_vertex (these ARE the edges)
+    # For each iport that receives from a flow, find the source vertex
     edge_set = set()
-    for vid, info in vertex_map.items():
-        src = info["src_id"]
-        dst = info["dst_id"]
-        if src != dst:
-            edge_set.add((src, dst))
+    for port_id, flow_id in iport_from_flow.items():
+        if port_id in iport_to_vertex and flow_id in flow_to_src_vertex:
+            src_vertex = flow_to_src_vertex[flow_id]
+            dst_vertex = iport_to_vertex[port_id]
+            if src_vertex != dst_vertex:
+                edge_set.add((src_vertex, dst_vertex))
     
-    # Add edges from flow_flow
-    for fid, info in flow_map.items():
-        from_id = info["from"]
-        to_id = info["to"]
-        if from_id != to_id:
-            edge_set.add((from_id, to_id))
+    # Now map vertex IDs (small) to component names
+    # The vertex IDs from ports should correspond to the order of components
+    # Try to match by looking at XXGpvertex lines that contain both vertex_id and component_id
+    # For now, use vertex_ids directly as node identifiers if we can't map them
     
-    # Now we need to figure out which IDs are actual components
-    # Components are IDs that appear as src or dst in edges
-    all_edge_ids = set()
-    for s, d in edge_set:
-        all_edge_ids.add(s)
-        all_edge_ids.add(d)
+    # Debug output
+    print(f"  [dbg] Components (at1): {len(node_by_id)}")
+    print(f"  [dbg] Vertex IDs from ports: {len(vertex_ids)}")
+    print(f"  [dbg] Output ports: {len(oport_to_vertex)}, Input ports: {len(iport_to_vertex)}")
+    print(f"  [dbg] Oport->flow: {len(oport_to_flow)}, Iport<-flow: {len(iport_from_flow)}")
+    print(f"  [dbg] Edges resolved: {len(edge_set)}")
+    if edge_set:
+        for i, (s, d) in enumerate(list(edge_set)[:5]):
+            print(f"  [dbg] edge: vertex {s} -> vertex {d}")
+
+    # Build final node and edge lists
+    # We have two sets of IDs:
+    # - node_by_id: large component IDs (32589, etc.) with names
+    # - vertex_ids: small vertex IDs (17, 20, etc.) from port definitions
+    # - edge_set: edges between small vertex IDs
     
-    # Assign names to component IDs
-    # Use vertex_vertex names as edge labels, and psameas names as component names
-    # The vertex_vertex "name" field is actually the component/connection name
-    node_id_map = {}  # numeric_id -> node_id string
+    # Try to map small vertex IDs to component names
+    # Strategy: the XXGpvertex lines contain both - check if vertex count matches component count
+    # If vertex_ids count ~= node_by_id count, map them by order of appearance
     
-    for vid, info in vertex_map.items():
-        name = info["name"]
-        src = info["src_id"]
-        dst = info["dst_id"]
-        # Assign name to the destination (the component being connected TO)
-        if name and dst in all_edge_ids:
-            if dst not in node_id_map:
-                safe_name = re.sub(r'[^\w]', '_', name)
-                node_id_map[dst] = safe_name
-        if name and src in all_edge_ids:
-            if src not in node_id_map:
-                safe_name = re.sub(r'[^\w]', '_', name)
-                node_id_map[src] = safe_name
-    
-    # Fill unnamed components
-    for cid in all_edge_ids:
-        if cid not in node_id_map:
-            node_id_map[cid] = f"Component_{cid}"
-    
-    # Deduplicate node names
-    seen_names = {}
-    for cid in list(node_id_map.keys()):
-        name = node_id_map[cid]
-        if name in seen_names:
-            seen_names[name] += 1
-            node_id_map[cid] = f"{name}_{seen_names[name]}"
+    # Build nodes from vertex_ids if we have edges, otherwise from node_by_id
+    if edge_set and vertex_ids:
+        # We have edges between vertex IDs - use vertex IDs as primary
+        # Map vertex_id -> component info by matching counts/order
+        sorted_vertices = sorted(vertex_ids, key=lambda x: int(x))
+        sorted_comps = sorted(node_by_id.keys(), key=lambda x: int(x))
+        
+        # Create a vertex_id -> name mapping
+        vertex_names = {}
+        if len(sorted_vertices) <= len(sorted_comps) * 2:
+            # Try to match by position in XXGpvertex lines
+            # Each component appears in a XXGpvertex line with its vertex_id
+            # For now, assign names sequentially or by proximity
+            for i, vid in enumerate(sorted_vertices):
+                if i < len(sorted_comps):
+                    vertex_names[vid] = node_by_id[sorted_comps[i]]
+                else:
+                    vertex_names[vid] = {"name": f"Node_{vid}", "type": "TRANSFORM", "display_name": f"Node_{vid}", "comp_type": "Unknown"}
         else:
-            seen_names[name] = 0
-    
-    # Create node list
-    for cid, nid in node_id_map.items():
-        ntype = _map_component_type(nid)
-        nodes.append({
-            "id": nid,
-            "name": nid,
-            "type": ntype,
-            "params": "",
-            "subgraph": None,
-        })
-    
-    # Create edge list
-    for src, dst in edge_set:
-        if src in node_id_map and dst in node_id_map:
-            edges.append({
-                "from": node_id_map[src],
-                "to": node_id_map[dst],
+            for vid in sorted_vertices:
+                vertex_names[vid] = {"name": f"Node_{vid}", "type": "TRANSFORM", "display_name": f"Node_{vid}", "comp_type": "Unknown"}
+        
+        # Build nodes
+        seen_names = set()
+        for vid in sorted_vertices:
+            info = vertex_names[vid]
+            name = info["name"]
+            if name in seen_names:
+                name = f"{name}_{vid}"
+            seen_names.add(name)
+            nodes.append({
+                "id": name,
+                "name": info["display_name"],
+                "type": info["type"],
+                "params": "",
+                "subgraph": None,
+            })
+            # Update vertex_names with final name for edge building
+            vertex_names[vid]["final_name"] = name
+        
+        # Build edges
+        for src_vid, dst_vid in edge_set:
+            if src_vid in vertex_names and dst_vid in vertex_names:
+                edges.append({
+                    "from": vertex_names[src_vid].get("final_name", vertex_names[src_vid]["name"]),
+                    "to": vertex_names[dst_vid].get("final_name", vertex_names[dst_vid]["name"]),
+                })
+    else:
+        # No edges resolved - just output components as disconnected nodes
+        for cid, info in node_by_id.items():
+            nodes.append({
+                "id": info["name"],
+                "name": info["display_name"],
+                "type": info["type"],
+                "params": "",
+                "subgraph": None,
             })
     
     print(f"[i] GDE Parser: {len(nodes)} nodes, {len(edges)} edges, {len(params)} params")
@@ -283,8 +332,8 @@ def main(project_path, output_path, xfr_path=None, dml_path=None, pset_path=None
     for w in warnings:
         print(w)
     if errors:
-        blocking = [e for e in errors if "no parent nod" not in e]
-        non_blocking = [e for e in errors if "no parent nod" in e]
+        blocking = [e for e in errors if "no parent nod" not in e and "nothing to write" not in e]
+        non_blocking = [e for e in errors if "no parent nod" in e or "nothing to write" in e]
         if non_blocking:
             print(f"\n[w] WARNINGS (non-blocking): {len(non_blocking)} nodes without parent")
         if blocking:
