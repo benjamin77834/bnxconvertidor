@@ -156,6 +156,17 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             dml_data = parse_dml(dml_path) if dml_path else {}
             dml_schema = dml_data.get("schema", {})
 
+            # Extract embedded transforms from GDE format
+            from main import _extract_embedded_transforms, _apply_embedded_transforms
+            with open(mp_path, "r", errors="replace") as f:
+                raw = f.read().replace('\x00', '')
+            embedded = _extract_embedded_transforms(raw)
+            if embedded["transforms"] or embedded["keys"] or embedded["filters"]:
+                node_map = {}
+                for nd in ast.get("nodes", []):
+                    node_map[nd["id"]] = {"name": nd["id"], "comp_type": nd.get("name", nd["id"])}
+                _apply_embedded_transforms(node_map, embedded, xfr_rules)
+
             # Validate
             errors, warnings = validate(dag, xfr_rules, dml_schema)
 
