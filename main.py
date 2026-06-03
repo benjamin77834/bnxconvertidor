@@ -92,28 +92,81 @@ def _parse_gde_native(content):
     vertex_ids = set()
     
     # Extract ports and flows using findall on entire content (file may have binary/non-standard line endings)
-    # Output ports: {2010212001|XXGvertex_oport|17|0|34|0|{0|out|}17|18|}
-    for m in re.finditer(r'XXGvertex_oport\|[^{]*\{0\|out\d*\|\}(\d+)\|(\d+)\|', content):
+    
+    # FIRST: Try XXGgraph_vertex_vertex + XXGraph_flow_flow (simpler format like DR_BASIC_COUNT)
+    # XXGgraph_vertex_vertex: {2010601001|XXGgraph_vertex_vertex|8|0|16|0|{Filter_by_Expression|}1|9|}
+    # Format: {NAME|}VID1|VID2|}  where VID2 is the vertex ID
+    for m in re.finditer(r'XXGgraph_vertex_vertex\|\d+\|\d+\|\d+\|\d+\|\{([^}]+)\|\}?(\d+)\|(\d+)\|', content):
+        name = m.group(1).strip().rstrip('|')
+        vid1 = m.group(2)
+        vid2 = m.group(3)
+        # vid2 is the vertex ID for this component
+        if name and not name.startswith("{"):
+            safe_name = re.sub(r'[^\w]', '_', name)
+            if vid2 not in node_by_id:
+                ntype = _map_component_type(name)
+                node_by_id[vid2] = {
+                    "name": safe_name,
+                    "type": ntype,
+                    "display_name": name,
+                    "comp_type": name,
+                }
+    
+    # XXGraph_flow_flow: {2010604001|XXGraph_flow_flow|4|0|8|0|{Flow_1|}3|5|}
+    # Format: {FLOW_NAME|}FROM_VERTEX|TO_VERTEX|}
+    flow_edges_direct = []
+    for m in re.finditer(r'XXGraph_flow_flow\|\d+\|\d+\|\d+\|\d+\|\{([^}]+)\|\}?(\d+)\|(\d+)\|', content):
+        fname = m.group(1).strip()
+        from_v = m.group(2)
+        to_v = m.group(3)
+        flow_edges_direct.append((from_v, to_v))
+    
+    if flow_edges_direct and node_by_id:
+        print(f"  [dbg] Direct flow edges found: {len(flow_edges_direct)}")
+        # We have both vertex names and direct edges - build the graph
+        for src, dst in flow_edges_direct:
+            if src in node_by_id and dst in node_by_id:
+                edge_set.add((src, dst))
+    
+    # Output ports: {2010212001|XXGvertex_oport_oport|9|0|18|0|{0|out|}9|10|}
+    # Generic: accept any port name between pipes
+    for m in re.finditer(r'XXGvertex_oport_oport\|\d+\|\d+\|\d+\|\d+\|\{\d+\|[^|]+\|\}(\d+)\|(\d+)\|', content):
         vertex_id = m.group(1)
         port_id = m.group(2)
         oport_to_vertex[port_id] = vertex_id
         vertex_ids.add(vertex_id)
     
-    # Input ports: {2010211001|XXGvertex_iport|19|0|37|0|{0|in|}17|19|}
-    for m in re.finditer(r'XXGvertex_iport\|[^{]*\{0\|in\d*\|\}(\d+)\|(\d+)\|', content):
+    # Also try simple _oport format: {2010212001|XXGvertex_oport|10|0|18|0|{0|out|}9|10|}
+    for m in re.finditer(r'XXGvertex_oport\|\d+\|\d+\|\d+\|\d+\|\{\d+\|[^|]+\|\}(\d+)\|(\d+)\|', content):
+        vertex_id = m.group(1)
+        port_id = m.group(2)
+        if port_id not in oport_to_vertex:
+            oport_to_vertex[port_id] = vertex_id
+            vertex_ids.add(vertex_id)
+    
+    # Input ports: {2010211001|XXGvertex_iport_iport|2838|0|4563|0|{0|in|}1721|1726|}
+    for m in re.finditer(r'XXGvertex_iport_iport\|\d+\|\d+\|\d+\|\d+\|\{\d+\|[^|]+\|\}(\d+)\|(\d+)\|', content):
         vertex_id = m.group(1)
         port_id = m.group(2)
         iport_to_vertex[port_id] = vertex_id
         vertex_ids.add(vertex_id)
     
-    # Oport to flow: {2010213001|XXGoport_dst_flow|20|0|39|0|{0|}19|6|}
-    for m in re.finditer(r'XXGoport_dst_flow\|[^{]*\{0\|\}?(\d+)\|(\d+)\|', content):
+    # Simple _iport format: {2010211001|XXGvertex_iport|15|0|29|0|{0|in|}9|15|}
+    for m in re.finditer(r'XXGvertex_iport\|\d+\|\d+\|\d+\|\d+\|\{\d+\|[^|]+\|\}(\d+)\|(\d+)\|', content):
+        vertex_id = m.group(1)
+        port_id = m.group(2)
+        if port_id not in iport_to_vertex:
+            iport_to_vertex[port_id] = vertex_id
+            vertex_ids.add(vertex_id)
+    
+    # Oport to flow: {2010213001|XXGoport_dst_flow|2834|0|4556|0|{0|}1722|1720|}
+    for m in re.finditer(r'XXGoport_dst_flow\|\d+\|\d+\|\d+\|\d+\|\{\d+\|\}(\d+)\|(\d+)\|', content):
         port_id = m.group(1)
         flow_id = m.group(2)
         oport_to_flow[port_id] = flow_id
     
-    # Iport from flow: {2010214001|XXGiport_src_flow|18|0|36|0|{0|}18|5|}
-    for m in re.finditer(r'XXGiport_src_flow\|[^{]*\{0\|\}?(\d+)\|(\d+)\|', content):
+    # Iport from flow: {2010214001|XXGiport_src_flow|2824|0|4541|0|{0|}1717|1692|}
+    for m in re.finditer(r'XXGiport_src_flow\|\d+\|\d+\|\d+\|\d+\|\{\d+\|\}(\d+)\|(\d+)\|', content):
         port_id = m.group(1)
         flow_id = m.group(2)
         iport_from_flow[port_id] = flow_id
@@ -259,39 +312,45 @@ def _parse_gde_native(content):
 
     # Build final node and edge lists
     # We have two sets of IDs:
-    # - node_by_id: large component IDs (32589, etc.) with names
-    # - vertex_ids: small vertex IDs (17, 20, etc.) from port definitions
-    # - edge_set: edges between small vertex IDs
+    # - node_by_id: vertex_id -> {name, type} from XXGgraph_vertex_vertex
+    # - vertex_ids: all vertex IDs seen in port definitions
+    # - edge_set: edges between vertex IDs
     
-    # Try to map small vertex IDs to component names
-    # Strategy: the XXGpvertex lines contain both - check if vertex count matches component count
-    # If vertex_ids count ~= node_by_id count, map them by order of appearance
+    # node_by_id already maps vertex_id -> component name (from XXGgraph_vertex_vertex)
+    # vertex_ids from ports should overlap with node_by_id keys
     
-    # Build nodes from vertex_ids if we have edges, otherwise from node_by_id
+    # Build nodes: use node_by_id for named nodes, create Node_X for unnamed ones
     if edge_set and vertex_ids:
-        # We have edges between vertex IDs - use vertex IDs as primary
-        # Map vertex_id -> component info by matching counts/order
-        sorted_vertices = sorted(vertex_ids, key=lambda x: int(x))
-        sorted_comps = sorted(node_by_id.keys(), key=lambda x: int(x))
+        all_vertex_ids = vertex_ids.copy()
+        # Also add vertex_ids from edge_set that might not be in vertex_ids
+        for src, dst in edge_set:
+            all_vertex_ids.add(src)
+            all_vertex_ids.add(dst)
         
-        # Create a vertex_id -> name mapping
+        # Build vertex_names using node_by_id (direct mapping from XXGgraph_vertex_vertex)
         vertex_names = {}
-        if len(sorted_vertices) <= len(sorted_comps) * 2:
-            # Try to match by position in XXGpvertex lines
-            # Each component appears in a XXGpvertex line with its vertex_id
-            # For now, assign names sequentially or by proximity
-            for i, vid in enumerate(sorted_vertices):
-                if i < len(sorted_comps):
-                    vertex_names[vid] = node_by_id[sorted_comps[i]]
-                else:
-                    vertex_names[vid] = {"name": f"Node_{vid}", "type": "TRANSFORM", "display_name": f"Node_{vid}", "comp_type": "Unknown"}
-        else:
-            for vid in sorted_vertices:
+        for vid in sorted(all_vertex_ids, key=lambda x: int(x)):
+            if vid in node_by_id:
+                vertex_names[vid] = node_by_id[vid]
+            else:
+                # Unknown vertex - might be a port-only node (reject, error, log output)
                 vertex_names[vid] = {"name": f"Node_{vid}", "type": "TRANSFORM", "display_name": f"Node_{vid}", "comp_type": "Unknown"}
         
-        # Build nodes
+        # Build nodes (only include vertices that participate in edges or are named components)
         seen_names = set()
-        for vid in sorted_vertices:
+        included_vids = set()
+        
+        # First include all vertices in edges
+        for src, dst in edge_set:
+            included_vids.add(src)
+            included_vids.add(dst)
+        # Also include all named components
+        for vid in node_by_id:
+            included_vids.add(vid)
+        
+        for vid in sorted(included_vids, key=lambda x: int(x)):
+            if vid not in vertex_names:
+                continue
             info = vertex_names[vid]
             name = info["name"]
             if name in seen_names:
@@ -304,15 +363,16 @@ def _parse_gde_native(content):
                 "params": "",
                 "subgraph": None,
             })
-            # Update vertex_names with final name for edge building
             vertex_names[vid]["final_name"] = name
         
         # Build edges
         for src_vid, dst_vid in edge_set:
             if src_vid in vertex_names and dst_vid in vertex_names:
+                src_name = vertex_names[src_vid].get("final_name", vertex_names[src_vid]["name"])
+                dst_name = vertex_names[dst_vid].get("final_name", vertex_names[dst_vid]["name"])
                 edges.append({
-                    "from": vertex_names[src_vid].get("final_name", vertex_names[src_vid]["name"]),
-                    "to": vertex_names[dst_vid].get("final_name", vertex_names[dst_vid]["name"]),
+                    "from": src_name,
+                    "to": dst_name,
                 })
     else:
         # No edges resolved - just output components as disconnected nodes
@@ -330,10 +390,227 @@ def _parse_gde_native(content):
     return {"nodes": nodes, "edges": edges, "subgraphs": {}, "abinitio_params": params}
 
 
+def parse_ksh(ksh_path):
+    """Parse Ab Initio .ksh deployment script to extract metadata."""
+    metadata = {
+        "graph_name": "",
+        "mp_path": "",
+        "ab_home": "",
+        "ab_version": "",
+        "project_dir": "",
+        "components_path": "",
+        "variables": {},
+    }
+    
+    with open(ksh_path, "r", errors="replace") as f:
+        content = f.read()
+    
+    # AB_GRAPH_NAME
+    m = re.search(r'AB_GRAPH_NAME[=;]([^\s;\n]+)', content)
+    if m:
+        val = m.group(1).strip().replace("AB_GRAPH_NAME=", "")
+        metadata["graph_name"] = val
+    
+    # AB_HOME
+    m = re.search(r'AB_HOME[=;]AB_HOME[=;]?([^\s;\n}]+)', content)
+    if not m:
+        m = re.search(r'AB_HOME[=;]([^\s;\n}]+)', content)
+    if m:
+        metadata["ab_home"] = m.group(1).replace("${AB_HOME:-", "").rstrip("}")
+    
+    # AB_COMPATIBILITY (version)
+    m = re.search(r'AB_COMPATIBILITY[=;](\S+)', content)
+    if m:
+        metadata["ab_version"] = m.group(1)
+    
+    # air sandbox run ... .mp
+    m = re.search(r'air\s+sandbox\s+run\s+"?([^"\s]+\.mp)"?', content)
+    if m:
+        metadata["mp_path"] = m.group(1)
+    
+    # PROJECT_DIR
+    m = re.search(r'PROJECT_DIR[=;]PROJECT_DIR[=;]?([^\s;\n}]+)', content)
+    if not m:
+        m = re.search(r'PROJECT_DIR[=;]([^\s;\n}]+)', content)
+    if m:
+        metadata["project_dir"] = m.group(1).replace("${PROJECT_DIR:-", "").rstrip("}")
+    
+    # AB_COMPONENTS
+    m = re.search(r'AB_COMPONENTS[=;]AB_COMPONENTS[=;]?([^\s;\n}]+)', content)
+    if m:
+        metadata["components_path"] = m.group(1).replace('"', '').replace("'", "")
+    
+    # Extract all export variables
+    for m in re.finditer(r'export\s+(\w+)[;=](\w+)=([^\s;\n]+)', content):
+        metadata["variables"][m.group(1)] = m.group(3)
+    
+    return metadata
+
+
+def _extract_embedded_transforms(content):
+    """Extract transform rules and keys from embedded DML in GDE .mp files.
+    
+    Parses patterns like:
+    {30001002|XXparameter|transform|out :: rollup(in) =
+    begin
+        out.id :: in.id;
+        out.nombre :: in.nombre;
+        out.monto :: sum(in.monto);
+    end;|3|1|1|@{0|}}
+    
+    {30001002|XXparameter|key|\{nombre\}|3|2|$|@{0|}}
+    
+    Returns dict of xfr_rules keyed by component name.
+    """
+    xfr_rules = {}
+    
+    # Extract all transform blocks
+    # They appear as XXparameter|transform|TRANSFORM_BODY
+    transforms = re.findall(
+        r'XXparameter\|transform\|([^|]*(?:begin.*?end;|[^|]+))',
+        content, re.DOTALL
+    )
+    
+    # Extract keys (group by fields)
+    keys = re.findall(r'XXparameter\|key\|\\?\{?([^|}]+)\\?\}?\|', content)
+    
+    # Extract filter expressions (for Filter_by_Expression components)
+    filters = re.findall(r'XXparameter\|select_expr\|([^|]+)\|', content)
+    
+    # Extract record schemas (out_metadata)
+    schemas = re.findall(r'XXparameter\|out_metadata\|record\s*(.*?)(?:end;|\|)', content, re.DOTALL)
+    
+    # Parse transform bodies into field mappings
+    # Each component gets its own set of rules
+    # We track transforms by their position/context
+    component_transforms = {}
+    current_component_idx = 0
+    
+    for transform in transforms:
+        rules = {"fields": [], "aggregations": [], "type": "passthrough"}
+        
+        # Parse "out :: rollup(in) = begin ... end;"
+        if "rollup" in transform.lower():
+            rules["type"] = "rollup"
+        elif "reformat" in transform.lower() or "::" in transform:
+            rules["type"] = "reformat"
+        
+        # Extract field assignments: out.field :: expression;
+        field_matches = re.findall(r'out\.(\w+)\s*::\s*(.+?);', transform)
+        for field_name, expression in field_matches:
+            expr = expression.strip()
+            # Detect aggregation functions
+            agg_match = re.match(r'(sum|count|min|max|avg|first|last)\((?:in\.)?(\w+)\)', expr)
+            if agg_match:
+                rules["aggregations"].append({
+                    "field": field_name,
+                    "function": agg_match.group(1),
+                    "source_field": agg_match.group(2),
+                })
+            elif expr.startswith("in."):
+                rules["fields"].append({
+                    "field": field_name,
+                    "source": expr.replace("in.", ""),
+                })
+            else:
+                rules["fields"].append({
+                    "field": field_name,
+                    "expression": expr,
+                })
+        
+        component_transforms[current_component_idx] = rules
+        current_component_idx += 1
+    
+    # Build xfr_rules dict
+    # We'll match these to components by order later
+    # For now, store with index keys
+    result = {
+        "transforms": component_transforms,
+        "keys": keys,
+        "filters": filters,
+    }
+    
+    return result
+
+
+def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
+    """Apply extracted embedded transforms to the xfr_rules dict.
+    
+    Maps transforms to components by type:
+    - Rollup components get rollup transforms + keys
+    - Filter components get filter expressions
+    - Reformat components get field mappings
+    """
+    keys = embedded.get("keys", [])
+    filters = embedded.get("filters", [])
+    transforms = embedded.get("transforms", {})
+    
+    # Find components by type and assign transforms
+    rollup_idx = 0
+    filter_idx = 0
+    reformat_idx = 0
+    
+    for vid, info in sorted(node_by_id.items(), key=lambda x: str(x[0])):
+        comp_name = info["name"].lower()
+        comp_type = info["comp_type"].lower()
+        
+        if "rollup" in comp_type:
+            # Find the rollup transform
+            for tidx, trules in transforms.items():
+                if trules["type"] == "rollup":
+                    rule = {}
+                    # Group by keys
+                    if keys:
+                        rule["group_by"] = [k.strip() for k in keys[0].split(",") if k.strip()]
+                    # Aggregations
+                    if trules["aggregations"]:
+                        rule["select"] = ", ".join(
+                            f'{a["function"]}({a["source_field"]}) as {a["field"]}' 
+                            for a in trules["aggregations"]
+                        )
+                        # Add non-agg fields
+                        non_agg = [f["field"] for f in trules.get("fields", [])]
+                        if non_agg and rule.get("group_by"):
+                            rule["group_by"] = list(set(rule["group_by"] + non_agg))
+                    xfr_rules[info["name"].lower()] = rule
+                    del transforms[tidx]
+                    break
+        
+        elif "filter" in comp_type:
+            if filters and filter_idx < len(filters):
+                xfr_rules[info["name"].lower()] = {
+                    "where": filters[filter_idx],
+                }
+                filter_idx += 1
+        
+        elif "reformat" in comp_type:
+            for tidx, trules in transforms.items():
+                if trules["type"] == "reformat" and trules.get("fields"):
+                    fields = trules["fields"]
+                    select_parts = []
+                    for f in fields:
+                        if "expression" in f:
+                            select_parts.append(f'{f["expression"]} as {f["field"]}')
+                        elif "source" in f:
+                            if f["source"] == f["field"]:
+                                select_parts.append(f["field"])
+                            else:
+                                select_parts.append(f'{f["source"]} as {f["field"]}')
+                    if select_parts:
+                        xfr_rules[info["name"].lower()] = {
+                            "select": ", ".join(select_parts),
+                        }
+                    del transforms[tidx]
+                    break
+
+
 def parse_project(file_path):
     """Smart parser: detects format and parses accordingly."""
     with open(file_path, "r", errors="replace") as f:
         content = f.read()
+    
+    # Clean null bytes and other binary artifacts
+    content = content.replace('\x00', '').replace('\x01', '').replace('\x02', '')
     
     if _is_gde_format(content):
         print("[i] Detected: GDE native format (Ab Initio serialized)")
@@ -349,6 +626,9 @@ def parse_project(file_path):
 
 def main(project_path, output_path, xfr_path=None, dml_path=None, pset_path=None, target="glue"):
     print("[*] BNX V54 START\n")
+
+    # Parse KSH metadata if provided via --ksh
+    ksh_metadata = {}
 
     # Parse PSET parameters
     pset_params = {}
@@ -367,6 +647,24 @@ def main(project_path, output_path, xfr_path=None, dml_path=None, pset_path=None
     xfr_rules = parse_xfr(xfr_path) if xfr_path else {}
     dml = parse_dml(dml_path) if dml_path else {}
     dml_schema = dml.get("schema", {})
+
+    # Extract embedded transforms from GDE .mp (DML transforms, keys, filters)
+    if ast.get("abinitio_params"):
+        with open(project_path, "r", errors="replace") as f:
+            raw_content = f.read().replace('\x00', '')
+        embedded = _extract_embedded_transforms(raw_content)
+        if embedded["transforms"] or embedded["keys"] or embedded["filters"]:
+            print(f"[i] Embedded transforms: {len(embedded['transforms'])} transforms, {len(embedded['keys'])} keys, {len(embedded['filters'])} filters")
+            # Build node_by_id from ast nodes for mapping
+            node_map = {}
+            for node_data in ast.get("nodes", []):
+                node_map[node_data["id"]] = {
+                    "name": node_data["id"],
+                    "comp_type": node_data.get("name", node_data["id"]),
+                }
+            _apply_embedded_transforms(node_map, embedded, xfr_rules)
+            if xfr_rules:
+                print(f"[i] XFR rules generated: {list(xfr_rules.keys())}")
 
     if dml_schema:
         print(f"[i] DML schema loaded: {list(dml_schema.keys())}\n")
@@ -400,6 +698,64 @@ def main(project_path, output_path, xfr_path=None, dml_path=None, pset_path=None
         print(f"\n[>] Target: Apache Flink (PyFlink)")
     else:
         generate_glue(dag, output_path, xfr_rules)
+
+    # Inject Ab Initio parameters as configuration block at top of generated file
+    abi_params = ast.get("abinitio_params", {})
+    all_params = {**abi_params, **pset_params}
+    if all_params:
+        with open(output_path, "r") as f:
+            generated_code = f.read()
+        
+        # Build config block
+        config_lines = []
+        config_lines.append("# " + "=" * 60)
+        config_lines.append("# AB INITIO PARAMETERS (extracted from .mp + .pset)")
+        config_lines.append("# " + "=" * 60)
+        config_lines.append("ABINITIO_CONFIG = {")
+        
+        # Group params by category
+        kafka_params = {k: v for k, v in all_params.items() if any(x in k.lower() for x in ["kafka", "confluent", "schema_registry", "topic", "bootstrap", "consumer", "producer"])}
+        source_params = {k: v for k, v in all_params.items() if any(x in k.lower() for x in ["source", "input", "read", "extract"])}
+        target_params = {k: v for k, v in all_params.items() if any(x in k.lower() for x in ["target", "output", "write", "sink", "load"])}
+        dml_params = {k: v for k, v in all_params.items() if any(x in k.lower() for x in ["dml", "schema", "format", "record"])}
+        other_params = {k: v for k, v in all_params.items() if k not in kafka_params and k not in source_params and k not in target_params and k not in dml_params}
+        
+        def write_section(name, params_dict):
+            if not params_dict:
+                return
+            config_lines.append(f"    # -- {name} --")
+            for k, v in sorted(params_dict.items()):
+                safe_v = str(v).replace('"', '\\"') if v else ""
+                config_lines.append(f'    "{k}": "{safe_v}",')
+        
+        write_section("KAFKA / CONFLUENT", kafka_params)
+        write_section("SOURCE", source_params)
+        write_section("TARGET / SINK", target_params)
+        write_section("DML / SCHEMA", dml_params)
+        write_section("OTHER", other_params)
+        
+        config_lines.append("}")
+        config_lines.append("")
+        config_lines.append("# " + "-" * 60)
+        config_lines.append("# TO CUSTOMIZE: modify values above, then adjust code below")
+        config_lines.append("# Kafka: update bootstrap_servers, topic, schema_registry_url")
+        config_lines.append("# Source: update paths, formats, connection strings")
+        config_lines.append("# Target: update output paths, table names")
+        config_lines.append("# " + "-" * 60)
+        config_lines.append("")
+        
+        # Insert after the imports (after the docstring)
+        insert_point = generated_code.find('\n\n', generated_code.find('"""', 3))
+        if insert_point > 0:
+            new_code = generated_code[:insert_point + 2] + "\n".join(config_lines) + "\n" + generated_code[insert_point + 2:]
+        else:
+            new_code = "\n".join(config_lines) + "\n" + generated_code
+        
+        with open(output_path, "w") as f:
+            f.write(new_code)
+        
+        print(f"[i] Injected {len(all_params)} parameters into {output_path}")
+        print(f"    Kafka: {len(kafka_params)}, Source: {len(source_params)}, Target: {len(target_params)}, DML: {len(dml_params)}")
         print(f"\n[>] Target: AWS Glue")
 
     # Accuracy report
@@ -425,6 +781,18 @@ if __name__ == "__main__":
     parser.add_argument("--xfr", required=False, default=None)
     parser.add_argument("--dml", required=False, default=None)
     parser.add_argument("--pset", required=False, default=None)
+    parser.add_argument("--ksh", required=False, default=None)
     parser.add_argument("--target", choices=["glue", "spark", "flink"], default="glue")
     args = parser.parse_args()
+    
+    # Parse KSH if provided
+    if args.ksh:
+        ksh_meta = parse_ksh(args.ksh)
+        print(f"[i] KSH loaded: {args.ksh}")
+        print(f"    Graph: {ksh_meta['graph_name']}")
+        print(f"    MP path: {ksh_meta['mp_path']}")
+        print(f"    Ab Initio: {ksh_meta['ab_version']}")
+        print(f"    AB_HOME: {ksh_meta['ab_home']}")
+        print()
+    
     main(args.project, args.output, args.xfr, args.dml, args.pset, args.target)
