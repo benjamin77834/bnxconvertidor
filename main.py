@@ -447,6 +447,102 @@ def parse_ksh(ksh_path):
     return metadata
 
 
+def _generate_pandas(dag, output_path, xfr_rules=None):
+    """Generate pure Python code using pandas (no Spark/Glue dependencies)."""
+    xfr_rules = xfr_rules or {}
+    from datetime import datetime
+    
+    with open(output_path, "w") as f:
+        f.write(f'"""\nBNX V54 - Python Puro (pandas)\nGenerated at: {datetime.now()}\nNo requiere Spark, Glue ni Flink. Solo: pip install pandas\n"""\n\n')
+        f.write("import pandas as pd\nimport os\n\n")
+        f.write('print("[*] BNX Python Job Started")\n\n')
+        
+        for node in dag.execution_order:
+            var_id = node.id
+            name = node.name
+            ntype = node.type.upper()
+            parents = node.parents
+            rule = xfr_rules.get(var_id.lower()) or xfr_rules.get(name.lower()) or {}
+            
+            if ntype == "SOURCE":
+                path = rule.get("path", f"data/{var_id.lower()}.csv") if rule else f"data/{var_id.lower()}.csv"
+                f.write(f'# [+] SOURCE: {name}\n')
+                f.write(f'{var_id}_df = pd.read_csv("{path}")\n')
+                f.write(f'print(f"[>] SOURCE {name}: {{len({var_id}_df)}} rows")\n\n')
+            
+            elif ntype == "FILTER":
+                f.write(f'# [.] FILTER: {name}\n')
+                if parents:
+                    where = rule.get("where", "") if rule else ""
+                    if where:
+                        # Convert SQL-like filter to pandas query
+                        f.write(f'{var_id}_df = {parents[0]}_df.query("{where}")\n')
+                    else:
+                        f.write(f'{var_id}_df = {parents[0]}_df.copy()\n')
+                else:
+                    f.write(f'{var_id}_df = pd.DataFrame()\n')
+                f.write(f'print(f"[~] FILTER {name}: {{len({var_id}_df)}} rows")\n\n')
+            
+            elif ntype == "JOIN":
+                f.write(f'# [~] JOIN: {name}\n')
+                if len(parents) >= 2:
+                    jk = rule.get("join_key", "id") if rule else "id"
+                    jt = rule.get("join_type", "inner") if rule else "inner"
+                    f.write(f'{var_id}_df = {parents[0]}_df.merge({parents[1]}_df, on="{jk}", how="{jt}")\n')
+                elif parents:
+                    f.write(f'{var_id}_df = {parents[0]}_df.copy()\n')
+                else:
+                    f.write(f'{var_id}_df = pd.DataFrame()\n')
+                f.write(f'print(f"[~] JOIN {name}: {{len({var_id}_df)}} rows")\n\n')
+            
+            elif ntype == "SINK":
+                f.write(f'# [*] SINK: {name}\n')
+                if parents:
+                    path = rule.get("path", f"output/{var_id.lower()}.csv") if rule else f"output/{var_id.lower()}.csv"
+                    f.write(f'os.makedirs(os.path.dirname("{path}"), exist_ok=True)\n')
+                    f.write(f'{parents[0]}_df.to_csv("{path}", index=False)\n')
+                    f.write(f'print(f"[>] SINK {name}: {{len({parents[0]}_df)}} rows -> {path}")\n\n')
+                else:
+                    f.write(f'# SINK {name} has no parent\n')
+                    f.write(f'print("[!] SINK {name}: no data")\n\n')
+            
+            else:  # TRANSFORM, PARTITION, CONCATENATE, etc.
+                f.write(f'# [.] {ntype}: {name}\n')
+                if parents:
+                    src = f'{parents[0]}_df'
+                    select = rule.get("select", "") if rule else ""
+                    where = rule.get("where", "") if rule else ""
+                    group_by = rule.get("group_by", []) if rule else []
+                    
+                    if group_by and select:
+                        # Aggregation
+                        keys = ", ".join(f'"{k}"' for k in group_by)
+                        # Parse select for agg functions
+                        agg_parts = []
+                        for part in select.split(","):
+                            part = part.strip()
+                            m = re.match(r'(\w+)\((\w+)\)\s+as\s+(\w+)', part, re.I)
+                            if m:
+                                fn, field, alias = m.group(1).lower(), m.group(2), m.group(3)
+                                agg_parts.append(f'{alias}=("{field}", "{fn}")')
+                        if agg_parts:
+                            f.write(f'{var_id}_df = {src}.groupby([{keys}]).agg({", ".join(agg_parts)}).reset_index()\n')
+                        else:
+                            f.write(f'{var_id}_df = {src}.groupby([{keys}]).first().reset_index()\n')
+                    elif where:
+                        f.write(f'{var_id}_df = {src}.query("{where}")\n')
+                    elif select and select != "*":
+                        cols = [c.strip() for c in select.split(",")]
+                        f.write(f'{var_id}_df = {src}[{cols}]\n')
+                    else:
+                        f.write(f'{var_id}_df = {src}.copy()\n')
+                else:
+                    f.write(f'{var_id}_df = pd.DataFrame()\n')
+                f.write(f'print(f"[~] {ntype} {name}: {{len({var_id}_df)}} rows")\n\n')
+        
+        f.write('print("[ok] BNX Python Job Finished")\n')
+
+
 def _extract_embedded_transforms(content):
     """Extract transform rules and keys from embedded DML in GDE .mp files.
     
@@ -696,6 +792,9 @@ def main(project_path, output_path, xfr_path=None, dml_path=None, pset_path=None
     elif target == "flink":
         generate_flink(dag, output_path, xfr_rules)
         print(f"\n[>] Target: Apache Flink (PyFlink)")
+    elif target == "python":
+        _generate_pandas(dag, output_path, xfr_rules)
+        print(f"\n[>] Target: Python Puro (pandas)")
     else:
         generate_glue(dag, output_path, xfr_rules)
 
@@ -782,7 +881,7 @@ if __name__ == "__main__":
     parser.add_argument("--dml", required=False, default=None)
     parser.add_argument("--pset", required=False, default=None)
     parser.add_argument("--ksh", required=False, default=None)
-    parser.add_argument("--target", choices=["glue", "spark", "flink"], default="glue")
+    parser.add_argument("--target", choices=["glue", "spark", "flink", "python"], default="glue")
     args = parser.parse_args()
     
     # Parse KSH if provided

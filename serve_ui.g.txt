@@ -178,6 +178,9 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                     generate_spark(dag, out_path, xfr_rules)
                 elif target == "flink":
                     generate_flink(dag, out_path, xfr_rules)
+                elif target == "python":
+                    from main import _generate_pandas
+                    _generate_pandas(dag, out_path, xfr_rules)
                 else:
                     generate_glue(dag, out_path, xfr_rules)
                 with open(out_path, "r") as f:
