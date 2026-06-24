@@ -516,7 +516,7 @@ def _generate_pandas(dag, output_path, xfr_rules=None):
                     
                     if group_by and select:
                         # Aggregation
-                        keys = ", ".join(f'"{k}"' for k in group_by)
+                        keys_str = "[" + ", ".join(f"'{k}'" for k in group_by) + "]"
                         # Parse select for agg functions
                         agg_parts = []
                         for part in select.split(","):
@@ -524,11 +524,12 @@ def _generate_pandas(dag, output_path, xfr_rules=None):
                             m = re.match(r'(\w+)\((\w+)\)\s+as\s+(\w+)', part, re.I)
                             if m:
                                 fn, field, alias = m.group(1).lower(), m.group(2), m.group(3)
-                                agg_parts.append(f'{alias}=("{field}", "{fn}")')
+                                agg_parts.append(f"{alias}=('{field}', '{fn}')")
                         if agg_parts:
-                            f.write(f'{var_id}_df = {src}.groupby([{keys}]).agg({", ".join(agg_parts)}).reset_index()\n')
+                            agg_str = ", ".join(agg_parts)
+                            f.write(f"{var_id}_df = {src}.groupby({keys_str}).agg({agg_str}).reset_index()\n")
                         else:
-                            f.write(f'{var_id}_df = {src}.groupby([{keys}]).first().reset_index()\n')
+                            f.write(f"{var_id}_df = {src}.groupby({keys_str}).first().reset_index()\n")
                     elif where:
                         f.write(f'{var_id}_df = {src}.query("{where}")\n')
                     elif select and select != "*":
