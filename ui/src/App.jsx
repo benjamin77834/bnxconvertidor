@@ -9,6 +9,7 @@ import GovernancePage from './components/GovernancePage'
 import ArchitecturePage from './components/ArchitecturePage'
 import ExecutivePage from './components/ExecutivePage'
 import RoadmapPage from './components/RoadmapPage'
+import HistoryPage from './components/HistoryPage'
 import { COMPILE_URL } from './config'
 
 // ── Themes ──────────────────────────────────────────────────
@@ -303,6 +304,7 @@ export default function App() {
             { id: 'architecture', label: '🏗️ Architecture' },
             { id: 'metrics', label: '📊 Metrics' },
             { id: 'roadmap', label: '🗺️ Roadmap' },
+            { id: 'history', label: '📜 History' },
           ].map(tab => (
             <button key={tab.id}
               onClick={() => setPage(tab.id)}
@@ -343,6 +345,8 @@ export default function App() {
           <MetricsPage theme={t} />
         ) : page === 'roadmap' ? (
           <RoadmapPage theme={t} />
+        ) : page === 'history' ? (
+          <HistoryPage theme={t} />
         ) : page === 'designer' ? (
           <DesignerPage theme={t} />
         ) : page === 'ocr' ? (
