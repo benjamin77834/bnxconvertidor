@@ -1,25 +1,27 @@
-# ═══════════════════════════════════════════════════════════
-# Variables
-# ═══════════════════════════════════════════════════════════
-
+# -----------------------------------------------------------------------------
+# Variables generales
+# -----------------------------------------------------------------------------
 variable "aws_region" {
   description = "Region de AWS"
   type        = string
   default     = "us-east-1"
 }
 
-variable "environment" {
-  description = "Ambiente: dev, staging, prod"
-  type        = string
-  default     = "prod"
-}
-
 variable "project_name" {
-  description = "Nombre del proyecto (prefijo para recursos)"
+  description = "Nombre del proyecto (se usa como prefijo en los recursos)"
   type        = string
   default     = "bnx-convertidor"
 }
 
+variable "environment" {
+  description = "Ambiente (dev, staging, prod)"
+  type        = string
+  default     = "prod"
+}
+
+# -----------------------------------------------------------------------------
+# Variables de Lambda
+# -----------------------------------------------------------------------------
 variable "lambda_memory_size" {
   description = "Memoria de la Lambda en MB"
   type        = number
@@ -32,12 +34,9 @@ variable "lambda_timeout" {
   default     = 60
 }
 
-variable "lambda_runtime" {
-  description = "Runtime de Python para Lambda"
-  type        = string
-  default     = "python3.11"
-}
-
+# -----------------------------------------------------------------------------
+# Variables de Glue (Pipeline de pruebas)
+# -----------------------------------------------------------------------------
 variable "glue_worker_type" {
   description = "Tipo de worker para Glue jobs"
   type        = string
@@ -50,27 +49,35 @@ variable "glue_num_workers" {
   default     = 2
 }
 
-variable "amplify_repository" {
-  description = "URL del repositorio Git para Amplify"
-  type        = string
-  default     = "https://github.com/benjamin77834/bnxconvertidor"
+# -----------------------------------------------------------------------------
+# Variables de Pipeline
+# -----------------------------------------------------------------------------
+variable "enable_daily_pipeline" {
+  description = "Habilitar ejecucion diaria del pipeline E2E (true/false)"
+  type        = bool
+  default     = false
 }
 
-variable "amplify_branch" {
-  description = "Rama para deploy de Amplify"
+variable "pipeline_schedule" {
+  description = "Cron para ejecucion programada del pipeline (UTC)"
   type        = string
-  default     = "empresav4"
+  default     = "cron(0 6 * * ? *)"
 }
 
-variable "amplify_oauth_token" {
-  description = "GitHub OAuth token para Amplify (sensitive)"
-  type        = string
-  sensitive   = true
-  default     = ""
-}
-
+# -----------------------------------------------------------------------------
+# Variables de Alertas
+# -----------------------------------------------------------------------------
 variable "alert_email" {
-  description = "Email para alertas de CloudWatch"
+  description = "Email para alertas de CloudWatch y SNS"
   type        = string
   default     = "ops@bank.com"
+}
+
+# -----------------------------------------------------------------------------
+# Variables de Control de Costos
+# -----------------------------------------------------------------------------
+variable "budget_monthly" {
+  description = "Presupuesto mensual total en USD para BNX"
+  type        = string
+  default     = "500"
 }
