@@ -1,25 +1,53 @@
 # BNX Convertidor — Terraform Infrastructure
 
-## Que despliega
+## Principio clave: NO interrumpir lo existente
+
+Este Terraform usa **data sources** para referenciar los recursos que ya estan en produccion (Lambda, Amplify, S3 bucket, IAM role). No los recrea, no los modifica, no los destruye.
+
+| Recurso | Estado | Como se maneja |
+|---------|--------|----------------|
+| Lambda `bnx-compiler` | YA EXISTE | `data.aws_lambda_function` (solo referencia) |
+| Amplify app | YA EXISTE | Comentado (no se toca) |
+| S3 `bnx-e2e-test` | YA EXISTE | `data.aws_s3_bucket` (solo referencia) |
+| IAM `lambdarol` | YA EXISTE | `data.aws_iam_role` (solo referencia) |
+
+## Que crea (NUEVO)
 
 | Recurso | Descripcion |
 |---------|-------------|
-| **Lambda** | API del compilador BNX (Python 3.11, Function URL publica) |
-| **Amplify** | Frontend React (auto-deploy desde Git) |
-| **S3 (data)** | Bucket para datos raw/curated/archive con versionado y lifecycle |
-| **S3 (scripts)** | Bucket para scripts Glue y paquetes Lambda |
-| **S3 (reports)** | Bucket para reportes regulatorios (CNBV, UIF) |
-| **Glue Job** | Job ETL template para ejecutar codigo generado por BNX |
-| **Glue Catalog** | Base de datos del catalogo para metadatos |
-| **IAM Roles** | Roles para Lambda, Glue y Amplify con minimo privilegio |
-| **CloudWatch** | Dashboard + alarmas (errores, latencia, throttles) |
-| **SNS** | Topic de alertas con suscripcion email |
+| **S3 (data)** | Bucket para datos raw/curated/archive con lifecycle |
+| **S3 (scripts)** | Bucket para scripts Glue y paquetes |
+| **S3 (reports)** | Bucket para reportes regulatorios |
+| **Glue Job (spark)** | Ejecuta codigo generado con target=spark |
+| **Glue Job (glue)** | Ejecuta codigo generado con target=glue |
+| **Glue Job (validate)** | Valida output Spark vs Glue vs Expected |
+| **Step Functions** | Pipeline E2E completo (compile → run → validate → notify) |
+| **EventBridge** | Ejecucion diaria programada (opcional) |
+| **IAM Roles** | Nuevos roles para Glue, Step Functions, EventBridge |
+| **CloudWatch Dashboard** | Metricas de Lambda + Pipeline + Glue |
+| **CloudWatch Alarms** | Errores Lambda, duracion, throttles, pipeline failures |
+| **SNS Topic** | Alertas por email |
 
-## Prerequisitos
+## Pipeline E2E
 
-1. AWS CLI configurado con credenciales
-2. Terraform >= 1.5.0
-3. GitHub OAuth token (para Amplify auto-deploy)
+El pipeline automatiza la prueba completa de conversion:
+
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│ BNX Lambda  │────>│  Glue Jobs  │────>│  Validate   │
+│ (compile)   │     │ (spark+glue)│     │  (compare)  │
+└─────────────┘     └─────────────┘     └──────┬──────┘
+                                               │
+                                        ┌──────┴──────┐
+                                        │  SNS Alert  │
+                                        │ (pass/fail) │
+                                        └─────────────┘
+```
+
+1. **Compila** el grafo .mp/.xfr con BNX Lambda (target=spark y target=glue)
+2. **Ejecuta** ambos scripts en Glue (en paralelo)
+3. **Valida** que el output sea igual entre Spark y Glue
+4. **Notifica** el resultado via SNS
 
 ## Uso rapido
 
@@ -28,68 +56,67 @@ cd terraform
 
 # Copiar variables
 cp terraform.tfvars.example terraform.tfvars
-# Editar terraform.tfvars con tus valores
 
 # Inicializar
 terraform init
 
-# Ver que va a crear
+# Ver que va a crear (NO destruye nada existente)
 terraform plan
 
 # Aplicar
 terraform apply
 
-# Ver outputs (URLs, nombres, ARNs)
+# Ver outputs
 terraform output
 ```
+
+## Ejecutar pipeline manualmente
+
+### Via Step Functions (despues de terraform apply)
+```bash
+aws stepfunctions start-execution \
+  --state-machine-arn $(terraform output -raw pipeline_arn) \
+  --region us-east-1
+```
+
+### Via script directo (sin Terraform)
+```bash
+./scripts/run_pipeline.sh --graph ../e2e/test.mp --xfr ../e2e/test.xfr
+```
+
+## Habilitar ejecucion diaria
+
+```bash
+terraform apply -var="enable_daily_pipeline=true"
+```
+
+Esto activa el EventBridge rule que ejecuta el pipeline a las 6am UTC diariamente.
 
 ## Estructura
 
 ```
 terraform/
-├── main.tf              # Provider AWS + backend
-├── variables.tf         # Todas las variables configurables
-├── iam.tf              # Roles y politicas (Lambda, Glue, Amplify)
-├── s3.tf               # Buckets (data, scripts, reports)
-├── lambda.tf           # Lambda function + Function URL + logs
-├── glue.tf             # Glue jobs + Catalog database
-├── amplify.tf          # Amplify app + branch
+├── main.tf              # Provider + data sources (recursos existentes)
+├── variables.tf         # Variables configurables
+├── iam.tf              # Roles NUEVOS (Glue, StepFn, EventBridge)
+├── s3.tf               # Buckets NUEVOS (data, scripts, reports)
+├── lambda.tf           # Solo log group (Lambda YA EXISTE)
+├── amplify.tf          # Comentado (Amplify YA EXISTE)
+├── glue.tf             # Glue jobs para pipeline E2E
+├── pipeline.tf         # Step Functions + EventBridge
 ├── monitoring.tf       # CloudWatch dashboard + alarmas + SNS
-├── outputs.tf          # URLs y ARNs de salida
-├── terraform.tfvars.example  # Valores de ejemplo
-└── README.md           # Este archivo
+├── outputs.tf          # URLs, ARNs, comandos utiles
+├── terraform.tfvars.example
+├── README.md
+└── scripts/
+    ├── run_pipeline.sh     # Ejecutar pipeline manualmente
+    └── validate_output.py  # Script de validacion (Glue Python Shell)
 ```
 
-## Ambientes
-
-Puedes tener multiples ambientes cambiando `environment`:
-
-```bash
-# Dev
-terraform workspace new dev
-terraform apply -var="environment=dev"
-
-# Staging
-terraform workspace new staging
-terraform apply -var="environment=staging"
-
-# Prod
-terraform workspace new prod
-terraform apply -var="environment=prod"
-```
-
-## Despues del apply
-
-1. **Lambda URL** se imprime en outputs — usala en `ui/src/config.js`
-2. **Amplify** hace auto-deploy al detectar push en la rama configurada
-3. **Glue job** queda listo — sube scripts a `s3://bnx-convertidor-scripts-prod/glue/`
-4. **Dashboard** disponible en CloudWatch para monitoreo
-5. **Alertas** llegan al email configurado cuando hay errores
-
-## Destruir
+## Destruir (solo lo nuevo)
 
 ```bash
 terraform destroy
 ```
 
-> Los buckets S3 con datos NO se destruyen por default (tienen `lifecycle { prevent_destroy }` implicito por versionado). Vacialos primero si quieres eliminarlos.
+Esto SOLO destruye los recursos creados por Terraform. La Lambda, Amplify y bucket E2E existente NO se tocan.

@@ -1,10 +1,19 @@
-# ═══════════════════════════════════════════════════════════
+# -----------------------------------------------------------------------------
 # BNX Convertidor — Terraform Infrastructure
-# Despliega TODOS los artefactos de la plataforma en AWS
-# ═══════════════════════════════════════════════════════════
+#
+# REGLAS:
+# 1. NO interrumpir recursos existentes (Lambda bnx-compiler, Amplify, S3 e2e)
+# 2. Usar data sources para referenciar lo que ya existe
+# 3. Seguir convenciones de bnxlakehouse:
+#    - local.common_tags en todos los recursos
+#    - Naming: ${var.project_name}-<recurso>-${var.environment}
+#    - Comentarios con separadores # -----
+#    - Medallion architecture para datos
+# 4. Pipeline de pruebas automatizado para validar codegen Spark y Glue
+# -----------------------------------------------------------------------------
 
 terraform {
-  required_version = ">= 1.5.0"
+  required_version = ">= 1.3.0"
 
   required_providers {
     aws = {
@@ -12,24 +21,41 @@ terraform {
       version = "~> 5.0"
     }
   }
-
-  # Backend remoto (opcional — descomentar para equipo)
-  # backend "s3" {
-  #   bucket = "bnx-terraform-state"
-  #   key    = "bnx-convertidor/terraform.tfstate"
-  #   region = "us-east-1"
-  # }
 }
 
 provider "aws" {
   region = var.aws_region
+}
 
-  default_tags {
-    tags = {
-      Project     = "BNX-Convertidor"
-      Environment = var.environment
-      ManagedBy   = "Terraform"
-      Team        = "Data-Engineering"
-    }
+# -----------------------------------------------------------------------------
+# Locals
+# -----------------------------------------------------------------------------
+locals {
+  common_tags = {
+    Project     = var.project_name
+    Environment = var.environment
+    ManagedBy   = "terraform"
   }
 }
+
+# -----------------------------------------------------------------------------
+# Data Sources — Recursos EXISTENTES (no se tocan, no se destruyen)
+# -----------------------------------------------------------------------------
+
+# Lambda existente: bnx-compiler (desplegada via deploy.sh)
+data "aws_lambda_function" "existing_compiler" {
+  function_name = "bnx-compiler"
+}
+
+# IAM Role existente (usada por Lambda y Glue manual)
+data "aws_iam_role" "existing_lambda_role" {
+  name = "lambdarol"
+}
+
+# S3 bucket existente para E2E tests
+data "aws_s3_bucket" "existing_e2e" {
+  bucket = "bnx-e2e-test"
+}
+
+# Account ID
+data "aws_caller_identity" "current" {}

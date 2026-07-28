@@ -1,25 +1,26 @@
-# ═══════════════════════════════════════════════════════════
+# -----------------------------------------------------------------------------
 # BNX Convertidor — Valores de ejemplo
-# Copia este archivo a terraform.tfvars y ajusta los valores
-# ═══════════════════════════════════════════════════════════
+# Copia a terraform.tfvars y ajusta
+# -----------------------------------------------------------------------------
 
-aws_region          = "us-east-1"
-environment         = "prod"
-project_name        = "bnx-convertidor"
+aws_region   = "us-east-1"
+project_name = "bnx-convertidor"
+environment  = "prod"
 
-# Lambda
-lambda_memory_size  = 512
-lambda_timeout      = 60
-lambda_runtime      = "python3.11"
+# Lambda (referencia, no se modifica)
+lambda_memory_size = 512
+lambda_timeout     = 60
 
-# Glue
-glue_worker_type    = "G.1X"
-glue_num_workers    = 2
+# Glue (pipeline de pruebas)
+glue_worker_type = "G.1X"
+glue_num_workers = 2
 
-# Amplify
-amplify_repository  = "https://github.com/benjamin77834/bnxconvertidor"
-amplify_branch      = "empresav4"
-# amplify_oauth_token = "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+# Pipeline
+enable_daily_pipeline = false
+pipeline_schedule     = "cron(0 6 * * ? *)"
 
 # Alertas
-alert_email         = "ops@bank.com"
+alert_email = "ops@bank.com"
+
+# Budget
+budget_monthly = "500"
