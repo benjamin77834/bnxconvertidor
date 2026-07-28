@@ -1,0 +1,25 @@
+# ═══════════════════════════════════════════════════════════
+# BNX Convertidor — Valores de ejemplo
+# Copia este archivo a terraform.tfvars y ajusta los valores
+# ═══════════════════════════════════════════════════════════
+
+aws_region          = "us-east-1"
+environment         = "prod"
+project_name        = "bnx-convertidor"
+
+# Lambda
+lambda_memory_size  = 512
+lambda_timeout      = 60
+lambda_runtime      = "python3.11"
+
+# Glue
+glue_worker_type    = "G.1X"
+glue_num_workers    = 2
+
+# Amplify
+amplify_repository  = "https://github.com/benjamin77834/bnxconvertidor"
+amplify_branch      = "empresav4"
+# amplify_oauth_token = "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+# Alertas
+alert_email         = "ops@bank.com"
