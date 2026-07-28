@@ -350,7 +350,7 @@ export default function App() {
         ) : page === 'history' ? (
           <HistoryPage theme={t} />
         ) : page === 'pipeline' ? (
-          <PipelinePage theme={t} />
+          <PipelinePage theme={t} compiledCode={result?.code || ''} compiledTarget={target} />
         ) : page === 'designer' ? (
           <DesignerPage theme={t} />
         ) : page === 'ocr' ? (
