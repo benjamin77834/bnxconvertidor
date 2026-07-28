@@ -416,6 +416,130 @@ def handler(event, context):
                     if p and os.path.exists(p):
                         os.unlink(p)
 
+        # --- /pipeline endpoint (ejecutar código en Glue desde UI) ---
+        if "/pipeline" in path and "/pipeline/status" not in path:
+            import boto3
+
+            action = fields.get("action", "run")
+            code_content = fields.get("code", "")
+            if "code" in files:
+                code_content = files["code"].decode() if isinstance(files["code"], bytes) else files["code"]
+
+            if not code_content:
+                return _response(400, {"error": "code is required (field or file)"})
+
+            pipeline_bucket = fields.get("bucket", "bnx-e2e-test")
+            pipeline_region = fields.get("region", "us-east-1")
+            pipeline_job = fields.get("job_name", "bnx-e2e-pipeline-ui")
+            pipeline_role = fields.get("role", "arn:aws:iam::034711235858:role/lambdarol")
+            script_target = fields.get("target", "spark")
+            script_key = f"scripts/{script_target}_job.py"
+
+            s3 = boto3.client("s3", region_name=pipeline_region)
+            glue = boto3.client("glue", region_name=pipeline_region)
+
+            results = {"steps": [], "status": "running"}
+
+            # Step 1: Upload script to S3
+            try:
+                s3.put_object(
+                    Bucket=pipeline_bucket,
+                    Key=script_key,
+                    Body=code_content.encode("utf-8")
+                )
+                results["steps"].append({"step": "upload_s3", "status": "done",
+                    "detail": f"s3://{pipeline_bucket}/{script_key}"})
+            except Exception as e:
+                results["steps"].append({"step": "upload_s3", "status": "error", "detail": str(e)})
+                results["status"] = "failed"
+                return _response(200, results)
+
+            # Step 2: Create or update Glue job
+            try:
+                try:
+                    glue.create_job(
+                        Name=pipeline_job,
+                        Role=pipeline_role,
+                        Command={
+                            "Name": "glueetl",
+                            "ScriptLocation": f"s3://{pipeline_bucket}/{script_key}",
+                            "PythonVersion": "3"
+                        },
+                        DefaultArguments={
+                            "--job-language": "python",
+                            "--TempDir": f"s3://{pipeline_bucket}/temp/",
+                            "--enable-metrics": "true",
+                        },
+                        GlueVersion="4.0",
+                        NumberOfWorkers=2,
+                        WorkerType="G.1X",
+                    )
+                    results["steps"].append({"step": "create_job", "status": "done", "detail": f"Created {pipeline_job}"})
+                except glue.exceptions.AlreadyExistsException:
+                    glue.update_job(
+                        JobName=pipeline_job,
+                        JobUpdate={
+                            "Role": pipeline_role,
+                            "Command": {
+                                "Name": "glueetl",
+                                "ScriptLocation": f"s3://{pipeline_bucket}/{script_key}",
+                                "PythonVersion": "3"
+                            },
+                            "DefaultArguments": {
+                                "--job-language": "python",
+                                "--TempDir": f"s3://{pipeline_bucket}/temp/",
+                                "--enable-metrics": "true",
+                            },
+                            "GlueVersion": "4.0",
+                            "NumberOfWorkers": 2,
+                            "WorkerType": "G.1X",
+                        }
+                    )
+                    results["steps"].append({"step": "create_job", "status": "done", "detail": f"Updated {pipeline_job}"})
+            except Exception as e:
+                results["steps"].append({"step": "create_job", "status": "error", "detail": str(e)})
+                results["status"] = "failed"
+                return _response(200, results)
+
+            # Step 3: Start job run
+            try:
+                run = glue.start_job_run(JobName=pipeline_job)
+                run_id = run["JobRunId"]
+                results["steps"].append({"step": "run_job", "status": "done", "detail": f"RunId: {run_id}"})
+                results["run_id"] = run_id
+                results["job_name"] = pipeline_job
+                results["status"] = "started"
+            except Exception as e:
+                results["steps"].append({"step": "run_job", "status": "error", "detail": str(e)})
+                results["status"] = "failed"
+
+            return _response(200, results)
+
+        # --- /pipeline/status endpoint (check job status) ---
+        if "/pipeline/status" in path:
+            import boto3
+
+            pipeline_job = fields.get("job_name", "bnx-e2e-pipeline-ui")
+            run_id = fields.get("run_id", "")
+            pipeline_region = fields.get("region", "us-east-1")
+
+            if not run_id:
+                return _response(400, {"error": "run_id is required"})
+
+            glue = boto3.client("glue", region_name=pipeline_region)
+            try:
+                run = glue.get_job_run(JobName=pipeline_job, RunId=run_id)
+                job_run = run["JobRun"]
+                return _response(200, {
+                    "status": job_run["JobRunState"],
+                    "started": str(job_run.get("StartedOn", "")),
+                    "completed": str(job_run.get("CompletedOn", "")),
+                    "duration": job_run.get("ExecutionTime", 0),
+                    "error": job_run.get("ErrorMessage", ""),
+                })
+            except Exception as e:
+                return _response(200, {"status": "UNKNOWN", "error": str(e)})
+
         # --- /compile endpoint ---
         if "mp" not in files:
             return _response(400, {"error": "mp file is required"})
