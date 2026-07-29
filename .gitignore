@@ -29,3 +29,8 @@ ui/coverage/
 
 # Temp
 *.tmp
+
+terraform/.terraform/
+terraform/tfplan
+terraform/*.tfstate*
+terraform/.build/

@@ -1,44 +1,16 @@
 # -----------------------------------------------------------------------------
-# S3 - Buckets para BNX Convertidor
-# Sigue Medallion Architecture de bnxlakehouse:
-#   Landing (grafos crudos) → Bronze (compilados) → Gold (ejecutados/validados)
+# S3 — Bucket para scripts y datos de BNX Convertidor
+# Reutiliza el ecosistema del lakehouse, solo crea un bucket de scripts
 # -----------------------------------------------------------------------------
 
-# Landing: Grafos .mp/.xfr/.dml originales del banco
-resource "aws_s3_bucket" "landing" {
-  bucket = "${var.project_name}-landing-${var.environment}"
+# Bucket para scripts generados por BNX (spark_job.py, glue_job.py)
+resource "aws_s3_bucket" "bnx_scripts" {
+  bucket = "${var.project_name}-bnx-scripts-${var.environment}"
   tags   = local.common_tags
 }
 
-# Bronze: Codigo generado por BNX (spark_job.py, glue_job.py)
-resource "aws_s3_bucket" "bronze" {
-  bucket = "${var.project_name}-bronze-${var.environment}"
-  tags   = local.common_tags
-}
-
-# Gold: Output de ejecucion validado (resultados correctos)
-resource "aws_s3_bucket" "gold" {
-  bucket = "${var.project_name}-gold-${var.environment}"
-  tags   = local.common_tags
-}
-
-# Scripts: Glue scripts activos para el pipeline
-resource "aws_s3_bucket" "scripts" {
-  bucket = "${var.project_name}-scripts-${var.environment}"
-  tags   = local.common_tags
-}
-
-# Reports: Reportes regulatorios generados
-resource "aws_s3_bucket" "reports" {
-  bucket = "${var.project_name}-reports-${var.environment}"
-  tags   = local.common_tags
-}
-
-# -----------------------------------------------------------------------------
-# Encriptacion server-side para todos los buckets
-# -----------------------------------------------------------------------------
-resource "aws_s3_bucket_server_side_encryption_configuration" "landing_encryption" {
-  bucket = aws_s3_bucket.landing.id
+resource "aws_s3_bucket_server_side_encryption_configuration" "bnx_scripts_encryption" {
+  bucket = aws_s3_bucket.bnx_scripts.id
   rule {
     apply_server_side_encryption_by_default {
       sse_algorithm = "AES256"
@@ -46,139 +18,51 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "landing_encryptio
   }
 }
 
-resource "aws_s3_bucket_server_side_encryption_configuration" "bronze_encryption" {
-  bucket = aws_s3_bucket.bronze.id
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
-    }
-  }
-}
-
-resource "aws_s3_bucket_server_side_encryption_configuration" "gold_encryption" {
-  bucket = aws_s3_bucket.gold.id
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
-    }
-  }
-}
-
-resource "aws_s3_bucket_server_side_encryption_configuration" "scripts_encryption" {
-  bucket = aws_s3_bucket.scripts.id
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
-    }
-  }
-}
-
-resource "aws_s3_bucket_server_side_encryption_configuration" "reports_encryption" {
-  bucket = aws_s3_bucket.reports.id
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
-    }
-  }
-}
-
-# -----------------------------------------------------------------------------
-# Bloquear acceso publico en todos los buckets
-# -----------------------------------------------------------------------------
-resource "aws_s3_bucket_public_access_block" "landing_public_access" {
-  bucket                  = aws_s3_bucket.landing.id
+resource "aws_s3_bucket_public_access_block" "bnx_scripts_public" {
+  bucket                  = aws_s3_bucket.bnx_scripts.id
   block_public_acls       = true
   block_public_policy     = true
   ignore_public_acls      = true
   restrict_public_buckets = true
 }
 
-resource "aws_s3_bucket_public_access_block" "bronze_public_access" {
-  bucket                  = aws_s3_bucket.bronze.id
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
-}
-
-resource "aws_s3_bucket_public_access_block" "gold_public_access" {
-  bucket                  = aws_s3_bucket.gold.id
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
-}
-
-resource "aws_s3_bucket_public_access_block" "scripts_public_access" {
-  bucket                  = aws_s3_bucket.scripts.id
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
-}
-
-resource "aws_s3_bucket_public_access_block" "reports_public_access" {
-  bucket                  = aws_s3_bucket.reports.id
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
-}
-
-# -----------------------------------------------------------------------------
-# Versionado en Landing y Bronze (trazabilidad de grafos y codigo)
-# -----------------------------------------------------------------------------
-resource "aws_s3_bucket_versioning" "landing_versioning" {
-  bucket = aws_s3_bucket.landing.id
+resource "aws_s3_bucket_versioning" "bnx_scripts_versioning" {
+  bucket = aws_s3_bucket.bnx_scripts.id
   versioning_configuration {
     status = "Enabled"
   }
 }
 
-resource "aws_s3_bucket_versioning" "bronze_versioning" {
-  bucket = aws_s3_bucket.bronze.id
-  versioning_configuration {
-    status = "Enabled"
-  }
+# Prefijos iniciales
+resource "aws_s3_object" "scripts_spark" {
+  bucket  = aws_s3_bucket.bnx_scripts.id
+  key     = "spark/"
+  content = ""
 }
 
-# -----------------------------------------------------------------------------
-# Lifecycle: mover grafos viejos a Glacier despues de 90 dias
-# -----------------------------------------------------------------------------
-resource "aws_s3_bucket_lifecycle_configuration" "landing_lifecycle" {
-  bucket = aws_s3_bucket.landing.id
-
-  rule {
-    id     = "archive-old-graphs"
-    status = "Enabled"
-
-    filter {
-      prefix = ""
-    }
-
-    transition {
-      days          = 90
-      storage_class = "STANDARD_IA"
-    }
-
-    transition {
-      days          = 365
-      storage_class = "GLACIER"
-    }
-  }
+resource "aws_s3_object" "scripts_glue" {
+  bucket  = aws_s3_bucket.bnx_scripts.id
+  key     = "glue/"
+  content = ""
 }
 
-# -----------------------------------------------------------------------------
-# Notificacion S3: cuando llega un grafo al landing, dispara Lambda pipeline
-# -----------------------------------------------------------------------------
-resource "aws_s3_bucket_notification" "landing_notification" {
-  bucket = aws_s3_bucket.landing.id
+resource "aws_s3_object" "scripts_temp" {
+  bucket  = aws_s3_bucket.bnx_scripts.id
+  key     = "temp/"
+  content = ""
+}
 
-  lambda_function {
-    lambda_function_arn = aws_lambda_function.pipeline_trigger.arn
-    events              = ["s3:ObjectCreated:*"]
-    filter_suffix       = ".mp"
-  }
-
-  depends_on = [aws_lambda_permission.allow_s3_landing]
+resource "aws_s3_object" "test_data" {
+  bucket  = aws_s3_bucket.bnx_scripts.id
+  key     = "test-data/orders.csv"
+  content = <<-EOF
+id,nombre,monto
+1,juan perez,150.50
+2,maria gomez,300.5
+3,carlos lopez,75.25
+4,ana martinez,200.0
+5,luis rodriguez,120.25
+6,juan perez,50.0
+7,maria gomez,100.0
+EOF
 }

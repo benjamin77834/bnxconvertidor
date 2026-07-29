@@ -1,15 +1,14 @@
 # -----------------------------------------------------------------------------
-# BNX Convertidor — Terraform Infrastructure
+# BNX Convertidor — Terraform en DataLab (cuenta 107094296911)
+#
+# Despliega el pipeline E2E de BNX Convertidor dentro de la plataforma
+# de datos fundacional (bnxlakehouse) ya desplegada.
 #
 # REGLAS:
-# 1. NO interrumpir recursos existentes (Lambda bnx-compiler, Amplify, S3 e2e)
-# 2. Usar data sources para referenciar lo que ya existe
-# 3. Seguir convenciones de bnxlakehouse:
-#    - local.common_tags en todos los recursos
-#    - Naming: ${var.project_name}-<recurso>-${var.environment}
-#    - Comentarios con separadores # -----
-#    - Medallion architecture para datos
-# 4. Pipeline de pruebas automatizado para validar codegen Spark y Glue
+# 1. Usar profile "datalab" (cuenta 107094296911)
+# 2. Reutilizar recursos existentes del lakehouse (roles, catalog, buckets)
+# 3. Solo crear lo nuevo: Glue jobs, Lambda trigger, Step Functions
+# 4. Seguir naming: datalake-<recurso>-<env> (como el lakehouse)
 # -----------------------------------------------------------------------------
 
 terraform {
@@ -24,7 +23,8 @@ terraform {
 }
 
 provider "aws" {
-  region = var.aws_region
+  region  = var.aws_region
+  profile = "datalab"
 }
 
 # -----------------------------------------------------------------------------
@@ -35,26 +35,27 @@ locals {
     Project     = var.project_name
     Environment = var.environment
     ManagedBy   = "terraform"
+    Component   = "bnx-convertidor"
   }
 }
 
 # -----------------------------------------------------------------------------
-# Data Sources — Recursos EXISTENTES (no se tocan, no se destruyen)
+# Data Sources — Recursos del Lakehouse YA DESPLEGADOS
 # -----------------------------------------------------------------------------
 
-# Lambda existente: bnx-compiler (desplegada via deploy.sh)
-data "aws_lambda_function" "existing_compiler" {
-  function_name = "bnx-compiler"
+# Glue Role existente del lakehouse
+data "aws_iam_role" "glue_role" {
+  name = "datalake-glue-role-${var.environment}"
 }
 
-# IAM Role existente (usada por Lambda y Glue manual)
-data "aws_iam_role" "existing_lambda_role" {
-  name = "lambdarol"
+# Lambda Role existente del lakehouse
+data "aws_iam_role" "lambda_role" {
+  name = "datalake-lambda-role-${var.environment}"
 }
 
-# S3 bucket existente para E2E tests
-data "aws_s3_bucket" "existing_e2e" {
-  bucket = "bnx-e2e-test"
+# Glue Catalog existente (referencia por nombre, no data source)
+locals {
+  glue_catalog_db = "datalake_${var.environment}"
 }
 
 # Account ID
