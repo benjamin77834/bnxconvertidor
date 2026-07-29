@@ -1,11 +1,43 @@
-# -----------------------------------------------------------------------------
-# IAM — Roles y Politicas
+# =============================================================================
+# IAM Roles - BNX Convertidor (Pipeline E2E)
+# =============================================================================
 #
-# El rol "lambdarol" YA EXISTE — no se recrea.
-# Solo creamos roles NUEVOS para el pipeline de pruebas.
-# -----------------------------------------------------------------------------
+# Este archivo define los roles y politicas IAM para el pipeline de pruebas
+# de BNX Convertidor: Lambda (pipeline trigger), Glue (jobs E2E),
+# Step Functions (orquestacion) y EventBridge (schedule).
+#
+# El rol "lambdarol" YA EXISTE — no se recrea, solo se referencia.
+#
+# =============================================================================
+# TABLA RESUMEN DE PERMISOS
+# =============================================================================
+#
+# ┌─────────────────────┬─────────────────────────────┬───────────────────────────────────────────┬──────────────┐
+# │ ROL                 │ POLÍTICA                    │ ACCIONES                                  │ RECURSO      │
+# ├─────────────────────┼─────────────────────────────┼───────────────────────────────────────────┼──────────────┤
+# │ (existente)         │ bnx-pipeline-permissions    │ iam:PassRole, glue:Create/Update/Start,   │ lambdarol,   │
+# │ lambdarol           │ (inline en AWS, no en TF)   │ s3:Put/Get/List                           │ bnx-e2e-test │
+# ├─────────────────────┼─────────────────────────────┼───────────────────────────────────────────┼──────────────┤
+# │ glue_role           │ AWSGlueServiceRole          │ (politica gestionada AWS)                 │ *            │
+# │                     │ glue-s3-access              │ s3:Get/Put/Delete, ListBucket             │ landing,     │
+# │                     │                             │                                           │ bronze, gold │
+# │                     │                             │                                           │ scripts, e2e │
+# ├─────────────────────┼─────────────────────────────┼───────────────────────────────────────────┼──────────────┤
+# │ lambda_pipeline     │ LambdaBasicExecution        │ (politica gestionada AWS)                 │ logs         │
+# │                     │ pipeline-policy             │ lambda:Invoke, s3:Put/Get, glue:Start,    │ bnx-compiler,│
+# │                     │                             │ states:StartExecution                     │ buckets, sfn │
+# ├─────────────────────┼─────────────────────────────┼───────────────────────────────────────────┼──────────────┤
+# │ stepfunctions_role  │ sfn-policy                  │ lambda:Invoke, glue:Start/Get/Stop,       │ compiler,    │
+# │                     │                             │ sns:Publish, logs:*                        │ trigger, sns │
+# ├─────────────────────┼─────────────────────────────┼───────────────────────────────────────────┼──────────────┤
+# │ eventbridge_role    │ eventbridge-sfn             │ states:StartExecution                     │ pipeline sfn │
+# └─────────────────────┴─────────────────────────────┴───────────────────────────────────────────┴──────────────┘
+#
+# =============================================================================
 
-# --- Glue Role (para jobs del pipeline) ---
+# -----------------------------------------------------------------------------
+# IAM Role - AWS Glue (para jobs del pipeline E2E)
+# -----------------------------------------------------------------------------
 resource "aws_iam_role" "glue_role" {
   name = "${var.project_name}-glue-role-${var.environment}"
 
@@ -25,14 +57,16 @@ resource "aws_iam_role" "glue_role" {
   tags = local.common_tags
 }
 
+# Politica gestionada de Glue Service
 resource "aws_iam_role_policy_attachment" "glue_service" {
   role       = aws_iam_role.glue_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole"
 }
 
-resource "aws_iam_policy" "glue_s3_access" {
-  name        = "${var.project_name}-glue-s3-${var.environment}"
-  description = "Permite a Glue leer/escribir en buckets BNX y E2E"
+# Acceso de Glue a buckets del pipeline
+resource "aws_iam_role_policy" "glue_s3_access" {
+  name = "${var.project_name}-glue-s3-access-${var.environment}"
+  role = aws_iam_role.glue_role.id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -43,7 +77,7 @@ resource "aws_iam_policy" "glue_s3_access" {
           "s3:GetObject",
           "s3:PutObject",
           "s3:DeleteObject",
-          "s3:ListBucket",
+          "s3:ListBucket"
         ]
         Resource = [
           data.aws_s3_bucket.existing_e2e.arn,
@@ -69,16 +103,11 @@ resource "aws_iam_policy" "glue_s3_access" {
       }
     ]
   })
-
-  tags = local.common_tags
 }
 
-resource "aws_iam_role_policy_attachment" "glue_s3" {
-  role       = aws_iam_role.glue_role.name
-  policy_arn = aws_iam_policy.glue_s3_access.arn
-}
-
-# --- Lambda Role (para pipeline trigger) ---
+# -----------------------------------------------------------------------------
+# IAM Role - Lambda Pipeline Trigger
+# -----------------------------------------------------------------------------
 resource "aws_iam_role" "lambda_pipeline_role" {
   name = "${var.project_name}-lambda-pipeline-${var.environment}"
 
@@ -103,9 +132,10 @@ resource "aws_iam_role_policy_attachment" "lambda_pipeline_basic" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
-resource "aws_iam_policy" "lambda_pipeline_policy" {
-  name        = "${var.project_name}-lambda-pipeline-policy-${var.environment}"
-  description = "Permite a Lambda del pipeline invocar BNX compiler, Glue y S3"
+# Permisos del pipeline trigger: invocar BNX compiler, S3, Glue, Step Functions
+resource "aws_iam_role_policy" "lambda_pipeline_policy" {
+  name = "${var.project_name}-lambda-pipeline-policy-${var.environment}"
+  role = aws_iam_role.lambda_pipeline_role.id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -143,22 +173,22 @@ resource "aws_iam_policy" "lambda_pipeline_policy" {
         Resource = "*"
       },
       {
-        Effect = "Allow"
-        Action = ["states:StartExecution"]
+        Effect   = "Allow"
+        Action   = ["states:StartExecution"]
         Resource = aws_sfn_state_machine.e2e_pipeline.arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["iam:PassRole"]
+        Resource = aws_iam_role.glue_role.arn
       }
     ]
   })
-
-  tags = local.common_tags
 }
 
-resource "aws_iam_role_policy_attachment" "lambda_pipeline" {
-  role       = aws_iam_role.lambda_pipeline_role.name
-  policy_arn = aws_iam_policy.lambda_pipeline_policy.arn
-}
-
-# --- Step Functions Role ---
+# -----------------------------------------------------------------------------
+# IAM Role - Step Functions (orquestacion del pipeline)
+# -----------------------------------------------------------------------------
 resource "aws_iam_role" "stepfunctions_role" {
   name = "${var.project_name}-sfn-role-${var.environment}"
 
@@ -178,9 +208,9 @@ resource "aws_iam_role" "stepfunctions_role" {
   tags = local.common_tags
 }
 
-resource "aws_iam_policy" "stepfunctions_policy" {
-  name        = "${var.project_name}-sfn-policy-${var.environment}"
-  description = "Permite a Step Functions invocar Lambda, Glue y SNS"
+resource "aws_iam_role_policy" "stepfunctions_policy" {
+  name = "${var.project_name}-sfn-policy-${var.environment}"
+  role = aws_iam_role.stepfunctions_role.id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -224,16 +254,11 @@ resource "aws_iam_policy" "stepfunctions_policy" {
       }
     ]
   })
-
-  tags = local.common_tags
 }
 
-resource "aws_iam_role_policy_attachment" "sfn_policy" {
-  role       = aws_iam_role.stepfunctions_role.name
-  policy_arn = aws_iam_policy.stepfunctions_policy.arn
-}
-
-# --- EventBridge Role ---
+# -----------------------------------------------------------------------------
+# IAM Role - EventBridge (schedule del pipeline)
+# -----------------------------------------------------------------------------
 resource "aws_iam_role" "eventbridge_role" {
   name = "${var.project_name}-eventbridge-role-${var.environment}"
 
