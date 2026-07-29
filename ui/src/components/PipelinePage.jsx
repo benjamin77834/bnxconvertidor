@@ -22,13 +22,17 @@ export default function PipelinePage({ theme, compiledCode, compiledTarget }) {
   const [running, setRunning] = useState(false)
   const [polling, setPolling] = useState(false)
   const [runId, setRunId] = useState('')
-  const [jobName, setJobName] = useState('bnx-e2e-pipeline-ui')
+  const [jobName, setJobName] = useState(
+    typeof window !== 'undefined' && window.location.hostname.includes('d142k2cigcx7cr')
+      ? 'datalake-bnx-test-spark-dev' : 'bnx-e2e-pipeline-ui'
+  )
   const pollingRef = useRef(null)
 
-  // Config
-  const [bucket, setBucket] = useState('bnx-e2e-test')
+  // Config — detectar ambiente por URL
+  const isDataLab = typeof window !== 'undefined' && window.location.hostname.includes('d142k2cigcx7cr')
+  const [bucket, setBucket] = useState(isDataLab ? 'datalake-bnx-scripts-dev' : 'bnx-e2e-test')
   const [region, setRegion] = useState('us-east-1')
-  const [role, setRole] = useState('arn:aws:iam::034711235858:role/lambdarol')
+  const [role, setRole] = useState(isDataLab ? 'arn:aws:iam::107094296911:role/datalake-glue-role-dev' : 'arn:aws:iam::034711235858:role/lambdarol')
 
   // Si viene codigo del Compiler, precargarlo
   useEffect(() => {
