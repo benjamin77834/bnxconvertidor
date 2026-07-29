@@ -1,26 +1,10 @@
-# -----------------------------------------------------------------------------
-# BNX Convertidor — Valores de ejemplo
-# Copia a terraform.tfvars y ajusta
-# -----------------------------------------------------------------------------
-
+# BNX Convertidor en DataLab (profile: datalab, cuenta: 107094296911)
 aws_region   = "us-east-1"
-project_name = "bnx-convertidor"
-environment  = "prod"
+project_name = "datalake"
+environment  = "dev"
 
-# Lambda (referencia, no se modifica)
-lambda_memory_size = 512
-lambda_timeout     = 60
-
-# Glue (pipeline de pruebas)
 glue_worker_type = "G.1X"
 glue_num_workers = 2
 
-# Pipeline
 enable_daily_pipeline = false
-pipeline_schedule     = "cron(0 6 * * ? *)"
-
-# Alertas
-alert_email = "ops@bank.com"
-
-# Budget
-budget_monthly = "500"
+alert_email = "benjamin.garcia@banamex.com"

@@ -1,5 +1,5 @@
 # -----------------------------------------------------------------------------
-# Variables generales
+# Variables generales (alineadas con bnxlakehouse)
 # -----------------------------------------------------------------------------
 variable "aws_region" {
   description = "Region de AWS"
@@ -8,34 +8,19 @@ variable "aws_region" {
 }
 
 variable "project_name" {
-  description = "Nombre del proyecto (se usa como prefijo en los recursos)"
+  description = "Nombre del proyecto (prefijo para recursos)"
   type        = string
-  default     = "bnx-convertidor"
+  default     = "datalake"
 }
 
 variable "environment" {
   description = "Ambiente (dev, staging, prod)"
   type        = string
-  default     = "prod"
+  default     = "dev"
 }
 
 # -----------------------------------------------------------------------------
-# Variables de Lambda
-# -----------------------------------------------------------------------------
-variable "lambda_memory_size" {
-  description = "Memoria de la Lambda en MB"
-  type        = number
-  default     = 512
-}
-
-variable "lambda_timeout" {
-  description = "Timeout de la Lambda en segundos"
-  type        = number
-  default     = 60
-}
-
-# -----------------------------------------------------------------------------
-# Variables de Glue (Pipeline de pruebas)
+# Variables de Glue (Pipeline de pruebas BNX)
 # -----------------------------------------------------------------------------
 variable "glue_worker_type" {
   description = "Tipo de worker para Glue jobs"
@@ -58,26 +43,11 @@ variable "enable_daily_pipeline" {
   default     = false
 }
 
-variable "pipeline_schedule" {
-  description = "Cron para ejecucion programada del pipeline (UTC)"
-  type        = string
-  default     = "cron(0 6 * * ? *)"
-}
-
 # -----------------------------------------------------------------------------
 # Variables de Alertas
 # -----------------------------------------------------------------------------
 variable "alert_email" {
-  description = "Email para alertas de CloudWatch y SNS"
+  description = "Email para alertas"
   type        = string
-  default     = "ops@bank.com"
-}
-
-# -----------------------------------------------------------------------------
-# Variables de Control de Costos
-# -----------------------------------------------------------------------------
-variable "budget_monthly" {
-  description = "Presupuesto mensual total en USD para BNX"
-  type        = string
-  default     = "500"
+  default     = "benjamin.garcia@banamex.com"
 }
