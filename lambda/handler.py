@@ -475,27 +475,30 @@ def handler(event, context):
                         WorkerType="G.1X",
                     )
                     results["steps"].append({"step": "create_job", "status": "done", "detail": f"Created {pipeline_job}"})
-                except glue.exceptions.AlreadyExistsException:
-                    glue.update_job(
-                        JobName=pipeline_job,
-                        JobUpdate={
-                            "Role": pipeline_role,
-                            "Command": {
-                                "Name": "glueetl",
-                                "ScriptLocation": f"s3://{pipeline_bucket}/{script_key}",
-                                "PythonVersion": "3"
-                            },
-                            "DefaultArguments": {
-                                "--job-language": "python",
-                                "--TempDir": f"s3://{pipeline_bucket}/temp/",
-                                "--enable-metrics": "true",
-                            },
-                            "GlueVersion": "4.0",
-                            "NumberOfWorkers": 2,
-                            "WorkerType": "G.1X",
-                        }
-                    )
-                    results["steps"].append({"step": "create_job", "status": "done", "detail": f"Updated {pipeline_job}"})
+                except Exception as create_err:
+                    if "AlreadyExists" in str(create_err) or "Idempotent" in str(create_err):
+                        glue.update_job(
+                            JobName=pipeline_job,
+                            JobUpdate={
+                                "Role": pipeline_role,
+                                "Command": {
+                                    "Name": "glueetl",
+                                    "ScriptLocation": f"s3://{pipeline_bucket}/{script_key}",
+                                    "PythonVersion": "3"
+                                },
+                                "DefaultArguments": {
+                                    "--job-language": "python",
+                                    "--TempDir": f"s3://{pipeline_bucket}/temp/",
+                                    "--enable-metrics": "true",
+                                },
+                                "GlueVersion": "4.0",
+                                "NumberOfWorkers": 2,
+                                "WorkerType": "G.1X",
+                            }
+                        )
+                        results["steps"].append({"step": "create_job", "status": "done", "detail": f"Updated {pipeline_job}"})
+                    else:
+                        raise create_err
             except Exception as e:
                 results["steps"].append({"step": "create_job", "status": "error", "detail": str(e)})
                 results["status"] = "failed"
