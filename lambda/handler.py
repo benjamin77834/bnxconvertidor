@@ -569,7 +569,12 @@ def handler(event, context):
 
 
 def _cors_headers():
-    return {"Content-Type": "application/json"}
+    return {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers": "Content-Type",
+        "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+    }
 
 
 def _response(status, body):
