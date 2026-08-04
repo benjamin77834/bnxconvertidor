@@ -399,7 +399,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._json_response(400, {"error": "action must be: list, save, delete, upload"})
 
     def _handle_pipeline(self):
-        """Pipeline local — ejecuta el código generado localmente (sin AWS)."""
+        """Pipeline — sube a S3 y ejecuta en Glue via AWS CLI (profile datalab)."""
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length)
         content_type = self.headers.get("Content-Type", "")
@@ -408,10 +408,17 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             import subprocess
             code_content = ""
             target = "spark"
+            bucket = "datalake-bnx-scripts-dev"
+            job_name = "datalake-bnx-test-spark-dev"
+            region = "us-east-1"
+            profile = "datalab"
 
             if "multipart/form-data" in content_type:
                 fields, file_parts = parse_multipart(body, content_type)
                 target = fields.get("target", "spark")
+                bucket = fields.get("bucket", bucket)
+                job_name = fields.get("job_name", job_name)
+                profile = fields.get("profile", profile)
                 if "code" in file_parts:
                     code_content = file_parts["code"].decode("utf-8", errors="replace")
                 elif "code" in fields:
@@ -423,49 +430,96 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
 
             results = {"steps": [], "status": "running"}
 
-            # Step 1: Guardar script en projects/output/
+            # Step 1: Guardar script localmente
             output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "projects", "output")
             os.makedirs(output_dir, exist_ok=True)
             script_path = os.path.join(output_dir, f"{target}_job.py")
             with open(script_path, "w") as f:
                 f.write(code_content)
-            results["steps"].append({"step": "upload_s3", "status": "done", "detail": f"Guardado: {script_path}"})
+            results["steps"].append({"step": "upload_s3", "status": "running", "detail": "Subiendo a S3..."})
 
-            # Step 2: No necesita crear job — ejecucion local
-            results["steps"].append({"step": "create_job", "status": "done", "detail": "Ejecucion local (sin Glue)"})
-
-            # Step 3: Ejecutar con Python local
-            try:
-                proc = subprocess.run(
-                    [sys.executable, script_path],
-                    capture_output=True, text=True, timeout=120,
-                    cwd=output_dir,
-                )
-                if proc.returncode == 0:
-                    results["steps"].append({"step": "run_job", "status": "done", "detail": "Ejecutado OK"})
-                    results["output"] = proc.stdout[-2000:] if proc.stdout else ""
-                    results["status"] = "completed"
-                else:
-                    error_msg = (proc.stderr or proc.stdout or "Unknown error")[-500:]
-                    results["steps"].append({"step": "run_job", "status": "error", "detail": error_msg})
-                    results["status"] = "failed"
-                    results["error"] = error_msg
-            except subprocess.TimeoutExpired:
-                results["steps"].append({"step": "run_job", "status": "error", "detail": "Timeout (120s)"})
+            # Step 2: Subir a S3 con AWS CLI
+            s3_key = f"scripts/{target}_job.py"
+            s3_uri = f"s3://{bucket}/{s3_key}"
+            proc = subprocess.run(
+                ["aws", "s3", "cp", script_path, s3_uri, "--profile", profile, "--region", region],
+                capture_output=True, text=True, timeout=30
+            )
+            if proc.returncode == 0:
+                results["steps"][-1] = {"step": "upload_s3", "status": "done", "detail": s3_uri}
+            else:
+                results["steps"][-1] = {"step": "upload_s3", "status": "error", "detail": proc.stderr[:200]}
                 results["status"] = "failed"
-            except FileNotFoundError:
-                # PySpark no disponible, solo guardar
-                results["steps"].append({"step": "run_job", "status": "info", "detail": f"Script guardado en {script_path}. Ejecutar manualmente: python3 {script_path}"})
-                results["status"] = "saved"
+                self._json_response(200, results)
+                return
+
+            # Step 3: Ejecutar Glue job
+            results["steps"].append({"step": "create_job", "status": "done", "detail": f"Job: {job_name}"})
+            proc = subprocess.run(
+                ["aws", "glue", "start-job-run", "--job-name", job_name, "--profile", profile, "--region", region, "--query", "JobRunId", "--output", "text"],
+                capture_output=True, text=True, timeout=30
+            )
+            if proc.returncode == 0:
+                run_id = proc.stdout.strip()
+                results["steps"].append({"step": "run_job", "status": "done", "detail": f"RunId: {run_id}"})
+                results["run_id"] = run_id
+                results["job_name"] = job_name
+                results["status"] = "started"
+            else:
+                results["steps"].append({"step": "run_job", "status": "error", "detail": proc.stderr[:200]})
+                results["status"] = "failed"
 
             self._json_response(200, results)
 
+        except FileNotFoundError:
+            self._json_response(200, {
+                "steps": [{"step": "upload_s3", "status": "error", "detail": "AWS CLI no encontrado. Instalar: https://aws.amazon.com/cli/"}],
+                "status": "failed"
+            })
         except Exception as e:
             self._json_response(500, {"error": str(e)})
 
     def _handle_pipeline_status(self):
-        """Status local — no hay polling, el resultado ya se devolvio en /pipeline."""
-        self._json_response(200, {"status": "COMPLETED", "detail": "Ejecucion local es sincrona"})
+        """Consulta status del Glue job via AWS CLI."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        content_type = self.headers.get("Content-Type", "")
+
+        import subprocess
+        job_name = "datalake-bnx-test-spark-dev"
+        run_id = ""
+        region = "us-east-1"
+        profile = "datalab"
+
+        if "multipart/form-data" in content_type:
+            fields, _ = parse_multipart(body, content_type)
+            job_name = fields.get("job_name", job_name)
+            run_id = fields.get("run_id", "")
+            region = fields.get("region", region)
+            profile = fields.get("profile", profile)
+
+        if not run_id:
+            self._json_response(400, {"error": "run_id is required"})
+            return
+
+        try:
+            proc = subprocess.run(
+                ["aws", "glue", "get-job-run", "--job-name", job_name, "--run-id", run_id,
+                 "--profile", profile, "--region", region, "--output", "json"],
+                capture_output=True, text=True, timeout=15
+            )
+            if proc.returncode == 0:
+                data = json.loads(proc.stdout)
+                jr = data.get("JobRun", {})
+                self._json_response(200, {
+                    "status": jr.get("JobRunState", "UNKNOWN"),
+                    "duration": jr.get("ExecutionTime", 0),
+                    "error": jr.get("ErrorMessage", ""),
+                })
+            else:
+                self._json_response(200, {"status": "UNKNOWN", "error": proc.stderr[:200]})
+        except Exception as e:
+            self._json_response(200, {"status": "UNKNOWN", "error": str(e)})
 
     def _save_temp(self, content, suffix):
         if isinstance(content, bytes):
