@@ -60,7 +60,9 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path
 
-        if "/pipeline/status" in path:
+        if "/library" in path:
+            self._handle_library()
+        elif "/pipeline/status" in path:
             self._handle_pipeline_status()
         elif "/pipeline" in path:
             self._handle_pipeline()
@@ -223,6 +225,147 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             err_msg = str(e)
             traceback.print_exc()
             self._json_response(500, {"error": err_msg})
+
+    def _handle_library(self):
+        """Biblioteca de grafos — lee/escribe en carpeta local projects/."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        content_type = self.headers.get("Content-Type", "")
+
+        projects_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "projects")
+        os.makedirs(projects_dir, exist_ok=True)
+
+        # Parse form
+        action = "list"
+        fields_data = {}
+        files_data = {}
+
+        if "multipart/form-data" in content_type:
+            import cgi
+            environ = {"REQUEST_METHOD": "POST", "CONTENT_TYPE": content_type, "CONTENT_LENGTH": str(len(body))}
+            fp = BytesIO(body)
+            form = cgi.FieldStorage(fp=fp, environ=environ, keep_blank_values=True)
+            for key in form.keys():
+                item = form[key]
+                if isinstance(item, list):
+                    item = item[0]
+                if hasattr(item, 'file') and item.file:
+                    files_data[key] = item.file.read()
+                elif hasattr(item, 'value'):
+                    val = item.value if isinstance(item.value, str) else item.value.decode()
+                    fields_data[key] = val
+        else:
+            try:
+                fields_data = json.loads(body.decode("utf-8"))
+            except:
+                pass
+
+        action = fields_data.get("action", "list")
+
+        if action == "list":
+            # Listar todos los grafos en projects/
+            items = []
+            for fname in sorted(os.listdir(projects_dir)):
+                fpath = os.path.join(projects_dir, fname)
+                if fname.endswith(".json") and os.path.isfile(fpath):
+                    try:
+                        with open(fpath, "r") as f:
+                            meta = json.load(f)
+                        items.append(meta)
+                    except:
+                        pass
+                elif fname.endswith(".mp") and os.path.isfile(fpath):
+                    # Auto-detectar .mp sueltos como grafos
+                    with open(fpath, "r", errors="replace") as f:
+                        mp_content = f.read()
+                    xfr_content = ""
+                    xfr_path = fpath.replace(".mp", ".xfr")
+                    if os.path.isfile(xfr_path):
+                        with open(xfr_path, "r", errors="replace") as f:
+                            xfr_content = f.read()
+                    items.append({
+                        "id": fname.replace(".mp", ""),
+                        "name": fname.replace(".mp", ""),
+                        "mp": mp_content,
+                        "xfr": xfr_content,
+                        "savedAt": str(os.path.getmtime(fpath)),
+                        "nodes": mp_content.count("\nNODE ") + (1 if mp_content.startswith("NODE ") else 0),
+                        "source": "file",
+                    })
+            items.sort(key=lambda x: x.get("savedAt", ""), reverse=True)
+            self._json_response(200, {"graphs": items})
+
+        elif action == "save":
+            name = fields_data.get("name", "sin_nombre")
+            mp_content = fields_data.get("mp", "")
+            xfr_content = fields_data.get("xfr", "")
+
+            # Si viene como file
+            if "mp" in files_data:
+                mp_content = files_data["mp"].decode("utf-8", errors="replace")
+            if "xfr" in files_data:
+                xfr_content = files_data["xfr"].decode("utf-8", errors="replace")
+
+            if not mp_content:
+                self._json_response(400, {"error": "mp content is required"})
+                return
+
+            # Guardar como .mp + .xfr + .json en projects/
+            safe_name = "".join(c if c.isalnum() or c in "-_ " else "" for c in name).strip().replace(" ", "_")
+            if not safe_name:
+                safe_name = "grafo_" + str(int(__import__("time").time()))
+
+            mp_path = os.path.join(projects_dir, f"{safe_name}.mp")
+            with open(mp_path, "w") as f:
+                f.write(mp_content)
+
+            if xfr_content:
+                xfr_path = os.path.join(projects_dir, f"{safe_name}.xfr")
+                with open(xfr_path, "w") as f:
+                    f.write(xfr_content)
+
+            # Metadata JSON
+            entry = {
+                "id": safe_name,
+                "name": name,
+                "mp": mp_content,
+                "xfr": xfr_content,
+                "savedAt": str(__import__("datetime").datetime.now().isoformat()),
+                "nodes": mp_content.count("\nNODE ") + (1 if mp_content.startswith("NODE ") else 0),
+                "source": "local",
+            }
+            meta_path = os.path.join(projects_dir, f"{safe_name}.json")
+            with open(meta_path, "w") as f:
+                json.dump(entry, f, indent=2)
+
+            self._json_response(200, {"saved": entry})
+
+        elif action == "delete":
+            graph_id = fields_data.get("id", "")
+            if not graph_id:
+                self._json_response(400, {"error": "id is required"})
+                return
+            # Borrar .mp, .xfr, .json
+            for ext in [".mp", ".xfr", ".json", ".dml"]:
+                p = os.path.join(projects_dir, f"{graph_id}{ext}")
+                if os.path.isfile(p):
+                    os.unlink(p)
+            self._json_response(200, {"deleted": graph_id})
+
+        elif action == "upload":
+            # Subir archivo(s) directamente a projects/
+            saved = []
+            for key, data in files_data.items():
+                fname = fields_data.get(f"{key}_name", key)
+                safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in fname)
+                fpath = os.path.join(projects_dir, safe)
+                with open(fpath, "wb") as f:
+                    f.write(data)
+                saved.append(safe)
+            self._json_response(200, {"uploaded": saved})
+
+        else:
+            self._json_response(400, {"error": "action must be: list, save, delete, upload"})
 
     def _handle_pipeline(self):
         """Ejecuta código en AWS Glue (sube a S3, crea/actualiza job, ejecuta)."""
