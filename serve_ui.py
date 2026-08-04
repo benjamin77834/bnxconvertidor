@@ -238,6 +238,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             job_name = "datalake-bnx-test-spark-dev"
             role_arn = "arn:aws:iam::107094296911:role/datalake-glue-role-dev"
             target = "spark"
+            profile = "datalab"
 
             if "multipart/form-data" in content_type:
                 import cgi
@@ -268,7 +269,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             results = {"steps": [], "status": "running"}
 
             # Step 1: Upload to S3
-            s3 = boto3.client("s3", region_name=region)
+            session = boto3.Session(profile_name=profile, region_name=region)
+            s3 = session.client("s3")
             try:
                 s3.put_object(Bucket=bucket, Key=script_key, Body=code_content.encode("utf-8"))
                 results["steps"].append({"step": "upload_s3", "status": "done", "detail": f"s3://{bucket}/{script_key}"})
@@ -279,7 +281,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 return
 
             # Step 2: Create or update Glue job
-            glue = boto3.client("glue", region_name=region)
+            glue = session.client("glue")
             try:
                 try:
                     glue.create_job(
@@ -342,6 +344,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             job_name = "datalake-bnx-test-spark-dev"
             run_id = ""
             region = "us-east-1"
+            profile = "datalab"
 
             if "multipart/form-data" in content_type:
                 import cgi
@@ -362,7 +365,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 self._json_response(400, {"error": "run_id is required"})
                 return
 
-            glue = boto3.client("glue", region_name=region)
+            glue = boto3.Session(profile_name=profile, region_name=region).client("glue")
             run = glue.get_job_run(JobName=job_name, RunId=run_id)
             job_run = run["JobRun"]
             self._json_response(200, {
