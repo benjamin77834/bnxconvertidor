@@ -20,6 +20,62 @@ import socketserver
 from urllib.parse import urlparse, parse_qs
 from io import BytesIO
 
+
+def parse_multipart(body, content_type):
+    """Parse multipart/form-data sin dependencia de cgi (removido en Python 3.13+)."""
+    fields = {}
+    files = {}
+
+    if "boundary=" not in content_type:
+        return fields, files
+
+    boundary = content_type.split("boundary=")[1].strip()
+    if boundary.startswith('"') and boundary.endswith('"'):
+        boundary = boundary[1:-1]
+
+    parts = body.split(f"--{boundary}".encode())
+
+    for part in parts[1:]:  # skip preamble
+        if part.strip() == b"--" or part.strip() == b"":
+            continue
+
+        # Split headers from body
+        if b"\r\n\r\n" in part:
+            header_data, file_data = part.split(b"\r\n\r\n", 1)
+        elif b"\n\n" in part:
+            header_data, file_data = part.split(b"\n\n", 1)
+        else:
+            continue
+
+        # Remove trailing \r\n
+        if file_data.endswith(b"\r\n"):
+            file_data = file_data[:-2]
+        elif file_data.endswith(b"\n"):
+            file_data = file_data[:-1]
+
+        headers = header_data.decode("utf-8", errors="replace")
+        name = None
+        filename = None
+
+        for line in headers.split("\n"):
+            line = line.strip()
+            if "name=" in line:
+                # Extract name
+                name_part = line.split("name=")[1].split(";")[0].strip().strip('"')
+                name = name_part
+            if "filename=" in line:
+                fn_part = line.split("filename=")[1].split(";")[0].strip().strip('"')
+                filename = fn_part
+
+        if name:
+            if filename:
+                files[name] = file_data
+                fields[f"{name}_filename"] = filename
+            else:
+                fields[name] = file_data.decode("utf-8", errors="replace")
+
+    return fields, files
+
 # Add project root to path
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -102,37 +158,24 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             target = "glue"
 
             if "multipart/form-data" in content_type:
-                # Parse multipart form data
-                import cgi
-                environ = {
-                    "REQUEST_METHOD": "POST",
-                    "CONTENT_TYPE": content_type,
-                    "CONTENT_LENGTH": str(len(body)),
-                }
-                fp = BytesIO(body)
-                form = cgi.FieldStorage(fp=fp, environ=environ, keep_blank_values=True)
-                
-                for key in form.keys():
-                    item = form[key]
-                    if isinstance(item, list):
-                        item = item[0]
-                    if hasattr(item, 'file') and item.file:
-                        file_data = item.file.read()
-                        # Keep as bytes for .mp files (may be binary GDE format)
-                        if key == "mp" or (hasattr(item, 'filename') and item.filename and item.filename.endswith('.mp')):
-                            mp_content = file_data  # keep as bytes
-                        elif key == "xfr" or (hasattr(item, 'filename') and item.filename and item.filename.endswith('.xfr')):
-                            xfr_content = file_data.decode("utf-8", errors="replace") if isinstance(file_data, bytes) else file_data
-                        elif key == "dml" or (hasattr(item, 'filename') and item.filename and item.filename.endswith('.dml')):
-                            dml_content = file_data.decode("utf-8", errors="replace") if isinstance(file_data, bytes) else file_data
-                        elif key == "pset" or (hasattr(item, 'filename') and item.filename and item.filename.endswith('.pset')):
-                            pset_content = file_data.decode("utf-8", errors="replace") if isinstance(file_data, bytes) else file_data
-                    elif hasattr(item, 'value'):
-                        val = item.value if isinstance(item.value, str) else item.value.decode()
-                        if key == "target":
-                            target = val
-                        elif key == "mp":
-                            mp_content = val
+                fields, file_parts = parse_multipart(body, content_type)
+                target = fields.get("target", "glue")
+                if "mp" in file_parts:
+                    mp_content = file_parts["mp"]  # keep as bytes for GDE
+                elif "mp" in fields:
+                    mp_content = fields["mp"]
+                if "xfr" in file_parts:
+                    xfr_content = file_parts["xfr"].decode("utf-8", errors="replace")
+                elif "xfr" in fields:
+                    xfr_content = fields["xfr"]
+                if "dml" in file_parts:
+                    dml_content = file_parts["dml"].decode("utf-8", errors="replace")
+                elif "dml" in fields:
+                    dml_content = fields["dml"]
+                if "pset" in file_parts:
+                    pset_content = file_parts["pset"].decode("utf-8", errors="replace")
+                elif "pset" in fields:
+                    pset_content = fields["pset"]
             else:
                 # JSON body
                 try:
@@ -241,19 +284,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         files_data = {}
 
         if "multipart/form-data" in content_type:
-            import cgi
-            environ = {"REQUEST_METHOD": "POST", "CONTENT_TYPE": content_type, "CONTENT_LENGTH": str(len(body))}
-            fp = BytesIO(body)
-            form = cgi.FieldStorage(fp=fp, environ=environ, keep_blank_values=True)
-            for key in form.keys():
-                item = form[key]
-                if isinstance(item, list):
-                    item = item[0]
-                if hasattr(item, 'file') and item.file:
-                    files_data[key] = item.file.read()
-                elif hasattr(item, 'value'):
-                    val = item.value if isinstance(item.value, str) else item.value.decode()
-                    fields_data[key] = val
+            fields_data, files_data = parse_multipart(body, content_type)
         else:
             try:
                 fields_data = json.loads(body.decode("utf-8"))
@@ -379,21 +410,12 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             target = "spark"
 
             if "multipart/form-data" in content_type:
-                import cgi
-                environ = {"REQUEST_METHOD": "POST", "CONTENT_TYPE": content_type, "CONTENT_LENGTH": str(len(body))}
-                fp = BytesIO(body)
-                form = cgi.FieldStorage(fp=fp, environ=environ, keep_blank_values=True)
-                for key in form.keys():
-                    item = form[key]
-                    if isinstance(item, list):
-                        item = item[0]
-                    val = ""
-                    if hasattr(item, 'file') and item.file:
-                        val = item.file.read().decode("utf-8", errors="replace")
-                    elif hasattr(item, 'value'):
-                        val = item.value if isinstance(item.value, str) else item.value.decode()
-                    if key == "code": code_content = val
-                    elif key == "target": target = val
+                fields, file_parts = parse_multipart(body, content_type)
+                target = fields.get("target", "spark")
+                if "code" in file_parts:
+                    code_content = file_parts["code"].decode("utf-8", errors="replace")
+                elif "code" in fields:
+                    code_content = fields["code"]
 
             if not code_content:
                 self._json_response(400, {"error": "code is required"})
