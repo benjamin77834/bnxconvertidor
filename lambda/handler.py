@@ -613,6 +613,34 @@ def handler(event, context):
             except Exception as e:
                 return _response(200, {"status": "UNKNOWN", "error": str(e)})
 
+        # --- /pipeline/logs endpoint (read CloudWatch logs) ---
+        if "/pipeline/logs" in path:
+            import boto3
+
+            run_id = fields.get("run_id", "")
+            pipeline_region = fields.get("region", "us-east-1")
+
+            if not run_id:
+                return _response(400, {"error": "run_id is required"})
+
+            logs_client = boto3.client("logs", region_name=pipeline_region)
+            all_logs = []
+            for log_group in ["/aws-glue/jobs/output", "/aws-glue/jobs/error"]:
+                try:
+                    resp = logs_client.get_log_events(
+                        logGroupName=log_group,
+                        logStreamName=run_id,
+                        limit=100,
+                    )
+                    for event in resp.get("events", []):
+                        msg = event.get("message", "").strip()
+                        if msg:
+                            all_logs.append(msg)
+                except Exception:
+                    pass
+
+            return _response(200, {"logs": all_logs})
+
         # --- /compile endpoint ---
         if "mp" not in files:
             return _response(400, {"error": "mp file is required"})
