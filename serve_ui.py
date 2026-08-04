@@ -60,7 +60,11 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path
 
-        if "/compile" in path or "/api" in path:
+        if "/pipeline/status" in path:
+            self._handle_pipeline_status()
+        elif "/pipeline" in path:
+            self._handle_pipeline()
+        elif "/compile" in path or "/api" in path:
             self._handle_compile()
         else:
             self.send_error(404, "Not found")
@@ -215,7 +219,164 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             if dml_path: os.unlink(dml_path)
 
         except Exception as e:
+            import traceback
+            err_msg = str(e)
+            traceback.print_exc()
+            self._json_response(500, {"error": err_msg})
+
+    def _handle_pipeline(self):
+        """Ejecuta código en AWS Glue (sube a S3, crea/actualiza job, ejecuta)."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        content_type = self.headers.get("Content-Type", "")
+
+        try:
+            import boto3
+            code_content = ""
+            bucket = "datalake-bnx-scripts-dev"
+            region = "us-east-1"
+            job_name = "datalake-bnx-test-spark-dev"
+            role_arn = "arn:aws:iam::107094296911:role/datalake-glue-role-dev"
+            target = "spark"
+
+            if "multipart/form-data" in content_type:
+                import cgi
+                environ = {"REQUEST_METHOD": "POST", "CONTENT_TYPE": content_type, "CONTENT_LENGTH": str(len(body))}
+                fp = BytesIO(body)
+                form = cgi.FieldStorage(fp=fp, environ=environ, keep_blank_values=True)
+                for key in form.keys():
+                    item = form[key]
+                    if isinstance(item, list):
+                        item = item[0]
+                    val = ""
+                    if hasattr(item, 'file') and item.file:
+                        val = item.file.read().decode("utf-8", errors="replace")
+                    elif hasattr(item, 'value'):
+                        val = item.value if isinstance(item.value, str) else item.value.decode()
+                    if key == "code": code_content = val
+                    elif key == "bucket": bucket = val
+                    elif key == "region": region = val
+                    elif key == "job_name": job_name = val
+                    elif key == "role": role_arn = val
+                    elif key == "target": target = val
+
+            if not code_content:
+                self._json_response(400, {"error": "code is required"})
+                return
+
+            script_key = f"scripts/{target}_job.py"
+            results = {"steps": [], "status": "running"}
+
+            # Step 1: Upload to S3
+            s3 = boto3.client("s3", region_name=region)
+            try:
+                s3.put_object(Bucket=bucket, Key=script_key, Body=code_content.encode("utf-8"))
+                results["steps"].append({"step": "upload_s3", "status": "done", "detail": f"s3://{bucket}/{script_key}"})
+            except Exception as e:
+                results["steps"].append({"step": "upload_s3", "status": "error", "detail": str(e)})
+                results["status"] = "failed"
+                self._json_response(200, results)
+                return
+
+            # Step 2: Create or update Glue job
+            glue = boto3.client("glue", region_name=region)
+            try:
+                try:
+                    glue.create_job(
+                        Name=job_name, Role=role_arn,
+                        Command={"Name": "glueetl", "ScriptLocation": f"s3://{bucket}/{script_key}", "PythonVersion": "3"},
+                        DefaultArguments={"--job-language": "python", "--TempDir": f"s3://{bucket}/temp/", "--enable-metrics": "true"},
+                        GlueVersion="4.0", NumberOfWorkers=2, WorkerType="G.1X",
+                    )
+                    results["steps"].append({"step": "create_job", "status": "done", "detail": f"Created {job_name}"})
+                except Exception as create_err:
+                    if "AlreadyExists" in str(create_err) or "Idempotent" in str(create_err):
+                        glue.update_job(
+                            JobName=job_name,
+                            JobUpdate={
+                                "Role": role_arn,
+                                "Command": {"Name": "glueetl", "ScriptLocation": f"s3://{bucket}/{script_key}", "PythonVersion": "3"},
+                                "DefaultArguments": {"--job-language": "python", "--TempDir": f"s3://{bucket}/temp/", "--enable-metrics": "true"},
+                                "GlueVersion": "4.0", "NumberOfWorkers": 2, "WorkerType": "G.1X",
+                            }
+                        )
+                        results["steps"].append({"step": "create_job", "status": "done", "detail": f"Updated {job_name}"})
+                    else:
+                        raise create_err
+            except Exception as e:
+                results["steps"].append({"step": "create_job", "status": "error", "detail": str(e)})
+                results["status"] = "failed"
+                self._json_response(200, results)
+                return
+
+            # Step 3: Start job run
+            try:
+                run = glue.start_job_run(JobName=job_name)
+                run_id = run["JobRunId"]
+                results["steps"].append({"step": "run_job", "status": "done", "detail": f"RunId: {run_id}"})
+                results["run_id"] = run_id
+                results["job_name"] = job_name
+                results["status"] = "started"
+            except Exception as e:
+                results["steps"].append({"step": "run_job", "status": "error", "detail": str(e)})
+                results["status"] = "failed"
+
+            self._json_response(200, results)
+
+        except ImportError:
+            self._json_response(200, {
+                "steps": [{"step": "upload_s3", "status": "error", "detail": "boto3 not installed. Run: pip install boto3"}],
+                "status": "failed"
+            })
+        except Exception as e:
             self._json_response(500, {"error": str(e)})
+
+    def _handle_pipeline_status(self):
+        """Consulta el estado de un Glue job run."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        content_type = self.headers.get("Content-Type", "")
+
+        try:
+            import boto3
+            job_name = "datalake-bnx-test-spark-dev"
+            run_id = ""
+            region = "us-east-1"
+
+            if "multipart/form-data" in content_type:
+                import cgi
+                environ = {"REQUEST_METHOD": "POST", "CONTENT_TYPE": content_type, "CONTENT_LENGTH": str(len(body))}
+                fp = BytesIO(body)
+                form = cgi.FieldStorage(fp=fp, environ=environ, keep_blank_values=True)
+                for key in form.keys():
+                    item = form[key]
+                    if isinstance(item, list):
+                        item = item[0]
+                    val = item.value if hasattr(item, 'value') else ""
+                    if isinstance(val, bytes): val = val.decode()
+                    if key == "job_name": job_name = val
+                    elif key == "run_id": run_id = val
+                    elif key == "region": region = val
+
+            if not run_id:
+                self._json_response(400, {"error": "run_id is required"})
+                return
+
+            glue = boto3.client("glue", region_name=region)
+            run = glue.get_job_run(JobName=job_name, RunId=run_id)
+            job_run = run["JobRun"]
+            self._json_response(200, {
+                "status": job_run["JobRunState"],
+                "started": str(job_run.get("StartedOn", "")),
+                "completed": str(job_run.get("CompletedOn", "")),
+                "duration": job_run.get("ExecutionTime", 0),
+                "error": job_run.get("ErrorMessage", ""),
+            })
+
+        except ImportError:
+            self._json_response(200, {"status": "ERROR", "error": "boto3 not installed"})
+        except Exception as e:
+            self._json_response(200, {"status": "UNKNOWN", "error": str(e)})
 
     def _save_temp(self, content, suffix):
         if isinstance(content, bytes):
