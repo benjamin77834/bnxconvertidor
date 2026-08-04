@@ -12,6 +12,7 @@ import RoadmapPage from './components/RoadmapPage'
 import HistoryPage from './components/HistoryPage'
 import PipelinePage from './components/PipelinePage'
 import GraphLibrary from './components/GraphLibrary'
+import GrafosPage from './components/GrafosPage'
 import { COMPILE_URL } from './config'
 
 // ── Themes ──────────────────────────────────────────────────
@@ -307,6 +308,7 @@ export default function App() {
             { id: 'metrics', label: '📊 Metrics' },
             { id: 'roadmap', label: '🗺️ Roadmap' },
             { id: 'pipeline', label: '🧪 Pipeline' },
+            { id: 'grafos', label: '📁 Grafos' },
             { id: 'history', label: '📜 History' },
           ].map(tab => (
             <button key={tab.id}
@@ -352,6 +354,14 @@ export default function App() {
           <HistoryPage theme={t} />
         ) : page === 'pipeline' ? (
           <PipelinePage theme={t} compiledCode={result?.code || ''} compiledTarget={target} />
+        ) : page === 'grafos' ? (
+          <GrafosPage theme={t} onLoadToCompiler={(g) => {
+            setEditorMp(g.mp || '')
+            setEditorXfr(g.xfr || '')
+            setShowEditor(true)
+            setEditorTab('mp')
+            setPage('compiler')
+          }} />
         ) : page === 'designer' ? (
           <DesignerPage theme={t} />
         ) : page === 'ocr' ? (
