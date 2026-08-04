@@ -416,6 +416,76 @@ def handler(event, context):
                     if p and os.path.exists(p):
                         os.unlink(p)
 
+        # --- /library endpoint (guardar/listar grafos en S3) ---
+        if "/library" in path:
+            import boto3
+
+            lib_bucket = "datalake-bnx-scripts-dev"
+            lib_prefix = "library/"
+            lib_region = "us-east-1"
+            action = fields.get("action", "list")
+
+            s3 = boto3.client("s3", region_name=lib_region)
+
+            if action == "list":
+                # Listar todos los grafos guardados
+                try:
+                    resp = s3.list_objects_v2(Bucket=lib_bucket, Prefix=lib_prefix)
+                    items = []
+                    for obj in resp.get("Contents", []):
+                        if obj["Key"].endswith(".json"):
+                            data = s3.get_object(Bucket=lib_bucket, Key=obj["Key"])
+                            meta = json.loads(data["Body"].read().decode("utf-8"))
+                            items.append(meta)
+                    # Ordenar por fecha mas reciente
+                    items.sort(key=lambda x: x.get("savedAt", ""), reverse=True)
+                    return _response(200, {"graphs": items})
+                except Exception as e:
+                    return _response(200, {"graphs": [], "error": str(e)})
+
+            elif action == "save":
+                # Guardar un grafo
+                name = fields.get("name", "sin_nombre")
+                mp_content = fields.get("mp", "")
+                xfr_content = fields.get("xfr", "")
+                if "mp" in files:
+                    mp_content = files["mp"].decode("utf-8", errors="replace") if isinstance(files["mp"], bytes) else files["mp"]
+                if "xfr" in files:
+                    xfr_content = files["xfr"].decode("utf-8", errors="replace") if isinstance(files["xfr"], bytes) else files["xfr"]
+
+                if not mp_content:
+                    return _response(400, {"error": "mp content is required"})
+
+                import hashlib
+                graph_id = hashlib.md5(f"{name}{mp_content[:100]}".encode()).hexdigest()[:12]
+                entry = {
+                    "id": graph_id,
+                    "name": name,
+                    "mp": mp_content,
+                    "xfr": xfr_content,
+                    "savedAt": str(__import__("datetime").datetime.utcnow().isoformat()),
+                    "nodes": mp_content.count("\nNODE ") + (1 if mp_content.startswith("NODE ") else 0),
+                }
+                s3.put_object(
+                    Bucket=lib_bucket,
+                    Key=f"{lib_prefix}{graph_id}.json",
+                    Body=json.dumps(entry).encode("utf-8"),
+                    ContentType="application/json",
+                )
+                return _response(200, {"saved": entry})
+
+            elif action == "delete":
+                graph_id = fields.get("id", "")
+                if not graph_id:
+                    return _response(400, {"error": "id is required"})
+                try:
+                    s3.delete_object(Bucket=lib_bucket, Key=f"{lib_prefix}{graph_id}.json")
+                    return _response(200, {"deleted": graph_id})
+                except Exception as e:
+                    return _response(200, {"error": str(e)})
+
+            return _response(400, {"error": "action must be list, save, or delete"})
+
         # --- /pipeline endpoint (ejecutar código en Glue desde UI) ---
         if "/pipeline" in path and "/pipeline/status" not in path:
             import boto3

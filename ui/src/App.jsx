@@ -11,6 +11,7 @@ import ExecutivePage from './components/ExecutivePage'
 import RoadmapPage from './components/RoadmapPage'
 import HistoryPage from './components/HistoryPage'
 import PipelinePage from './components/PipelinePage'
+import GraphLibrary from './components/GraphLibrary'
 import { COMPILE_URL } from './config'
 
 // ── Themes ──────────────────────────────────────────────────
@@ -369,7 +370,13 @@ export default function App() {
         }}>
           <FileUpload files={files} setFiles={setFiles} onCompile={compile} loading={loading} theme={t} />
 
-          {/* Inline Editor */}
+          {/* Biblioteca de Grafos (S3) */}
+          <GraphLibrary theme={t} onLoad={(g) => {
+            setEditorMp(g.mp || '')
+            setEditorXfr(g.xfr || '')
+            setShowEditor(true)
+            setEditorTab('mp')
+          }} />
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ fontSize: 14, color: t.muted, textTransform: 'uppercase', letterSpacing: 1 }}>✏️ Editor</span>
