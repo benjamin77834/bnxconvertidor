@@ -34,3 +34,4 @@ terraform/.terraform/
 terraform/tfplan
 terraform/*.tfstate*
 terraform/.build/
+.env.aws
