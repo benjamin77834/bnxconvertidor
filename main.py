@@ -449,6 +449,7 @@ def parse_ksh(ksh_path):
 
 def _generate_pandas(dag, output_path, xfr_rules=None):
     """Generate pure Python code using pandas (no Spark/Glue dependencies)."""
+    import os
     xfr_rules = xfr_rules or {}
     from datetime import datetime
     
@@ -471,12 +472,23 @@ def _generate_pandas(dag, output_path, xfr_rules=None):
                 f.write(f'print(f"[>] SOURCE {name}: {{len({var_id}_df)}} rows")\n\n')
             
             elif ntype == "FILTER":
-                f.write(f'# [.] FILTER: {name}\n')
+                f.write(f'# [-] FILTER: {name}\n')
                 if parents:
                     where = rule.get("where", "") if rule else ""
                     if where:
-                        # Convert SQL-like filter to pandas query
-                        f.write(f'{var_id}_df = {parents[0]}_df.query("{where}")\n')
+                        # Translate Ab Initio built-in functions to pandas equivalents
+                        if "next_in_sequence()" in where:
+                            # next_in_sequence() > 1 skips header rows in raw/fixed-width files.
+                            # No-op for structured formats (CSV with header already parsed).
+                            f.write(f'# next_in_sequence() filter: no-op for CSV/parquet (header handled by reader)\n')
+                            f.write(f'{var_id}_df = {parents[0]}_df.copy()\n')
+                        elif re.search(r'\b(string_|decimal_|integer_|date_|is_blank|is_defined)', where):
+                            # Other Ab Initio functions that can't go in .query() - use .copy() as fallback
+                            f.write(f'# TODO: Ab Initio expression not directly translatable: {where}\n')
+                            f.write(f'{var_id}_df = {parents[0]}_df.copy()\n')
+                        else:
+                            # Standard expression compatible with pandas query
+                            f.write(f'{var_id}_df = {parents[0]}_df.query("{where}")\n')
                     else:
                         f.write(f'{var_id}_df = {parents[0]}_df.copy()\n')
                 else:
@@ -499,7 +511,9 @@ def _generate_pandas(dag, output_path, xfr_rules=None):
                 f.write(f'# [*] SINK: {name}\n')
                 if parents:
                     path = rule.get("path", f"output/{var_id.lower()}.csv") if rule else f"output/{var_id.lower()}.csv"
-                    f.write(f'os.makedirs(os.path.dirname("{path}"), exist_ok=True)\n')
+                    dir_part = os.path.dirname(path)
+                    if dir_part:
+                        f.write(f'os.makedirs("{dir_part}", exist_ok=True)\n')
                     f.write(f'{parents[0]}_df.to_csv("{path}", index=False)\n')
                     f.write(f'print(f"[>] SINK {name}: {{len({parents[0]}_df)}} rows -> {path}")\n\n')
                 else:
@@ -514,7 +528,38 @@ def _generate_pandas(dag, output_path, xfr_rules=None):
                     where = rule.get("where", "") if rule else ""
                     group_by = rule.get("group_by", []) if rule else []
                     
-                    if group_by and select:
+                    # Map Ab Initio string functions to pandas expressions
+                    # string_upcase(in.field) -> df["field"].str.upper()
+                    string_transforms = []
+                    if select:
+                        for part in select.split(","):
+                            part = part.strip()
+                            # Match: string_upcase(in.field) as alias OR string_upcase(field) as alias
+                            m_str = re.match(r'(string_\w+)\((?:in\.)?(\w+)\)\s+as\s+(\w+)', part, re.I)
+                            if m_str:
+                                fn, field, alias = m_str.group(1).lower(), m_str.group(2), m_str.group(3)
+                                pandas_fn = {
+                                    'string_upcase': '.str.upper()',
+                                    'string_downcase': '.str.lower()',
+                                    'string_lrtrim': '.str.strip()',
+                                    'string_ltrim': '.str.lstrip()',
+                                    'string_rtrim': '.str.rstrip()',
+                                    'string_length': '.str.len()',
+                                    'string_reverse': '.str[::-1]',
+                                }.get(fn, '')
+                                if pandas_fn:
+                                    string_transforms.append((field, alias, pandas_fn))
+                    
+                    # Deduplicate group_by keys preserving order
+                    if group_by:
+                        group_by = list(dict.fromkeys(group_by))
+                    
+                    if string_transforms and not group_by:
+                        # Generate pandas string operations
+                        f.write(f'{var_id}_df = {src}.copy()\n')
+                        for field, alias, pandas_fn in string_transforms:
+                            f.write(f'{var_id}_df["{alias}"] = {var_id}_df["{field}"]{pandas_fn}\n')
+                    elif group_by and select:
                         # Aggregation
                         keys_str = "[" + ", ".join(f"'{k}'" for k in group_by) + "]"
                         # Parse select for agg functions
@@ -562,14 +607,23 @@ def _extract_embedded_transforms(content):
     xfr_rules = {}
     
     # Extract all transform blocks
-    # They appear as XXparameter|transform|TRANSFORM_BODY
-    transforms = re.findall(
-        r'XXparameter\|transform\|([^|]*(?:begin.*?end;|[^|]+))',
+    # They appear as XXparameter|transform|BODY or XXparameter|transform0|BODY etc.
+    # The body can contain pipes (|) inside GDE format, escaped braces (\{ \}), and multiline content
+    # Strategy: find "transform0|" then capture until we hit the pattern for next parameter field "|N|N|"
+    raw_transforms = re.findall(
+        r'XXparameter\|transform\d*\|(.*?)(?:\|\d+\|\d+\|)',
         content, re.DOTALL
     )
+    # Filter: only keep transforms that have actual DML content (:: or begin/end)
+    transforms = [t.strip() for t in raw_transforms if '::' in t or 'begin' in t.lower()]
     
     # Extract keys (group by fields)
-    keys = re.findall(r'XXparameter\|key\|\\?\{?([^|}]+)\\?\}?\|', content)
+    keys_raw = re.findall(r'XXparameter\|key\|\\?\{?([^|}]+)\\?\}?\|', content)
+    keys = [k.replace('\\', '').strip() for k in keys_raw]
+    try:
+        print(f"  [dbg] Extracted keys: {keys}")
+    except (UnicodeEncodeError, OSError):
+        print(f"  [dbg] Extracted keys: {len(keys)} keys found")
     
     # Extract filter expressions (for Filter_by_Expression components)
     filters = re.findall(r'XXparameter\|select_expr\|([^|]+)\|', content)
@@ -616,6 +670,7 @@ def _extract_embedded_transforms(content):
                 })
         
         component_transforms[current_component_idx] = rules
+        print(f"  [dbg] Transform #{current_component_idx}: type={rules['type']}, fields={len(rules['fields'])}, aggs={len(rules['aggregations'])}")
         current_component_idx += 1
     
     # Build xfr_rules dict
@@ -656,19 +711,26 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
             for tidx, trules in transforms.items():
                 if trules["type"] == "rollup":
                     rule = {}
-                    # Group by keys
+                    # Group by keys — ONLY from the explicit key parameter
                     if keys:
-                        rule["group_by"] = [k.strip() for k in keys[0].split(",") if k.strip()]
+                        rule["group_by"] = list(dict.fromkeys(k.strip() for k in keys[0].split(",") if k.strip()))
                     # Aggregations
                     if trules["aggregations"]:
                         rule["select"] = ", ".join(
                             f'{a["function"]}({a["source_field"]}) as {a["field"]}' 
                             for a in trules["aggregations"]
                         )
-                        # Add non-agg fields
+                        # Non-agg fields that are NOT in the key are passthrough (first)
+                        # Do NOT add them to group_by — they use first() aggregation
                         non_agg = [f["field"] for f in trules.get("fields", [])]
                         if non_agg and rule.get("group_by"):
-                            rule["group_by"] = list(set(rule["group_by"] + non_agg))
+                            passthrough = [f for f in non_agg if f not in rule["group_by"]]
+                            if passthrough:
+                                # Add passthrough fields as first() aggregations
+                                extra_agg = ", ".join(
+                                    f'first({f}) as {f}' for f in passthrough
+                                )
+                                rule["select"] = rule["select"] + ", " + extra_agg
                     xfr_rules[info["name"].lower()] = rule
                     del transforms[tidx]
                     break
@@ -762,6 +824,8 @@ def main(project_path, output_path, xfr_path=None, dml_path=None, pset_path=None
             _apply_embedded_transforms(node_map, embedded, xfr_rules)
             if xfr_rules:
                 print(f"[i] XFR rules generated: {list(xfr_rules.keys())}")
+                for rk, rv in xfr_rules.items():
+                    print(f"    {rk}: {rv}")
 
     if dml_schema:
         print(f"[i] DML schema loaded: {list(dml_schema.keys())}\n")
