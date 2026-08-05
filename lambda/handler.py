@@ -416,7 +416,7 @@ def handler(event, context):
                     if p and os.path.exists(p):
                         os.unlink(p)
 
-        # --- /library endpoint (guardar/listar grafos en S3) ---
+        # --- /library endpoint (guardar/listar grafos en S3 como archivos) ---
         if "/library" in path:
             import boto3
 
@@ -428,23 +428,41 @@ def handler(event, context):
             s3 = boto3.client("s3", region_name=lib_region)
 
             if action == "list":
-                # Listar todos los grafos guardados
+                # Listar archivos .mp en library/ (como explorador de carpetas)
                 try:
                     resp = s3.list_objects_v2(Bucket=lib_bucket, Prefix=lib_prefix)
                     items = []
+                    mp_files = {}
+                    xfr_files = set()
                     for obj in resp.get("Contents", []):
-                        if obj["Key"].endswith(".json"):
-                            data = s3.get_object(Bucket=lib_bucket, Key=obj["Key"])
-                            meta = json.loads(data["Body"].read().decode("utf-8"))
-                            items.append(meta)
-                    # Ordenar por fecha mas reciente
-                    items.sort(key=lambda x: x.get("savedAt", ""), reverse=True)
+                        key = obj["Key"]
+                        name = key.replace(lib_prefix, "")
+                        if not name:
+                            continue
+                        if name.endswith(".mp"):
+                            base = name.replace(".mp", "")
+                            mp_files[base] = {
+                                "id": base,
+                                "name": base,
+                                "file": name,
+                                "size": obj["Size"],
+                                "lastModified": str(obj["LastModified"]),
+                            }
+                        elif name.endswith(".xfr"):
+                            xfr_files.add(name.replace(".xfr", ""))
+
+                    # Marcar cuales tienen .xfr
+                    for base, info in mp_files.items():
+                        info["hasXfr"] = base in xfr_files
+                        items.append(info)
+
+                    items.sort(key=lambda x: x.get("lastModified", ""), reverse=True)
                     return _response(200, {"graphs": items})
                 except Exception as e:
                     return _response(200, {"graphs": [], "error": str(e)})
 
             elif action == "save":
-                # Guardar un grafo
+                # Subir .mp y .xfr como archivos directos a S3
                 name = fields.get("name", "sin_nombre")
                 mp_content = fields.get("mp", "")
                 xfr_content = fields.get("xfr", "")
@@ -456,35 +474,54 @@ def handler(event, context):
                 if not mp_content:
                     return _response(400, {"error": "mp content is required"})
 
-                import hashlib
-                graph_id = hashlib.md5(f"{name}{mp_content[:100]}".encode()).hexdigest()[:12]
-                entry = {
-                    "id": graph_id,
-                    "name": name,
-                    "mp": mp_content,
-                    "xfr": xfr_content,
-                    "savedAt": str(__import__("datetime").datetime.utcnow().isoformat()),
-                    "nodes": mp_content.count("\nNODE ") + (1 if mp_content.startswith("NODE ") else 0),
-                }
+                # Nombre seguro para S3
+                safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in name).strip("_")
+                if not safe_name:
+                    safe_name = "grafo"
+
+                # Subir .mp
                 s3.put_object(
                     Bucket=lib_bucket,
-                    Key=f"{lib_prefix}{graph_id}.json",
-                    Body=json.dumps(entry).encode("utf-8"),
-                    ContentType="application/json",
+                    Key=f"{lib_prefix}{safe_name}.mp",
+                    Body=mp_content.encode("utf-8"),
+                    ContentType="text/plain",
                 )
-                return _response(200, {"saved": entry})
 
-            elif action == "delete":
-                graph_id = fields.get("id", "")
-                if not graph_id:
-                    return _response(400, {"error": "id is required"})
+                # Subir .xfr si existe
+                if xfr_content:
+                    s3.put_object(
+                        Bucket=lib_bucket,
+                        Key=f"{lib_prefix}{safe_name}.xfr",
+                        Body=xfr_content.encode("utf-8"),
+                        ContentType="text/plain",
+                    )
+
+                return _response(200, {"saved": {"name": safe_name, "hasXfr": bool(xfr_content)}})
+
+            elif action == "download":
+                # Descargar contenido de un archivo
+                file_name = fields.get("file", "")
+                if not file_name:
+                    return _response(400, {"error": "file name is required"})
                 try:
-                    s3.delete_object(Bucket=lib_bucket, Key=f"{lib_prefix}{graph_id}.json")
-                    return _response(200, {"deleted": graph_id})
+                    obj = s3.get_object(Bucket=lib_bucket, Key=f"{lib_prefix}{file_name}")
+                    content = obj["Body"].read().decode("utf-8", errors="replace")
+                    return _response(200, {"file": file_name, "content": content})
                 except Exception as e:
                     return _response(200, {"error": str(e)})
 
-            return _response(400, {"error": "action must be list, save, or delete"})
+            elif action == "delete":
+                name = fields.get("id", "") or fields.get("name", "")
+                if not name:
+                    return _response(400, {"error": "name is required"})
+                try:
+                    s3.delete_object(Bucket=lib_bucket, Key=f"{lib_prefix}{name}.mp")
+                    s3.delete_object(Bucket=lib_bucket, Key=f"{lib_prefix}{name}.xfr")
+                    return _response(200, {"deleted": name})
+                except Exception as e:
+                    return _response(200, {"error": str(e)})
+
+            return _response(400, {"error": "action must be list, save, download, or delete"})
 
         # --- /pipeline endpoint (ejecutar código en Glue desde UI) ---
         if "/pipeline" in path and "/pipeline/status" not in path:
