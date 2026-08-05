@@ -416,112 +416,126 @@ def handler(event, context):
                     if p and os.path.exists(p):
                         os.unlink(p)
 
-        # --- /library endpoint (guardar/listar grafos en S3 como archivos) ---
+        # --- /library endpoint (proyectos + grafos como carpetas en S3) ---
         if "/library" in path:
             import boto3
 
             lib_bucket = "datalake-bnx-scripts-dev"
             lib_prefix = "library/"
             lib_region = "us-east-1"
-            action = fields.get("action", "list")
+            action = fields.get("action", "list_projects")
 
             s3 = boto3.client("s3", region_name=lib_region)
 
-            if action == "list":
-                # Listar archivos .mp en library/ (como explorador de carpetas)
+            if action == "list_projects":
+                # Listar proyectos (carpetas de primer nivel en library/)
                 try:
-                    resp = s3.list_objects_v2(Bucket=lib_bucket, Prefix=lib_prefix)
-                    items = []
-                    mp_files = {}
-                    xfr_files = set()
+                    resp = s3.list_objects_v2(Bucket=lib_bucket, Prefix=lib_prefix, Delimiter="/")
+                    projects = []
+                    for prefix in resp.get("CommonPrefixes", []):
+                        proj_name = prefix["Prefix"].replace(lib_prefix, "").rstrip("/")
+                        if proj_name:
+                            # Contar archivos dentro
+                            files_resp = s3.list_objects_v2(Bucket=lib_bucket, Prefix=f"{lib_prefix}{proj_name}/")
+                            file_count = len([o for o in files_resp.get("Contents", []) if o["Key"].endswith(".mp")])
+                            projects.append({"name": proj_name, "graphs": file_count})
+                    return _response(200, {"projects": projects})
+                except Exception as e:
+                    return _response(200, {"projects": [], "error": str(e)})
+
+            elif action == "create_project":
+                # Crear proyecto (carpeta en S3)
+                project = fields.get("project", "").strip()
+                if not project:
+                    return _response(400, {"error": "project name is required"})
+                safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in project).strip("_")
+                s3.put_object(Bucket=lib_bucket, Key=f"{lib_prefix}{safe}/", Body=b"")
+                return _response(200, {"created": safe})
+
+            elif action == "list_files":
+                # Listar archivos dentro de un proyecto
+                project = fields.get("project", "")
+                if not project:
+                    return _response(400, {"error": "project is required"})
+                try:
+                    resp = s3.list_objects_v2(Bucket=lib_bucket, Prefix=f"{lib_prefix}{project}/")
+                    files_list = []
                     for obj in resp.get("Contents", []):
-                        key = obj["Key"]
-                        name = key.replace(lib_prefix, "")
-                        if not name:
-                            continue
-                        if name.endswith(".mp"):
-                            base = name.replace(".mp", "")
-                            mp_files[base] = {
-                                "id": base,
-                                "name": base,
-                                "file": name,
+                        fname = obj["Key"].replace(f"{lib_prefix}{project}/", "")
+                        if fname and not fname.endswith("/"):
+                            files_list.append({
+                                "name": fname,
                                 "size": obj["Size"],
                                 "lastModified": str(obj["LastModified"]),
-                            }
-                        elif name.endswith(".xfr"):
-                            xfr_files.add(name.replace(".xfr", ""))
-
-                    # Marcar cuales tienen .xfr
-                    for base, info in mp_files.items():
-                        info["hasXfr"] = base in xfr_files
-                        items.append(info)
-
-                    items.sort(key=lambda x: x.get("lastModified", ""), reverse=True)
-                    return _response(200, {"graphs": items})
+                            })
+                    return _response(200, {"project": project, "files": files_list})
                 except Exception as e:
-                    return _response(200, {"graphs": [], "error": str(e)})
+                    return _response(200, {"files": [], "error": str(e)})
 
-            elif action == "save":
-                # Subir .mp y .xfr como archivos directos a S3
-                name = fields.get("name", "sin_nombre")
+            elif action == "upload":
+                # Subir archivo(s) a un proyecto
+                project = fields.get("project", "")
+                if not project:
+                    return _response(400, {"error": "project is required"})
+                uploaded = []
+                for key, data in files.items():
+                    if key in ("project", "action"):
+                        continue
+                    # Usar el nombre del campo o filename
+                    fname = key
+                    if isinstance(data, bytes):
+                        s3.put_object(
+                            Bucket=lib_bucket,
+                            Key=f"{lib_prefix}{project}/{fname}",
+                            Body=data,
+                            ContentType="text/plain",
+                        )
+                        uploaded.append(fname)
+                # Tambien revisar campos de texto con contenido mp/xfr
                 mp_content = fields.get("mp", "")
                 xfr_content = fields.get("xfr", "")
-                if "mp" in files:
-                    mp_content = files["mp"].decode("utf-8", errors="replace") if isinstance(files["mp"], bytes) else files["mp"]
-                if "xfr" in files:
-                    xfr_content = files["xfr"].decode("utf-8", errors="replace") if isinstance(files["xfr"], bytes) else files["xfr"]
-
-                if not mp_content:
-                    return _response(400, {"error": "mp content is required"})
-
-                # Nombre seguro para S3
-                safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in name).strip("_")
-                if not safe_name:
-                    safe_name = "grafo"
-
-                # Subir .mp
-                s3.put_object(
-                    Bucket=lib_bucket,
-                    Key=f"{lib_prefix}{safe_name}.mp",
-                    Body=mp_content.encode("utf-8"),
-                    ContentType="text/plain",
-                )
-
-                # Subir .xfr si existe
+                name = fields.get("name", "grafo")
+                if mp_content:
+                    s3.put_object(Bucket=lib_bucket, Key=f"{lib_prefix}{project}/{name}.mp", Body=mp_content.encode(), ContentType="text/plain")
+                    uploaded.append(f"{name}.mp")
                 if xfr_content:
-                    s3.put_object(
-                        Bucket=lib_bucket,
-                        Key=f"{lib_prefix}{safe_name}.xfr",
-                        Body=xfr_content.encode("utf-8"),
-                        ContentType="text/plain",
-                    )
-
-                return _response(200, {"saved": {"name": safe_name, "hasXfr": bool(xfr_content)}})
+                    s3.put_object(Bucket=lib_bucket, Key=f"{lib_prefix}{project}/{name}.xfr", Body=xfr_content.encode(), ContentType="text/plain")
+                    uploaded.append(f"{name}.xfr")
+                return _response(200, {"uploaded": uploaded, "project": project})
 
             elif action == "download":
                 # Descargar contenido de un archivo
+                project = fields.get("project", "")
                 file_name = fields.get("file", "")
-                if not file_name:
-                    return _response(400, {"error": "file name is required"})
+                if not project or not file_name:
+                    return _response(400, {"error": "project and file are required"})
                 try:
-                    obj = s3.get_object(Bucket=lib_bucket, Key=f"{lib_prefix}{file_name}")
+                    obj = s3.get_object(Bucket=lib_bucket, Key=f"{lib_prefix}{project}/{file_name}")
                     content = obj["Body"].read().decode("utf-8", errors="replace")
-                    return _response(200, {"file": file_name, "content": content})
+                    return _response(200, {"file": file_name, "project": project, "content": content})
                 except Exception as e:
                     return _response(200, {"error": str(e)})
 
             elif action == "delete":
-                name = fields.get("id", "") or fields.get("name", "")
-                if not name:
-                    return _response(400, {"error": "name is required"})
+                # Borrar archivo o proyecto
+                project = fields.get("project", "")
+                file_name = fields.get("file", "")
+                if not project:
+                    return _response(400, {"error": "project is required"})
                 try:
-                    s3.delete_object(Bucket=lib_bucket, Key=f"{lib_prefix}{name}.mp")
-                    s3.delete_object(Bucket=lib_bucket, Key=f"{lib_prefix}{name}.xfr")
-                    return _response(200, {"deleted": name})
+                    if file_name:
+                        s3.delete_object(Bucket=lib_bucket, Key=f"{lib_prefix}{project}/{file_name}")
+                        return _response(200, {"deleted": f"{project}/{file_name}"})
+                    else:
+                        # Borrar proyecto completo (todos los archivos)
+                        resp = s3.list_objects_v2(Bucket=lib_bucket, Prefix=f"{lib_prefix}{project}/")
+                        for obj in resp.get("Contents", []):
+                            s3.delete_object(Bucket=lib_bucket, Key=obj["Key"])
+                        return _response(200, {"deleted_project": project})
                 except Exception as e:
                     return _response(200, {"error": str(e)})
 
-            return _response(400, {"error": "action must be list, save, download, or delete"})
+            return _response(400, {"error": "action: list_projects, create_project, list_files, upload, download, delete"})
 
         # --- /pipeline endpoint (ejecutar código en Glue desde UI) ---
         if "/pipeline" in path and "/pipeline/status" not in path:
