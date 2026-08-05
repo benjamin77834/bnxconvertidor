@@ -73,12 +73,66 @@ def _build_transform(var_id, src_df, rule):
     if rule.get("transform") == "lookup_join":
         lookup_name = rule.get("lookup_name", "lookup")
         raw = rule.get("raw_transform", "")
-        # Generate a comment with the original Ab Initio logic + simplified join
+        output_fields = rule.get("output_fields", [])
+        
+        # Parse the Ab Initio lookup pattern into PySpark
+        import re as _re
+        
+        # Extract join keys from lookup_count("name", in.key1, in.key2)
+        join_keys_match = _re.findall(r'lookup_count\("[^"]+"\s*,\s*in\.(\w+)(?:\s*,\s*in\.(\w+))?', raw)
+        join_keys = []
+        if join_keys_match:
+            for m in join_keys_match:
+                join_keys.extend([k for k in m if k])
+        
+        # Extract filter condition (if statement comparing fields)
+        filter_match = _re.search(r'if\(in\.(\w+)\s*(>=|<=|>|<|==)\s*rec\.(\w+)\)', raw)
+        filter_cond = ""
+        if filter_match:
+            filter_cond = f'col("{filter_match.group(1)}") {filter_match.group(2)} col("{filter_match.group(3)}")'
+        
+        # Extract sort field from vector_sort(vec, {field descending/ascending})
+        sort_match = _re.search(r'vector_sort\(\w+,\s*\\?\{?\s*(\w+)\s+(descending|ascending)', raw)
+        sort_field = ""
+        sort_order = "desc"
+        if sort_match:
+            sort_field = sort_match.group(1)
+            sort_order = "desc" if "desc" in sort_match.group(2) else "asc"
+        
+        # Extract output field assignment: out.field :: first_without_error(...)
+        out_field_match = _re.search(r'out\.(\w+)\s*::\s*first_without_error\(.*?\[0\]\.(\w+)', raw)
+        out_field = ""
+        lookup_field = ""
+        if out_field_match:
+            out_field = out_field_match.group(1)
+            lookup_field = out_field_match.group(2)
+        
+        # Generate PySpark code
         lines = []
-        lines.append(f'# Ab Initio lookup pattern: {lookup_name}')
-        lines.append(f'# Original: {raw[:200]}{"..." if len(raw) > 200 else ""}')
-        lines.append(f'# TODO: Implement as broadcast join with {lookup_name}_df')
-        lines.append(f'{var_id}_df = {src_df}  # lookup join pending: {lookup_name}')
+        lines.append(f'# Lookup Join: {lookup_name} (translated from Ab Initio lookup_count/lookup_next)')
+        lines.append(f'# Join keys: {join_keys}, Sort: {sort_field} {sort_order}, Output: {out_field}')
+        
+        if join_keys:
+            join_expr = ", ".join(f'"{k}"' for k in join_keys)
+            lines.append(f'{var_id}_df = {src_df}.join(')
+            lines.append(f'    broadcast({lookup_name}_df),')
+            lines.append(f'    on=[{join_expr}],')
+            lines.append(f'    how="left"')
+            lines.append(f')')
+            
+            if filter_cond:
+                lines.append(f'{var_id}_df = {var_id}_df.where({filter_cond})')
+            
+            if sort_field:
+                order_fn = f'col("{sort_field}").desc()' if sort_order == "desc" else f'col("{sort_field}")'
+                lines.append(f'_w = Window.partitionBy({join_expr}).orderBy({order_fn})')
+                lines.append(f'{var_id}_df = {var_id}_df.withColumn("_rn", row_number().over(_w)).where("_rn = 1").drop("_rn")')
+            
+            if out_field and lookup_field and out_field != lookup_field:
+                lines.append(f'{var_id}_df = {var_id}_df.withColumnRenamed("{lookup_field}", "{out_field}")')
+        else:
+            lines.append(f'{var_id}_df = {src_df}  # Could not parse lookup keys')
+        
         return "\n".join(lines)
     
     # --- TRANSFORM EXPRESSIONS (withColumn from reformat) ---

@@ -32,8 +32,10 @@ def _map_component_type(name):
         return "SOURCE"
     if any(k in n for k in ["write", "output", "sink", "load", "target"]):
         return "SINK"
-    if any(k in n for k in ["merge", "join", "lookup"]):
+    if any(k in n for k in ["merge", "join"]):
         return "JOIN"
+    if any(k in n for k in ["lookup", "lkp"]):
+        return "LOOKUP"
     if any(k in n for k in ["filter", "select", "where", "filter_by"]):
         return "FILTER"
     if any(k in n for k in ["partition", "repartition", "round_robin"]):
@@ -650,6 +652,12 @@ def _extract_embedded_transforms(content):
         field_matches = re.findall(r'out\.(\w+)\s*::\s*(.+?);', transform)
         for field_name, expression in field_matches:
             expr = expression.strip()
+            # Skip newline/record terminator fields
+            if field_name == "newline" or field_name == "*":
+                continue
+            # Skip passthrough (out.* :: in.*)
+            if expr == "in.*" or expr == "in." + field_name:
+                continue
             # Detect aggregation functions
             agg_match = re.match(r'(sum|count|min|max|avg|first|last)\((?:in\.)?(\w+)\)', expr)
             if agg_match:
