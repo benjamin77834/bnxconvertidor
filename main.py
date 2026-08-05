@@ -638,7 +638,7 @@ def _extract_embedded_transforms(content):
     current_component_idx = 0
     
     for transform in transforms:
-        rules = {"fields": [], "aggregations": [], "type": "passthrough"}
+        rules = {"fields": [], "aggregations": [], "type": "passthrough", "raw_body": transform}
         
         # Parse "out :: rollup(in) = begin ... end;"
         if "rollup" in transform.lower():
@@ -689,76 +689,125 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
     """Apply extracted embedded transforms to the xfr_rules dict.
     
     Maps transforms to components by type:
+    - Sort components get sort_by rules
     - Rollup components get rollup transforms + keys
     - Filter components get filter expressions
-    - Reformat components get field mappings
+    - Reformat components get field mappings or raw transform
+    - Lookup (Output File with mode lookup) gets lookup_key
     """
     keys = embedded.get("keys", [])
     filters = embedded.get("filters", [])
     transforms = embedded.get("transforms", {})
     
-    # Find components by type and assign transforms
-    rollup_idx = 0
+    # Track which keys have been used
+    key_idx = 0
     filter_idx = 0
-    reformat_idx = 0
     
     for vid, info in sorted(node_by_id.items(), key=lambda x: str(x[0])):
-        comp_name = info["name"].lower()
+        comp_name = info["name"]
         comp_type = info["comp_type"].lower()
+        name_lower = comp_name.lower()
         
-        if "rollup" in comp_type:
-            # Find the rollup transform
-            for tidx, trules in transforms.items():
+        # --- SORT ---
+        if "sort" in comp_type and "sort" in comp_name.lower():
+            # Find the sort key for this component
+            if keys and key_idx < len(keys):
+                key_str = keys[key_idx]
+                # Parse key: "{num_cliente; fec_transaccion; hor_fintxn}" -> list
+                sort_fields = [f.strip().rstrip('}').lstrip('{') for f in key_str.replace(';', ',').split(',') if f.strip()]
+                if sort_fields:
+                    xfr_rules[name_lower] = {
+                        "sort_by": sort_fields,
+                    }
+                key_idx += 1
+        
+        # --- LOOKUP (Output File with mode=lookup and key) ---
+        elif ("output" in comp_type or "file" in comp_type) and "lkp" in comp_name.lower():
+            # This is a lookup file — mark it with lookup_key
+            if keys and key_idx < len(keys):
+                key_str = keys[key_idx]
+                lookup_keys = [f.strip().rstrip('}').lstrip('{') for f in key_str.replace(';', ',').split(',') if f.strip()]
+                xfr_rules[name_lower] = {
+                    "lookup_key": lookup_keys[0] if lookup_keys else "",
+                    "source_type": "lookup",
+                }
+                key_idx += 1
+        
+        # --- ROLLUP ---
+        elif "rollup" in comp_type:
+            for tidx, trules in list(transforms.items()):
                 if trules["type"] == "rollup":
                     rule = {}
-                    # Group by keys — ONLY from the explicit key parameter
-                    if keys:
-                        rule["group_by"] = list(dict.fromkeys(k.strip() for k in keys[0].split(",") if k.strip()))
-                    # Aggregations
+                    if keys and key_idx < len(keys):
+                        key_str = keys[key_idx]
+                        rule["group_by"] = [f.strip().rstrip('}').lstrip('{') for f in key_str.replace(';', ',').split(',') if f.strip()]
+                        key_idx += 1
                     if trules["aggregations"]:
                         rule["select"] = ", ".join(
                             f'{a["function"]}({a["source_field"]}) as {a["field"]}' 
                             for a in trules["aggregations"]
                         )
-                        # Non-agg fields that are NOT in the key are passthrough (first)
-                        # Do NOT add them to group_by — they use first() aggregation
-                        non_agg = [f["field"] for f in trules.get("fields", [])]
-                        if non_agg and rule.get("group_by"):
-                            passthrough = [f for f in non_agg if f not in rule["group_by"]]
-                            if passthrough:
-                                # Add passthrough fields as first() aggregations
-                                extra_agg = ", ".join(
-                                    f'first({f}) as {f}' for f in passthrough
-                                )
-                                rule["select"] = rule["select"] + ", " + extra_agg
-                    xfr_rules[info["name"].lower()] = rule
+                    xfr_rules[name_lower] = rule
                     del transforms[tidx]
                     break
         
+        # --- FILTER ---
         elif "filter" in comp_type:
             if filters and filter_idx < len(filters):
-                xfr_rules[info["name"].lower()] = {
-                    "where": filters[filter_idx],
-                }
+                xfr_rules[name_lower] = {"where": filters[filter_idx]}
                 filter_idx += 1
         
+        # --- REFORMAT ---
         elif "reformat" in comp_type:
-            for tidx, trules in transforms.items():
-                if trules["type"] == "reformat" and trules.get("fields"):
-                    fields = trules["fields"]
-                    select_parts = []
-                    for f in fields:
-                        if "expression" in f:
-                            select_parts.append(f'{f["expression"]} as {f["field"]}')
-                        elif "source" in f:
-                            if f["source"] == f["field"]:
-                                select_parts.append(f["field"])
-                            else:
-                                select_parts.append(f'{f["source"]} as {f["field"]}')
-                    if select_parts:
-                        xfr_rules[info["name"].lower()] = {
-                            "select": ", ".join(select_parts),
+            for tidx, trules in list(transforms.items()):
+                if trules["type"] in ("reformat", "passthrough"):
+                    # Check if transform has lookup_count/lookup_next (complex lookup pattern)
+                    raw_body = trules.get("raw_body", "")
+                    if "lookup_count" in raw_body or "lookup_next" in raw_body:
+                        # Complex lookup join — generate a comment with the original logic
+                        # and a simplified version using broadcast join
+                        lookup_name = ""
+                        import re as _re
+                        lkp_match = _re.search(r'lookup_count\("([^"]+)"', raw_body)
+                        if lkp_match:
+                            lookup_name = lkp_match.group(1).replace("-", "_").lower()
+                        
+                        # Extract output fields from out.field :: expressions
+                        out_fields = _re.findall(r'out\.(\w+)\s*::', raw_body)
+                        
+                        xfr_rules[name_lower] = {
+                            "transform": "lookup_join",
+                            "lookup_name": lookup_name,
+                            "raw_transform": raw_body[:500],
+                            "output_fields": out_fields,
                         }
+                        del transforms[tidx]
+                        break
+                    
+                    # Regular reformat with field mappings
+                    fields = trules.get("fields", [])
+                    if fields:
+                        select_parts = []
+                        for f in fields:
+                            if "expression" in f:
+                                select_parts.append(f'{f["expression"]} as {f["field"]}')
+                            elif "source" in f:
+                                if f["source"] == f["field"]:
+                                    select_parts.append(f["field"])
+                                else:
+                                    select_parts.append(f'{f["source"]} as {f["field"]}')
+                        if select_parts:
+                            xfr_rules[name_lower] = {"select": ", ".join(select_parts)}
+                    elif "out.*" in raw_body and "::" in raw_body:
+                        # Simple passthrough with maybe one extra field
+                        extra_fields = _re.findall(r'out\.(\w+)\s*::\s*(.+?);', raw_body)
+                        transforms_list = []
+                        for field, expr in extra_fields:
+                            if field != "*" and "in." not in expr.replace("in.*", ""):
+                                transforms_list.append(f"{expr.strip()} as {field}")
+                        if transforms_list:
+                            xfr_rules[name_lower] = {"transform_exprs": transforms_list}
+                    
                     del transforms[tidx]
                     break
 

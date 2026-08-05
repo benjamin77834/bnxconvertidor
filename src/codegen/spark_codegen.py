@@ -29,17 +29,82 @@ def _map_date_functions(expr):
     return expr
 
 
+def _map_string_functions(expr):
+    """Map Ab Initio string functions to Spark SQL equivalents."""
+    if not expr:
+        return expr
+    # string_upcase(x) -> upper(x)
+    expr = re.sub(r'string_upcase\(', 'upper(', expr)
+    # string_downcase(x) -> lower(x)
+    expr = re.sub(r'string_downcase\(', 'lower(', expr)
+    # string_lrtrim(x) -> trim(x)
+    expr = re.sub(r'string_lrtrim\(', 'trim(', expr)
+    # string_ltrim(x) -> ltrim(x)
+    expr = re.sub(r'string_ltrim\(', 'ltrim(', expr)
+    # string_rtrim(x) -> rtrim(x)
+    expr = re.sub(r'string_rtrim\(', 'rtrim(', expr)
+    # string_length(x) -> length(x)
+    expr = re.sub(r'string_length\(', 'length(', expr)
+    # string_substring(x, start, len) -> substring(x, start, len)
+    expr = re.sub(r'string_substring\(', 'substring(', expr)
+    # string_replace(x, old, new) -> replace(x, old, new)
+    expr = re.sub(r'string_replace\(', 'replace(', expr)
+    # string_concat(a, b) -> concat(a, b)
+    expr = re.sub(r'string_concat\(', 'concat(', expr)
+    # string_lpad(x, n, c) -> lpad(x, n, c)
+    expr = re.sub(r'string_lpad\(', 'lpad(', expr)
+    # string_rpad(x, n, c) -> rpad(x, n, c)
+    expr = re.sub(r'string_rpad\(', 'rpad(', expr)
+    # string_index(x, sub) -> instr(x, sub)
+    expr = re.sub(r'string_index\(', 'instr(', expr)
+    # string_reverse(x) -> reverse(x)
+    expr = re.sub(r'string_reverse\(', 'reverse(', expr)
+    # Strip "in." prefix from field references (Ab Initio uses in.field)
+    expr = re.sub(r'\bin\.(\w+)', r'\1', expr)
+    return expr
+
+
 def _build_transform(var_id, src_df, rule):
+    # --- SORT ---
+    sort_by = rule.get("sort_by")
+    if sort_by:
+        sort_cols = ", ".join(f'"{c}"' for c in sort_by)
+        return f'{var_id}_df = {src_df}.orderBy({sort_cols})'
+    
+    # --- LOOKUP JOIN ---
+    if rule.get("transform") == "lookup_join":
+        lookup_name = rule.get("lookup_name", "lookup")
+        raw = rule.get("raw_transform", "")
+        lines = []
+        lines.append(f'# Ab Initio lookup pattern: {lookup_name}')
+        lines.append(f'# Original: {raw[:200]}{"..." if len(raw) > 200 else ""}')
+        lines.append(f'{var_id}_df = {src_df}  # lookup join pending: {lookup_name}')
+        return "\n".join(lines)
+    
+    # --- TRANSFORM EXPRESSIONS ---
+    transform_exprs = rule.get("transform_exprs")
+    if transform_exprs:
+        lines = [f'{var_id}_df = {src_df}']
+        for expr_str in transform_exprs:
+            if " as " in expr_str.lower():
+                parts = expr_str.rsplit(" as ", 1)
+                lines.append(f'{var_id}_df = {var_id}_df.withColumn("{parts[1].strip()}", expr("{parts[0].strip()}"))')
+        return "\n".join(lines)
+
     select = rule.get("select", "*")
     where = rule.get("where")
     group_by = rule.get("group_by")
 
     # Map Ab Initio date functions to Spark
     select = _map_date_functions(select)
+    select = _map_string_functions(select)
     if where:
         where = _map_date_functions(where)
+        where = _map_string_functions(where)
 
     if group_by:
+        # Deduplicate keys preserving order
+        group_by = list(dict.fromkeys(group_by))
         keys = ", ".join(f'"{k}"' for k in group_by)
         agg_exprs = []
         for col in select.split(","):
@@ -55,10 +120,30 @@ def _build_transform(var_id, src_df, rule):
             code += f'.where("{where}")'
         return code
 
-    cols = [f'"{c.strip()}"' for c in select.split(",")]
-    code = f'{var_id}_df = {src_df}.selectExpr({", ".join(cols)})'
+    # Check if this is a reformat (column transformations that keep other columns)
+    # Pattern: "expr as field, expr as field" where fields are being replaced/transformed
+    cols_raw = [c.strip() for c in select.split(",")]
+    has_as = any(" as " in c.lower() for c in cols_raw)
+    
+    if has_as:
+        # Reformat: use withColumn for each transformed field to preserve all other columns
+        lines = []
+        lines.append(f'{var_id}_df = {src_df}')
+        for c in cols_raw:
+            m = re.match(r'(.+?)\s+as\s+(\w+)', c.strip(), re.I)
+            if m:
+                expr, alias = m.group(1).strip(), m.group(2)
+                lines.append(f'{var_id}_df = {var_id}_df.withColumn("{alias}", expr("{expr}"))')
+            else:
+                # plain column reference, skip (already exists)
+                pass
+        code = "\n".join(lines)
+    else:
+        cols = [f'"{c.strip()}"' for c in cols_raw]
+        code = f'{var_id}_df = {src_df}.selectExpr({", ".join(cols)})'
+    
     if where:
-        code += f'.where("{where}")'
+        code += f'\n{var_id}_df = {var_id}_df.where("{where}")'
     return code
 
 
@@ -144,6 +229,34 @@ def generate_spark(dag, output_path, xfr_rules=None):
                 else:
                     f.write(f'{var_id}_df = None\n')
                 f.write(f'print("[~] TRANSFORM: {log_name}")\n\n')
+
+            elif ntype == "FILTER":
+                f.write(f'# [-] FILTER: {log_name}\n')
+                if parents:
+                    src = f'{parents[0]}_df'
+                    where = rule.get("where", "") if rule else ""
+                    if where:
+                        # Translate Ab Initio functions to Spark equivalents
+                        if "next_in_sequence()" in where:
+                            # next_in_sequence() > 1 in Ab Initio typically skips header rows
+                            # in raw/fixed-width files. When reading CSV/parquet with header=true,
+                            # this filter is a no-op (header already handled by reader).
+                            f.write(f'# next_in_sequence() filter: no-op for structured formats (CSV/parquet with header)\n')
+                            f.write(f'{var_id}_df = {src}\n')
+                        elif re.search(r'\b(string_|decimal_|integer_|is_blank|is_defined)', where):
+                            # Ab Initio type-check functions - map common ones
+                            mapped = _map_date_functions(where)
+                            mapped = re.sub(r'is_blank\((\w+)\)', r'\1 IS NULL OR \1 = ""', mapped)
+                            mapped = re.sub(r'is_defined\((\w+)\)', r'\1 IS NOT NULL', mapped)
+                            f.write(f'{var_id}_df = {src}.where("{mapped}")\n')
+                        else:
+                            where = _map_date_functions(where)
+                            f.write(f'{var_id}_df = {src}.where("{where}")\n')
+                    else:
+                        f.write(f'{var_id}_df = {src}.selectExpr("*")\n')
+                else:
+                    f.write(f'{var_id}_df = None\n')
+                f.write(f'print("[~] FILTER: {log_name}")\n\n')
 
             elif ntype == "JOIN":
                 f.write(f'# [~] JOIN: {log_name}\n')

@@ -38,19 +38,74 @@ def _map_date_functions(expr):
     expr = re.sub(r'last_day_of_month\(', 'last_day(', expr)
     return expr
 
+
+def _map_string_functions(expr):
+    """Map Ab Initio string functions to Spark SQL equivalents."""
+    if not expr:
+        return expr
+    expr = re.sub(r'string_upcase\(', 'upper(', expr)
+    expr = re.sub(r'string_downcase\(', 'lower(', expr)
+    expr = re.sub(r'string_lrtrim\(', 'trim(', expr)
+    expr = re.sub(r'string_ltrim\(', 'ltrim(', expr)
+    expr = re.sub(r'string_rtrim\(', 'rtrim(', expr)
+    expr = re.sub(r'string_length\(', 'length(', expr)
+    expr = re.sub(r'string_substring\(', 'substring(', expr)
+    expr = re.sub(r'string_replace\(', 'replace(', expr)
+    expr = re.sub(r'string_concat\(', 'concat(', expr)
+    expr = re.sub(r'string_lpad\(', 'lpad(', expr)
+    expr = re.sub(r'string_rpad\(', 'rpad(', expr)
+    expr = re.sub(r'string_index\(', 'instr(', expr)
+    expr = re.sub(r'string_reverse\(', 'reverse(', expr)
+    # Strip "in." prefix from field references
+    expr = re.sub(r'\bin\.(\w+)', r'\1', expr)
+    return expr
+
 def _build_transform(var_id, src_df, rule):
-    """Genera c?digo PySpark a partir de una regla XFR { select, where, group_by }"""
+    """Genera codigo PySpark a partir de una regla XFR { select, where, group_by, sort_by, transform }"""
+    
+    # --- SORT ---
+    sort_by = rule.get("sort_by")
+    if sort_by:
+        sort_cols = ", ".join(f'"{c}"' for c in sort_by)
+        return f'{var_id}_df = {src_df}.orderBy({sort_cols})'
+    
+    # --- LOOKUP JOIN (from Ab Initio lookup_count/lookup_next pattern) ---
+    if rule.get("transform") == "lookup_join":
+        lookup_name = rule.get("lookup_name", "lookup")
+        raw = rule.get("raw_transform", "")
+        # Generate a comment with the original Ab Initio logic + simplified join
+        lines = []
+        lines.append(f'# Ab Initio lookup pattern: {lookup_name}')
+        lines.append(f'# Original: {raw[:200]}{"..." if len(raw) > 200 else ""}')
+        lines.append(f'# TODO: Implement as broadcast join with {lookup_name}_df')
+        lines.append(f'{var_id}_df = {src_df}  # lookup join pending: {lookup_name}')
+        return "\n".join(lines)
+    
+    # --- TRANSFORM EXPRESSIONS (withColumn from reformat) ---
+    transform_exprs = rule.get("transform_exprs")
+    if transform_exprs:
+        lines = [f'{var_id}_df = {src_df}']
+        for expr_str in transform_exprs:
+            if " as " in expr_str.lower():
+                parts = expr_str.rsplit(" as ", 1)
+                lines.append(f'{var_id}_df = {var_id}_df.withColumn("{parts[1].strip()}", expr("{parts[0].strip()}"))')
+        return "\n".join(lines)
+
     select = rule.get("select", "*")
     where = rule.get("where")
     group_by = rule.get("group_by")
 
     # Map Ab Initio date functions to Spark
     select = _map_date_functions(select)
+    select = _map_string_functions(select)
     if where:
         where = _map_date_functions(where)
+        where = _map_string_functions(where)
 
     if group_by:
         # Genera groupBy().agg() para agregaciones
+        # Deduplicate keys preserving order
+        group_by = list(dict.fromkeys(group_by))
         keys = ", ".join(f'"{k}"' for k in group_by)
         # Convierte "SUM(amount) as total_spent" ? sum("amount").alias("total_spent")
         agg_exprs = []
@@ -68,11 +123,28 @@ def _build_transform(var_id, src_df, rule):
             code += f'.where("{where}")'
         return code
 
-    # Transform simple
-    cols = [f'"{c.strip()}"' for c in select.split(",")]
-    code = f'{var_id}_df = {src_df}.selectExpr({", ".join(cols)})'
+    # Check if this is a reformat (column transformations that keep other columns)
+    cols_raw = [c.strip() for c in select.split(",")]
+    has_as = any(" as " in c.lower() for c in cols_raw)
+    
+    if has_as:
+        # Reformat: use withColumn for each transformed field to preserve all other columns
+        lines = []
+        lines.append(f'{var_id}_df = {src_df}')
+        for c in cols_raw:
+            m = re.match(r'(.+?)\s+as\s+(\w+)', c.strip(), re.I)
+            if m:
+                expr, alias = m.group(1).strip(), m.group(2)
+                lines.append(f'{var_id}_df = {var_id}_df.withColumn("{alias}", expr("{expr}"))')
+            else:
+                pass
+        code = "\n".join(lines)
+    else:
+        cols = [f'"{c.strip()}"' for c in cols_raw]
+        code = f'{var_id}_df = {src_df}.selectExpr({", ".join(cols)})'
+    
     if where:
-        code += f'.where("{where}")'
+        code += f'\n{var_id}_df = {var_id}_df.where("{where}")'
     return code
 
 def generate_glue(dag, output_path, xfr_rules=None):
@@ -278,19 +350,34 @@ def generate_glue(dag, output_path, xfr_rules=None):
 
             # FILTER ? filter with reject port
             elif ntype == "FILTER":
-                f.write(f'# ? FILTER: {log_name}\n')
+                f.write(f'# [-] FILTER: {log_name}\n')
                 if parents:
                     src = f'{parents[0]}_df'
                     where = rule.get("where") if rule else None
                     if where:
-                        f.write(f'{var_id}_df = {src}.where("{where}")\n')
-                        f.write(f'{var_id}_reject_df = {src}.where("NOT ({where})")\n')
+                        # Translate Ab Initio functions to Spark equivalents
+                        if "next_in_sequence()" in where:
+                            # next_in_sequence() > 1 skips header rows in raw files.
+                            # No-op for structured formats (CSV/parquet with header).
+                            f.write(f'# next_in_sequence() filter: no-op for structured formats\n')
+                            f.write(f'{var_id}_df = {src}\n')
+                            f.write(f'{var_id}_reject_df = spark.createDataFrame([], {src}.schema)\n')
+                        elif re.search(r'\b(string_|decimal_|integer_|is_blank|is_defined)', where):
+                            mapped = _map_date_functions(where)
+                            mapped = re.sub(r'is_blank\((\w+)\)', r'\1 IS NULL OR \1 = ""', mapped)
+                            mapped = re.sub(r'is_defined\((\w+)\)', r'\1 IS NOT NULL', mapped)
+                            f.write(f'{var_id}_df = {src}.where("{mapped}")\n')
+                            f.write(f'{var_id}_reject_df = {src}.where("NOT ({mapped})")\n')
+                        else:
+                            where = _map_date_functions(where)
+                            f.write(f'{var_id}_df = {src}.where("{where}")\n')
+                            f.write(f'{var_id}_reject_df = {src}.where("NOT ({where})")\n')
                     else:
                         f.write(f'{var_id}_df = {src}\n')
                         f.write(f'{var_id}_reject_df = spark.createDataFrame([], {src}.schema)\n')
                 else:
                     f.write(f'{var_id}_df = None\n')
-                f.write(f'print("? FILTER: {log_name}")\n\n')
+                f.write(f'print("[-] FILTER: {log_name}")\n\n')
 
             # SINK
             elif ntype == "SINK":
