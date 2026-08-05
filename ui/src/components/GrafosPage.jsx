@@ -212,7 +212,28 @@ export default function GrafosPage({ theme, onLoadToCompiler }) {
             </div>
           )}
           {filtered.map(g => (
-            <div key={g.id} onClick={() => setSelected(g)} style={{
+            <div key={g.id} onClick={async () => {
+              setSelected(g)
+              // Descargar contenido del .mp desde S3
+              if (!g.mp) {
+                const form = new FormData()
+                form.append('action', 'download')
+                form.append('file', `${g.name}.mp`)
+                const res = await fetch(LIB_URL, { method: 'POST', body: form })
+                const data = await res.json()
+                if (data.content) g.mp = data.content
+                // Descargar .xfr si existe
+                if (g.hasXfr) {
+                  const form2 = new FormData()
+                  form2.append('action', 'download')
+                  form2.append('file', `${g.name}.xfr`)
+                  const res2 = await fetch(LIB_URL, { method: 'POST', body: form2 })
+                  const data2 = await res2.json()
+                  if (data2.content) g.xfr = data2.content
+                }
+                setSelected({...g})
+              }
+            }} style={{
               ...card, padding: 14, cursor: 'pointer',
               borderLeft: `3px solid ${selected?.id === g.id ? '#22c55e' : 'transparent'}`,
               background: selected?.id === g.id ? (t.accent || '#1a73e8') + '10' : (t.card || '#1e2433'),
@@ -221,9 +242,10 @@ export default function GrafosPage({ theme, onLoadToCompiler }) {
                 <div>
                   <div style={{ fontSize: 14, fontWeight: 600, color: t.text || '#e2e8f0' }}>{g.name}</div>
                   <div style={{ fontSize: 11, color: t.dim || '#64748b', marginTop: 2 }}>
-                    {g.nodes || '?'} nodos · {g.savedAt ? new Date(g.savedAt).toLocaleDateString() : ''}
-                    {g.xfr ? ' · +xfr' : ''}
-                    {g.source === 'file' ? ' · 📄 archivo' : ' · ☁️ S3'}
+                    {g.file || `${g.name}.mp`}
+                    {g.hasXfr ? ' · +.xfr' : ''}
+                    {g.size ? ` · ${(g.size/1024).toFixed(1)}KB` : ''}
+                    {g.lastModified ? ` · ${new Date(g.lastModified).toLocaleDateString()}` : ''}
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: 4 }}>
@@ -251,7 +273,9 @@ export default function GrafosPage({ theme, onLoadToCompiler }) {
             <div style={card}>
               <h3 style={{ fontSize: 15, fontWeight: 600, color: t.text || '#e2e8f0', margin: '0 0 8px' }}>{selected.name}</h3>
               <div style={{ fontSize: 11, color: t.dim || '#64748b', marginBottom: 10 }}>
-                {selected.nodes} nodos · ID: {selected.id}
+                {selected.file || `${selected.name}.mp`}
+                {selected.hasXfr ? ' + .xfr' : ''}
+                {selected.size ? ` · ${(selected.size/1024).toFixed(1)}KB` : ''}
               </div>
               <div style={{ fontSize: 11, color: '#22c55e', marginBottom: 4 }}>.mp</div>
               <pre style={{
