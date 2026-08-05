@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { COMPILE_URL } from '../config'
+import { PIPELINE_URL, PIPELINE_STATUS_URL } from '../config'
 
 const PIPELINE_STEPS = [
   { id: 'load', label: '1. Cargar Codigo', icon: '📄' },
@@ -22,17 +22,13 @@ export default function PipelinePage({ theme, compiledCode, compiledTarget }) {
   const [running, setRunning] = useState(false)
   const [polling, setPolling] = useState(false)
   const [runId, setRunId] = useState('')
-  const [jobName, setJobName] = useState(
-    typeof window !== 'undefined' && window.location.hostname.includes('d142k2cigcx7cr')
-      ? 'datalake-bnx-test-spark-dev' : 'bnx-e2e-pipeline-ui'
-  )
+  const [jobName, setJobName] = useState('datalake-bnx-test-spark-dev')
   const pollingRef = useRef(null)
 
-  // Config — detectar ambiente por URL
-  const isDataLab = typeof window !== 'undefined' && window.location.hostname.includes('d142k2cigcx7cr')
-  const [bucket, setBucket] = useState(isDataLab ? 'datalake-bnx-scripts-dev' : 'bnx-e2e-test')
+  // Config — siempre DataLab
+  const [bucket, setBucket] = useState('datalake-bnx-scripts-dev')
   const [region, setRegion] = useState('us-east-1')
-  const [role, setRole] = useState(isDataLab ? 'arn:aws:iam::107094296911:role/datalake-glue-role-dev' : 'arn:aws:iam::034711235858:role/lambdarol')
+  const [role, setRole] = useState('arn:aws:iam::107094296911:role/datalake-glue-role-dev')
 
   // Si viene codigo del Compiler, precargarlo
   useEffect(() => {
@@ -82,7 +78,7 @@ export default function PipelinePage({ theme, compiledCode, compiledTarget }) {
       form.append('role', role)
       form.append('action', 'run')
 
-      const res = await fetch(COMPILE_URL.replace('/compile', '/pipeline'), { method: 'POST', body: form })
+      const res = await fetch(PIPELINE_URL, { method: 'POST', body: form })
       const data = await res.json()
 
       // Procesar pasos
@@ -121,7 +117,7 @@ export default function PipelinePage({ theme, compiledCode, compiledTarget }) {
         form.append('run_id', rid)
         form.append('region', region)
 
-        const res = await fetch(COMPILE_URL.replace('/compile', '/pipeline/status'), { method: 'POST', body: form })
+        const res = await fetch(PIPELINE_STATUS_URL, { method: 'POST', body: form })
         const data = await res.json()
 
         addLog(`[${attempts}] Status: ${data.status}${data.duration ? ` (${data.duration}s)` : ''}`)

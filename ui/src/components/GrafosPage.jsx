@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
-import { COMPILE_URL } from '../config'
+import { LIBRARY_URL } from '../config'
 
-const LIB_URL = COMPILE_URL.replace('/compile', '/library')
+const LIB_URL = LIBRARY_URL
 
 export default function GrafosPage({ theme, onLoadToCompiler }) {
   const t = theme || {}
