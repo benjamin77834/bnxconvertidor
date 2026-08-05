@@ -358,6 +358,7 @@ export default function App() {
           <GrafosPage theme={t} onLoadToCompiler={(g) => {
             setEditorMp(g.mp || '')
             setEditorXfr(g.xfr || '')
+            if (g.pset) setEditorPset(g.pset)
             setShowEditor(true)
             setEditorTab('mp')
             setPage('compiler')

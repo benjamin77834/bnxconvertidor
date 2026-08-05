@@ -116,10 +116,12 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path
 
-        if "/compile" in path or "/api" in path:
+        if "/library" in path or "/pipeline" in path:
+            self._proxy_to_datalab(path)
+        elif "/compile" in path or "/api" in path:
             self._handle_compile()
         else:
-            self.send_error(404, "Not found — pipeline/library endpoints are remote (API Gateway)")
+            self.send_error(404, "Not found")
 
     def do_GET(self):
         path = urlparse(self.path).path
@@ -138,6 +140,27 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             super().do_GET()
         else:
             self._json_response(200, {"message": "BNX API running", "endpoints": ["/api/health", "/compile (POST)"]})
+
+    def _proxy_to_datalab(self, path):
+        """Proxy requests to DataLab API Gateway (for pipeline/library when firewall blocks direct access)."""
+        import urllib.request
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        content_type = self.headers.get("Content-Type", "")
+
+        datalab_url = f"https://6lewkixco1.execute-api.us-east-1.amazonaws.com/prod{path}"
+        try:
+            req = urllib.request.Request(datalab_url, data=body, method="POST")
+            req.add_header("Content-Type", content_type)
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                result = resp.read()
+                self.send_response(resp.status)
+                self._cors_headers()
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(result)
+        except Exception as e:
+            self._json_response(502, {"error": f"Proxy error: {str(e)}"})
 
     def _handle_compile(self):
         content_length = int(self.headers.get("Content-Length", 0))
