@@ -235,7 +235,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             if embedded["transforms"] or embedded["keys"] or embedded["filters"]:
                 node_map = {}
                 for nd in ast.get("nodes", []):
-                    node_map[nd["id"]] = {"name": nd["id"], "comp_type": nd.get("name", nd["id"])}
+                    vid = nd.get("vertex_id", nd["id"])
+                    node_map[vid] = {"name": nd["id"], "comp_type": nd.get("name", nd["id"])}
                 _apply_embedded_transforms(node_map, embedded, xfr_rules)
 
             # Validate
