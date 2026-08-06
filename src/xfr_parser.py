@@ -6,28 +6,77 @@ def parse_xfr(path):
         NodeName:
           select col1, col2, ...
           where condition
+    
+    También soporta DML nativo de Ab Initio (out :: reformat(in) = begin...end;)
     Retorna dict: { "nodename": { "select": "...", "where": "..." } }
     """
     xfr_map = {}
     current = None
+    raw_dml_buffer = []
+    in_raw_dml = False
 
     with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            stripped = line.strip()
+        content = f.read()
+    
+    # Check if the entire file is a raw DML transform (no NodeName: headers)
+    stripped_content = content.strip()
+    if stripped_content.startswith("out") and "::" in stripped_content and "begin" in stripped_content.lower():
+        # Entire file is a single raw DML — detect lookup pattern
+        if "lookup_count" in stripped_content or "lookup_next" in stripped_content:
+            lkp_match = re.search(r'lookup_count\("([^"]+)"', stripped_content)
+            lookup_name = lkp_match.group(1).replace("-", "_").lower() if lkp_match else "lookup"
+            return {"_raw_dml": {"transform": "lookup_join", "lookup_name": lookup_name, "raw_transform": stripped_content[:500]}}
+        return {"_raw_dml": {"raw_transform": stripped_content}}
 
-            if not stripped or stripped.startswith("#"):
-                continue
+    for line in content.split("\n"):
+        stripped = line.strip()
 
-            # Detecta cabecera de nodo: "NodeName:"
-            if re.match(r"^\w+\s*:$", stripped):
-                current = stripped.rstrip(":").strip().lower()
-                xfr_map[current] = {"select": "*", "where": None}
-                continue
+        if not stripped or stripped.startswith("#"):
+            if in_raw_dml:
+                raw_dml_buffer.append(line)
+            continue
 
-            if current is None:
-                continue
+        # Detecta cabecera de nodo: "NodeName:"
+        if re.match(r"^\w+\s*:$", stripped):
+            # Save previous raw DML if any
+            if current and in_raw_dml and raw_dml_buffer:
+                raw_text = "\n".join(raw_dml_buffer).strip()
+                if "lookup_count" in raw_text or "lookup_next" in raw_text:
+                    lkp_match = re.search(r'lookup_count\("([^"]+)"', raw_text)
+                    lookup_name = lkp_match.group(1).replace("-", "_").lower() if lkp_match else "lookup"
+                    xfr_map[current] = {"transform": "lookup_join", "lookup_name": lookup_name, "raw_transform": raw_text[:500]}
+                else:
+                    xfr_map[current] = {"raw_transform": raw_text}
+            
+            current = stripped.rstrip(":").strip().lower()
+            xfr_map[current] = {"select": "*", "where": None}
+            raw_dml_buffer = []
+            in_raw_dml = False
+            continue
 
-            m_select = re.match(r"(?i)^select\s+(.+)$", stripped)
+        if current is None:
+            continue
+
+        # Detect start of raw DML (Ab Initio native format)
+        if stripped.startswith("out") and "::" in stripped and ("reformat" in stripped or "rollup" in stripped):
+            in_raw_dml = True
+            raw_dml_buffer = [line]
+            continue
+        
+        if in_raw_dml:
+            raw_dml_buffer.append(line)
+            # Check if DML block ended
+            if stripped.endswith("end;") or stripped == "end;":
+                raw_text = "\n".join(raw_dml_buffer).strip()
+                if "lookup_count" in raw_text or "lookup_next" in raw_text:
+                    lkp_match = re.search(r'lookup_count\("([^"]+)"', raw_text)
+                    lookup_name = lkp_match.group(1).replace("-", "_").lower() if lkp_match else "lookup"
+                    xfr_map[current] = {"transform": "lookup_join", "lookup_name": lookup_name, "raw_transform": raw_text[:500]}
+                else:
+                    xfr_map[current] = {"raw_transform": raw_text}
+                in_raw_dml = False
+                raw_dml_buffer = []
+            continue
             if m_select:
                 xfr_map[current]["select"] = m_select.group(1).strip()
                 continue
