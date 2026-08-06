@@ -294,7 +294,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 "warnings": warnings,
                 "code": code,
                 "accuracy": acc,
-                "params": ast.get("abinitio_params", {}),
+                "params": {k: v for k, v in list(ast.get("abinitio_params", {}).items())[:20]},
             })
 
             # Cleanup
