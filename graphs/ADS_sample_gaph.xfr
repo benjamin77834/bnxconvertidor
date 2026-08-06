@@ -1,0 +1,41 @@
+# XFR rules for ADS_sample_gaph.mp
+# Overrides embedded transforms with more specific rules
+
+# === SOURCES ===
+Input_File_3:
+  source_type s3
+  path s3://datalake-bnx-scripts-dev/raw/MX_CARDS_DWH/DRI_484_ADS_D.tmp
+  format parquet
+
+Input_File_1:
+  source_type s3
+  path s3://datalake-bnx-scripts-dev/raw/ecscards/SECS000u13.BBD.DNLOAD.DWH.ADS.EP
+  format parquet
+
+# === DEDUP ===
+Dedup_Sorted:
+  dedup_keys V_CASE_NBR, V_CARD_NBR, D_TRANS_DATE
+  order_by D_CREATE_DATE
+
+Dedup_Sorted_1:
+  dedup_keys V_CASE_NBR, V_CARD_NBR
+  order_by D_TRANS_DATE
+
+# === TRANSFORMS ===
+Reformat:
+  select V_NUM_REFADQUIRENTE, D_FECHA_COMPRA, N_IMP_TRNMONDESTINO, V_TYPE_REFOUND, N_HIERARCHY, MIS_DATE
+  where V_CASE_NBR == 'I2122310013'
+
+Reformat_1:
+  select V_NUM_REFADQUIRENTE, D_FECHA_COMPRA, N_IMP_TRNMONDESTINO, V_TYPE_REFOUND, N_HIERARCHY, MIS_DATE
+
+# === SINKS ===
+Input_File_4:
+  sink_type s3
+  path s3://datalake-bnx-scripts-dev/output/MX_CARDS_DWH/DRI_484_ADS_D.tmp_1
+  format parquet
+
+Input_File_2:
+  sink_type s3
+  path s3://datalake-bnx-scripts-dev/output/ecscards/SECS000u13.BBD.DNLOAD.DWH.ADS.EP.20270927_New
+  format parquet
