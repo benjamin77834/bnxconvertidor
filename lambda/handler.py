@@ -566,10 +566,11 @@ def handler(event, context):
             s3_paths = _re.findall(r's3://([^/"\s]+)', code_content)
             buckets_to_check = set(s3_paths)
             buckets_to_check.add(pipeline_bucket)
+            created_buckets = []
             for bucket_name in buckets_to_check:
                 try:
                     s3.head_bucket(Bucket=bucket_name)
-                except s3.exceptions.ClientError:
+                except Exception:
                     try:
                         if pipeline_region == "us-east-1":
                             s3.create_bucket(Bucket=bucket_name)
@@ -578,9 +579,11 @@ def handler(event, context):
                                 Bucket=bucket_name,
                                 CreateBucketConfiguration={"LocationConstraint": pipeline_region}
                             )
-                        results["steps"].append({"step": "create_bucket", "status": "done", "detail": f"Created s3://{bucket_name}"})
-                    except Exception:
-                        pass  # bucket may already exist or permission denied
+                        created_buckets.append(bucket_name)
+                    except Exception as e:
+                        results["steps"].append({"step": "create_bucket", "status": "error", "detail": f"Cannot create s3://{bucket_name}: {str(e)[:100]}"})
+            if created_buckets:
+                results["steps"].append({"step": "create_bucket", "status": "done", "detail": f"Created: {', '.join(created_buckets)}"})
 
             # Step 1: Upload script to S3
             try:
