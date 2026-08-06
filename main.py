@@ -468,6 +468,7 @@ def _parse_gde_native(content):
                 "type": info["type"],
                 "params": "",
                 "subgraph": None,
+                "vertex_id": vid,
             }
             # Include data_path if available (for SOURCE/SINK)
             if "data_path" in info:
@@ -729,6 +730,7 @@ def _extract_embedded_transforms(content):
     
     # Extract keys (group by fields)
     # Key format: key|\{field1; field2\}| or key|\{\}| (empty = all fields)
+    # Strategy: extract keys with their position context to map to components
     keys_raw = re.findall(r'XXparameter\|key\|([^|]*)\|', content)
     keys = []
     for k in keys_raw:
@@ -736,6 +738,31 @@ def _extract_embedded_transforms(content):
         cleaned = k.replace('\\{', '').replace('\\}', '').replace('{', '').replace('}', '').strip()
         if cleaned:
             keys.append(cleaned)
+    
+    # Better: extract keys per component using XXGpvertex/XXGfvertex position mapping
+    # Find which vertex each key belongs to by position in content
+    vertex_positions = [(m.start(), m.group(1)) for m in re.finditer(r'XXG[pf]vertex\|(\d+)\|', content)]
+    key_positions = [(m.start(), m.group(1)) for m in re.finditer(r'XXparameter\|key\|([^|]*)\|', content)]
+    
+    # Map each key to its containing vertex
+    keys_by_vertex = {}
+    for key_pos, key_val in key_positions:
+        # Find the vertex that contains this key (last vertex before this position)
+        owning_vertex = None
+        for vpos, vid in vertex_positions:
+            if vpos < key_pos:
+                owning_vertex = vid
+            else:
+                break
+        if owning_vertex:
+            cleaned = key_val.replace('\\{', '').replace('\\}', '').replace('{', '').replace('}', '').strip()
+            if cleaned:
+                if owning_vertex not in keys_by_vertex:
+                    keys_by_vertex[owning_vertex] = []
+                keys_by_vertex[owning_vertex].append(cleaned)
+    
+    if keys_by_vertex:
+        print(f"  [dbg] Keys by vertex: {keys_by_vertex}")
     
     # Extract dedup 'keep' settings (first, last, unique-only)
     keeps = re.findall(r'XXparameter\|keep\|(\w+)\|', content)
@@ -826,6 +853,7 @@ def _extract_embedded_transforms(content):
     result = {
         "transforms": component_transforms,
         "keys": keys,
+        "keys_by_vertex": keys_by_vertex,
         "filters": filters,
         "keeps": keeps,
     }
@@ -845,6 +873,7 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
     """
     import re as _re
     keys = embedded.get("keys", [])
+    keys_by_vertex = embedded.get("keys_by_vertex", {})
     filters = embedded.get("filters", [])
     transforms = embedded.get("transforms", {})
     keeps = embedded.get("keeps", [])
@@ -854,10 +883,18 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
     filter_idx = 0
     keep_idx = 0
     
+    # Build reverse map: node_id (from node_map) -> vertex_id
+    # node_map keys are node IDs (names), we need to find vertex IDs
+    # The caller passes node_map built from ast nodes, but we need vertex IDs
+    # for keys_by_vertex lookup. We'll try matching by iterating.
+    
     for vid, info in sorted(node_by_id.items(), key=lambda x: str(x[0])):
         comp_name = info["name"]
         comp_type = info["comp_type"].lower()
         name_lower = comp_name.lower()
+        
+        # Get keys specific to this vertex (from position-based extraction)
+        vertex_keys = keys_by_vertex.get(vid, [])
         
         # --- DEDUP --- (must be checked BEFORE sort, since "dedup_sorted" contains "sort")
         if "dedup" in comp_type or "dedup" in comp_name.lower():
@@ -866,13 +903,18 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
                 keep_idx += 1 if keeps else 0
                 continue
             rule = {}
-            if keys and key_idx < len(keys):
+            if vertex_keys:
+                # Use vertex-specific keys
+                dedup_fields = []
+                for k in vertex_keys:
+                    dedup_fields.extend([f.strip() for f in k.replace(';', ',').split(',') if f.strip()])
+                rule["dedup_keys"] = dedup_fields
+            elif keys and key_idx < len(keys):
                 key_str = keys[key_idx]
                 dedup_fields = [f.strip().rstrip('}').lstrip('{') for f in key_str.replace(';', ',').split(',') if f.strip()]
                 rule["dedup_keys"] = dedup_fields
                 key_idx += 1
             else:
-                # Empty key (like \{\}) = dedup on all columns (full record)
                 rule["dedup_keys"] = []
             # Apply keep setting
             if keeps and keep_idx < len(keeps):
@@ -884,15 +926,19 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
         
         # --- SORT ---
         elif "sort" in comp_type and "sort" in comp_name.lower():
-            # Find the sort key for this component
-            if keys and key_idx < len(keys):
+            if vertex_keys:
+                # Use vertex-specific keys for sort
+                sort_fields = []
+                for k in vertex_keys:
+                    sort_fields.extend([f.strip() for f in k.replace(';', ',').split(',') if f.strip()])
+                if sort_fields:
+                    xfr_rules[name_lower] = {"sort_by": sort_fields}
+            elif keys and key_idx < len(keys):
                 key_str = keys[key_idx]
-                # Parse key: "{num_cliente; fec_transaccion; hor_fintxn}" -> list
                 sort_fields = [f.strip().rstrip('}').lstrip('{') for f in key_str.replace(';', ',').split(',') if f.strip()]
                 if sort_fields:
-                    xfr_rules[name_lower] = {
-                        "sort_by": sort_fields,
-                    }
+                    xfr_rules[name_lower] = {"sort_by": sort_fields}
+                key_idx += 1
                 key_idx += 1
         
         # --- LOOKUP (Output File with mode=lookup and key) ---
@@ -1057,12 +1103,13 @@ def main(project_path, output_path, xfr_path=None, dml_path=None, pset_path=None
         with open(project_path, "r", errors="replace") as f:
             raw_content = f.read().replace('\x00', '')
         embedded = _extract_embedded_transforms(raw_content)
-        if embedded["transforms"] or embedded["keys"] or embedded["filters"]:
+        if embedded["transforms"] or embedded["keys"] or embedded["keys_by_vertex"] or embedded["filters"] or embedded["keeps"]:
             print(f"[i] Embedded transforms: {len(embedded['transforms'])} transforms, {len(embedded['keys'])} keys, {len(embedded['filters'])} filters")
-            # Build node_by_id from ast nodes for mapping
+            # Build node_by_id using VERTEX IDs as keys (for keys_by_vertex mapping)
             node_map = {}
             for node_data in ast.get("nodes", []):
-                node_map[node_data["id"]] = {
+                vid = node_data.get("vertex_id", node_data["id"])
+                node_map[vid] = {
                     "name": node_data["id"],
                     "comp_type": node_data.get("name", node_data["id"]),
                 }
