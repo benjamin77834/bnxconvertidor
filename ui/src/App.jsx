@@ -938,11 +938,41 @@ export default function App() {
                 </div>
               </div>
               {codeOpen && (
-                <pre style={{
-                  padding: 16, fontSize: 14, color: t.muted,
-                  fontFamily: 'monospace', whiteSpace: 'pre', overflowY: 'auto',
-                  flex: 1, lineHeight: 1.6, margin: 0,
-                }}>{result.code}</pre>
+                result.code && result.code.length > 5000 ? (
+                  <div style={{ padding: 20, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, flex: 1, justifyContent: 'center' }}>
+                    <span style={{ fontSize: 32 }}>📄</span>
+                    <span style={{ fontSize: 14, color: t.text, fontWeight: 600 }}>
+                      Código generado: {result.code.split('\n').length} líneas ({(result.code.length / 1024).toFixed(1)} KB)
+                    </span>
+                    <span style={{ fontSize: 12, color: t.dim }}>
+                      El código es muy grande para mostrarse en el editor. Descárgalo directamente.
+                    </span>
+                    <button onClick={() => {
+                      const blob = new Blob([result.code], { type: 'text/plain' })
+                      const url = URL.createObjectURL(blob)
+                      const a = document.createElement('a')
+                      a.href = url; a.download = `bnx_${target}_job.py`; a.click()
+                      URL.revokeObjectURL(url)
+                    }} style={{
+                      padding: '10px 24px', borderRadius: 6, cursor: 'pointer',
+                      background: t.accent || '#22c55e', color: '#000', border: 'none',
+                      fontSize: 14, fontWeight: 600,
+                    }}>📥 Descargar código</button>
+                    <pre style={{
+                      padding: 12, fontSize: 12, color: t.dim,
+                      fontFamily: 'monospace', whiteSpace: 'pre', overflowY: 'auto',
+                      maxHeight: 150, width: '100%', margin: 0,
+                      background: t.bg || '#0f1117', borderRadius: 6,
+                      border: `1px solid ${t.border}`,
+                    }}>{result.code.slice(0, 800)}...{'\n\n'}# ... ({result.code.split('\n').length - 20} líneas más)</pre>
+                  </div>
+                ) : (
+                  <pre style={{
+                    padding: 16, fontSize: 14, color: t.muted,
+                    fontFamily: 'monospace', whiteSpace: 'pre', overflowY: 'auto',
+                    flex: 1, lineHeight: 1.6, margin: 0,
+                  }}>{result.code}</pre>
+                )
               )}
             </div>
           )}
