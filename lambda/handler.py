@@ -561,29 +561,20 @@ def handler(event, context):
 
             results = {"steps": [], "status": "running"}
 
-            # Step 0: Ensure S3 buckets referenced in code exist
+            # Step 0: Replace generic S3 paths with pipeline bucket
             import re as _re
-            s3_paths = _re.findall(r's3://([^/"\s]+)', code_content)
-            buckets_to_check = set(s3_paths)
-            buckets_to_check.add(pipeline_bucket)
-            created_buckets = []
-            for bucket_name in buckets_to_check:
+            # Replace s3://bnx/ with s3://pipeline_bucket/ (generic paths from codegen)
+            code_content = _re.sub(r's3://bnx/', f's3://{pipeline_bucket}/', code_content)
+            
+            # Ensure pipeline bucket exists
+            try:
+                s3.head_bucket(Bucket=pipeline_bucket)
+            except Exception:
                 try:
-                    s3.head_bucket(Bucket=bucket_name)
-                except Exception:
-                    try:
-                        if pipeline_region == "us-east-1":
-                            s3.create_bucket(Bucket=bucket_name)
-                        else:
-                            s3.create_bucket(
-                                Bucket=bucket_name,
-                                CreateBucketConfiguration={"LocationConstraint": pipeline_region}
-                            )
-                        created_buckets.append(bucket_name)
-                    except Exception as e:
-                        results["steps"].append({"step": "create_bucket", "status": "error", "detail": f"Cannot create s3://{bucket_name}: {str(e)[:100]}"})
-            if created_buckets:
-                results["steps"].append({"step": "create_bucket", "status": "done", "detail": f"Created: {', '.join(created_buckets)}"})
+                    s3.create_bucket(Bucket=pipeline_bucket)
+                    results["steps"].append({"step": "create_bucket", "status": "done", "detail": f"Created s3://{pipeline_bucket}"})
+                except Exception as e:
+                    results["steps"].append({"step": "create_bucket", "status": "error", "detail": str(e)[:150]})
 
             # Step 1: Upload script to S3
             try:
