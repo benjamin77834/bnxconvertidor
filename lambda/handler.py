@@ -561,6 +561,27 @@ def handler(event, context):
 
             results = {"steps": [], "status": "running"}
 
+            # Step 0: Ensure S3 buckets referenced in code exist
+            import re as _re
+            s3_paths = _re.findall(r's3://([^/"\s]+)', code_content)
+            buckets_to_check = set(s3_paths)
+            buckets_to_check.add(pipeline_bucket)
+            for bucket_name in buckets_to_check:
+                try:
+                    s3.head_bucket(Bucket=bucket_name)
+                except s3.exceptions.ClientError:
+                    try:
+                        if pipeline_region == "us-east-1":
+                            s3.create_bucket(Bucket=bucket_name)
+                        else:
+                            s3.create_bucket(
+                                Bucket=bucket_name,
+                                CreateBucketConfiguration={"LocationConstraint": pipeline_region}
+                            )
+                        results["steps"].append({"step": "create_bucket", "status": "done", "detail": f"Created s3://{bucket_name}"})
+                    except Exception:
+                        pass  # bucket may already exist or permission denied
+
             # Step 1: Upload script to S3
             try:
                 s3.put_object(
