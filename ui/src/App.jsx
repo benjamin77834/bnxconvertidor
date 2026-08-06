@@ -940,12 +940,13 @@ export default function App() {
               {codeOpen && (
                 result.code && result.code.length > 5000 ? (
                   <div style={{ padding: 20, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, flex: 1, justifyContent: 'center' }}>
-                    <span style={{ fontSize: 32 }}>📄</span>
-                    <span style={{ fontSize: 14, color: t.text, fontWeight: 600 }}>
-                      Código generado: {result.code.split('\n').length} líneas ({(result.code.length / 1024).toFixed(1)} KB)
+                    <style>{`@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.4} }`}</style>
+                    <span style={{ fontSize: 48 }}>⚠️</span>
+                    <span style={{ fontSize: 16, color: t.text, fontWeight: 700, textAlign: 'center' }}>
+                      CÓDIGO MUY GRANDE — DESCARGA REQUERIDA
                     </span>
-                    <span style={{ fontSize: 12, color: t.dim }}>
-                      El código es muy grande para mostrarse en el editor. Descárgalo directamente.
+                    <span style={{ fontSize: 13, color: t.muted, textAlign: 'center' }}>
+                      {result.code.split('\n').length} líneas · {(result.code.length / 1024).toFixed(1)} KB — El código no se puede mostrar en pantalla
                     </span>
                     <button onClick={() => {
                       const blob = new Blob([result.code], { type: 'text/plain' })
@@ -954,17 +955,19 @@ export default function App() {
                       a.href = url; a.download = `bnx_${target}_job.py`; a.click()
                       URL.revokeObjectURL(url)
                     }} style={{
-                      padding: '10px 24px', borderRadius: 6, cursor: 'pointer',
-                      background: t.accent || '#22c55e', color: '#000', border: 'none',
-                      fontSize: 14, fontWeight: 600,
-                    }}>📥 Descargar código</button>
+                      padding: '14px 32px', borderRadius: 8, cursor: 'pointer',
+                      background: '#22c55e', color: '#000', border: 'none',
+                      fontSize: 16, fontWeight: 700,
+                      animation: 'blink 1.5s ease-in-out infinite',
+                      boxShadow: '0 0 20px rgba(34,197,94,0.4)',
+                    }}>📥 DESCARGAR CÓDIGO AQUÍ</button>
                     <pre style={{
-                      padding: 12, fontSize: 12, color: t.dim,
+                      padding: 12, fontSize: 11, color: t.dim,
                       fontFamily: 'monospace', whiteSpace: 'pre', overflowY: 'auto',
-                      maxHeight: 150, width: '100%', margin: 0,
+                      maxHeight: 120, width: '100%', margin: 0,
                       background: t.bg || '#0f1117', borderRadius: 6,
                       border: `1px solid ${t.border}`,
-                    }}>{result.code.slice(0, 800)}...{'\n\n'}# ... ({result.code.split('\n').length - 20} líneas más)</pre>
+                    }}>{result.code.slice(0, 600)}...{'\n\n'}# ... ({result.code.split('\n').length - 15} líneas más)</pre>
                   </div>
                 ) : (
                   <pre style={{
