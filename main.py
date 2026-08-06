@@ -782,6 +782,37 @@ def _extract_embedded_transforms(content):
     if filters:
         print(f"  [dbg] Extracted filters: {filters}")
     
+    # Map filters (select_expr) to their containing vertex
+    filters_by_vertex = {}
+    filter_positions = [(m.start(), m.group(1)) for m in re.finditer(r'XXparameter\|select_expr\|([^|]+)\|', content, re.DOTALL)]
+    for fpos, fval in filter_positions:
+        owning_vertex = None
+        for vpos, vid in vertex_positions:
+            if vpos < fpos:
+                owning_vertex = vid
+            else:
+                break
+        if owning_vertex and fval.strip():
+            # Clean up newlines in filter expression
+            filters_by_vertex[owning_vertex] = fval.strip().replace('\n', ' ')
+    
+    # Also map 'select' filters (from Reformat components) by vertex
+    select_filter_positions = [(m.start(), m.group(1)) for m in re.finditer(r'XXparameter\|select\|([^|]+)\|', content)]
+    for sfpos, sfval in select_filter_positions:
+        sfval = sfval.strip()
+        if sfval and ('==' in sfval or '!=' in sfval or '>' in sfval or '<' in sfval):
+            owning_vertex = None
+            for vpos, vid in vertex_positions:
+                if vpos < sfpos:
+                    owning_vertex = vid
+                else:
+                    break
+            if owning_vertex:
+                filters_by_vertex[owning_vertex] = sfval
+    
+    if filters_by_vertex:
+        print(f"  [dbg] Filters by vertex: {filters_by_vertex}")
+    
     # Extract record schemas (out_metadata)
     schemas = re.findall(r'XXparameter\|out_metadata\|record\s*(.*?)(?:end;|\|)', content, re.DOTALL)
     
@@ -855,6 +886,7 @@ def _extract_embedded_transforms(content):
         "keys": keys,
         "keys_by_vertex": keys_by_vertex,
         "filters": filters,
+        "filters_by_vertex": filters_by_vertex,
         "keeps": keeps,
     }
     
@@ -875,6 +907,7 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
     keys = embedded.get("keys", [])
     keys_by_vertex = embedded.get("keys_by_vertex", {})
     filters = embedded.get("filters", [])
+    filters_by_vertex = embedded.get("filters_by_vertex", {})
     transforms = embedded.get("transforms", {})
     keeps = embedded.get("keeps", [])
     
@@ -973,7 +1006,11 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
         
         # --- FILTER ---
         elif "filter" in comp_type:
-            if filters and filter_idx < len(filters):
+            # Use vertex-specific filter if available
+            vertex_filter = filters_by_vertex.get(vid)
+            if vertex_filter:
+                xfr_rules[name_lower] = {"where": vertex_filter}
+            elif filters and filter_idx < len(filters):
                 xfr_rules[name_lower] = {"where": filters[filter_idx]}
                 filter_idx += 1
         
@@ -1103,7 +1140,7 @@ def main(project_path, output_path, xfr_path=None, dml_path=None, pset_path=None
         with open(project_path, "r", errors="replace") as f:
             raw_content = f.read().replace('\x00', '')
         embedded = _extract_embedded_transforms(raw_content)
-        if embedded["transforms"] or embedded["keys"] or embedded["keys_by_vertex"] or embedded["filters"] or embedded["keeps"]:
+        if embedded["transforms"] or embedded["keys"] or embedded["keys_by_vertex"] or embedded["filters"] or embedded["filters_by_vertex"] or embedded["keeps"]:
             print(f"[i] Embedded transforms: {len(embedded['transforms'])} transforms, {len(embedded['keys'])} keys, {len(embedded['filters'])} filters")
             # Build node_by_id using VERTEX IDs as keys (for keys_by_vertex mapping)
             node_map = {}
