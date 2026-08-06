@@ -111,12 +111,25 @@ def _build_transform(var_id, src_df, rule):
     
     # --- TRANSFORM EXPRESSIONS ---
     transform_exprs = rule.get("transform_exprs")
-    if transform_exprs:
+    literals = rule.get("literals")
+    if transform_exprs or literals:
         lines = [f'{var_id}_df = {src_df}']
-        for expr_str in transform_exprs:
-            if " as " in expr_str.lower():
-                parts = expr_str.rsplit(" as ", 1)
-                lines.append(f'{var_id}_df = {var_id}_df.withColumn("{parts[1].strip()}", expr("{parts[0].strip()}"))')
+        where = rule.get("where")
+        if where:
+            lines.append(f'{var_id}_df = {var_id}_df.where("{where}")')
+        if transform_exprs:
+            for expr_str in transform_exprs:
+                if " as " in expr_str.lower():
+                    parts = expr_str.rsplit(" as ", 1)
+                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{parts[1].strip()}", expr("{parts[0].strip()}"))')
+        if literals:
+            for lit_field in literals:
+                fname = lit_field["field"]
+                val = lit_field["literal"]
+                if lit_field.get("literal_type") == "number":
+                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{fname}", lit({val}))')
+                else:
+                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{fname}", lit("{val}"))')
         return "\n".join(lines)
 
     select = rule.get("select", "*")
