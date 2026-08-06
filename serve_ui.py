@@ -224,6 +224,12 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             ast = parse_project(mp_path)
             dag = build_dag(ast)
             xfr_rules = parse_xfr(xfr_path) if xfr_path else {}
+            # Remove placeholder entries and handle raw DML
+            if "_raw_dml" in xfr_rules:
+                raw_rule = xfr_rules.pop("_raw_dml")
+                xfr_rules["_global_raw_dml"] = raw_rule
+            xfr_rules = {k: v for k, v in xfr_rules.items()
+                         if not (v.get("select") == "*" and v.get("where") is None and len(v) == 2)}
             dml_data = parse_dml(dml_path) if dml_path else {}
             dml_schema = dml_data.get("schema", {})
 

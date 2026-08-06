@@ -959,8 +959,10 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
         
         # --- SORT ---
         elif "sort" in comp_type and "sort" in comp_name.lower():
+            # Skip if .xfr already has a real sort_by rule
+            if name_lower in xfr_rules and xfr_rules[name_lower].get("sort_by"):
+                continue
             if vertex_keys:
-                # Use vertex-specific keys for sort
                 sort_fields = []
                 for k in vertex_keys:
                     sort_fields.extend([f.strip() for f in k.replace(';', ',').split(',') if f.strip()])
@@ -971,7 +973,6 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
                 sort_fields = [f.strip().rstrip('}').lstrip('{') for f in key_str.replace(';', ',').split(',') if f.strip()]
                 if sort_fields:
                     xfr_rules[name_lower] = {"sort_by": sort_fields}
-                key_idx += 1
                 key_idx += 1
         
         # --- LOOKUP (Output File with mode=lookup and key) ---
@@ -1016,8 +1017,14 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
         
         # --- REFORMAT ---
         elif "reformat" in comp_type:
-            # Skip if already defined by external .xfr with meaningful content
-            if name_lower in xfr_rules and (xfr_rules[name_lower].get("select", "*") != "*" or xfr_rules[name_lower].get("where")):
+            # Skip if .xfr already defines real rules for this component
+            existing = xfr_rules.get(name_lower, {})
+            has_real_xfr = (existing.get("select", "*") != "*" or 
+                           existing.get("where") or 
+                           existing.get("transform") or
+                           existing.get("raw_transform") or
+                           existing.get("literals"))
+            if has_real_xfr:
                 continue
             for tidx, trules in list(transforms.items()):
                 if trules["type"] in ("reformat", "passthrough"):
@@ -1132,6 +1139,15 @@ def main(project_path, output_path, xfr_path=None, dml_path=None, pset_path=None
     ast = parse_project(project_path)
     dag = build_dag(ast)
     xfr_rules = parse_xfr(xfr_path) if xfr_path else {}
+    # Handle raw DML transforms from .xfr (single-file DML without node headers)
+    if "_raw_dml" in xfr_rules:
+        # Raw DML applies to all reformat nodes — store for later application
+        raw_rule = xfr_rules.pop("_raw_dml")
+        # Will be applied during embedded transform processing
+        xfr_rules["_global_raw_dml"] = raw_rule
+    # Remove placeholder entries (select: "*", where: None) that would block embeddeds
+    xfr_rules = {k: v for k, v in xfr_rules.items() 
+                 if not (v.get("select") == "*" and v.get("where") is None and len(v) == 2)}
     dml = parse_dml(dml_path) if dml_path else {}
     dml_schema = dml.get("schema", {})
 
