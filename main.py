@@ -114,6 +114,74 @@ def _parse_gde_native(content):
                     "comp_type": name,
                 }
     
+    # Detect Output_File vs Input_File using mode parameter and port types
+    # Output_File has write port (XXGiport with "write") and mode=0x0062
+    # Input_File has read port (XXGoport with "read") and mode=0x0001
+    # Strategy: find XXGfvertex blocks that contain Output_File.mdc or mode|0x0062
+    # and match them to vertex IDs
+    
+    # Build a map: vertex_id -> has_write_port (iport with 'write' name)
+    write_port_vertices = set()
+    for m in re.finditer(r'XXGvertex_iport_iport\|\d+\|\d+\|\d+\|\d+\|\{\d+\|write\|\}(\d+)\|(\d+)\|', content):
+        write_port_vertices.add(m.group(1))
+    # Also simpler format
+    for m in re.finditer(r'XXGvertex_iport\|\d+\|\d+\|\d+\|\d+\|\{\d+\|write\|\}(\d+)\|(\d+)\|', content):
+        write_port_vertices.add(m.group(1))
+    
+    # Reclassify: vertices with write ports that are named "Input_File*" or "Output*" → SINK
+    for vid in write_port_vertices:
+        if vid in node_by_id:
+            info = node_by_id[vid]
+            if info["type"] == "SOURCE":
+                info["type"] = "SINK"
+                print(f"  [dbg] Reclassified {info['display_name']} (vertex {vid}) as SINK (has write port)")
+    
+    # Also detect from XXGfvertex blocks with Output_File.mdc prototype
+    for m in re.finditer(r'XXGfvertex\|(\d+)\|.*?Output_File\.mdc', content):
+        # The XXGfvertex ID is followed by XXGgraph_vertex_vertex mapping it
+        pass
+    
+    # Extract Layout paths (source/sink file paths) from XXGfvertex components
+    # Pattern: Layout|/path/to/file| inside XXGfvertex blocks
+    # Match Layout paths to vertex IDs via eme_dataset_mapping paths
+    layout_paths = {}
+    for m in re.finditer(r'XXGfvertex\|(\d+)\|.*?(?:Layout\|([^|]+)\|)', content):
+        fvertex_id = m.group(1)
+        path = m.group(2).strip()
+        if path and path.startswith("/"):
+            layout_paths[fvertex_id] = path
+    
+    # Also extract paths from eme_dataset_mapping (more reliable for actual data paths)
+    # Strategy: find all XXGfvertex positions, then for each one, find the Layout|/path| 
+    # that appears between it and the next XXGfvertex (or end of content)
+    fvertex_positions = [(m.start(), m.group(1)) for m in re.finditer(r'XXGfvertex\|(\d+)\|', content)]
+    for i, (pos, fvid) in enumerate(fvertex_positions):
+        # Determine end boundary (next XXGfvertex or end)
+        end_pos = fvertex_positions[i + 1][0] if i + 1 < len(fvertex_positions) else len(content)
+        block = content[pos:end_pos]
+        # Look for Layout|/path| in this block
+        lm = re.search(r'Layout\|(/[^|]+)\|', block)
+        if lm:
+            layout_paths[fvid] = lm.group(1).strip()
+        # Also check eme_dataset_mapping interp
+        em = re.search(r'dataset_path\s+_interp_\("(/[^"]+)"', block)
+        if em and fvid not in layout_paths:
+            layout_paths[fvid] = em.group(1).strip()
+    
+    if layout_paths:
+        print(f"  [dbg] Layout paths: {layout_paths}")
+    
+    # Map XXGfvertex IDs to XXGgraph_vertex_vertex IDs
+    # The relationship is: XXGgraph_vertex_vertex maps to XXGfvertex via the last number
+    # e.g. {Input_File_3|}12|15|} means vertex 15 is the XXGfvertex for Input_File_3
+    # We need to match fvertex IDs to node_by_id vertex IDs
+    # node_by_id keys are the XXGfvertex IDs (vid2 in the regex)
+    
+    # Assign paths to nodes
+    for vid, info in node_by_id.items():
+        if vid in layout_paths:
+            info["data_path"] = layout_paths[vid]
+    
     # XXGraph_flow_flow: {2010604001|XXGraph_flow_flow|4|0|8|0|{Flow_1|}3|5|}
     # Format: {FLOW_NAME|}FROM_VERTEX|TO_VERTEX|}
     flow_edges_direct = []
@@ -187,7 +255,9 @@ def _parse_gde_native(content):
             parts = line.split("|")
             if len(parts) >= 3:
                 param_name = parts[2].strip()
-                params[param_name] = ""
+                # Skip numeric IDs, internal params, and structural refs
+                if param_name and not param_name.isdigit() and not param_name.startswith("_") and not param_name.startswith("!") and "XXG" not in param_name:
+                    params[param_name] = ""
             continue
         
         # IMPORTANT: Check ports BEFORE component definitions
@@ -367,13 +437,17 @@ def _parse_gde_native(content):
             if name in seen_names:
                 name = f"{name}_{vid}"
             seen_names.add(name)
-            nodes.append({
+            node_data = {
                 "id": name,
                 "name": info["display_name"],
                 "type": info["type"],
                 "params": "",
                 "subgraph": None,
-            })
+            }
+            # Include data_path if available (for SOURCE/SINK)
+            if "data_path" in info:
+                node_data["data_path"] = info["data_path"]
+            nodes.append(node_data)
             vertex_names[vid]["final_name"] = name
         
         # Build edges
@@ -611,7 +685,7 @@ def _extract_embedded_transforms(content):
         out.monto :: sum(in.monto);
     end;|3|1|1|@{0|}}
     
-    {30001002|XXparameter|key|\{nombre\}|3|2|$|@{0|}}
+    {30001002|XXparameter|key|\\{nombre\\}|3|2|$|@{0|}}
     
     Returns dict of xfr_rules keyed by component name.
     """
@@ -629,8 +703,17 @@ def _extract_embedded_transforms(content):
     transforms = [t.strip() for t in raw_transforms if '::' in t or 'begin' in t.lower()]
     
     # Extract keys (group by fields)
-    keys_raw = re.findall(r'XXparameter\|key\|\\?\{?([^|}]+)\\?\}?\|', content)
-    keys = [k.replace('\\', '').strip() for k in keys_raw]
+    # Key format: key|\{field1; field2\}| or key|\{\}| (empty = all fields)
+    keys_raw = re.findall(r'XXparameter\|key\|([^|]*)\|', content)
+    keys = []
+    for k in keys_raw:
+        # Remove escaped braces and clean
+        cleaned = k.replace('\\{', '').replace('\\}', '').replace('{', '').replace('}', '').strip()
+        if cleaned:
+            keys.append(cleaned)
+    
+    # Extract dedup 'keep' settings (first, last, unique-only)
+    keeps = re.findall(r'XXparameter\|keep\|(\w+)\|', content)
     try:
         print(f"  [dbg] Extracted keys: {keys}")
     except (UnicodeEncodeError, OSError):
@@ -642,8 +725,10 @@ def _extract_embedded_transforms(content):
     select_filters = re.findall(r'XXparameter\|select\|([^|]+)\|', content)
     for sf in select_filters:
         sf = sf.strip()
-        if sf and ('==' in sf or '!=' in sf or '>' in sf or '<' in sf):
+        if sf and ('==' in sf or '!=' in sf or '>' in sf or '<' in sf or 'in(' in sf.lower()):
             filters.append(sf)
+    if filters:
+        print(f"  [dbg] Extracted filters: {filters}")
     
     # Extract record schemas (out_metadata)
     schemas = re.findall(r'XXparameter\|out_metadata\|record\s*(.*?)(?:end;|\|)', content, re.DOTALL)
@@ -717,6 +802,7 @@ def _extract_embedded_transforms(content):
         "transforms": component_transforms,
         "keys": keys,
         "filters": filters,
+        "keeps": keeps,
     }
     
     return result
@@ -732,21 +818,43 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
     - Reformat components get field mappings or raw transform
     - Lookup (Output File with mode lookup) gets lookup_key
     """
+    import re as _re
     keys = embedded.get("keys", [])
     filters = embedded.get("filters", [])
     transforms = embedded.get("transforms", {})
+    keeps = embedded.get("keeps", [])
     
     # Track which keys have been used
     key_idx = 0
     filter_idx = 0
+    keep_idx = 0
     
     for vid, info in sorted(node_by_id.items(), key=lambda x: str(x[0])):
         comp_name = info["name"]
         comp_type = info["comp_type"].lower()
         name_lower = comp_name.lower()
         
+        # --- DEDUP --- (must be checked BEFORE sort, since "dedup_sorted" contains "sort")
+        if "dedup" in comp_type or "dedup" in comp_name.lower():
+            rule = {}
+            if keys and key_idx < len(keys):
+                key_str = keys[key_idx]
+                dedup_fields = [f.strip().rstrip('}').lstrip('{') for f in key_str.replace(';', ',').split(',') if f.strip()]
+                rule["dedup_keys"] = dedup_fields
+                key_idx += 1
+            else:
+                # Empty key (like \{\}) = dedup on all columns (full record)
+                rule["dedup_keys"] = []
+            # Apply keep setting
+            if keeps and keep_idx < len(keeps):
+                keep_val = keeps[keep_idx]
+                if keep_val == "last":
+                    rule["keep"] = "last"
+                keep_idx += 1
+            xfr_rules[name_lower] = rule
+        
         # --- SORT ---
-        if "sort" in comp_type and "sort" in comp_name.lower():
+        elif "sort" in comp_type and "sort" in comp_name.lower():
             # Find the sort key for this component
             if keys and key_idx < len(keys):
                 key_str = keys[key_idx]
@@ -843,6 +951,10 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
                             rule["select"] = ", ".join(select_parts)
                         if literal_parts:
                             rule["literals"] = literal_parts
+                        # Apply select filter if available for this Reformat
+                        if filters and filter_idx < len(filters):
+                            rule["where"] = filters[filter_idx]
+                            filter_idx += 1
                         if rule:
                             xfr_rules[name_lower] = rule
                     elif "out.*" in raw_body and "::" in raw_body:
@@ -854,6 +966,11 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
                                 transforms_list.append(f"{expr.strip()} as {field}")
                         if transforms_list:
                             xfr_rules[name_lower] = {"transform_exprs": transforms_list}
+                    else:
+                        # No fields extracted but we have a filter for this reformat
+                        if filters and filter_idx < len(filters):
+                            xfr_rules[name_lower] = {"where": filters[filter_idx]}
+                            filter_idx += 1
                     
                     del transforms[tidx]
                     break
@@ -904,7 +1021,7 @@ def main(project_path, output_path, xfr_path=None, dml_path=None, pset_path=None
     dml_schema = dml.get("schema", {})
 
     # Extract embedded transforms from GDE .mp (DML transforms, keys, filters)
-    if ast.get("abinitio_params"):
+    if ast.get("abinitio_params") is not None:  # Always extract for GDE format (even if no params)
         with open(project_path, "r", errors="replace") as f:
             raw_content = f.read().replace('\x00', '')
         embedded = _extract_embedded_transforms(raw_content)
@@ -922,6 +1039,20 @@ def main(project_path, output_path, xfr_path=None, dml_path=None, pset_path=None
                 print(f"[i] XFR rules generated: {list(xfr_rules.keys())}")
                 for rk, rv in xfr_rules.items():
                     print(f"    {rk}: {rv}")
+    
+    # Apply data_path from GDE nodes to xfr_rules (for SOURCE/SINK path resolution)
+    for node_data in ast.get("nodes", []):
+        if "data_path" in node_data:
+            ntype = node_data["type"].upper()
+            node_id_lower = node_data["id"].lower()
+            if ntype == "SOURCE":
+                if node_id_lower not in xfr_rules:
+                    xfr_rules[node_id_lower] = {}
+                xfr_rules[node_id_lower]["path"] = f"s3://bnx/raw{node_data['data_path']}"
+            elif ntype == "SINK":
+                if node_id_lower not in xfr_rules:
+                    xfr_rules[node_id_lower] = {}
+                xfr_rules[node_id_lower]["path"] = f"s3://bnx/output{node_data['data_path']}"
 
     if dml_schema:
         print(f"[i] DML schema loaded: {list(dml_schema.keys())}\n")
