@@ -28,10 +28,15 @@ function buildLayout(nodes, edges, theme) {
   const t = theme || {}
   const nodeTextColor = t.text || '#e2e8f0'
 
+  // Topological sort to assign levels (X position)
   const levelMap = {}
   const inDeg = {}
-  nodes.forEach(n => { inDeg[n.id] = 0 })
-  edges.forEach(e => { if (inDeg[e.to] !== undefined) inDeg[e.to]++ })
+  const outEdges = {}
+  nodes.forEach(n => { inDeg[n.id] = 0; outEdges[n.id] = [] })
+  edges.forEach(e => {
+    if (inDeg[e.to] !== undefined) inDeg[e.to]++
+    if (outEdges[e.from]) outEdges[e.from].push(e.to)
+  })
 
   const queue = nodes.filter(n => inDeg[n.id] === 0).map(n => n.id)
   let level = 0
@@ -53,23 +58,48 @@ function buildLayout(nodes, edges, theme) {
     level++
   }
 
-  const levelCount = {}
+  // Assign any unvisited nodes to level 0
+  nodes.forEach(n => { if (levelMap[n.id] === undefined) levelMap[n.id] = 0 })
+
+  // Push children to be at least parent+1 (ensure proper spacing)
+  edges.forEach(e => {
+    if (levelMap[e.to] !== undefined && levelMap[e.from] !== undefined) {
+      if (levelMap[e.to] <= levelMap[e.from]) {
+        levelMap[e.to] = levelMap[e.from] + 1
+      }
+    }
+  })
+
+  // Group nodes by level and assign Y positions with spacing
+  const levels = {}
   nodes.forEach(n => {
     const l = levelMap[n.id] ?? 0
-    levelCount[l] = (levelCount[l] || 0) + 1
+    if (!levels[l]) levels[l] = []
+    levels[l].push(n.id)
   })
-  const levelIdx = {}
+
+  const posMap = {}
+  const xSpacing = 240
+  const ySpacing = 100
+
+  Object.keys(levels).sort((a, b) => a - b).forEach(l => {
+    const group = levels[l]
+    const totalHeight = (group.length - 1) * ySpacing
+    group.forEach((id, idx) => {
+      posMap[id] = {
+        x: parseInt(l) * xSpacing,
+        y: (idx * ySpacing) - totalHeight / 2
+      }
+    })
+  })
 
   const rfNodes = nodes.map(n => {
-    const l = levelMap[n.id] ?? 0
-    levelIdx[l] = (levelIdx[l] || 0) + 1
-    const idx = levelIdx[l]
-    const total = levelCount[l]
     const color = TYPE_COLOR[n.type] || '#64748b'
+    const pos = posMap[n.id] || { x: 0, y: 0 }
 
     return {
       id: n.id,
-      position: { x: l * 220, y: (idx - (total + 1) / 2) * 80 },
+      position: pos,
       data: { label: n.name },
       style: {
         background: color + '22',

@@ -141,6 +141,11 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         else:
             self._json_response(200, {"message": "BNX API running", "endpoints": ["/api/health", "/compile (POST)"]})
 
+    def end_headers(self):
+        # No-cache headers for all responses
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        self.send_header("Pragma", "no-cache")
+        super().end_headers()
     def _proxy_to_datalab(self, path):
         """Proxy requests to DataLab API Gateway (for pipeline/library when firewall blocks direct access)."""
         import urllib.request
@@ -258,12 +263,16 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
 
             # Build response
             nodes = []
+            node_ids = set()
             for node in dag.execution_order:
                 nodes.append({
                     "id": node.id, "name": node.name, "type": node.type,
                     "parents": node.parents, "children": node.children,
                 })
-            edges = [{"from": e["from"], "to": e["to"]} for e in ast.get("edges", [])]
+                node_ids.add(node.id)
+            # Filter edges: only include edges where both endpoints exist as nodes
+            edges = [{"from": e["from"], "to": e["to"]} for e in ast.get("edges", [])
+                     if e["from"] in node_ids and e["to"] in node_ids]
 
             self._json_response(200, {
                 "nodes": nodes,
