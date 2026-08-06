@@ -98,11 +98,23 @@ def _parse_gde_native(content):
     # FIRST: Try XXGgraph_vertex_vertex + XXGraph_flow_flow (simpler format like DR_BASIC_COUNT)
     # XXGgraph_vertex_vertex: {2010601001|XXGgraph_vertex_vertex|8|0|16|0|{Filter_by_Expression|}1|9|}
     # Format: {NAME|}VID1|VID2|}  where VID2 is the vertex ID
+    
+    # Detect subgraph IDs (XXGgraph entities that are NOT the root graph)
+    subgraph_ids = set()
+    for m in re.finditer(r'XXGgraph\|(\d+)\|', content):
+        subgraph_ids.add(m.group(1))
+    # Root graph (id=1) is not a subgraph vertex  
+    subgraph_ids.discard("1")
+    subgraph_ids.discard("0")
+    
     for m in re.finditer(r'XXGgraph_vertex_vertex\|\d+\|\d+\|\d+\|\d+\|\{([^}]+)\|\}?(\d+)\|(\d+)\|', content):
         name = m.group(1).strip().rstrip('|')
         vid1 = m.group(2)
         vid2 = m.group(3)
         # vid2 is the vertex ID for this component
+        # Skip subgraph vertices (they are containers, not actual data components)
+        if vid2 in subgraph_ids:
+            continue
         if name and not name.startswith("{"):
             safe_name = re.sub(r'[^\w]', '_', name)
             if vid2 not in node_by_id:

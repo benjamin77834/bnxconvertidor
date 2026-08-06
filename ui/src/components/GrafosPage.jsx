@@ -143,11 +143,32 @@ export default function GrafosPage({ theme, onLoadToCompiler }) {
     setSelectedProject(null); setFiles([]); setSelectedFile(null); fetchProjects()
   }
 
-  const downloadFile = () => {
-    if (!fileContent || !selectedFile) return
-    const blob = new Blob([fileContent], { type: 'text/plain' })
-    const url = URL.createObjectURL(blob); const a = document.createElement('a')
-    a.href = url; a.download = selectedFile.name; a.click(); URL.revokeObjectURL(url)
+  const downloadFile = (f) => {
+    if (!selectedProject) return
+    const form = new FormData(); form.append('action', 'download'); form.append('project', selectedProject.name); form.append('file', f?.name || selectedFile?.name)
+    fetch(LIBRARY_URL, { method: 'POST', body: form })
+      .then(res => res.json())
+      .then(data => {
+        if (data.content) {
+          const blob = new Blob([data.content], { type: 'text/plain' })
+          const url = URL.createObjectURL(blob); const a = document.createElement('a')
+          a.href = url; a.download = f?.name || selectedFile?.name; a.click(); URL.revokeObjectURL(url)
+        }
+      })
+  }
+
+  const downloadSelected = async () => {
+    if (!selectedProject || selected.size === 0) return
+    for (const fname of selected) {
+      const form = new FormData(); form.append('action', 'download'); form.append('project', selectedProject.name); form.append('file', fname)
+      const res = await fetch(LIBRARY_URL, { method: 'POST', body: form })
+      const data = await res.json()
+      if (data.content) {
+        const blob = new Blob([data.content], { type: 'text/plain' })
+        const url = URL.createObjectURL(blob); const a = document.createElement('a')
+        a.href = url; a.download = fname; a.click(); URL.revokeObjectURL(url)
+      }
+    }
   }
 
   const fileIcon = (name) => {
@@ -207,14 +228,22 @@ export default function GrafosPage({ theme, onLoadToCompiler }) {
               </div>
             </div>
 
-            {/* Compilar seleccion */}
+            {/* Compilar/Descargar seleccion */}
             {selected.size > 0 && (
-              <button onClick={compileSelection} disabled={compiling} style={{
-                padding: '8px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                background: '#22c55e', color: '#000', border: 'none', width: '100%',
-              }}>
-                {compiling ? '⏳...' : `🚀 Compilar ${selected.size} archivo${selected.size > 1 ? 's' : ''}`}
-              </button>
+              <div style={{ display: 'flex', gap: 4 }}>
+                <button onClick={compileSelection} disabled={compiling} style={{
+                  padding: '8px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                  background: '#22c55e', color: '#000', border: 'none', flex: 1,
+                }}>
+                  {compiling ? '⏳...' : `🚀 Compilar ${selected.size}`}
+                </button>
+                <button onClick={downloadSelected} style={{
+                  padding: '8px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                  background: '#6366f120', color: '#6366f1', border: '1px solid #6366f140',
+                }}>
+                  📥 Bajar
+                </button>
+              </div>
             )}
 
             {showUpload && (
@@ -246,7 +275,10 @@ export default function GrafosPage({ theme, onLoadToCompiler }) {
                     {(f.size / 1024).toFixed(1)}KB
                   </div>
                 </div>
-                <button onClick={() => deleteFile(f)} style={{ padding: '2px 4px', borderRadius: 3, fontSize: 9, cursor: 'pointer', background: '#ef444410', border: '1px solid #ef444430', color: '#ef4444' }}>✕</button>
+                <div style={{ display: 'flex', gap: 3 }}>
+                  <button onClick={(e) => { e.stopPropagation(); downloadFile(f) }} style={{ padding: '2px 4px', borderRadius: 3, fontSize: 9, cursor: 'pointer', background: '#6366f110', border: '1px solid #6366f130', color: '#6366f1' }}>📥</button>
+                  <button onClick={() => deleteFile(f)} style={{ padding: '2px 4px', borderRadius: 3, fontSize: 9, cursor: 'pointer', background: '#ef444410', border: '1px solid #ef444430', color: '#ef4444' }}>✕</button>
+                </div>
               </div>
             ))}
           </div>
@@ -259,7 +291,7 @@ export default function GrafosPage({ theme, onLoadToCompiler }) {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                 <div style={{ fontSize: 14, fontWeight: 600, color: t.text || '#e2e8f0' }}>{selectedFile.name}</div>
                 <div style={{ display: 'flex', gap: 4 }}>
-                  <button onClick={downloadFile} style={{ padding: '4px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer', background: 'transparent', border: `1px solid ${t.border || '#334155'}`, color: t.muted || '#94a3b8' }}>📥</button>
+                  <button onClick={() => downloadFile(selectedFile)} style={{ padding: '4px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer', background: 'transparent', border: `1px solid ${t.border || '#334155'}`, color: t.muted || '#94a3b8' }}>📥</button>
                   {selectedFile.name.endsWith('.mp') && (
                     <button onClick={() => onLoadToCompiler && onLoadToCompiler({ mp: fileContent, xfr: '', name: selectedFile.name.replace('.mp', '') })} style={{ padding: '4px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer', background: '#22c55e', color: '#000', border: 'none', fontWeight: 600 }}>🚀 Compilar</button>
                   )}
