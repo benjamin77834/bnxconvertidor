@@ -629,6 +629,12 @@ def _extract_embedded_transforms(content):
     
     # Extract filter expressions (for Filter_by_Expression components)
     filters = re.findall(r'XXparameter\|select_expr\|([^|]+)\|', content)
+    # Also extract 'select' parameters that contain filter expressions (Reformat with pre-filter)
+    select_filters = re.findall(r'XXparameter\|select\|([^|]+)\|', content)
+    for sf in select_filters:
+        sf = sf.strip()
+        if sf and ('==' in sf or '!=' in sf or '>' in sf or '<' in sf):
+            filters.append(sf)
     
     # Extract record schemas (out_metadata)
     schemas = re.findall(r'XXparameter\|out_metadata\|record\s*(.*?)(?:end;|\|)', content, re.DOTALL)
@@ -653,7 +659,7 @@ def _extract_embedded_transforms(content):
         for field_name, expression in field_matches:
             expr = expression.strip()
             # Skip newline/record terminator fields
-            if field_name == "newline" or field_name == "*":
+            if field_name == "newline" or field_name == "*" or field_name == "V_FILLER":
                 continue
             # Skip passthrough (out.* :: in.*)
             if expr == "in.*" or expr == "in." + field_name:
@@ -670,6 +676,20 @@ def _extract_embedded_transforms(content):
                 rules["fields"].append({
                     "field": field_name,
                     "source": expr.replace("in.", ""),
+                })
+            elif re.match(r"^'[^']*'$", expr) or re.match(r'^"[^"]*"$', expr):
+                # String literal
+                rules["fields"].append({
+                    "field": field_name,
+                    "literal": expr.strip("'\""),
+                    "literal_type": "string",
+                })
+            elif re.match(r'^-?\d+(\.\d+)?$', expr):
+                # Numeric literal
+                rules["fields"].append({
+                    "field": field_name,
+                    "literal": expr,
+                    "literal_type": "number",
                 })
             else:
                 rules["fields"].append({
@@ -796,16 +816,26 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
                     fields = trules.get("fields", [])
                     if fields:
                         select_parts = []
+                        literal_parts = []
                         for f in fields:
-                            if "expression" in f:
+                            if "literal" in f:
+                                # Literal assignment: withColumn("field", lit(value))
+                                literal_parts.append(f)
+                            elif "expression" in f:
                                 select_parts.append(f'{f["expression"]} as {f["field"]}')
                             elif "source" in f:
                                 if f["source"] == f["field"]:
                                     select_parts.append(f["field"])
                                 else:
                                     select_parts.append(f'{f["source"]} as {f["field"]}')
+                        
+                        rule = {}
                         if select_parts:
-                            xfr_rules[name_lower] = {"select": ", ".join(select_parts)}
+                            rule["select"] = ", ".join(select_parts)
+                        if literal_parts:
+                            rule["literals"] = literal_parts
+                        if rule:
+                            xfr_rules[name_lower] = rule
                     elif "out.*" in raw_body and "::" in raw_body:
                         # Simple passthrough with maybe one extra field
                         extra_fields = _re.findall(r'out\.(\w+)\s*::\s*(.+?);', raw_body)
