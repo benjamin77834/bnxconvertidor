@@ -168,10 +168,13 @@ def _parse_gde_native(content):
         oport_to_flow[port_id] = flow_id
     
     # Iport from flow: {2010214001|XXGiport_src_flow|2824|0|4541|0|{0|}1717|1692|}
+    # NOTE: A single iport can receive from MULTIPLE flows (fan-in, e.g. Concatenate)
     for m in re.finditer(r'XXGiport_src_flow\|\d+\|\d+\|\d+\|\d+\|\{\d+\|\}(\d+)\|(\d+)\|', content):
         port_id = m.group(1)
         flow_id = m.group(2)
-        iport_from_flow[port_id] = flow_id
+        if port_id not in iport_from_flow:
+            iport_from_flow[port_id] = []
+        iport_from_flow[port_id].append(flow_id)
     
     # Now parse line-by-line for components and parameters
     for line in re.split(r'[\r\n]+', content):
@@ -274,7 +277,10 @@ def _parse_gde_native(content):
             if m:
                 port_id = m.group(1)
                 flow_id = m.group(2)
-                iport_from_flow[port_id] = flow_id
+                if port_id not in iport_from_flow:
+                    iport_from_flow[port_id] = []
+                if flow_id not in iport_from_flow[port_id]:
+                    iport_from_flow[port_id].append(flow_id)
             continue
     
     # Build edges: oport → flow → iport
@@ -289,13 +295,16 @@ def _parse_gde_native(content):
             flow_to_src_vertex[flow_id] = oport_to_vertex[port_id]
     
     # For each iport that receives from a flow, find the source vertex
+    # iport_from_flow values are now LISTS (fan-in support)
     edge_set = set()
-    for port_id, flow_id in iport_from_flow.items():
-        if port_id in iport_to_vertex and flow_id in flow_to_src_vertex:
-            src_vertex = flow_to_src_vertex[flow_id]
+    for port_id, flow_ids in iport_from_flow.items():
+        if port_id in iport_to_vertex:
             dst_vertex = iport_to_vertex[port_id]
-            if src_vertex != dst_vertex:
-                edge_set.add((src_vertex, dst_vertex))
+            for flow_id in flow_ids:
+                if flow_id in flow_to_src_vertex:
+                    src_vertex = flow_to_src_vertex[flow_id]
+                    if src_vertex != dst_vertex:
+                        edge_set.add((src_vertex, dst_vertex))
     
     # Now map vertex IDs (small) to component names
     # The vertex IDs from ports should correspond to the order of components
