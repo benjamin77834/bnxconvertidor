@@ -271,8 +271,14 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 })
                 node_ids.add(node.id)
             # Filter edges: only include edges where both endpoints exist as nodes
-            edges = [{"from": e["from"], "to": e["to"]} for e in ast.get("edges", [])
+            all_edges = ast.get("edges", [])
+            edges = [{"from": e["from"], "to": e["to"]} for e in all_edges
                      if e["from"] in node_ids and e["to"] in node_ids]
+            print(f"  [resp] Returning {len(nodes)} nodes, {len(edges)} edges (from {len(all_edges)} raw)")
+            if len(edges) != len(all_edges):
+                bad = [e for e in all_edges if e["from"] not in node_ids or e["to"] not in node_ids]
+                for b in bad[:5]:
+                    print(f"  [resp] DROPPED edge: {b['from']} -> {b['to']}")
 
             self._json_response(200, {
                 "nodes": nodes,
