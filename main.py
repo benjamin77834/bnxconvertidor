@@ -836,6 +836,10 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
         
         # --- DEDUP --- (must be checked BEFORE sort, since "dedup_sorted" contains "sort")
         if "dedup" in comp_type or "dedup" in comp_name.lower():
+            # Skip if already defined by external .xfr (has dedup_keys with actual values)
+            if name_lower in xfr_rules and xfr_rules[name_lower].get("dedup_keys"):
+                keep_idx += 1 if keeps else 0
+                continue
             rule = {}
             if keys and key_idx < len(keys):
                 key_str = keys[key_idx]
@@ -904,6 +908,9 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
         
         # --- REFORMAT ---
         elif "reformat" in comp_type:
+            # Skip if already defined by external .xfr with meaningful content
+            if name_lower in xfr_rules and (xfr_rules[name_lower].get("select", "*") != "*" or xfr_rules[name_lower].get("where")):
+                continue
             for tidx, trules in list(transforms.items()):
                 if trules["type"] in ("reformat", "passthrough"):
                     # Check if transform has lookup_count/lookup_next (complex lookup pattern)
