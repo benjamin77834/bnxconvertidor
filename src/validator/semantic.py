@@ -176,7 +176,7 @@ def validate(dag, xfr_rules, dml_schema=None):
         if ntype == "DEDUP":
             if not node.parents:
                 errors.append(f"[w] DEDUP '{node.name}' has no parent node")
-            elif not rule.get("dedup_keys"):
+            elif rule.get("dedup_keys") is None and not rule:
                 warnings.append(f"[w] DEDUP '{node.name}' has no dedup_keys - using default ['id']")
 
         # 3c. NORMALIZE sin padre o sin config

@@ -324,14 +324,18 @@ def generate_glue(dag, output_path, xfr_rules=None):
                     src = f'{parents[0]}_df'
                     dedup_keys = rule.get("dedup_keys", ["id"]) if rule else ["id"]
                     order_by = rule.get("order_by") if rule else None
-                    keys_str = ", ".join(f'"{k}"' for k in dedup_keys)
-                    if order_by:
-                        # Mantener el registro m?s reciente
-                        f.write(f'from pyspark.sql.window import Window\n')
-                        f.write(f'_w_{var_id} = Window.partitionBy({keys_str}).orderBy(col("{order_by}").desc())\n')
-                        f.write(f'{var_id}_df = {src}.withColumn("_rn", row_number().over(_w_{var_id})).where("_rn = 1").drop("_rn")\n')
+                    if dedup_keys:
+                        keys_str = ", ".join(f'"{k}"' for k in dedup_keys)
+                        if order_by:
+                            # Mantener el registro m?s reciente
+                            f.write(f'from pyspark.sql.window import Window\n')
+                            f.write(f'_w_{var_id} = Window.partitionBy({keys_str}).orderBy(col("{order_by}").desc())\n')
+                            f.write(f'{var_id}_df = {src}.withColumn("_rn", row_number().over(_w_{var_id})).where("_rn = 1").drop("_rn")\n')
+                        else:
+                            f.write(f'{var_id}_df = {src}.dropDuplicates([{keys_str}])\n')
                     else:
-                        f.write(f'{var_id}_df = {src}.dropDuplicates([{keys_str}])\n')
+                        # Empty key = dedup on all columns (full record deduplication)
+                        f.write(f'{var_id}_df = {src}.dropDuplicates()  # full record dedup\n')
                 else:
                     f.write(f'{var_id}_df = None  # no parent\n')
                 f.write(f'print("[-] DEDUP: {log_name}")\n\n')
