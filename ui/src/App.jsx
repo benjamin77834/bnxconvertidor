@@ -935,7 +935,10 @@ export default function App() {
                 background: '#f59e0b', color: '#000', border: 'none', fontSize: 12, fontWeight: 700,
               }}>📥 Extractor</button>
               <button onClick={() => {
-                if (result.code) { const blob = new Blob([result.code], { type: 'text/plain' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `bnx_${target}_transform_job.py`; a.click(); URL.revokeObjectURL(url) }
+                const code = result.code || '# No transform code generated'
+                const blob = new Blob([code], { type: 'text/plain' })
+                const url = URL.createObjectURL(blob); const a = document.createElement('a')
+                a.href = url; a.download = `bnx_${target}_transform_job.py`; a.click(); URL.revokeObjectURL(url)
               }} style={{
                 padding: '8px 16px', borderRadius: 6, cursor: 'pointer',
                 background: '#22c55e', color: '#000', border: 'none', fontSize: 12, fontWeight: 700,
