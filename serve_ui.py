@@ -250,7 +250,10 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
 
             # Generate code
             code = ""
-            if not [e for e in errors if "no parent nod" not in e and "nothing to write" not in e]:
+            blocking = [e for e in errors if "no parent nod" not in e and "nothing to write" not in e and "has no parent" not in e and "needs 2 parents" not in e]
+            if blocking:
+                print(f"  [!] Blocking errors: {blocking[:3]}")
+            if not blocking:
                 out_path = self._save_temp("", ".py")
                 if target == "spark":
                     generate_spark(dag, out_path, xfr_rules)
