@@ -274,8 +274,18 @@ def _parse_gde_native(content):
             parts = line.split("|")
             if len(parts) >= 3:
                 param_name = parts[2].strip()
-                # Skip numeric IDs, internal params, and structural refs
-                if param_name and not param_name.isdigit() and not param_name.startswith("_") and not param_name.startswith("!") and "XXG" not in param_name:
+                # Skip: numeric IDs, internal params, structural refs, template params
+                if (param_name and not param_name.isdigit() 
+                    and not param_name.startswith("_") 
+                    and not param_name.startswith("!")
+                    and "XXG" not in param_name
+                    and not any(x in param_name for x in [
+                        "interface", "condition", "display_name", "keyword", 
+                        "metadata", "mpcmodtime", "operation", "num_", "type",
+                        "mpname", "image__", "port_analysis", "continuous",
+                        "filter_aggregate", "propagat", "doc_", "callback",
+                        "threshold", "limit_keyword", "ramp_keyword",
+                    ])):
                     params[param_name] = ""
             continue
         
@@ -1225,7 +1235,8 @@ def main(project_path, output_path, xfr_path=None, dml_path=None, pset_path=None
     # Inject Ab Initio parameters as configuration block at top of generated file
     abi_params = ast.get("abinitio_params", {})
     all_params = {**abi_params, **pset_params}
-    if all_params:
+    # Skip param injection if too many (causes oversized output)
+    if all_params and len(all_params) <= 50:
         with open(output_path, "r") as f:
             generated_code = f.read()
         

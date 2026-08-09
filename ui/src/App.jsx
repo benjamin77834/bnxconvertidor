@@ -276,6 +276,7 @@ export default function App() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: t.bg, color: t.text, transition: 'background .4s ease, color .4s ease' }}>
+      <style>{`@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.4} }`}</style>
       {/* Header */}
       <header style={{
         padding: '12px 24px', background: t.header, borderBottom: `1px solid ${t.border}`,
@@ -328,7 +329,14 @@ export default function App() {
 
         {/* Downloads */}
         {result?.code && (
-          <button style={iconBtn} onClick={downloadCode}>📥 Code</button>
+          <button style={{
+            ...iconBtn,
+            background: '#22c55e20',
+            border: '1px solid #22c55e',
+            color: '#22c55e',
+            fontWeight: 700,
+            animation: result.code.length > 5000 ? 'blink 1.5s ease-in-out infinite' : 'none',
+          }} onClick={downloadCode}>📥 Code</button>
         )}
         {result?.nodes?.length > 0 && (
           <button style={iconBtn} onClick={downloadDag}>🖼️ DAG</button>
