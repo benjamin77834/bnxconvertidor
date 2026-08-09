@@ -190,16 +190,33 @@ def _parse_gde_native(content):
     if layout_paths:
         print(f"  [dbg] Layout paths: {layout_paths}")
     
-    # Map XXGfvertex IDs to XXGgraph_vertex_vertex IDs
-    # The relationship is: XXGgraph_vertex_vertex maps to XXGfvertex via the last number
-    # e.g. {Input_File_3|}12|15|} means vertex 15 is the XXGfvertex for Input_File_3
-    # We need to match fvertex IDs to node_by_id vertex IDs
-    # node_by_id keys are the XXGfvertex IDs (vid2 in the regex)
+    # Detect XXGtvertex (Input_Table / Output_Table) — database connections
+    db_sources = {}
+    tvertex_positions = [(m.start(), m.group(1)) for m in re.finditer(r'XXGtvertex\|(\d+)\|', content)]
+    for i, (pos, tvid) in enumerate(tvertex_positions):
+        end_pos = tvertex_positions[i + 1][0] if i + 1 < len(tvertex_positions) else len(content)
+        block = content[pos:end_pos]
+        # Extract DB info
+        dbms_m = re.search(r'dbms\|(\w+)\|', block)
+        table_spec_m = re.search(r'table_spec\|([^|]+)\|', block)
+        config_m = re.search(r'config_file\|([^|]+)\|', block)
+        if dbms_m:
+            db_info = {"dbms": dbms_m.group(1)}
+            if table_spec_m:
+                db_info["query"] = table_spec_m.group(1).strip()
+            if config_m:
+                db_info["config_file"] = config_m.group(1).strip()
+            db_sources[tvid] = db_info
     
-    # Assign paths to nodes
+    if db_sources:
+        print(f"  [dbg] DB sources: {list(db_sources.keys())} ({list(db_sources.values())[0].get('dbms', '?')})")
+    
+    # Assign paths and DB info to nodes
     for vid, info in node_by_id.items():
         if vid in layout_paths:
             info["data_path"] = layout_paths[vid]
+        if vid in db_sources:
+            info["db_source"] = db_sources[vid]
     
     # XXGraph_flow_flow: {2010604001|XXGraph_flow_flow|4|0|8|0|{Flow_1|}3|5|}
     # Format: {FLOW_NAME|}FROM_VERTEX|TO_VERTEX|}
@@ -483,6 +500,9 @@ def _parse_gde_native(content):
             # Include data_path if available (for SOURCE/SINK)
             if "data_path" in info:
                 node_data["data_path"] = info["data_path"]
+            # Include db_source if available (for Input_Table/Output_Table)
+            if "db_source" in info:
+                node_data["db_source"] = info["db_source"]
             nodes.append(node_data)
             vertex_names[vid]["final_name"] = name
         
@@ -751,7 +771,7 @@ def _extract_embedded_transforms(content):
     
     # Better: extract keys per component using XXGpvertex/XXGfvertex position mapping
     # Find which vertex each key belongs to by position in content
-    vertex_positions = [(m.start(), m.group(1)) for m in re.finditer(r'XXG[pf]vertex\|(\d+)\|', content)]
+    vertex_positions = [(m.start(), m.group(1)) for m in re.finditer(r'XXG[pft]vertex\|(\d+)\|', content)]
     key_positions = [(m.start(), m.group(1)) for m in re.finditer(r'XXparameter\|key\|([^|]*)\|', content)]
     
     # Map each key to its containing vertex

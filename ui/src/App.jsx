@@ -911,6 +911,38 @@ export default function App() {
             }
           </div>
 
+          {/* DB Sources Alert — Two Programs */}
+          {result?.has_db_sources && (
+            <div style={{
+              borderTop: `1px solid #f59e0b40`, background: '#f59e0b08',
+              padding: '12px 20px', display: 'flex', alignItems: 'center', gap: 16,
+            }}>
+              <span style={{ fontSize: 24 }}>🗄️</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#f59e0b' }}>
+                  Se detectaron {result.db_sources_count} fuente(s) de base de datos — Se generan 2 programas
+                </div>
+                <div style={{ fontSize: 11, color: t.dim, marginTop: 2 }}>
+                  Programa 1: Extractor (DB → S3) | Programa 2: Transformer (S3 → S3)
+                </div>
+              </div>
+              <button onClick={() => {
+                const blob = new Blob([result.extractor_code], { type: 'text/plain' })
+                const url = URL.createObjectURL(blob); const a = document.createElement('a')
+                a.href = url; a.download = 'bnx_extractor_job.py'; a.click(); URL.revokeObjectURL(url)
+              }} style={{
+                padding: '8px 16px', borderRadius: 6, cursor: 'pointer',
+                background: '#f59e0b', color: '#000', border: 'none', fontSize: 12, fontWeight: 700,
+              }}>📥 Extractor</button>
+              <button onClick={() => {
+                if (result.code) { const blob = new Blob([result.code], { type: 'text/plain' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `bnx_${target}_transform_job.py`; a.click(); URL.revokeObjectURL(url) }
+              }} style={{
+                padding: '8px 16px', borderRadius: 6, cursor: 'pointer',
+                background: '#22c55e', color: '#000', border: 'none', fontSize: 12, fontWeight: 700,
+              }}>📥 Transformer</button>
+            </div>
+          )}
+
           {/* Code panel */}
           {result?.code && (
             <div style={{
