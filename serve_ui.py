@@ -287,12 +287,54 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 for b in bad[:5]:
                     print(f"  [resp] DROPPED edge: {b['from']} -> {b['to']}")
 
+            # Detect DB sources → generate extractor program
+            db_nodes = [n for n in ast.get("nodes", []) if n.get("db_source")]
+            extractor_code = ""
+            if db_nodes:
+                from datetime import datetime
+                ext_lines = []
+                ext_lines.append(f'"""\n[*] BNX EXTRACTOR — Database to S3\nGenerated at: {datetime.now()}\nThis program extracts data from DB sources and lands it in S3.\nRun this BEFORE the transform job.\n"""\n')
+                ext_lines.append("import boto3")
+                ext_lines.append("from pyspark.sql import SparkSession\n")
+                ext_lines.append("spark = SparkSession.builder.appName('BNX_Extractor').getOrCreate()\n")
+                ext_lines.append('print("[*] BNX Extractor Started")\n')
+                ext_lines.append("# " + "=" * 50)
+                ext_lines.append("# CONFIGURE: Update connection details below")
+                ext_lines.append("# " + "=" * 50)
+                ext_lines.append('JDBC_URL = "jdbc:teradata://YOUR_HOST/DATABASE=YOUR_DB"')
+                ext_lines.append('JDBC_USER = "YOUR_USER"  # Use AWS Secrets Manager in production')
+                ext_lines.append('JDBC_PASSWORD = "YOUR_PASSWORD"  # Use AWS Secrets Manager in production')
+                ext_lines.append(f'S3_LANDING = "s3://datalake-bnx-scripts-dev/landing/"\n')
+                
+                for db_node in db_nodes:
+                    name = db_node["id"]
+                    db = db_node["db_source"]
+                    dbms = db.get("dbms", "unknown")
+                    query = db.get("query", f"SELECT * FROM {name}")
+                    safe_name = name.lower()
+                    
+                    ext_lines.append(f'# [{dbms.upper()}] {name}')
+                    ext_lines.append(f'{safe_name}_df = spark.read.format("jdbc") \\')
+                    ext_lines.append(f'    .option("url", JDBC_URL) \\')
+                    ext_lines.append(f'    .option("user", JDBC_USER) \\')
+                    ext_lines.append(f'    .option("password", JDBC_PASSWORD) \\')
+                    ext_lines.append(f'    .option("query", """{query}""") \\')
+                    ext_lines.append(f'    .load()')
+                    ext_lines.append(f'{safe_name}_df.write.mode("overwrite").parquet(f"{{S3_LANDING}}{safe_name}/")')
+                    ext_lines.append(f'print(f"[>] Extracted {{name}}: {{{safe_name}_df.count()}} rows")\n')
+                
+                ext_lines.append('print("[ok] BNX Extractor Finished")')
+                extractor_code = "\n".join(ext_lines)
+
             self._json_response(200, {
                 "nodes": nodes,
                 "edges": edges,
                 "errors": errors,
                 "warnings": warnings,
                 "code": code,
+                "extractor_code": extractor_code,
+                "has_db_sources": bool(db_nodes),
+                "db_sources_count": len(db_nodes),
                 "accuracy": acc,
                 "params": {k: v for k, v in list(ast.get("abinitio_params", {}).items())[:20]},
             })
