@@ -1235,7 +1235,7 @@ def main(project_path, output_path, xfr_path=None, dml_path=None, pset_path=None
     # Inject Ab Initio parameters as configuration block at top of generated file
     abi_params = ast.get("abinitio_params", {})
     all_params = {**abi_params, **pset_params}
-    # Skip param injection if too many (causes oversized output)
+    # Skip param injection if too many — add as comments only
     if all_params and len(all_params) <= 50:
         with open(output_path, "r") as f:
             generated_code = f.read()
@@ -1291,6 +1291,33 @@ def main(project_path, output_path, xfr_path=None, dml_path=None, pset_path=None
         print(f"[i] Injected {len(all_params)} parameters into {output_path}")
         print(f"    Kafka: {len(kafka_params)}, Source: {len(source_params)}, Target: {len(target_params)}, DML: {len(dml_params)}")
         print(f"\n[>] Target: AWS Glue")
+    elif all_params and len(all_params) > 50:
+        # Too many params — add as comments only (reference)
+        with open(output_path, "r") as f:
+            generated_code = f.read()
+        
+        comment_lines = []
+        comment_lines.append("# " + "=" * 60)
+        comment_lines.append(f"# AB INITIO PARAMETERS ({len(all_params)} params — reference only)")
+        comment_lines.append("# " + "=" * 60)
+        for k, v in sorted(list(all_params.items())[:30]):
+            safe_v = str(v).replace("\n", " ")[:60] if v else ""
+            comment_lines.append(f"# {k} = {safe_v}")
+        if len(all_params) > 30:
+            comment_lines.append(f"# ... and {len(all_params) - 30} more parameters")
+        comment_lines.append("# " + "=" * 60)
+        comment_lines.append("")
+        
+        insert_point = generated_code.find('\n\n', generated_code.find('"""', 3))
+        if insert_point > 0:
+            new_code = generated_code[:insert_point + 2] + "\n".join(comment_lines) + "\n" + generated_code[insert_point + 2:]
+        else:
+            new_code = "\n".join(comment_lines) + "\n" + generated_code
+        
+        with open(output_path, "w") as f:
+            f.write(new_code)
+        
+        print(f"[i] Added {len(all_params)} parameters as comments in {output_path}")
 
     # Accuracy report
     acc = compute_accuracy(dag, xfr_rules, dml_schema)
