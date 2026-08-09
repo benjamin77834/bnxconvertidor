@@ -10,10 +10,11 @@ const PIPELINE_STEPS = [
   { id: 'validate', label: '6. Resultado', icon: '✅' },
 ]
 
-export default function PipelinePage({ theme, compiledCode, compiledTarget }) {
+export default function PipelinePage({ theme, compiledCode, compiledTarget, extractorCode, hasDbSources }) {
   const t = theme || {}
   const fileRef = useRef(null)
   const [code, setCode] = useState('')
+  const [extCode, setExtCode] = useState('')
   const [codeSource, setCodeSource] = useState('')
   const [codeTarget, setCodeTarget] = useState('spark')
   const [stepStatus, setStepStatus] = useState({})
@@ -37,7 +38,10 @@ export default function PipelinePage({ theme, compiledCode, compiledTarget }) {
       setCodeSource(`Compiler (target=${compiledTarget || 'glue'})`)
       setCodeTarget(compiledTarget || 'glue')
     }
-  }, [compiledCode, compiledTarget])
+    if (extractorCode) {
+      setExtCode(extractorCode)
+    }
+  }, [compiledCode, compiledTarget, extractorCode])
 
   // Cleanup polling on unmount
   useEffect(() => {
@@ -62,6 +66,7 @@ export default function PipelinePage({ theme, compiledCode, compiledTarget }) {
 
     setStep('load', 'done', codeSource || 'Manual')
     addLog(`Codigo listo: ${code.split('\n').length} lineas (${codeTarget})`)
+    if (extCode) addLog(`Extractor listo: ${extCode.split('\n').length} lineas (DB → S3)`)
 
     addLog('Enviando a AWS via Lambda /pipeline...')
     setStep('upload_s3', 'running')
@@ -69,6 +74,23 @@ export default function PipelinePage({ theme, compiledCode, compiledTarget }) {
     setStep('run_job', 'running')
 
     try {
+      // If we have extractor code, upload it first
+      if (extCode) {
+        addLog('📤 Subiendo Extractor a S3...')
+        const extForm = new FormData()
+        extForm.append('code', extCode)
+        extForm.append('target', codeTarget)
+        extForm.append('bucket', bucket)
+        extForm.append('region', region)
+        extForm.append('job_name', jobName.replace('-spark-', '-extractor-').replace('-glue-', '-extractor-'))
+        extForm.append('role', role)
+        extForm.append('action', 'upload_only')
+        await fetch(PIPELINE_URL, { method: 'POST', body: extForm })
+        addLog('✅ Extractor subido a S3')
+      }
+
+      // Upload and run transformer
+      addLog('📤 Subiendo Transformer a S3 y ejecutando...')
       const form = new FormData()
       form.append('code', code)
       form.append('target', codeTarget)
@@ -319,6 +341,19 @@ echo "DONE"
                 <span style={{ fontWeight: 700 }}>[ok]</span>
                 <span>{codeSource}</span>
                 <span style={{ color: t.dim || '#64748b' }}>({code.split('\n').length}L)</span>
+              </div>
+            )}
+
+            {extCode && (
+              <div style={{
+                padding: '8px 12px', borderRadius: 6, marginBottom: 8,
+                background: '#f59e0b10', border: '1px solid #f59e0b40',
+                display: 'flex', alignItems: 'center', gap: 8,
+              }}>
+                <span style={{ fontSize: 16 }}>🗄️</span>
+                <span style={{ fontSize: 11, color: '#f59e0b', fontWeight: 600 }}>
+                  2 Programas: Extractor ({extCode.split('\n').length}L) + Transformer ({code.split('\n').length}L) — Se subirán ambos a S3
+                </span>
               </div>
             )}
 

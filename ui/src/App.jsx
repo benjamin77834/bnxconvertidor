@@ -361,7 +361,7 @@ export default function App() {
         ) : page === 'history' ? (
           <HistoryPage theme={t} />
         ) : page === 'pipeline' ? (
-          <PipelinePage theme={t} compiledCode={result?.code || ''} compiledTarget={target} />
+          <PipelinePage theme={t} compiledCode={result?.code || ''} compiledTarget={target} extractorCode={result?.extractor_code || ''} hasDbSources={result?.has_db_sources || false} />
         ) : page === 'grafos' ? (
           <GrafosPage theme={t} onLoadToCompiler={(g) => {
             setEditorMp(g.mp || '')
