@@ -30,7 +30,11 @@ def _map_component_type(name):
     n = name.lower()
     if any(k in n for k in ["read", "input", "scan", "source", "extract", "ingest"]):
         return "SOURCE"
+    if n.startswith("v") and "_src_" in n:
+        return "SOURCE"
     if any(k in n for k in ["write", "output", "sink", "load", "target"]):
+        return "SINK"
+    if n.startswith("v") and "_tgt_" in n:
         return "SINK"
     if any(k in n for k in ["merge", "join"]):
         return "JOIN"
