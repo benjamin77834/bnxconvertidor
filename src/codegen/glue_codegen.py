@@ -135,6 +135,33 @@ def _build_transform(var_id, src_df, rule):
         
         return "\n".join(lines)
     
+    # --- DML FIELDS (parsed from external .xfr with Ab Initio DML) ---
+    dml_fields = rule.get("dml_fields")
+    if dml_fields:
+        lines = [f'{var_id}_df = {src_df}']
+        for f in dml_fields:
+            fname = f["field"]
+            expr = f["expr"]
+            ftype = f.get("type", "")
+            comment = f.get("comment", "")
+            if ftype == "rename":
+                lines.append(f'{var_id}_df = {var_id}_df.withColumn("{fname}", {expr})')
+            elif ftype in ("literal", "function"):
+                lines.append(f'{var_id}_df = {var_id}_df.withColumn("{fname}", {expr})')
+            elif ftype == "conditional_trim":
+                lines.append(f'{var_id}_df = {var_id}_df.withColumn("{fname}", {expr})')
+            elif ftype == "coalesce":
+                lines.append(f'{var_id}_df = {var_id}_df.withColumn("{fname}", {expr})')
+            elif ftype == "string_op":
+                lines.append(f'{var_id}_df = {var_id}_df.withColumn("{fname}", {expr})')
+            elif ftype == "passthrough" and comment:
+                lines.append(f'{var_id}_df = {var_id}_df.withColumn("{fname}", {expr})  # {comment}')
+            elif ftype == "todo":
+                lines.append(f'{var_id}_df = {var_id}_df.withColumn("{fname}", {expr})')
+            else:
+                lines.append(f'{var_id}_df = {var_id}_df.withColumn("{fname}", {expr})')
+        return "\n".join(lines)
+    
     # --- TRANSFORM EXPRESSIONS (withColumn from reformat) ---
     transform_exprs = rule.get("transform_exprs")
     literals = rule.get("literals")
