@@ -227,9 +227,22 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             # Remove placeholder entries and handle raw DML
             if "_raw_dml" in xfr_rules:
                 raw_rule = xfr_rules.pop("_raw_dml")
-                xfr_rules["_global_raw_dml"] = raw_rule
+                if raw_rule.get("dml_fields"):
+                    xfr_rules["_global_dml_fields"] = raw_rule["dml_fields"]
+                else:
+                    xfr_rules["_global_raw_dml"] = raw_rule
             xfr_rules = {k: v for k, v in xfr_rules.items()
                          if not (v.get("select") == "*" and v.get("where") is None and len(v) == 2)}
+            
+            # Apply _global_dml_fields to first TRANSFORM without rules
+            if "_global_dml_fields" in xfr_rules:
+                dml_fields_list = xfr_rules.pop("_global_dml_fields")
+                for nd in ast.get("nodes", []):
+                    if nd["type"].upper() == "TRANSFORM":
+                        nid = nd["id"].lower()
+                        if nid not in xfr_rules:
+                            xfr_rules[nid] = {"dml_fields": dml_fields_list}
+                            break
             dml_data = parse_dml(dml_path) if dml_path else {}
             dml_schema = dml_data.get("schema", {})
 

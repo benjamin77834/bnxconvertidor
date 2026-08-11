@@ -1175,10 +1175,12 @@ def main(project_path, output_path, xfr_path=None, dml_path=None, pset_path=None
     xfr_rules = parse_xfr(xfr_path) if xfr_path else {}
     # Handle raw DML transforms from .xfr (single-file DML without node headers)
     if "_raw_dml" in xfr_rules:
-        # Raw DML applies to all reformat nodes — store for later application
         raw_rule = xfr_rules.pop("_raw_dml")
-        # Will be applied during embedded transform processing
-        xfr_rules["_global_raw_dml"] = raw_rule
+        # If dml_fields parsed, apply to first TRANSFORM node that lacks rules
+        if raw_rule.get("dml_fields"):
+            xfr_rules["_global_dml_fields"] = raw_rule["dml_fields"]
+        else:
+            xfr_rules["_global_raw_dml"] = raw_rule
     # Remove placeholder entries (select: "*", where: None) that would block embeddeds
     xfr_rules = {k: v for k, v in xfr_rules.items() 
                  if not (v.get("select") == "*" and v.get("where") is None and len(v) == 2)}
@@ -1219,6 +1221,17 @@ def main(project_path, output_path, xfr_path=None, dml_path=None, pset_path=None
                 if node_id_lower not in xfr_rules:
                     xfr_rules[node_id_lower] = {}
                 xfr_rules[node_id_lower]["path"] = f"s3://bnx/output{node_data['data_path']}"
+
+    # Apply _global_dml_fields to TRANSFORM nodes that don't have rules
+    if "_global_dml_fields" in xfr_rules:
+        dml_fields = xfr_rules.pop("_global_dml_fields")
+        for node_data in ast.get("nodes", []):
+            if node_data["type"].upper() == "TRANSFORM":
+                nid = node_data["id"].lower()
+                if nid not in xfr_rules:
+                    xfr_rules[nid] = {"dml_fields": dml_fields}
+                    print(f"[i] Applied DML fields ({len(dml_fields)} fields) to {nid}")
+                    break  # Apply to first transform without rules
 
     if dml_schema:
         print(f"[i] DML schema loaded: {list(dml_schema.keys())}\n")
