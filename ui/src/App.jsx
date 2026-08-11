@@ -368,7 +368,7 @@ export default function App() {
             setEditorXfr(g.xfr || '')
             if (g.pset) setEditorPset(g.pset)
             setShowEditor(true)
-            setEditorTab('mp')
+            setEditorTab(g.xfr ? 'xfr' : 'mp')
             setPage('compiler')
             // Auto-compile after loading from Grafos
             setTimeout(() => {
@@ -444,17 +444,24 @@ export default function App() {
                   />
                 )}
                 {editorTab === 'xfr' && (
-                  <textarea
-                    value={editorXfr}
-                    onChange={e => setEditorXfr(e.target.value)}
-                    placeholder={`ReadCSV:\n  source_type s3\n  path s3://bucket/data\n  format csv\n\nTransform:\n  select id, name, amount\n  where amount > 0\n\nWriteOut:\n  sink_type s3\n  path s3://output\n  format parquet`}
-                    style={{
-                      width: '100%', minHeight: 140, maxHeight: 300, padding: 10, borderRadius: 8,
-                      background: t.codeBg || '#081220', border: `1px solid #6366f140`,
-                      color: '#6366f1', fontSize: 12, fontFamily: 'monospace', lineHeight: 1.5,
-                      resize: 'vertical', outline: 'none',
-                    }}
-                  />
+                  <>
+                    {editorXfr && editorXfr.includes('# ===') && (
+                      <div style={{ fontSize: 11, color: '#6366f1', marginBottom: 4, padding: '4px 8px', borderRadius: 4, background: '#6366f110', border: '1px solid #6366f130' }}>
+                        📎 {(editorXfr.match(/# ===/g) || []).length} archivo(s) .xfr concatenados
+                      </div>
+                    )}
+                    <textarea
+                      value={editorXfr}
+                      onChange={e => setEditorXfr(e.target.value)}
+                      placeholder={`ReadCSV:\n  source_type s3\n  path s3://bucket/data\n  format csv\n\nTransform:\n  select id, name, amount\n  where amount > 0\n\nWriteOut:\n  sink_type s3\n  path s3://output\n  format parquet`}
+                      style={{
+                        width: '100%', minHeight: 140, maxHeight: 300, padding: 10, borderRadius: 8,
+                        background: t.codeBg || '#081220', border: `1px solid #6366f140`,
+                        color: '#6366f1', fontSize: 12, fontFamily: 'monospace', lineHeight: 1.5,
+                        resize: 'vertical', outline: 'none',
+                      }}
+                    />
+                  </>
                 )}
                 {editorTab === 'pset' && (
                   <textarea
