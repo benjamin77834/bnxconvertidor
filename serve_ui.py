@@ -225,7 +225,14 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             dag = build_dag(ast)
             xfr_rules = parse_xfr(xfr_path) if xfr_path else {}
             # Remove placeholder entries and handle raw DML
-            if "_raw_dml" in xfr_rules:
+            if "_multi_xfr" in xfr_rules:
+                multi = xfr_rules.pop("_multi_xfr")
+                transform_nodes = [n for n in ast.get("nodes", []) if n["type"].upper() == "TRANSFORM"]
+                for i, xfr_data in enumerate(multi):
+                    if i < len(transform_nodes):
+                        nid = transform_nodes[i]["id"].lower()
+                        xfr_rules[nid] = {"dml_fields": xfr_data["dml_fields"]}
+            elif "_raw_dml" in xfr_rules:
                 raw_rule = xfr_rules.pop("_raw_dml")
                 if raw_rule.get("dml_fields"):
                     xfr_rules["_global_dml_fields"] = raw_rule["dml_fields"]

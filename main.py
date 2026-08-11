@@ -1173,10 +1173,18 @@ def main(project_path, output_path, xfr_path=None, dml_path=None, pset_path=None
     ast = parse_project(project_path)
     dag = build_dag(ast)
     xfr_rules = parse_xfr(xfr_path) if xfr_path else {}
-    # Handle raw DML transforms from .xfr (single-file DML without node headers)
-    if "_raw_dml" in xfr_rules:
+    # Handle raw DML transforms from .xfr
+    if "_multi_xfr" in xfr_rules:
+        # Multiple .xfr files — assign each to a TRANSFORM node in order
+        multi = xfr_rules.pop("_multi_xfr")
+        transform_nodes = [n for n in ast.get("nodes", []) if n["type"].upper() == "TRANSFORM"]
+        for i, xfr_data in enumerate(multi):
+            if i < len(transform_nodes):
+                nid = transform_nodes[i]["id"].lower()
+                xfr_rules[nid] = {"dml_fields": xfr_data["dml_fields"]}
+                print(f"[i] Applied {xfr_data['name']} ({len(xfr_data['dml_fields'])} fields) to {nid}")
+    elif "_raw_dml" in xfr_rules:
         raw_rule = xfr_rules.pop("_raw_dml")
-        # If dml_fields parsed, apply to first TRANSFORM node that lacks rules
         if raw_rule.get("dml_fields"):
             xfr_rules["_global_dml_fields"] = raw_rule["dml_fields"]
         else:

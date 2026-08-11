@@ -145,14 +145,15 @@ def parse_xfr(path):
     # Check if the file contains multiple concatenated .xfr files (from Grafos)
     stripped_content = content.strip()
     if '# ===' in stripped_content:
-        # Multiple .xfr files concatenated — parse each one
-        all_fields = []
+        # Multiple .xfr files concatenated — parse each one separately
+        parsed_xfrs = []
         sections = stripped_content.split('# ===')
         for section in sections:
             if not section.strip():
                 continue
-            # Remove the header line (filename ===)
+            # Extract filename from header
             lines = section.split('\n')
+            header = lines[0].strip().rstrip('=').strip() if lines else ''
             body = '\n'.join(lines[1:]) if lines else ''
             # Clean and parse
             clean = []
@@ -165,9 +166,9 @@ def parse_xfr(path):
             if clean_body.startswith("out") and "::" in clean_body:
                 fields = _parse_dml_fields(clean_body)
                 if fields:
-                    all_fields.extend(fields)
-        if all_fields:
-            return {"_raw_dml": {"dml_fields": all_fields, "raw_transform": f"{len(all_fields)} fields from {len(sections)-1} files"}}
+                    parsed_xfrs.append({"name": header, "dml_fields": fields})
+        if parsed_xfrs:
+            return {"_multi_xfr": parsed_xfrs}
     
     # Check if the entire file is a raw DML transform (no NodeName: headers)
     # Remove include lines and comments
