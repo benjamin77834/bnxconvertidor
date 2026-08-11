@@ -270,10 +270,13 @@ def _parse_gde_native(content):
             vertex_ids.add(vertex_id)
     
     # Oport to flow: {2010213001|XXGoport_dst_flow|2834|0|4556|0|{0|}1722|1720|}
+    # NOTE: A single oport can send to MULTIPLE flows (fan-out, e.g. Replicate)
     for m in re.finditer(r'XXGoport_dst_flow\|\d+\|\d+\|\d+\|\d+\|\{\d+\|\}(\d+)\|(\d+)\|', content):
         port_id = m.group(1)
         flow_id = m.group(2)
-        oport_to_flow[port_id] = flow_id
+        if port_id not in oport_to_flow:
+            oport_to_flow[port_id] = []
+        oport_to_flow[port_id].append(flow_id)
     
     # Iport from flow: {2010214001|XXGiport_src_flow|2824|0|4541|0|{0|}1717|1692|}
     # NOTE: A single iport can receive from MULTIPLE flows (fan-in, e.g. Concatenate)
@@ -388,7 +391,10 @@ def _parse_gde_native(content):
             if m:
                 port_id = m.group(1)
                 flow_id = m.group(2)
-                oport_to_flow[port_id] = flow_id
+                if port_id not in oport_to_flow:
+                    oport_to_flow[port_id] = []
+                if flow_id not in oport_to_flow[port_id]:
+                    oport_to_flow[port_id].append(flow_id)
             continue
         
         # Input port from flow: {2010214001|XXGiport_src_flow|18|0|36|0|{0|}18|5|}
@@ -409,10 +415,12 @@ def _parse_gde_native(content):
     # iport_from_flow: port_id -> flow_id (input port receives from this flow)
     
     # Invert: flow_id -> source_vertex (via oport)
+    # oport_to_flow values are now LISTS (fan-out support: one port → multiple flows)
     flow_to_src_vertex = {}
-    for port_id, flow_id in oport_to_flow.items():
+    for port_id, flow_ids in oport_to_flow.items():
         if port_id in oport_to_vertex:
-            flow_to_src_vertex[flow_id] = oport_to_vertex[port_id]
+            for flow_id in flow_ids:
+                flow_to_src_vertex[flow_id] = oport_to_vertex[port_id]
     
     # For each iport that receives from a flow, find the source vertex
     # iport_from_flow values are now LISTS (fan-in support)
