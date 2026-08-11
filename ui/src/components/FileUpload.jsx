@@ -50,7 +50,7 @@ export default function FileUpload({ files, setFiles, onCompile, loading, theme 
 
   const fileInfo = {
     mp:  { label: 'Graph', desc: 'Nodos, edges y subgraphs del pipeline', required: true },
-    xfr: { label: 'Transform Rules', desc: 'SELECT, WHERE, GROUP BY, JOIN keys', required: false },
+    xfr: { label: 'Transform Rules', desc: 'SELECT, WHERE, GROUP BY, JOIN keys (sube múltiples .xfr)', required: false },
     dml: { label: 'Schema', desc: 'Tipos de datos y keys por tabla', required: false },
   }
 
@@ -134,7 +134,7 @@ export default function FileUpload({ files, setFiles, onCompile, loading, theme 
           fontSize: 14, fontWeight: 600, cursor: canCompile ? 'pointer' : 'not-allowed',
         }}
         onClick={() => onCompile({
-          mp: getSelected('mp'), xfr: getSelected('xfr'), dml: getSelected('dml'),
+          mp: getSelected('mp'), xfr: files.xfr || [], dml: getSelected('dml'), allXfr: true,
         })}
         disabled={!canCompile}
       >

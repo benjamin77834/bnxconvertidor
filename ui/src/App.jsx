@@ -92,7 +92,19 @@ export default function App() {
     const startTime = Date.now()
     const form = new FormData()
     form.append('mp', selected.mp)
-    if (selected.xfr) form.append('xfr', selected.xfr)
+    // Handle multiple .xfr files — concatenate them into one
+    if (selected.allXfr && Array.isArray(selected.xfr) && selected.xfr.length > 0) {
+      // Read all xfr files and concatenate
+      const xfrContents = []
+      for (const f of selected.xfr) {
+        const text = await f.text()
+        xfrContents.push(`# === ${f.name} ===\n${text}`)
+      }
+      const combined = xfrContents.join('\n\n')
+      form.append('xfr', new File([combined], 'combined.xfr'))
+    } else if (selected.xfr && !Array.isArray(selected.xfr)) {
+      form.append('xfr', selected.xfr)
+    }
     if (selected.dml) form.append('dml', selected.dml)
     form.append('target', target)
     try {
