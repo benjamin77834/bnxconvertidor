@@ -92,9 +92,14 @@ export default function GrafosPage({ theme, onLoadToCompiler }) {
 
     // Enviar al Compiler
     if (onLoadToCompiler) {
+      // Concatenate all .xfr files into one (each with a header comment)
+      const combinedXfr = xfrFiles.map(([name, content]) => 
+        `# === ${name} ===\n${content}`
+      ).join('\n\n')
+      
       onLoadToCompiler({
         mp: mpFiles.length ? mpFiles[0][1] : '',
-        xfr: xfrFiles.length ? xfrFiles[0][1] : '',
+        xfr: combinedXfr,
         pset: psetFiles.length ? psetFiles[0][1] : '',
         plan: planFiles.length ? planFiles[0][1] : '',
         mpFiles: mpFiles.map(([name, content]) => ({ name, content })),
