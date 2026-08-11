@@ -370,6 +370,11 @@ export default function App() {
             setShowEditor(true)
             setEditorTab('mp')
             setPage('compiler')
+            // Auto-compile after loading from Grafos
+            setTimeout(() => {
+              const compileBtn = document.querySelector('[data-compile-btn]')
+              if (compileBtn) compileBtn.click()
+            }, 500)
           }} />
         ) : page === 'designer' ? (
           <DesignerPage theme={t} />
@@ -487,6 +492,7 @@ export default function App() {
                       .finally(() => setLoading(false))
                   }}
                   disabled={!editorMp.trim() || loading}
+                  data-compile-btn="true"
                   style={{
                     padding: '8px 16px', borderRadius: 8, cursor: editorMp.trim() ? 'pointer' : 'not-allowed',
                     background: editorMp.trim() ? t.accent : t.border,
