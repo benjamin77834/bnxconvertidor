@@ -78,7 +78,7 @@ export default function FileUpload({ files, setFiles, onCompile, loading, theme 
           <div key={ext} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <div>
               <span style={{ fontSize: 13, color: t.text || '#e2e8f0', fontWeight: 600 }}>
-                .{ext} — {info.label}
+                .{ext} — {info.label} {ext === 'xfr' && list.length > 1 && <span style={{ color: '#22c55e', fontSize: 11 }}>({list.length} archivos)</span>}
               </span>
               <span style={{ fontSize: 12, color: info.required ? '#f59e0b' : (t.dim || '#64748b'), marginLeft: 6 }}>
                 {info.required ? '(required)' : '(optional)'}
@@ -133,12 +133,15 @@ export default function FileUpload({ files, setFiles, onCompile, loading, theme 
           color: '#fff', border: 'none', borderRadius: 8,
           fontSize: 14, fontWeight: 600, cursor: canCompile ? 'pointer' : 'not-allowed',
         }}
-        onClick={() => onCompile({
-          mp: getSelected('mp'), xfr: files.xfr || [], dml: getSelected('dml'), allXfr: true,
-        })}
+        onClick={() => {
+          console.log('Compiling with xfr files:', (files.xfr || []).map(f => f.name))
+          onCompile({
+            mp: getSelected('mp'), xfr: files.xfr || [], dml: getSelected('dml'), allXfr: true,
+          })
+        }}
         disabled={!canCompile}
       >
-        {loading ? '⏳ Compiling...' : '🚀 Compile'}
+        {loading ? '⏳ Compiling...' : `🚀 Compile${(files.xfr || []).length > 1 ? ` (${(files.xfr || []).length} xfr)` : ''}`}
       </button>
     </div>
   )
