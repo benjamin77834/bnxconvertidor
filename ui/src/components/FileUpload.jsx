@@ -97,12 +97,12 @@ export default function FileUpload({ files, setFiles, onCompile, loading, theme 
                   <div key={f.name} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                     <div style={{
                       ...slot, ...slotActive,
-                      ...(selected === f.name ? slotSelected : {}),
+                      ...(ext === 'xfr' ? slotSelected : (selected === f.name ? slotSelected : {})),
                       padding: '6px 10px', fontSize: 12,
                     }}>
-                      {selected === f.name ? '✅' : '📄'} {f.name}
+                      {ext === 'xfr' || selected === f.name ? '✅' : '📄'} {f.name}
                     </div>
-                    {selected !== f.name && (
+                    {ext !== 'xfr' && selected !== f.name && (
                       <button
                         style={{
                           padding: '4px 8px', background: 'transparent', color: '#22c55e',
