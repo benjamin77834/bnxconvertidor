@@ -143,6 +143,41 @@ def _parse_gde_native(content):
     # Strategy: find XXGfvertex blocks that contain Output_File.mdc or mode|0x0062
     # and match them to vertex IDs
     
+    # ALSO: Use prototype_path from XXGpvertex/XXGfvertex to reclassify nodes
+    # XXGfvertex with Input_File.mdc → SOURCE
+    # XXGfvertex with Output_File.mdc → SINK  
+    # XXGpvertex with Filter_by_Expression.mpc → FILTER
+    # Map vertex_id → prototype_path using XXGgraph_vertex_vertex which links graph(1) to vertex(vid)
+    # The vertex ID in XXGgraph_vertex_vertex points to the XXGpvertex/XXGfvertex
+    # So node_by_id[vid2] is linked to vertex vid2 which IS the XXGpvertex/XXGfvertex id
+    
+    # Find all prototype_paths by their containing XXGpvertex/XXGfvertex position
+    pvertex_positions = [(m.start(), m.group(1)) for m in re.finditer(r'XXG[pf]vertex\|(\d+)\|', content)]
+    for i, (pos, pvid) in enumerate(pvertex_positions):
+        end_pos = pvertex_positions[i + 1][0] if i + 1 < len(pvertex_positions) else min(pos + 20000, len(content))
+        block = content[pos:end_pos]
+        # Extract prototype_path
+        proto_match = re.search(r'prototype_path\|([^|]+)\|', block)
+        if proto_match and pvid in node_by_id:
+            proto = proto_match.group(1).lower()
+            info = node_by_id[pvid]
+            if 'input_file' in proto:
+                if info["type"] != "SOURCE":
+                    print(f"  [dbg] Reclassified {info['display_name']} (vertex {pvid}) as SOURCE (prototype: Input_File)")
+                    info["type"] = "SOURCE"
+            elif 'output_file' in proto:
+                if info["type"] != "SINK":
+                    print(f"  [dbg] Reclassified {info['display_name']} (vertex {pvid}) as SINK (prototype: Output_File)")
+                    info["type"] = "SINK"
+            elif 'filter_by_expression' in proto:
+                if info["type"] != "FILTER":
+                    info["type"] = "FILTER"
+            elif 'compute_checksum' in proto:
+                info["type"] = "TRANSFORM"
+            elif 'redefine_format' in proto:
+                info["type"] = "TRANSFORM"
+            elif 'replicate' in proto:
+                info["type"] = "TRANSFORM"
     # Build a map: vertex_id -> has_write_port (iport with 'write' name)
     write_port_vertices = set()
     for m in re.finditer(r'XXGvertex_iport_iport\|\d+\|\d+\|\d+\|\d+\|\{\d+\|write\|\}(\d+)\|(\d+)\|', content):
@@ -1156,6 +1191,76 @@ def parse_project(file_path):
         return parse_mp_ast(file_path)
 
 
+def _assign_multi_xfr(multi, transform_nodes, xfr_rules):
+    """Assign multiple parsed .xfr files to TRANSFORM nodes by name matching.
+    
+    Strategy:
+    1. Try to match by extracting version tokens (e.g. V9S2P3) from XFR filename
+       and finding the TRANSFORM node that contains the same token.
+    2. If no token match, try fuzzy substring matching on the XFR name vs node ID.
+    3. Fallback: assign in positional order to unmatched TRANSFORM nodes.
+    """
+    assigned = set()  # indices of transform_nodes already assigned
+    unmatched_xfrs = []  # (index, xfr_data) for fallback
+
+    for xi, xfr_data in enumerate(multi):
+        xfr_name = xfr_data.get("name", "").upper()
+        matched = False
+
+        # Extract version tokens like V9S2P3, V9S2P2, V4S1P1 etc.
+        # Pattern: VnSnPn (Version, Step, Part)
+        tokens = re.findall(r'V\d+S\d+P\d+', xfr_name, re.IGNORECASE)
+
+        if tokens:
+            for token in tokens:
+                token_upper = token.upper()
+                for ti, tnode in enumerate(transform_nodes):
+                    if ti in assigned:
+                        continue
+                    node_id_upper = tnode["id"].upper()
+                    node_name_upper = tnode.get("name", "").upper()
+                    if token_upper in node_id_upper or token_upper in node_name_upper:
+                        nid = tnode["id"].lower()
+                        xfr_rules[nid] = {"dml_fields": xfr_data["dml_fields"]}
+                        assigned.add(ti)
+                        matched = True
+                        print(f"[i] Applied {xfr_data['name']} ({len(xfr_data['dml_fields'])} fields) → {nid} (token match: {token_upper})")
+                        break
+                if matched:
+                    break
+
+        if not matched:
+            # Try: extract meaningful parts from the XFR name and check for substring overlap
+            # Remove common prefixes/suffixes and file extension noise
+            xfr_parts = re.findall(r'[A-Z][A-Z0-9_]+', xfr_name)
+            for part in xfr_parts:
+                if len(part) < 4:
+                    continue
+                for ti, tnode in enumerate(transform_nodes):
+                    if ti in assigned:
+                        continue
+                    if part in tnode["id"].upper() or part in tnode.get("name", "").upper():
+                        nid = tnode["id"].lower()
+                        xfr_rules[nid] = {"dml_fields": xfr_data["dml_fields"]}
+                        assigned.add(ti)
+                        matched = True
+                        print(f"[i] Applied {xfr_data['name']} ({len(xfr_data['dml_fields'])} fields) → {nid} (substring match: {part})")
+                        break
+                if matched:
+                    break
+
+        if not matched:
+            unmatched_xfrs.append((xi, xfr_data))
+
+    # Fallback: assign remaining XFRs to remaining TRANSFORM nodes in order
+    remaining_transforms = [ti for ti in range(len(transform_nodes)) if ti not in assigned]
+    for (xi, xfr_data), ti in zip(unmatched_xfrs, remaining_transforms):
+        nid = transform_nodes[ti]["id"].lower()
+        xfr_rules[nid] = {"dml_fields": xfr_data["dml_fields"]}
+        assigned.add(ti)
+        print(f"[i] Applied {xfr_data['name']} ({len(xfr_data['dml_fields'])} fields) → {nid} (positional fallback)")
+
+
 # ============================================================
 # Main
 # ============================================================
@@ -1183,14 +1288,10 @@ def main(project_path, output_path, xfr_path=None, dml_path=None, pset_path=None
     xfr_rules = parse_xfr(xfr_path) if xfr_path else {}
     # Handle raw DML transforms from .xfr
     if "_multi_xfr" in xfr_rules:
-        # Multiple .xfr files — assign each to a TRANSFORM node in order
+        # Multiple .xfr files — assign each to a TRANSFORM node by name match
         multi = xfr_rules.pop("_multi_xfr")
         transform_nodes = [n for n in ast.get("nodes", []) if n["type"].upper() == "TRANSFORM"]
-        for i, xfr_data in enumerate(multi):
-            if i < len(transform_nodes):
-                nid = transform_nodes[i]["id"].lower()
-                xfr_rules[nid] = {"dml_fields": xfr_data["dml_fields"]}
-                print(f"[i] Applied {xfr_data['name']} ({len(xfr_data['dml_fields'])} fields) to {nid}")
+        _assign_multi_xfr(multi, transform_nodes, xfr_rules)
     elif "_raw_dml" in xfr_rules:
         raw_rule = xfr_rules.pop("_raw_dml")
         if raw_rule.get("dml_fields"):

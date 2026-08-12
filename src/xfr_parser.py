@@ -1,7 +1,23 @@
 import re
 
 
-def _parse_dml_fields(dml_content):
+def _extract_constants(content):
+    """Extract constant declarations from Ab Initio XFR header.
+    
+    Pattern: constant string('value') NAME parameter = 'default';
+             constant integer(0) NAME parameter = 0;
+    
+    Returns dict: {NAME: value_string}
+    """
+    constants = {}
+    for m in re.finditer(r"constant\s+\w+\('([^']*)'\)\s+(\w+)", content):
+        constants[m.group(2)] = m.group(1)
+    for m in re.finditer(r"constant\s+\w+\((\d+)\)\s+(\w+)", content):
+        constants[m.group(2)] = m.group(1)
+    return constants
+
+
+def _parse_dml_fields(dml_content, constants=None):
     """Parse Ab Initio DML field assignments into Spark-compatible expressions.
     
     Handles:
@@ -13,7 +29,9 @@ def _parse_dml_fields(dml_content):
     - out.FIELD :: in.D_FIELD  (date passthrough)
     - out.FIELD :0: expr  (with default 0)
     - out.* :: in.*  (passthrough all)
+    - out.FIELD :: CONSTANT_NAME  (resolved from constants dict)
     """
+    constants = constants or {}
     fields = []
     
     # Extract field assignments: out.FIELD :: expression;
@@ -52,6 +70,15 @@ def _parse_dml_fields(dml_content):
         # NULL
         if expr == 'NULL':
             fields.append({"field": field_name, "expr": 'lit(None)', "type": "literal"})
+            continue
+        
+        # Constant reference: just an identifier that matches a declared constant
+        if constants and expr in constants:
+            val = constants[expr]
+            if val == '':
+                fields.append({"field": field_name, "expr": 'lit("")', "type": "literal"})
+            else:
+                fields.append({"field": field_name, "expr": f'lit("{val}")', "type": "literal"})
             continue
         
         # Numeric literal or zero default
@@ -112,12 +139,12 @@ def _map_string_ops(expr):
     src_field = src_match.group(1) if src_match else "unknown"
     
     # Check for string_substring
-    sub_match = re.search(r'string_substring\([^,]+,\s*(\d+),\s*(\d+)\)', expr)
+    sub_match = re.search(r'string_substring\s*\([^,]+,\s*(\d+),\s*(\d+)\)', expr)
     start = sub_match.group(1) if sub_match else "1"
     length = sub_match.group(2) if sub_match else "255"
     
-    # Check for string_pad (lpad)
-    pad_match = re.search(r'string_pad\([^,]+,\s*(\d+)\)', expr)
+    # Check for string_pad (lpad) — allow flexible spacing
+    pad_match = re.search(r'string_pad\s*\(.+?,\s*(\d+)\s*\)', expr)
     if pad_match:
         pad_len = pad_match.group(1)
         return f'lpad(substring(col("{src_field}"), {start}, {length}), {pad_len}, " ")'
@@ -155,6 +182,8 @@ def parse_xfr(path):
             lines = section.split('\n')
             header = lines[0].strip().rstrip('=').strip() if lines else ''
             body = '\n'.join(lines[1:]) if lines else ''
+            # Extract constants before cleaning
+            constants = _extract_constants(body)
             # Clean and parse
             clean = []
             for ln in body.split('\n'):
@@ -164,7 +193,7 @@ def parse_xfr(path):
                 clean.append(l)
             clean_body = '\n'.join(clean).strip()
             if clean_body.startswith("out") and "::" in clean_body:
-                fields = _parse_dml_fields(clean_body)
+                fields = _parse_dml_fields(clean_body, constants)
                 if fields:
                     parsed_xfrs.append({"name": header, "dml_fields": fields})
         if parsed_xfrs:
@@ -172,6 +201,7 @@ def parse_xfr(path):
     
     # Check if the entire file is a raw DML transform (no NodeName: headers)
     # Remove include lines and comments
+    constants = _extract_constants(stripped_content)
     clean_lines = []
     for line in stripped_content.split('\n'):
         ln = line.strip()
@@ -188,7 +218,7 @@ def parse_xfr(path):
             return {"_raw_dml": {"transform": "lookup_join", "lookup_name": lookup_name, "raw_transform": clean_content[:500]}}
         
         # Parse field assignments from DML
-        fields = _parse_dml_fields(clean_content)
+        fields = _parse_dml_fields(clean_content, constants)
         if fields:
             return {"_raw_dml": {"dml_fields": fields, "raw_transform": clean_content[:300]}}
         return {"_raw_dml": {"raw_transform": clean_content[:500]}}

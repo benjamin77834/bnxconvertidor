@@ -228,10 +228,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             if "_multi_xfr" in xfr_rules:
                 multi = xfr_rules.pop("_multi_xfr")
                 transform_nodes = [n for n in ast.get("nodes", []) if n["type"].upper() == "TRANSFORM"]
-                for i, xfr_data in enumerate(multi):
-                    if i < len(transform_nodes):
-                        nid = transform_nodes[i]["id"].lower()
-                        xfr_rules[nid] = {"dml_fields": xfr_data["dml_fields"]}
+                from main import _assign_multi_xfr
+                _assign_multi_xfr(multi, transform_nodes, xfr_rules)
             elif "_raw_dml" in xfr_rules:
                 raw_rule = xfr_rules.pop("_raw_dml")
                 if raw_rule.get("dml_fields"):
