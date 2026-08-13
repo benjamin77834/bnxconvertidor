@@ -194,7 +194,7 @@ export default function GrafosPage({ theme, onLoadToCompiler }) {
 
       <div style={{ display: 'flex', gap: 20, flex: 1, minHeight: 0 }}>
         {/* Col 1: Proyectos */}
-        <div style={{ flex: '0 0 200px', display: 'flex', flexDirection: 'column', gap: 8, overflowY: 'auto' }}>
+        <div style={{ flex: '0 0 auto', minWidth: 180, maxWidth: 320, display: 'flex', flexDirection: 'column', gap: 8, overflowY: 'auto' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span style={{ fontSize: 12, fontWeight: 600, color: t.muted || '#94a3b8' }}>Proyectos</span>
             <button onClick={() => setShowNewProject(!showNewProject)} style={{ padding: '3px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer', background: '#22c55e15', border: '1px solid #22c55e30', color: '#22c55e' }}>+</button>
@@ -212,7 +212,7 @@ export default function GrafosPage({ theme, onLoadToCompiler }) {
               background: selectedProject?.name === p.name ? '#22c55e15' : (t.card || '#1e2433'),
               border: `1px solid ${selectedProject?.name === p.name ? '#22c55e40' : (t.border || '#334155')}`,
             }}>
-              <div style={{ fontSize: 12, fontWeight: 500, color: t.text || '#e2e8f0' }}>📁 {p.name}</div>
+              <div style={{ fontSize: 12, fontWeight: 500, color: t.text || '#e2e8f0', whiteSpace: 'nowrap' }}>📁 {p.name}</div>
               <div style={{ fontSize: 10, color: t.dim || '#64748b' }}>{p.graphs} grafos</div>
             </div>
           ))}
@@ -220,7 +220,7 @@ export default function GrafosPage({ theme, onLoadToCompiler }) {
 
         {/* Col 2: Archivos */}
         {selectedProject && (
-          <div style={{ flex: '0 0 300px', display: 'flex', flexDirection: 'column', gap: 8, overflowY: 'auto' }}>
+          <div style={{ flex: '0 0 auto', minWidth: 250, maxWidth: 400, display: 'flex', flexDirection: 'column', gap: 8, overflowY: 'auto' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
               <span style={{ fontSize: 12, fontWeight: 600, color: t.muted || '#94a3b8' }}>{selectedProject.name}/</span>
               <div style={{ display: 'flex', gap: 4 }}>
@@ -273,7 +273,7 @@ export default function GrafosPage({ theme, onLoadToCompiler }) {
                 <input type="checkbox" checked={selected.has(f.name)} onChange={() => toggleSelect(f.name)}
                   style={{ cursor: 'pointer', accentColor: '#22c55e' }} />
                 <div onClick={() => selectFile(f)} style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 11, color: t.text || '#e2e8f0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <div style={{ fontSize: 12, color: t.text || '#e2e8f0', whiteSpace: 'nowrap' }}>
                     {fileIcon(f.name)} {f.name}
                   </div>
                   <div style={{ fontSize: 9, color: t.dim || '#64748b' }}>
