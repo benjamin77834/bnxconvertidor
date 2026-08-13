@@ -280,7 +280,7 @@ export default function GrafosPage({ theme, onLoadToCompiler }) {
                     {(f.size / 1024).toFixed(1)}KB
                   </div>
                 </div>
-                <div style={{ display: 'flex', gap: 3 }}>
+                <div style={{ display: 'flex', gap: 3, flexShrink: 0, marginLeft: 8 }}>
                   <button onClick={(e) => { e.stopPropagation(); downloadFile(f) }} style={{ padding: '2px 4px', borderRadius: 3, fontSize: 9, cursor: 'pointer', background: '#6366f110', border: '1px solid #6366f130', color: '#6366f1' }}>📥</button>
                   <button onClick={() => deleteFile(f)} style={{ padding: '2px 4px', borderRadius: 3, fontSize: 9, cursor: 'pointer', background: '#ef444410', border: '1px solid #ef444430', color: '#ef4444' }}>✕</button>
                 </div>
