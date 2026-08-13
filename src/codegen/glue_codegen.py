@@ -314,8 +314,8 @@ def generate_glue(dag, output_path, xfr_rules=None):
                     f.write(f'{var_id}_df = {var_id}_df.where("{" AND ".join(filters)}")\n')
                 f.write(f'print("[>] SOURCE: {log_name}")\n\n')
 
-            # TRANSFORM / XFR
-            elif ntype in ("TRANSFORM", "XFR"):
+            # TRANSFORM / XFR / ROLLUP
+            elif ntype in ("TRANSFORM", "XFR", "ROLLUP"):
                 f.write(f'# [.] TRANSFORM: {log_name}\n')
                 if parents:
                     src = f'{parents[0]}_df'

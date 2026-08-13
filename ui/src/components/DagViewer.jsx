@@ -8,6 +8,7 @@ import 'reactflow/dist/style.css'
 const TYPE_COLOR = {
   SOURCE:      '#22c55e',
   TRANSFORM:   '#6366f1',
+  ROLLUP:      '#7c3aed',
   XFR:         '#6366f1',
   JOIN:        '#f59e0b',
   SINK:        '#ef4444',
