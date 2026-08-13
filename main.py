@@ -51,7 +51,7 @@ def _map_component_type(name):
     if any(k in n for k in ["concatenate", "gather", "combine", "fuse"]):
         return "CONCATENATE"
     if any(k in n for k in ["rollup", "aggregate", "summary"]):
-        return "TRANSFORM"
+        return "ROLLUP"
     if any(k in n for k in ["sort", "sort_within"]):
         return "TRANSFORM"
     if any(k in n for k in ["reformat", "transform", "compute", "copy",
@@ -174,9 +174,9 @@ def _parse_gde_native(content):
                 if info["type"] != "FILTER":
                     info["type"] = "FILTER"
             elif 'rollup' in proto:
-                if info["type"] != "TRANSFORM":
-                    print(f"  [dbg] Reclassified {info['display_name']} (vertex {pvid}) as TRANSFORM (prototype: Rollup)")
-                    info["type"] = "TRANSFORM"
+                if info["type"] != "ROLLUP":
+                    print(f"  [dbg] Reclassified {info['display_name']} (vertex {pvid}) as ROLLUP (prototype: Rollup)")
+                    info["type"] = "ROLLUP"
             elif 'sort' in proto and 'dedup' not in proto:
                 if info["type"] != "TRANSFORM":
                     info["type"] = "TRANSFORM"

@@ -34,6 +34,7 @@ const light = {
 const LEGEND = [
   { type: 'SOURCE',      color: '#22c55e', desc: 'Lectura de datos desde S3, DB o archivos (Scan)' },
   { type: 'TRANSFORM',   color: '#6366f1', desc: 'SELECT, WHERE, GROUP BY (Reformat/Rollup)' },
+  { type: 'ROLLUP',      color: '#7c3aed', desc: 'Agrupación y agregaciones (SUM, COUNT, AVG, MAX)' },
   { type: 'JOIN',        color: '#f59e0b', desc: 'Combina dos o más datasets por una key' },
   { type: 'DEDUP',       color: '#06b6d4', desc: 'Elimina registros duplicados por key (Dedup Sort)' },
   { type: 'NORMALIZE',   color: '#a855f7', desc: 'Expande un registro en múltiples filas' },
