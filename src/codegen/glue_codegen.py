@@ -316,7 +316,8 @@ def generate_glue(dag, output_path, xfr_rules=None):
 
             # TRANSFORM / XFR / ROLLUP
             elif ntype in ("TRANSFORM", "XFR", "ROLLUP"):
-                f.write(f'# [.] TRANSFORM: {log_name}\n')
+                label = "ROLLUP" if ntype == "ROLLUP" else "TRANSFORM"
+                f.write(f'# [.] {label}: {log_name}\n')
                 if parents:
                     src = f'{parents[0]}_df'
                     if rule:
@@ -325,7 +326,7 @@ def generate_glue(dag, output_path, xfr_rules=None):
                         f.write(f'{var_id}_df = {src}.selectExpr("*")  # no XFR rule found\n')
                 else:
                     f.write(f'{var_id}_df = None  # no parent\n')
-                f.write(f'print("[~] TRANSFORM: {log_name}")\n\n')
+                f.write(f'print("[~] {label}: {log_name}")\n\n')
 
             # JOIN
             elif ntype == "JOIN":
