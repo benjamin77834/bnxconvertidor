@@ -912,11 +912,21 @@ def _extract_embedded_transforms(content):
     
     # Parse transform bodies into field mappings
     # Each component gets its own set of rules
-    # We track transforms by their position/context
+    # Map each transform to its owning vertex by position in content
     component_transforms = {}
-    current_component_idx = 0
+    transforms_by_vertex = {}
     
-    for transform in transforms:
+    # Find positions of all transform parameters in content
+    transform_positions = [(m.start(), m.group(1)) for m in re.finditer(
+        r'XXparameter\|transform\d*\|(.*?)(?:\|\d+\|\d+\|)', content, re.DOTALL
+    )]
+    
+    current_component_idx = 0
+    for tpos, transform_body in transform_positions:
+        transform = transform_body.strip()
+        if '::' not in transform and 'begin' not in transform.lower():
+            continue
+        
         rules = {"fields": [], "aggregations": [], "type": "passthrough", "raw_body": transform}
         
         # Parse "out :: rollup(in) = begin ... end;"
@@ -968,8 +978,19 @@ def _extract_embedded_transforms(content):
                     "expression": expr,
                 })
         
+        # Map to owning vertex by position
+        owning_vertex = None
+        for vpos, vid in vertex_positions:
+            if vpos < tpos:
+                owning_vertex = vid
+            else:
+                break
+        
+        if owning_vertex:
+            transforms_by_vertex[owning_vertex] = rules
+        
         component_transforms[current_component_idx] = rules
-        print(f"  [dbg] Transform #{current_component_idx}: type={rules['type']}, fields={len(rules['fields'])}, aggs={len(rules['aggregations'])}")
+        print(f"  [dbg] Transform #{current_component_idx}: type={rules['type']}, fields={len(rules['fields'])}, aggs={len(rules['aggregations'])}, vertex={owning_vertex}")
         current_component_idx += 1
     
     # Build xfr_rules dict
@@ -977,6 +998,7 @@ def _extract_embedded_transforms(content):
     # For now, store with index keys
     result = {
         "transforms": component_transforms,
+        "transforms_by_vertex": transforms_by_vertex,
         "keys": keys,
         "keys_by_vertex": keys_by_vertex,
         "filters": filters,
@@ -1003,7 +1025,68 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
     filters = embedded.get("filters", [])
     filters_by_vertex = embedded.get("filters_by_vertex", {})
     transforms = embedded.get("transforms", {})
+    transforms_by_vertex = embedded.get("transforms_by_vertex", {})
     keeps = embedded.get("keeps", [])
+    
+    # FIRST PASS: Direct vertex-based assignment (highest priority)
+    # transforms_by_vertex maps vertex_id -> parsed transform rules
+    for vid, trules in transforms_by_vertex.items():
+        if vid in node_by_id:
+            comp_name = node_by_id[vid]["name"]
+            name_lower = comp_name.lower()
+            # Skip if already has external .xfr rules
+            if name_lower in xfr_rules:
+                continue
+            
+            if trules["type"] == "rollup" and trules["aggregations"]:
+                rule = {}
+                # Get keys for this vertex
+                vertex_keys = keys_by_vertex.get(vid, [])
+                if vertex_keys:
+                    rule["group_by"] = [f.strip() for f in vertex_keys[0].replace(';', ',').split(',') if f.strip()]
+                rule["select"] = ", ".join(
+                    f'{a["function"]}({a["source_field"]}) as {a["field"]}' 
+                    for a in trules["aggregations"]
+                )
+                xfr_rules[name_lower] = rule
+                print(f"  [dbg] Direct vertex match: {comp_name} ({vid}) → rollup ({len(trules['aggregations'])} aggs)")
+            elif trules["type"] == "reformat" and (trules["fields"] or trules.get("raw_body")):
+                raw_body = trules.get("raw_body", "")
+                fields = trules.get("fields", [])
+                
+                if "lookup_count" in raw_body or "lookup_next" in raw_body:
+                    lkp_match = _re.search(r'lookup_count\("([^"]+)"', raw_body)
+                    lookup_name = lkp_match.group(1).replace("-", "_").lower() if lkp_match else "lookup"
+                    xfr_rules[name_lower] = {
+                        "transform": "lookup_join",
+                        "lookup_name": lookup_name,
+                        "raw_transform": raw_body[:500],
+                    }
+                elif fields:
+                    select_parts = []
+                    literal_parts = []
+                    for f in fields:
+                        if "literal" in f:
+                            literal_parts.append(f)
+                        elif "expression" in f:
+                            select_parts.append(f'{f["expression"]} as {f["field"]}')
+                        elif "source" in f:
+                            if f["source"] == f["field"]:
+                                select_parts.append(f["field"])
+                            else:
+                                select_parts.append(f'{f["source"]} as {f["field"]}')
+                    rule = {}
+                    if select_parts:
+                        rule["select"] = ", ".join(select_parts)
+                    if literal_parts:
+                        rule["literals"] = literal_parts
+                    if rule:
+                        xfr_rules[name_lower] = rule
+                        print(f"  [dbg] Direct vertex match: {comp_name} ({vid}) → reformat ({len(fields)} fields)")
+                elif len(raw_body) > 50:
+                    # Large reformat — store raw for reference
+                    xfr_rules[name_lower] = {"raw_transform": raw_body[:500]}
+                    print(f"  [dbg] Direct vertex match: {comp_name} ({vid}) → raw reformat ({len(raw_body)} chars)")
     
     # Track which keys have been used
     key_idx = 0
