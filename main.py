@@ -113,19 +113,20 @@ def _parse_gde_native(content):
     
     # Track which vertices belong to subgraphs (parent is a subgraph, not root graph)
     subgraph_children = set()  # vertex IDs that are inside a subgraph
+    subgraph_parent_map = {}   # vertex_id -> subgraph_id (for labeling)
     
     for m in re.finditer(r'XXGgraph_vertex_vertex\|\d+\|\d+\|\d+\|\d+\|\{([^}]+)\|\}?(\d+)\|(\d+)\|', content):
         name = m.group(1).strip().rstrip('|')
         vid1 = m.group(2)  # parent graph vertex ID
         vid2 = m.group(3)  # this component's vertex ID
         # vid2 is the vertex ID for this component
-        # Skip subgraph vertices (they are containers, not actual data components)
+        # Skip subgraph CONTAINERS (they are XXGgraph entities, not actual data components)
         if vid2 in subgraph_ids:
             continue
-        # If parent is a subgraph (not root graph "1"), mark as subgraph child
+        # Track subgraph membership but DO NOT skip — flatten into main graph
         if vid1 in subgraph_ids:
             subgraph_children.add(vid2)
-            continue
+            subgraph_parent_map[vid2] = vid1
         if name and not name.startswith("{"):
             safe_name = re.sub(r'[^\w]', '_', name)
             if vid2 not in node_by_id:
@@ -463,16 +464,13 @@ def _parse_gde_native(content):
     for port_id, flow_ids in iport_from_flow.items():
         if port_id in iport_to_vertex:
             dst_vertex = iport_to_vertex[port_id]
-            # Skip edges involving subgraph children
-            if dst_vertex in subgraph_children:
-                continue
             for flow_id in flow_ids:
                 if flow_id in flow_to_src_vertex:
                     src_vertex = flow_to_src_vertex[flow_id]
-                    # Skip edges involving subgraph children
-                    if src_vertex in subgraph_children:
-                        continue
                     if src_vertex != dst_vertex:
+                        # Skip edges where either endpoint is a subgraph CONTAINER
+                        if src_vertex in subgraph_ids or dst_vertex in subgraph_ids:
+                            continue
                         edge_set.add((src_vertex, dst_vertex))
     
     # Now map vertex IDs (small) to component names
