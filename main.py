@@ -173,6 +173,25 @@ def _parse_gde_native(content):
             elif 'filter_by_expression' in proto:
                 if info["type"] != "FILTER":
                     info["type"] = "FILTER"
+            elif 'rollup' in proto:
+                if info["type"] != "TRANSFORM":
+                    print(f"  [dbg] Reclassified {info['display_name']} (vertex {pvid}) as TRANSFORM (prototype: Rollup)")
+                    info["type"] = "TRANSFORM"
+            elif 'sort' in proto and 'dedup' not in proto:
+                if info["type"] != "TRANSFORM":
+                    info["type"] = "TRANSFORM"
+            elif 'dedup' in proto:
+                if info["type"] != "DEDUP":
+                    info["type"] = "DEDUP"
+            elif 'normalize' in proto:
+                if info["type"] != "NORMALIZE":
+                    info["type"] = "NORMALIZE"
+            elif 'join' in proto:
+                if info["type"] != "JOIN":
+                    info["type"] = "JOIN"
+            elif 'gather' in proto or 'concatenate' in proto:
+                if info["type"] != "CONCATENATE":
+                    info["type"] = "CONCATENATE"
             elif 'compute_checksum' in proto:
                 info["type"] = "TRANSFORM"
             elif 'redefine_format' in proto:
