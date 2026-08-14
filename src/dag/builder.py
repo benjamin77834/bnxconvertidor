@@ -8,11 +8,22 @@ class Node:
         self.params = params
         self.parents = []
         self.children = []
+        self.db_source = None  # For Input_Table nodes (Teradata, Oracle, etc.)
+        self.data_path = None  # For file-based SOURCE/SINK nodes
 
 class DAG:
     def __init__(self, nodes_list, edges_list, exclude_edges=None):
         # crear dict de nodos usando ID seguro
         self.nodes = {n["id"]: Node(n["id"], n["type"], n.get("params", "")) for n in nodes_list}
+        
+        # Propagate db_source and data_path to Node objects
+        for n in nodes_list:
+            node_obj = self.nodes.get(n["id"])
+            if node_obj:
+                if "db_source" in n:
+                    node_obj.db_source = n["db_source"]
+                if "data_path" in n:
+                    node_obj.data_path = n["data_path"]
 
         # Mega-DAG metadata (populated by build_mega_dag)
         self.cross_graph_edges = []

@@ -442,7 +442,29 @@ def generate_glue(dag, output_path, xfr_rules=None):
                 table = rule.get("table") if rule else None
                 conn = rule.get("connection") if rule else None
 
-                if src_type == "kafka" and topic:
+                # Check for db_source (Input_Table from Teradata/Oracle/etc.)
+                node_data = next((n for n in dag.execution_order if n.id == var_id), None)
+                db_src = getattr(node_data, 'db_source', None) if node_data else None
+                if not db_src and rule:
+                    db_src = rule.get("db_source")
+
+                if db_src:
+                    dbms = db_src.get("dbms", "unknown")
+                    query = db_src.get("query", "")
+                    # Clean up Ab Initio variable references in query
+                    import re as _re
+                    query_clean = _re.sub(r'\$\\\{([^}]+)\\\}', r'${\1}', query)
+                    query_clean = _re.sub(r'\$\{([^}]+)\}', r'${\1}', query_clean)
+                    f.write(f'# Original DB: {dbms}\n')
+                    f.write(f'# Original Query: {query_clean[:200]}\n')
+                    f.write(f'{var_id}_df = spark.read.format("parquet").load("s3://bnx/landing/{var_id.lower()}/")\n')
+                    # Apply WHERE clause from original query if present
+                    where_match = _re.search(r'where\s+(.+)', query_clean, _re.IGNORECASE | _re.DOTALL)
+                    if where_match:
+                        where_clause = where_match.group(1).strip().rstrip(';')
+                        f.write(f'# Applying original WHERE filter:\n')
+                        f.write(f'# {var_id}_df = {var_id}_df.where("{where_clause}")\n')
+                elif src_type == "kafka" and topic:
                     f.write(f'{var_id}_df = spark.readStream.format("kafka")')
                     f.write(f'.option("kafka.bootstrap.servers", "{conn or "localhost:9092"}")')
                     f.write(f'.option("subscribe", "{topic}").load()\n')
