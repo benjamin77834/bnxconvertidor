@@ -1103,6 +1103,10 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
         comp_type = info["comp_type"].lower()
         name_lower = comp_name.lower()
         
+        # Skip if already assigned by direct vertex match (first pass)
+        if name_lower in xfr_rules:
+            continue
+        
         # Get keys specific to this vertex (from position-based extraction)
         vertex_keys = keys_by_vertex.get(vid, [])
         
