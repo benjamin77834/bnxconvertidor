@@ -444,7 +444,19 @@ export default function App() {
                 </div>
                 {/* Editor area */}
                 {editorTab === 'mp' && (
+                  <>
+                  <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                    <button onClick={() => { navigator.clipboard.writeText(editorMp) }} style={{
+                      padding: '2px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer',
+                      background: 'transparent', border: `1px solid #22c55e40`, color: '#22c55e',
+                    }}>📋 Copiar</button>
+                    <button onClick={() => { const ta = document.getElementById('editor-mp'); if(ta){ ta.select(); ta.focus() } }} style={{
+                      padding: '2px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer',
+                      background: 'transparent', border: `1px solid #22c55e40`, color: '#22c55e',
+                    }}>✅ Seleccionar</button>
+                  </div>
                   <textarea
+                    id="editor-mp"
                     value={editorMp}
                     onChange={e => setEditorMp(e.target.value)}
                     placeholder={`NODE ReadCSV : SOURCE\nNODE Transform : TRANSFORM\nNODE WriteOut : SINK\n\nReadCSV -> Transform\nTransform -> WriteOut\n\n# También soporta formato nativo Ab Initio:\n# {timestamp|XXGpvertex|id|...|name|...}`}
@@ -455,6 +467,7 @@ export default function App() {
                       resize: 'vertical', outline: 'none',
                     }}
                   />
+                  </>
                 )}
                 {editorTab === 'xfr' && (
                   <>
@@ -463,7 +476,18 @@ export default function App() {
                         📎 {(editorXfr.match(/# ===/g) || []).length} archivo(s) .xfr concatenados
                       </div>
                     )}
+                    <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                      <button onClick={() => { navigator.clipboard.writeText(editorXfr) }} style={{
+                        padding: '2px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer',
+                        background: 'transparent', border: `1px solid #6366f140`, color: '#6366f1',
+                      }}>📋 Copiar</button>
+                      <button onClick={() => { const ta = document.getElementById('editor-xfr'); if(ta){ ta.select(); ta.focus() } }} style={{
+                        padding: '2px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer',
+                        background: 'transparent', border: `1px solid #6366f140`, color: '#6366f1',
+                      }}>✅ Seleccionar</button>
+                    </div>
                     <textarea
+                      id="editor-xfr"
                       value={editorXfr}
                       onChange={e => setEditorXfr(e.target.value)}
                       placeholder={`ReadCSV:\n  source_type s3\n  path s3://bucket/data\n  format csv\n\nTransform:\n  select id, name, amount\n  where amount > 0\n\nWriteOut:\n  sink_type s3\n  path s3://output\n  format parquet`}
@@ -477,7 +501,19 @@ export default function App() {
                   </>
                 )}
                 {editorTab === 'pset' && (
+                  <>
+                  <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                    <button onClick={() => { navigator.clipboard.writeText(editorPset) }} style={{
+                      padding: '2px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer',
+                      background: 'transparent', border: `1px solid #f59e0b40`, color: '#f59e0b',
+                    }}>📋 Copiar</button>
+                    <button onClick={() => { const ta = document.getElementById('editor-pset'); if(ta){ ta.select(); ta.focus() } }} style={{
+                      padding: '2px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer',
+                      background: 'transparent', border: `1px solid #f59e0b40`, color: '#f59e0b',
+                    }}>✅ Seleccionar</button>
+                  </div>
                   <textarea
+                    id="editor-pset"
                     value={editorPset}
                     onChange={e => setEditorPset(e.target.value)}
                     placeholder={`# Formato simple:\nS3_INPUT = s3://datalake/raw\nS3_OUTPUT = s3://datalake/curated\n\n# O formato nativo Ab Initio:\n# !prototype|P|||path\n# KEY||||VALUE`}
@@ -488,6 +524,7 @@ export default function App() {
                       resize: 'vertical', outline: 'none',
                     }}
                   />
+                  </>
                 )}
                 {/* Status indicators */}
                 <div style={{ display: 'flex', gap: 8, fontSize: 10, color: t.dim }}>
