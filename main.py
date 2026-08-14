@@ -1186,6 +1186,22 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
                     del transforms[tidx]
                     break
         
+        # --- JOIN ---
+        elif "join" in comp_type:
+            # Extract join key from vertex-specific keys
+            if vertex_keys:
+                join_fields = []
+                for k in vertex_keys:
+                    join_fields.extend([f.strip() for f in k.replace(';', ',').split(',') if f.strip()])
+                if join_fields:
+                    xfr_rules[name_lower] = {"join_key": join_fields[0] if len(join_fields) == 1 else join_fields}
+            elif keys and key_idx < len(keys):
+                key_str = keys[key_idx]
+                join_fields = [f.strip().rstrip('}').lstrip('{') for f in key_str.replace(';', ',').split(',') if f.strip()]
+                if join_fields:
+                    xfr_rules[name_lower] = {"join_key": join_fields[0] if len(join_fields) == 1 else join_fields}
+                key_idx += 1
+        
         # --- FILTER ---
         elif "filter" in comp_type:
             # Use vertex-specific filter if available
@@ -1209,24 +1225,20 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
                 continue
             for tidx, trules in list(transforms.items()):
                 if trules["type"] in ("reformat", "passthrough"):
-                    # Check if transform has lookup_count/lookup_next (complex lookup pattern)
                     raw_body = trules.get("raw_body", "")
+                    
+                    # Complex lookup join pattern
                     if "lookup_count" in raw_body or "lookup_next" in raw_body:
-                        # Complex lookup join — generate a comment with the original logic
-                        # and a simplified version using broadcast join
                         lookup_name = ""
                         import re as _re
                         lkp_match = _re.search(r'lookup_count\("([^"]+)"', raw_body)
                         if lkp_match:
                             lookup_name = lkp_match.group(1).replace("-", "_").lower()
-                        
-                        # Extract output fields from out.field :: expressions
                         out_fields = _re.findall(r'out\.(\w+)\s*::', raw_body)
-                        
                         xfr_rules[name_lower] = {
                             "transform": "lookup_join",
                             "lookup_name": lookup_name,
-                            "raw_transform": raw_body[:500],
+                            "raw_transform": raw_body[:2000],
                             "output_fields": out_fields,
                         }
                         del transforms[tidx]
@@ -1234,12 +1246,30 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
                     
                     # Regular reformat with field mappings
                     fields = trules.get("fields", [])
-                    if fields:
+                    
+                    # If we have complex expressions (if/else, string_*, lookup),
+                    # store raw_transform for full DML-to-Spark translation
+                    has_complex = any(
+                        f.get("expression") and (
+                            "if(" in f["expression"] or 
+                            "string_" in f["expression"] or
+                            "lookup(" in f["expression"] or
+                            "date_" in f["expression"]
+                        )
+                        for f in fields
+                    )
+                    
+                    if has_complex and len(raw_body) > 50:
+                        # Store the full raw body for _build_transform to translate
+                        xfr_rules[name_lower] = {"raw_transform": raw_body[:3000]}
+                        print(f"  [dbg] Direct vertex match: {comp_name} ({vid}) → complex reformat (raw DML)")
+                        del transforms[tidx]
+                        break
+                    elif fields:
                         select_parts = []
                         literal_parts = []
                         for f in fields:
                             if "literal" in f:
-                                # Literal assignment: withColumn("field", lit(value))
                                 literal_parts.append(f)
                             elif "expression" in f:
                                 select_parts.append(f'{f["expression"]} as {f["field"]}')
@@ -1254,23 +1284,16 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
                             rule["select"] = ", ".join(select_parts)
                         if literal_parts:
                             rule["literals"] = literal_parts
-                        # Apply select filter if available for this Reformat
                         if filters and filter_idx < len(filters):
                             rule["where"] = filters[filter_idx]
                             filter_idx += 1
                         if rule:
                             xfr_rules[name_lower] = rule
-                    elif "out.*" in raw_body and "::" in raw_body:
-                        # Simple passthrough with maybe one extra field
-                        extra_fields = _re.findall(r'out\.(\w+)\s*::\s*(.+?);', raw_body)
-                        transforms_list = []
-                        for field, expr in extra_fields:
-                            if field != "*" and "in." not in expr.replace("in.*", ""):
-                                transforms_list.append(f"{expr.strip()} as {field}")
-                        if transforms_list:
-                            xfr_rules[name_lower] = {"transform_exprs": transforms_list}
+                    elif len(raw_body) > 50:
+                        # Large reformat — store raw for reference
+                        xfr_rules[name_lower] = {"raw_transform": raw_body[:3000]}
+                        print(f"  [dbg] Direct vertex match: {comp_name} ({vid}) → raw reformat ({len(raw_body)} chars)")
                     else:
-                        # No fields extracted but we have a filter for this reformat
                         if filters and filter_idx < len(filters):
                             xfr_rules[name_lower] = {"where": filters[filter_idx]}
                             filter_idx += 1
