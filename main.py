@@ -178,8 +178,8 @@ def _parse_gde_native(content):
                     print(f"  [dbg] Reclassified {info['display_name']} (vertex {pvid}) as ROLLUP (prototype: Rollup)")
                     info["type"] = "ROLLUP"
             elif 'sort' in proto and 'dedup' not in proto:
-                if info["type"] != "TRANSFORM":
-                    info["type"] = "TRANSFORM"
+                info["type"] = "TRANSFORM"
+                info["is_sort"] = True  # Flag for sort identification in _apply_embedded_transforms
             elif 'dedup' in proto:
                 if info["type"] != "DEDUP":
                     info["type"] = "DEDUP"
@@ -567,6 +567,9 @@ def _parse_gde_native(content):
             # Include db_source if available (for Input_Table/Output_Table)
             if "db_source" in info:
                 node_data["db_source"] = info["db_source"]
+            # Include is_sort flag for Sort components
+            if info.get("is_sort"):
+                node_data["is_sort"] = True
             nodes.append(node_data)
             vertex_names[vid]["final_name"] = name
         
@@ -1111,7 +1114,7 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
         vertex_keys = keys_by_vertex.get(vid, [])
         
         # --- DEDUP --- (must be checked BEFORE sort, since "dedup_sorted" contains "sort")
-        if "dedup" in comp_type or "dedup" in comp_name.lower():
+        if "dedup" in comp_type or "dedup" in comp_name.lower() or "dedup" in info.get("proto_type", ""):
             # Skip if already defined by external .xfr (has dedup_keys with actual values)
             if name_lower in xfr_rules and xfr_rules[name_lower].get("dedup_keys"):
                 keep_idx += 1 if keeps else 0
@@ -1139,7 +1142,9 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
             xfr_rules[name_lower] = rule
         
         # --- SORT ---
-        elif "sort" in comp_type and "sort" in comp_name.lower():
+        elif ("sort" in comp_type or "sort" in comp_name.lower() or 
+              "ordeno" in comp_name.lower() or "ordeno" in comp_type or
+              info.get("proto_type") == "SORT" or info.get("is_sort")):
             # Skip if .xfr already has a real sort_by rule
             if name_lower in xfr_rules and xfr_rules[name_lower].get("sort_by"):
                 continue
@@ -1149,11 +1154,13 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
                     sort_fields.extend([f.strip() for f in k.replace(';', ',').split(',') if f.strip()])
                 if sort_fields:
                     xfr_rules[name_lower] = {"sort_by": sort_fields}
+                    print(f"  [dbg] Sort rule assigned: {comp_name} -> sort_by={sort_fields}")
             elif keys and key_idx < len(keys):
                 key_str = keys[key_idx]
                 sort_fields = [f.strip().rstrip('}').lstrip('{') for f in key_str.replace(';', ',').split(',') if f.strip()]
                 if sort_fields:
                     xfr_rules[name_lower] = {"sort_by": sort_fields}
+                    print(f"  [dbg] Sort rule assigned (positional): {comp_name} -> sort_by={sort_fields}")
                 key_idx += 1
         
         # --- LOOKUP (Output File with mode=lookup and key) ---
@@ -1187,7 +1194,7 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
                     break
         
         # --- JOIN ---
-        elif "join" in comp_type:
+        elif "join" in comp_type or "join" in comp_name.lower() or info.get("proto_type") == "JOIN":
             # Extract join key from vertex-specific keys
             if vertex_keys:
                 join_fields = []
@@ -1195,11 +1202,13 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
                     join_fields.extend([f.strip() for f in k.replace(';', ',').split(',') if f.strip()])
                 if join_fields:
                     xfr_rules[name_lower] = {"join_key": join_fields[0] if len(join_fields) == 1 else join_fields}
+                    print(f"  [dbg] Join key assigned: {comp_name} -> join_key={join_fields}")
             elif keys and key_idx < len(keys):
                 key_str = keys[key_idx]
                 join_fields = [f.strip().rstrip('}').lstrip('{') for f in key_str.replace(';', ',').split(',') if f.strip()]
                 if join_fields:
                     xfr_rules[name_lower] = {"join_key": join_fields[0] if len(join_fields) == 1 else join_fields}
+                    print(f"  [dbg] Join key assigned (positional): {comp_name} -> join_key={join_fields}")
                 key_idx += 1
         
         # --- FILTER ---
@@ -1445,6 +1454,8 @@ def main(project_path, output_path, xfr_path=None, dml_path=None, pset_path=None
                 node_map[vid] = {
                     "name": node_data["id"],
                     "comp_type": node_data.get("name", node_data["id"]),
+                    "proto_type": node_data.get("type", "TRANSFORM"),  # SOURCE/SINK/JOIN/TRANSFORM/etc.
+                    "is_sort": node_data.get("is_sort", False),
                 }
             _apply_embedded_transforms(node_map, embedded, xfr_rules)
             if xfr_rules:
