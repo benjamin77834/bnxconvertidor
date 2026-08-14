@@ -56,9 +56,188 @@ def _map_string_functions(expr):
     expr = re.sub(r'string_rpad\(', 'rpad(', expr)
     expr = re.sub(r'string_index\(', 'instr(', expr)
     expr = re.sub(r'string_reverse\(', 'reverse(', expr)
+    # string_suffix(str, n) → right(str, n)
+    expr = re.sub(r'string_suffix\(', 'right(', expr)
+    # string_prefix(str, n) → left(str, n)
+    expr = re.sub(r'string_prefix\(', 'left(', expr)
     # Strip "in." prefix from field references
     expr = re.sub(r'\bin\.(\w+)', r'\1', expr)
     return expr
+
+
+def _translate_abinitio_expr(raw_expr):
+    """Translate a complete Ab Initio DML expression to Spark SQL.
+    
+    Handles: string_*, if/else, date_*, lookup(), type casts, etc.
+    Returns a valid Spark SQL expression string.
+    """
+    if not raw_expr:
+        return raw_expr
+    
+    expr = raw_expr.strip()
+    
+    # Remove Ab Initio type casts: (type("format"))value → value
+    # Examples: (date("YYYY-MM-DD"))in.contact_date → in.contact_date
+    #           (string(10))string_prefix(...) → string_prefix(...)
+    #           (datetime("YYYY-MM-DD"))now() → current_timestamp()
+    expr = re.sub(r'\(date\("[^"]*"\)\)', '', expr)
+    expr = re.sub(r'\(datetime\("[^"]*"\)\)', '', expr)
+    expr = re.sub(r'\(string\(\d+\)\)', '', expr)
+    expr = re.sub(r'\(decimal\(\d+\)\)', '', expr)
+    
+    # Strip "in." and "in0." and "in1." prefixes
+    expr = re.sub(r'\bin\d*\.(\w+)', r'\1', expr)
+    
+    # Map Ab Initio functions to Spark SQL
+    expr = _map_string_functions(expr)
+    expr = _map_date_functions(expr)
+    
+    # date_difference_days(d1, d2) → datediff(d1, d2)
+    expr = re.sub(r'date_difference_days\(', 'datediff(', expr)
+    # date_week_of_year(date) → weekofyear(date)
+    expr = re.sub(r'date_week_of_year\(', 'weekofyear(', expr)
+    # date_day_of_month(date) → dayofmonth(date)
+    expr = re.sub(r'date_day_of_month\(', 'dayofmonth(', expr)
+    # date_year(date) → year(date)
+    expr = re.sub(r'date_year\(', 'year(', expr)
+    # date_month(date) → month(date)
+    expr = re.sub(r'date_month\(', 'month(', expr)
+    
+    # !is_null(field) → field IS NOT NULL (must be before is_null)
+    expr = re.sub(r'!is_null\((\w+)\)', r'\1 IS NOT NULL', expr)
+    # is_null(field) → field IS NULL
+    expr = re.sub(r'is_null\((\w+)\)', r'\1 IS NULL', expr)
+    
+    # Ab Initio if/else → Spark CASE WHEN
+    # Pattern: if(cond) value1 else if(cond2) value2 else value3
+    if re.search(r'\bif\s*\(', expr):
+        expr = _translate_if_else_to_case(expr)
+    
+    # Remove lookup() calls — these need broadcast join, mark with comment
+    if 'lookup(' in expr:
+        # Extract: lookup("Name", key).field → NULL /* lookup: Name.field */
+        expr = re.sub(
+            r'lookup\("([^"]+)"\s*,\s*[^)]+\)\.(\w+)',
+            r'NULL /* TODO: lookup \1.\2 */',
+            expr
+        )
+    
+    # Clean up double spaces
+    expr = re.sub(r'\s+', ' ', expr).strip()
+    
+    # Remove trailing semicolons
+    expr = expr.rstrip(';').strip()
+    
+    return expr
+
+
+def _translate_if_else_to_case(expr):
+    """Convert Ab Initio if/else if/else chain to Spark SQL CASE WHEN.
+    
+    Input:  if(cond1) val1 else if(cond2) val2 else val3
+    Output: CASE WHEN cond1 THEN val1 WHEN cond2 THEN val2 ELSE val3 END
+    """
+    result = "CASE"
+    remaining = expr.strip()
+    
+    max_iterations = 20
+    iteration = 0
+    
+    while remaining and iteration < max_iterations:
+        iteration += 1
+        remaining = remaining.strip()
+        
+        # Match: if(condition) or if (condition)
+        m = re.match(r'if\s*\(', remaining)
+        if not m:
+            # This is the final ELSE value
+            remaining = remaining.strip().rstrip(';').strip()
+            if remaining:
+                result += f" ELSE {remaining}"
+            break
+        
+        # Find the matching closing parenthesis for the if(
+        start_paren = remaining.index('(')
+        paren_depth = 0
+        cond_end = -1
+        for i in range(start_paren, len(remaining)):
+            if remaining[i] == '(':
+                paren_depth += 1
+            elif remaining[i] == ')':
+                paren_depth -= 1
+                if paren_depth == 0:
+                    cond_end = i
+                    break
+        
+        if cond_end < 0:
+            # Malformed — just return original
+            return expr
+        
+        condition = remaining[start_paren + 1:cond_end].strip()
+        rest = remaining[cond_end + 1:].strip()
+        
+        # Now extract the THEN value: everything until we hit ' else ' at top level
+        # We need to handle quoted strings and nested parens
+        value = ""
+        else_pos = -1
+        depth = 0
+        in_str = False
+        str_char = None
+        i = 0
+        while i < len(rest):
+            c = rest[i]
+            if c in ('"', "'") and not in_str:
+                in_str = True
+                str_char = c
+            elif c == str_char and in_str:
+                in_str = False
+            elif not in_str:
+                if c == '(':
+                    depth += 1
+                elif c == ')':
+                    depth -= 1
+                elif depth == 0 and rest[i:i+5] == ' else' and (i + 5 >= len(rest) or not rest[i+5].isalnum()):
+                    else_pos = i
+                    break
+            i += 1
+        
+        if else_pos >= 0:
+            value = rest[:else_pos].strip().rstrip(';').strip()
+            after_else = rest[else_pos + 5:].strip()  # skip ' else'
+            # Check if next token is 'if' (else if chain)
+            if after_else.startswith('if'):
+                remaining = after_else
+            else:
+                # Final else value
+                remaining = after_else
+                # Map == to = in condition
+                condition = condition.replace('==', '=')
+                result += f" WHEN {condition} THEN {value}"
+                # The remaining is the ELSE value
+                final_val = remaining.strip().rstrip(';').strip()
+                if final_val:
+                    result += f" ELSE {final_val}"
+                remaining = ""
+                break
+        else:
+            # No else found — this is the last branch
+            value = rest.strip().rstrip(';').strip()
+            remaining = ""
+        
+        # Map == to = in condition for SQL
+        condition = condition.replace('==', '=')
+        result += f" WHEN {condition} THEN {value}"
+    
+    result += " END"
+    return result
+
+
+def _find_else_keyword(text):
+    """Find the position of 'else' keyword not inside quotes or nested if().
+    DEPRECATED: Use the inline logic in _translate_if_else_to_case instead.
+    """
+    idx = text.find(' else ')
+    return idx if idx >= 0 else text.find(' else\n')
 
 def _build_transform(var_id, src_df, rule):
     """Genera codigo PySpark a partir de una regla XFR { select, where, group_by, sort_by, transform }"""
@@ -75,7 +254,6 @@ def _build_transform(var_id, src_df, rule):
         raw = rule.get("raw_transform", "")
         output_fields = rule.get("output_fields", [])
         
-        # Parse the Ab Initio lookup pattern into PySpark
         import re as _re
         
         # Extract join keys from lookup_count("name", in.key1, in.key2)
@@ -85,32 +263,9 @@ def _build_transform(var_id, src_df, rule):
             for m in join_keys_match:
                 join_keys.extend([k for k in m if k])
         
-        # Extract filter condition (if statement comparing fields)
-        filter_match = _re.search(r'if\(in\.(\w+)\s*(>=|<=|>|<|==)\s*rec\.(\w+)\)', raw)
-        filter_cond = ""
-        if filter_match:
-            filter_cond = f'col("{filter_match.group(1)}") {filter_match.group(2)} col("{filter_match.group(3)}")'
-        
-        # Extract sort field from vector_sort(vec, {field descending/ascending})
-        sort_match = _re.search(r'vector_sort\(\w+,\s*\\?\{?\s*(\w+)\s+(descending|ascending)', raw)
-        sort_field = ""
-        sort_order = "desc"
-        if sort_match:
-            sort_field = sort_match.group(1)
-            sort_order = "desc" if "desc" in sort_match.group(2) else "asc"
-        
-        # Extract output field assignment: out.field :: first_without_error(...)
-        out_field_match = _re.search(r'out\.(\w+)\s*::\s*first_without_error\(.*?\[0\]\.(\w+)', raw)
-        out_field = ""
-        lookup_field = ""
-        if out_field_match:
-            out_field = out_field_match.group(1)
-            lookup_field = out_field_match.group(2)
-        
         # Generate PySpark code
         lines = []
         lines.append(f'# Lookup Join: {lookup_name} (translated from Ab Initio lookup_count/lookup_next)')
-        lines.append(f'# Join keys: {join_keys}, Sort: {sort_field} {sort_order}, Output: {out_field}')
         
         if join_keys:
             join_expr = ", ".join(f'"{k}"' for k in join_keys)
@@ -119,21 +274,37 @@ def _build_transform(var_id, src_df, rule):
             lines.append(f'    on=[{join_expr}],')
             lines.append(f'    how="left"')
             lines.append(f')')
-            
-            if filter_cond:
-                lines.append(f'{var_id}_df = {var_id}_df.where({filter_cond})')
-            
-            if sort_field:
-                order_fn = f'col("{sort_field}").desc()' if sort_order == "desc" else f'col("{sort_field}")'
-                lines.append(f'_w = Window.partitionBy({join_expr}).orderBy({order_fn})')
-                lines.append(f'{var_id}_df = {var_id}_df.withColumn("_rn", row_number().over(_w)).where("_rn = 1").drop("_rn")')
-            
-            if out_field and lookup_field and out_field != lookup_field:
-                lines.append(f'{var_id}_df = {var_id}_df.withColumnRenamed("{lookup_field}", "{out_field}")')
         else:
             lines.append(f'{var_id}_df = {src_df}  # Could not parse lookup keys')
         
         return "\n".join(lines)
+    
+    # --- RAW TRANSFORM (complete Ab Initio DML body) ---
+    raw_transform = rule.get("raw_transform")
+    if raw_transform and not rule.get("select") and not rule.get("dml_fields"):
+        # Parse field assignments from raw DML: out.field :: expression;
+        field_matches = re.findall(r'out\.(\w+)\s*::\s*(.+?);', raw_transform)
+        if field_matches:
+            lines = [f'{var_id}_df = {src_df}']
+            where = rule.get("where")
+            if where:
+                where = _translate_abinitio_expr(where)
+                lines.append(f'{var_id}_df = {var_id}_df.where("{where}")')
+            
+            for field_name, raw_expr in field_matches:
+                if field_name in ("newline", "*", "V_FILLER"):
+                    continue
+                raw_expr = raw_expr.strip()
+                # Skip pure passthrough: in.field_name
+                if re.match(r'^in\d*\.' + re.escape(field_name) + r'$', raw_expr):
+                    continue
+                
+                spark_expr = _translate_abinitio_expr(raw_expr)
+                # Escape internal double quotes for the expr() call
+                spark_expr_escaped = spark_expr.replace('"', '\\"')
+                lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", expr("{spark_expr_escaped}"))')
+            
+            return "\n".join(lines)
     
     # --- DML FIELDS (parsed from external .xfr with Ab Initio DML) ---
     dml_fields = rule.get("dml_fields")
@@ -141,25 +312,8 @@ def _build_transform(var_id, src_df, rule):
         lines = [f'{var_id}_df = {src_df}']
         for f in dml_fields:
             fname = f["field"]
-            expr = f["expr"]
-            ftype = f.get("type", "")
-            comment = f.get("comment", "")
-            if ftype == "rename":
-                lines.append(f'{var_id}_df = {var_id}_df.withColumn("{fname}", {expr})')
-            elif ftype in ("literal", "function"):
-                lines.append(f'{var_id}_df = {var_id}_df.withColumn("{fname}", {expr})')
-            elif ftype == "conditional_trim":
-                lines.append(f'{var_id}_df = {var_id}_df.withColumn("{fname}", {expr})')
-            elif ftype == "coalesce":
-                lines.append(f'{var_id}_df = {var_id}_df.withColumn("{fname}", {expr})')
-            elif ftype == "string_op":
-                lines.append(f'{var_id}_df = {var_id}_df.withColumn("{fname}", {expr})')
-            elif ftype == "passthrough" and comment:
-                lines.append(f'{var_id}_df = {var_id}_df.withColumn("{fname}", {expr})  # {comment}')
-            elif ftype == "todo":
-                lines.append(f'{var_id}_df = {var_id}_df.withColumn("{fname}", {expr})')
-            else:
-                lines.append(f'{var_id}_df = {var_id}_df.withColumn("{fname}", {expr})')
+            expr_val = f["expr"]
+            lines.append(f'{var_id}_df = {var_id}_df.withColumn("{fname}", {expr_val})')
         return "\n".join(lines)
     
     # --- TRANSFORM EXPRESSIONS (withColumn from reformat) ---
@@ -167,15 +321,17 @@ def _build_transform(var_id, src_df, rule):
     literals = rule.get("literals")
     if transform_exprs or literals:
         lines = [f'{var_id}_df = {src_df}']
-        # Apply where filter first if present
         where = rule.get("where")
         if where:
+            where = _translate_abinitio_expr(where)
             lines.append(f'{var_id}_df = {var_id}_df.where("{where}")')
         if transform_exprs:
             for expr_str in transform_exprs:
                 if " as " in expr_str.lower():
                     parts = expr_str.rsplit(" as ", 1)
-                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{parts[1].strip()}", expr("{parts[0].strip()}"))')
+                    spark_expr = _translate_abinitio_expr(parts[0].strip())
+                    spark_expr_escaped = spark_expr.replace('"', '\\"')
+                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{parts[1].strip()}", expr("{spark_expr_escaped}"))')
         if literals:
             for lit_field in literals:
                 fname = lit_field["field"]
@@ -190,28 +346,25 @@ def _build_transform(var_id, src_df, rule):
     where = rule.get("where")
     group_by = rule.get("group_by")
 
-    # Map Ab Initio date functions to Spark
-    select = _map_date_functions(select)
-    select = _map_string_functions(select)
+    # Map Ab Initio functions to Spark SQL
+    select = _translate_abinitio_expr(select) if select != "*" else select
     if where:
-        where = _map_date_functions(where)
-        where = _map_string_functions(where)
+        where = _translate_abinitio_expr(where)
 
     if group_by:
-        # Genera groupBy().agg() para agregaciones
         # Deduplicate keys preserving order
         group_by = list(dict.fromkeys(group_by))
         keys = ", ".join(f'"{k}"' for k in group_by)
-        # Convierte "SUM(amount) as total_spent" ? sum("amount").alias("total_spent")
+        # Parse "SUM(amount) as total_spent" → sum("amount").alias("total_spent")
         agg_exprs = []
-        for col in select.split(","):
-            col = col.strip()
-            m = re.match(r"(\w+)\((\w+)\)\s+as\s+(\w+)", col, re.I)
+        for col_expr in select.split(","):
+            col_expr = col_expr.strip()
+            m = re.match(r"(\w+)\((\w+)\)\s+as\s+(\w+)", col_expr, re.I)
             if m:
                 fn, field, alias = m.group(1).lower(), m.group(2), m.group(3)
                 agg_exprs.append(f'{fn}("{field}").alias("{alias}")')
             else:
-                agg_exprs.append(f'col("{col}")')
+                agg_exprs.append(f'col("{col_expr}")')
         agg_str = ", ".join(agg_exprs)
         code = f'{var_id}_df = {src_df}.groupBy({keys}).agg({agg_str})'
         if where:
@@ -229,8 +382,10 @@ def _build_transform(var_id, src_df, rule):
         for c in cols_raw:
             m = re.match(r'(.+?)\s+as\s+(\w+)', c.strip(), re.I)
             if m:
-                expr, alias = m.group(1).strip(), m.group(2)
-                lines.append(f'{var_id}_df = {var_id}_df.withColumn("{alias}", expr("{expr}"))')
+                spark_expr = m.group(1).strip()
+                alias = m.group(2)
+                spark_expr_escaped = spark_expr.replace('"', '\\"')
+                lines.append(f'{var_id}_df = {var_id}_df.withColumn("{alias}", expr("{spark_expr_escaped}"))')
             else:
                 pass
         code = "\n".join(lines)
@@ -323,22 +478,51 @@ def generate_glue(dag, output_path, xfr_rules=None):
                     if rule:
                         f.write(_build_transform(var_id, src, rule) + "\n")
                     else:
-                        f.write(f'{var_id}_df = {src}.selectExpr("*")  # no XFR rule found\n')
+                        f.write(f'{var_id}_df = {src}.selectExpr("*")  # passthrough\n')
                 else:
-                    f.write(f'{var_id}_df = None  # no parent\n')
+                    # Check if this node has a db_source (Input_Table without edges resolved)
+                    node_data = next((n for n in dag.execution_order if n.id == var_id), None)
+                    db_src = getattr(node_data, 'db_source', None) if node_data else None
+                    if db_src:
+                        query = db_src.get("query", "").replace("$\\{EDW_TER_DEFAULT_DB\\}", "${EDW_TER_DEFAULT_DB}")
+                        f.write(f'# DB Source: {db_src.get("dbms", "unknown")}\n')
+                        f.write(f'{var_id}_df = spark.read.format("parquet").load("s3://bnx/landing/{var_id.lower()}/")\n')
+                    elif rule and rule.get("path"):
+                        f.write(f'{var_id}_df = spark.read.format("parquet").load("{rule["path"]}")\n')
+                    else:
+                        f.write(f'{var_id}_df = spark.read.format("parquet").load("s3://bnx/landing/{var_id.lower()}/")\n')
                 f.write(f'print("[~] {label}: {log_name}")\n\n')
 
             # JOIN
             elif ntype == "JOIN":
                 f.write(f'# [~] JOIN: {log_name}\n')
                 if len(parents) >= 2:
-                    join_key = rule.get("join_key", "id") if rule else "id"
+                    join_key = rule.get("join_key", None) if rule else None
                     join_type = rule.get("join_type", "inner") if rule else "inner"
-                    # primer join
-                    f.write(f'{var_id}_df = {parents[0]}_df.join({parents[1]}_df, on="{join_key}", how="{join_type}")\n')
-                    # joins encadenados para padres adicionales
+                    
+                    # If no explicit key, try to extract from embedded keys_by_vertex
+                    if not join_key:
+                        # Check for keys in xfr_rules for this node
+                        node_rule = xfr_rules.get(var_id.lower()) or xfr_rules.get(log_name.lower()) or {}
+                        join_key = node_rule.get("join_key", None)
+                    
+                    if not join_key:
+                        # Default fallback — try "id" but warn
+                        join_key = "id"
+                        f.write(f'# WARNING: join key not resolved from plan, defaulting to "id"\n')
+                    
+                    # Handle multi-column join keys
+                    if isinstance(join_key, list):
+                        keys_list = "[" + ", ".join(f'"{k}"' for k in join_key) + "]"
+                        f.write(f'{var_id}_df = {parents[0]}_df.join({parents[1]}_df, on={keys_list}, how="{join_type}")\n')
+                    else:
+                        f.write(f'{var_id}_df = {parents[0]}_df.join({parents[1]}_df, on="{join_key}", how="{join_type}")\n')
+                    # Chained joins for additional parents
                     for extra_parent in parents[2:]:
-                        f.write(f'{var_id}_df = {var_id}_df.join({extra_parent}_df, on="{join_key}", how="{join_type}")\n')
+                        if isinstance(join_key, list):
+                            f.write(f'{var_id}_df = {var_id}_df.join({extra_parent}_df, on={keys_list}, how="{join_type}")\n')
+                        else:
+                            f.write(f'{var_id}_df = {var_id}_df.join({extra_parent}_df, on="{join_key}", how="{join_type}")\n')
                 elif len(parents) == 1:
                     f.write(f'{var_id}_df = {parents[0]}_df\n')
                 else:
@@ -448,30 +632,24 @@ def generate_glue(dag, output_path, xfr_rules=None):
                     f.write(f'{var_id}_df = None\n')
                 f.write(f'print("? PARTITION: {log_name}")\n\n')
 
-            # FILTER ? filter with reject port
+            # FILTER - filter with reject port
             elif ntype == "FILTER":
                 f.write(f'# [-] FILTER: {log_name}\n')
                 if parents:
                     src = f'{parents[0]}_df'
                     where = rule.get("where") if rule else None
                     if where:
-                        # Translate Ab Initio functions to Spark equivalents
+                        # Translate Ab Initio expression to Spark SQL
+                        spark_where = _translate_abinitio_expr(where)
+                        
                         if "next_in_sequence()" in where:
-                            # next_in_sequence() > 1 skips header rows in raw files.
-                            # No-op for structured formats (CSV/parquet with header).
                             f.write(f'# next_in_sequence() filter: no-op for structured formats\n')
                             f.write(f'{var_id}_df = {src}\n')
                             f.write(f'{var_id}_reject_df = spark.createDataFrame([], {src}.schema)\n')
-                        elif re.search(r'\b(string_|decimal_|integer_|is_blank|is_defined)', where):
-                            mapped = _map_date_functions(where)
-                            mapped = re.sub(r'is_blank\((\w+)\)', r'\1 IS NULL OR \1 = ""', mapped)
-                            mapped = re.sub(r'is_defined\((\w+)\)', r'\1 IS NOT NULL', mapped)
-                            f.write(f'{var_id}_df = {src}.where("{mapped}")\n')
-                            f.write(f'{var_id}_reject_df = {src}.where("NOT ({mapped})")\n')
                         else:
-                            where = _map_date_functions(where)
-                            f.write(f'{var_id}_df = {src}.where("{where}")\n')
-                            f.write(f'{var_id}_reject_df = {src}.where("NOT ({where})")\n')
+                            spark_where_escaped = spark_where.replace('"', '\\"')
+                            f.write(f'{var_id}_df = {src}.where("{spark_where_escaped}")\n')
+                            f.write(f'{var_id}_reject_df = {src}.where("NOT ({spark_where_escaped})")\n')
                     else:
                         f.write(f'{var_id}_df = {src}\n')
                         f.write(f'{var_id}_reject_df = spark.createDataFrame([], {src}.schema)\n')
