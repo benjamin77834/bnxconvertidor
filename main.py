@@ -114,6 +114,16 @@ def _parse_gde_native(content):
     # Track which vertices belong to subgraphs (parent is a subgraph, not root graph)
     subgraph_children = set()  # vertex IDs that are inside a subgraph
     subgraph_parent_map = {}   # vertex_id -> subgraph_id (for labeling)
+    subgraph_names = {}        # subgraph_id -> display_name (from XXGgraph_vertex_vertex)
+    
+    # Subgraph types that should be collapsed into a single SINK node
+    # (their internal components are implementation details, not separate data steps)
+    COLLAPSIBLE_SUBGRAPH_TYPES = [
+        "write_seq_file", "write_separated_values", "output_file",
+        "ftp_to", "sftp_to", "write_multifile", "write_xml",
+        "overwrite_output_file", "append_output_file",
+    ]
+    collapsible_subgraphs = set()  # subgraph IDs that should be collapsed
     
     for m in re.finditer(r'XXGgraph_vertex_vertex\|\d+\|\d+\|\d+\|\d+\|\{([^}]+)\|\}?(\d+)\|(\d+)\|', content):
         name = m.group(1).strip().rstrip('|')
@@ -122,8 +132,16 @@ def _parse_gde_native(content):
         # vid2 is the vertex ID for this component
         # Skip subgraph CONTAINERS (they are XXGgraph entities, not actual data components)
         if vid2 in subgraph_ids:
+            # Record the subgraph name for collapsing decisions
+            subgraph_names[vid2] = name
+            # Check if this subgraph should be collapsed (Write_Seq_File, etc.)
+            name_lower = name.lower().replace(" ", "_").replace("-", "_")
+            if any(st in name_lower for st in COLLAPSIBLE_SUBGRAPH_TYPES):
+                collapsible_subgraphs.add(vid2)
+                print(f"  [dbg] Collapsible subgraph detected: {name} (id={vid2})")
             continue
         # Track subgraph membership but DO NOT skip — flatten into main graph
+        # UNLESS the subgraph is collapsible (then children are hidden)
         if vid1 in subgraph_ids:
             subgraph_children.add(vid2)
             subgraph_parent_map[vid2] = vid1
@@ -137,6 +155,52 @@ def _parse_gde_native(content):
                     "display_name": name,
                     "comp_type": name,
                 }
+    
+    # Also detect collapsible subgraphs by prototype_path in XXGgraph blocks
+    # XXGgraph blocks contain prototype_path|/path/to/Write_Seq_File.mp|
+    for sgid in subgraph_ids:
+        if sgid in collapsible_subgraphs:
+            continue
+        # Find the XXGgraph block for this subgraph and check prototype
+        proto_match = re.search(
+            r'XXGgraph\|' + re.escape(sgid) + r'\|.*?prototype_path\|([^|]+)\|',
+            content, re.DOTALL
+        )
+        if proto_match:
+            proto_path = proto_match.group(1).lower()
+            if any(st in proto_path for st in COLLAPSIBLE_SUBGRAPH_TYPES):
+                collapsible_subgraphs.add(sgid)
+                sg_name = subgraph_names.get(sgid, f"Subgraph_{sgid}")
+                print(f"  [dbg] Collapsible subgraph (by prototype): {sg_name} (id={sgid}, proto={proto_match.group(1)})")
+    
+    # For collapsible subgraphs: remove their children from node_by_id and create a single SINK node
+    # Also track which vertex IDs belong to collapsed subgraphs (to fix edges later)
+    collapsed_children = set()  # all vertex IDs that are inside collapsed subgraphs
+    collapsed_sink_map = {}     # child_vertex_id -> collapsed_sink_vertex_id (for edge redirection)
+    
+    for sg_id in collapsible_subgraphs:
+        sg_name = subgraph_names.get(sg_id, f"Write_Seq_{sg_id}")
+        safe_sg_name = re.sub(r'[^\w]', '_', sg_name)
+        
+        # Find all children of this subgraph
+        children_of_sg = [vid for vid, parent in subgraph_parent_map.items() if parent == sg_id]
+        
+        # Remove children from node_by_id (they shouldn't appear as separate nodes)
+        for child_vid in children_of_sg:
+            collapsed_children.add(child_vid)
+            collapsed_sink_map[child_vid] = sg_id
+            if child_vid in node_by_id:
+                del node_by_id[child_vid]
+        
+        # Create a single SINK node for the collapsed subgraph
+        # Use the subgraph ID as the vertex ID for the collapsed node
+        node_by_id[sg_id] = {
+            "name": safe_sg_name,
+            "type": "SINK",
+            "display_name": sg_name,
+            "comp_type": sg_name,
+        }
+        print(f"  [dbg] Collapsed subgraph {sg_name}: {len(children_of_sg)} internal components → 1 SINK node")
     
     # Detect Output_File vs Input_File using mode parameter and port types
     # Output_File has write port (XXGiport with "write") and mode=0x0062
@@ -279,6 +343,7 @@ def _parse_gde_native(content):
     
     # XXGraph_flow_flow: {2010604001|XXGraph_flow_flow|4|0|8|0|{Flow_1|}3|5|}
     # Format: {FLOW_NAME|}FROM_VERTEX|TO_VERTEX|}
+    edge_set = set()  # Initialize early — used by both direct flows and port-based edges
     flow_edges_direct = []
     for m in re.finditer(r'XXGraph_flow_flow\|\d+\|\d+\|\d+\|\d+\|\{([^}]+)\|\}?(\d+)\|(\d+)\|', content):
         fname = m.group(1).strip()
@@ -290,6 +355,14 @@ def _parse_gde_native(content):
         print(f"  [dbg] Direct flow edges found: {len(flow_edges_direct)}")
         # We have both vertex names and direct edges - build the graph
         for src, dst in flow_edges_direct:
+            # Redirect edges for collapsed subgraph children
+            if src in collapsed_children:
+                src = collapsed_sink_map[src]
+            if dst in collapsed_children:
+                dst = collapsed_sink_map[dst]
+            # Skip internal edges within same collapsed subgraph
+            if src == dst:
+                continue
             if src in node_by_id and dst in node_by_id:
                 edge_set.add((src, dst))
     
@@ -479,7 +552,6 @@ def _parse_gde_native(content):
     
     # For each iport that receives from a flow, find the source vertex
     # iport_from_flow values are now LISTS (fan-in support)
-    edge_set = set()
     for port_id, flow_ids in iport_from_flow.items():
         if port_id in iport_to_vertex:
             dst_vertex = iport_to_vertex[port_id]
@@ -488,8 +560,24 @@ def _parse_gde_native(content):
                     src_vertex = flow_to_src_vertex[flow_id]
                     if src_vertex != dst_vertex:
                         # Skip edges where either endpoint is a subgraph CONTAINER
-                        if src_vertex in subgraph_ids or dst_vertex in subgraph_ids:
+                        # (but NOT collapsed subgraphs — those are valid SINK nodes now)
+                        src_is_non_collapsed_sg = src_vertex in subgraph_ids and src_vertex not in collapsible_subgraphs
+                        dst_is_non_collapsed_sg = dst_vertex in subgraph_ids and dst_vertex not in collapsible_subgraphs
+                        if src_is_non_collapsed_sg or dst_is_non_collapsed_sg:
                             continue
+                        
+                        # Redirect edges involving collapsed subgraph children
+                        # If src is a child of a collapsed subgraph, redirect src to the SINK node
+                        if src_vertex in collapsed_children:
+                            src_vertex = collapsed_sink_map[src_vertex]
+                        # If dst is a child of a collapsed subgraph, redirect dst to the SINK node
+                        if dst_vertex in collapsed_children:
+                            dst_vertex = collapsed_sink_map[dst_vertex]
+                        
+                        # Skip internal edges (both endpoints in same collapsed subgraph)
+                        if src_vertex == dst_vertex:
+                            continue
+                        
                         edge_set.add((src_vertex, dst_vertex))
     
     # Now map vertex IDs (small) to component names
@@ -517,7 +605,7 @@ def _parse_gde_native(content):
     # vertex_ids from ports should overlap with node_by_id keys
     
     # Build nodes: use node_by_id for named nodes, create Node_X for unnamed ones
-    if edge_set and vertex_ids:
+    if edge_set and (vertex_ids or node_by_id):
         all_vertex_ids = vertex_ids.copy()
         # Also add vertex_ids from edge_set that might not be in vertex_ids
         for src, dst in edge_set:
