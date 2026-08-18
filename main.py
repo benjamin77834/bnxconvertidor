@@ -578,6 +578,11 @@ def _parse_gde_native(content):
                         if src_vertex == dst_vertex:
                             continue
                         
+                        # Skip edges involving template vertices (not real instances)
+                        # Templates have ports but are NOT listed in XXGgraph_vertex_vertex
+                        if src_vertex not in node_by_id or dst_vertex not in node_by_id:
+                            continue
+                        
                         edge_set.add((src_vertex, dst_vertex))
     
     # Now map vertex IDs (small) to component names
@@ -625,13 +630,17 @@ def _parse_gde_native(content):
         seen_names = set()
         included_vids = set()
         
-        # First include all vertices in edges
+        # First include all vertices in edges (already filtered to exclude templates)
         for src, dst in edge_set:
             included_vids.add(src)
             included_vids.add(dst)
-        # Also include all named components
+        # Also include all named components (from XXGgraph_vertex_vertex only)
         for vid in node_by_id:
             included_vids.add(vid)
+        
+        # Filter: only include vertices that are actual instances (in node_by_id)
+        # This removes template/prototype vertices that have ports but aren't real nodes
+        included_vids = included_vids & set(node_by_id.keys())
         
         for vid in sorted(included_vids, key=lambda x: int(x)):
             if vid not in vertex_names:
