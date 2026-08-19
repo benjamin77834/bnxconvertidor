@@ -277,6 +277,10 @@ def _parse_gde_native(content):
             if info["type"] == "SOURCE":
                 info["type"] = "SINK"
                 print(f"  [dbg] Reclassified {info['display_name']} (vertex {vid}) as SINK (has write port)")
+            elif info["type"] == "LOOKUP":
+                # Output_File with lookup mode (0x0262) + key = lookup file WRITER, not reader
+                info["type"] = "SINK"
+                print(f"  [dbg] Reclassified {info['display_name']} (vertex {vid}) as SINK (lookup writer with write port)")
     
     # Also detect from XXGfvertex blocks with Output_File.mdc prototype
     for m in re.finditer(r'XXGfvertex\|(\d+)\|.*?Output_File\.mdc', content):
