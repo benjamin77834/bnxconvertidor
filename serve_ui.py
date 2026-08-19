@@ -224,6 +224,22 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             ast = parse_project(mp_path)
             dag = build_dag(ast)
             xfr_rules = parse_xfr(xfr_path) if xfr_path else {}
+            
+            # Parse PSET and merge into abinitio_params
+            pset_params = {}
+            if pset_content:
+                pset_path_tmp = self._save_temp(pset_content, ".pset")
+                try:
+                    pset_params = parse_pset(pset_path_tmp)
+                    # Merge pset params into ast abinitio_params
+                    if "abinitio_params" not in ast:
+                        ast["abinitio_params"] = {}
+                    ast["abinitio_params"].update(pset_params)
+                    print(f"  [pset] Loaded {len(pset_params)} parameters from .pset")
+                except Exception as e:
+                    print(f"  [pset] Warning: could not parse pset: {e}")
+                finally:
+                    os.unlink(pset_path_tmp)
             # Remove placeholder entries and handle raw DML
             if "_multi_xfr" in xfr_rules:
                 multi = xfr_rules.pop("_multi_xfr")
@@ -256,12 +272,31 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             with open(mp_path, "r", errors="replace") as f:
                 raw = f.read().replace('\x00', '')
             embedded = _extract_embedded_transforms(raw)
-            if embedded["transforms"] or embedded["keys"] or embedded["filters"]:
+            if embedded["transforms"] or embedded["keys"] or embedded.get("keys_by_vertex") or embedded["filters"] or embedded.get("filters_by_vertex") or embedded.get("keeps"):
                 node_map = {}
                 for nd in ast.get("nodes", []):
                     vid = nd.get("vertex_id", nd["id"])
-                    node_map[vid] = {"name": nd["id"], "comp_type": nd.get("name", nd["id"])}
+                    node_map[vid] = {
+                        "name": nd["id"],
+                        "comp_type": nd.get("name", nd["id"]),
+                        "proto_type": nd.get("type", "TRANSFORM"),
+                        "is_sort": nd.get("is_sort", False),
+                    }
                 _apply_embedded_transforms(node_map, embedded, xfr_rules)
+
+            # Apply data_path from GDE nodes to xfr_rules (SOURCE/SINK path resolution)
+            for nd in ast.get("nodes", []):
+                if "data_path" in nd:
+                    ntype = nd["type"].upper()
+                    nid_lower = nd["id"].lower()
+                    if ntype == "SOURCE":
+                        if nid_lower not in xfr_rules:
+                            xfr_rules[nid_lower] = {}
+                        xfr_rules[nid_lower]["path"] = f"s3://bnx/raw{nd['data_path']}"
+                    elif ntype == "SINK":
+                        if nid_lower not in xfr_rules:
+                            xfr_rules[nid_lower] = {}
+                        xfr_rules[nid_lower]["path"] = f"s3://bnx/output{nd['data_path']}"
 
             # Validate
             errors, warnings = validate(dag, xfr_rules, dml_schema)
