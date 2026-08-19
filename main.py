@@ -40,7 +40,7 @@ def _map_component_type(name):
         return "JOIN"
     if any(k in n for k in ["lookup", "lkp"]):
         return "LOOKUP"
-    if any(k in n for k in ["filter", "select", "where", "filter_by"]):
+    if any(k in n for k in ["filter", "filtro", "select", "where", "filter_by"]):
         return "FILTER"
     if any(k in n for k in ["partition", "repartition", "round_robin"]):
         return "PARTITION"
@@ -1313,7 +1313,8 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
                 key_idx += 1
         
         # --- FILTER ---
-        elif "filter" in comp_type:
+        elif ("filter" in comp_type.lower() or "filtro" in comp_type.lower() or "filtro" in name_lower or
+              info.get("proto_type") == "FILTER"):
             # Use vertex-specific filter if available
             vertex_filter = filters_by_vertex.get(vid)
             if vertex_filter:
