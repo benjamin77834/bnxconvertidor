@@ -125,7 +125,7 @@ def _parse_gde_native(content):
     ]
     collapsible_subgraphs = set()  # subgraph IDs that should be collapsed
     
-    for m in re.finditer(r'XXGgraph_vertex_vertex\|\d+\|\d+\|\d+\|\d+\|\{([^}]+)\|\}?(\d+)\|(\d+)\|', content):
+    for m in re.finditer(r'XXGgraph_vertex_vertex\|\d+\|\d+\|\d+\|\d+\|\{([^}]*)\|\}?(\d+)\|(\d+)\|', content):
         name = m.group(1).strip().rstrip('|')
         vid1 = m.group(2)  # parent graph vertex ID
         vid2 = m.group(3)  # this component's vertex ID
@@ -201,6 +201,15 @@ def _parse_gde_native(content):
             "comp_type": sg_name,
         }
         print(f"  [dbg] Collapsed subgraph {sg_name}: {len(children_of_sg)} internal components → 1 SINK node")
+    
+    # Also redirect any port mappings that point to collapsed children
+    # This ensures edges resolved via oport_to_vertex/iport_to_vertex go to the SINK
+    for port_id, vertex_id in list(oport_to_vertex.items()):
+        if vertex_id in collapsed_children:
+            oport_to_vertex[port_id] = collapsed_sink_map[vertex_id]
+    for port_id, vertex_id in list(iport_to_vertex.items()):
+        if vertex_id in collapsed_children:
+            iport_to_vertex[port_id] = collapsed_sink_map[vertex_id]
     
     # Detect Output_File vs Input_File using mode parameter and port types
     # Output_File has write port (XXGiport with "write") and mode=0x0062
@@ -466,6 +475,31 @@ def _parse_gde_native(content):
         if port_id not in iport_from_flow:
             iport_from_flow[port_id] = []
         iport_from_flow[port_id].append(flow_id)
+    
+    # XXGiport_binding_iport: maps subgraph external iport to internal component iport
+    # Format: {ID|XXGiport_binding_iport|...|{0|}EXT_IPORT|INT_IPORT|}
+    # When an external flow connects to a subgraph's iport, the binding tells us which
+    # internal component actually receives the data.
+    # For collapsed subgraphs, we redirect these bindings to the SINK node.
+    iport_binding_map = {}  # external_iport_id -> internal_iport_id
+    for m in re.finditer(r'XXGiport_binding_iport\|\d+\|\d+\|\d+\|\d+\|\{\d+\|\}(\d+)\|(\d+)\|', content):
+        ext_iport = m.group(1)
+        int_iport = m.group(2)
+        iport_binding_map[ext_iport] = int_iport
+    
+    # For collapsed subgraphs: if an external iport is bound to an internal component's iport,
+    # AND that internal component is a collapsed child, remap the external iport to point to
+    # the subgraph container (our collapsed SINK node).
+    if iport_binding_map and collapsed_children:
+        for ext_iport, int_iport in iport_binding_map.items():
+            # The internal iport belongs to a vertex inside the subgraph
+            int_vertex = iport_to_vertex.get(int_iport)
+            if int_vertex and int_vertex in collapsed_children:
+                # The ext_iport is on the subgraph container — make sure it resolves to the SINK
+                sg_id = collapsed_sink_map[int_vertex]
+                # Remap: the external iport should point to the subgraph SINK vertex
+                iport_to_vertex[ext_iport] = sg_id
+                print(f"  [dbg] iport_binding: ext_iport {ext_iport} -> SINK {sg_id} (was internal vertex {int_vertex})")
     
     # Now parse line-by-line for components and parameters
     for line in re.split(r'[\r\n]+', content):
