@@ -309,6 +309,11 @@ def _parse_gde_native(content):
         lm = re.search(r'Layout\|(/[^|]+)\|', block)
         if lm:
             layout_paths[fvid] = lm.group(1).strip()
+        else:
+            # Also try Layout|file:path| format (Ab Initio file: prefix)
+            lm2 = re.search(r'Layout\|file:([^|]+)\|', block)
+            if lm2:
+                layout_paths[fvid] = lm2.group(1).strip()
         # Also check eme_dataset_mapping interp
         em = re.search(r'dataset_path\s+_interp_\("(/[^"]+)"', block)
         if em and fvid not in layout_paths:
@@ -337,6 +342,49 @@ def _parse_gde_native(content):
     
     if db_sources:
         print(f"  [dbg] DB sources: {list(db_sources.keys())} ({list(db_sources.values())[0].get('dbms', '?')})")
+    
+    # Extract graph-level parameters with VALUES from the XXGgraph parameter_set block
+    # Format: {30001002|XXparameter|NAME|VALUE|...}
+    # These are the user-configurable params (AI_JOBNAME, S_CNTRY_CDE, V_MISDATE, etc.)
+    for m in re.finditer(r'\{30001002\|XXparameter\|([^|]+)\|([^|]*)\|(\d+)\|(\d+)\|([^|]*)\|', content):
+        pname = m.group(1).strip()
+        pvalue = m.group(2).strip()
+        pflags = m.group(5).strip()
+        # Only keep user-level params (REFK = reference key, or params with actual values)
+        if (pname and pvalue and not pname.startswith("_") and not pname.startswith("!")
+            and not pname.isdigit() and "XXG" not in pname
+            and not any(x in pname for x in [
+                "interface", "condition", "display_name", "keyword",
+                "metadata", "mpcmodtime", "operation", "num_", "type",
+                "mpname", "image__", "port_analysis", "continuous",
+                "filter_aggregate", "propagat", "doc_", "callback",
+                "threshold", "limit_keyword", "ramp_keyword", "count",
+                "protection", "mode", "Layout", "transform", "select",
+                "key", "output_index", "logging", "log", "reject",
+                "main_mp_port", "either_or", "direct_addressed",
+                "block_compressed", "keep_on_disk", "only_last",
+                "orc_file", "m_catalog",
+            ])
+            and len(pvalue) < 200  # Skip long internal values
+            and "param " not in pvalue  # Skip conditional expressions
+            and "value " not in pvalue  # Skip keyword-value mappings
+            ):
+            params[pname] = pvalue
+    
+    if params:
+        print(f"  [dbg] Graph params: {dict(list(params.items())[:10])}")
+    
+    # Resolve $\{VAR\} and $VAR references in layout_paths using graph params
+    if layout_paths and params:
+        for fvid in list(layout_paths.keys()):
+            path_val = layout_paths[fvid]
+            # Replace $\{VAR\} patterns (escaped braces in GDE format)
+            resolved = re.sub(r'\$\\?\{(\w+)\\?\}', lambda m: params.get(m.group(1), m.group(0)), path_val)
+            # Replace remaining $VAR patterns
+            resolved = re.sub(r'\$(\w+)', lambda m: params.get(m.group(1), m.group(0)), resolved)
+            if resolved != path_val:
+                layout_paths[fvid] = resolved
+                print(f"  [dbg] Resolved path: {path_val} -> {resolved}")
     
     # Assign paths and DB info to nodes
     for vid, info in node_by_id.items():
@@ -430,6 +478,7 @@ def _parse_gde_native(content):
             parts = line.split("|")
             if len(parts) >= 3:
                 param_name = parts[2].strip()
+                param_value = parts[3].strip() if len(parts) >= 4 else ""
                 # Skip: numeric IDs, internal params, structural refs, template params
                 if (param_name and not param_name.isdigit() 
                     and not param_name.startswith("_") 
@@ -442,7 +491,7 @@ def _parse_gde_native(content):
                         "filter_aggregate", "propagat", "doc_", "callback",
                         "threshold", "limit_keyword", "ramp_keyword",
                     ])):
-                    params[param_name] = ""
+                    params[param_name] = param_value
             continue
         
         # IMPORTANT: Check ports BEFORE component definitions
