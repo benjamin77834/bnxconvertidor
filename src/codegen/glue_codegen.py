@@ -336,9 +336,31 @@ def _build_transform(var_id, src_df, rule):
                     continue
                 
                 spark_expr = _translate_abinitio_expr(raw_expr)
-                # Escape internal double quotes for the expr() call
-                spark_expr_escaped = spark_expr.replace('"', '\\"')
-                lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", expr("{spark_expr_escaped}"))')
+                
+                # Generate PySpark-native API when possible instead of expr()
+                # Pattern: CAST(field AS TYPE) → col("field").cast("type")
+                cast_match = re.match(r'^CAST\((\w+)\s+AS\s+(\w+)\)$', spark_expr)
+                # Pattern: trim(field) → trim(col("field"))
+                trim_match = re.match(r'^trim\((\w+)\)$', spark_expr)
+                # Pattern: substring(field, start, len) → substring(col("field"), start, len)
+                substr_match = re.match(r'^substring\((\w+),\s*(\d+),\s*(\d+)\)$', spark_expr)
+                
+                if cast_match:
+                    src_col = cast_match.group(1)
+                    cast_type = cast_match.group(2).lower()
+                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", col("{src_col}").cast("{cast_type}"))')
+                elif trim_match:
+                    src_col = trim_match.group(1)
+                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", trim(col("{src_col}")))')
+                elif substr_match:
+                    src_col = substr_match.group(1)
+                    start = substr_match.group(2)
+                    length = substr_match.group(3)
+                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", substring(col("{src_col}"), {start}, {length}))')
+                else:
+                    # General case: use expr()
+                    spark_expr_escaped = spark_expr.replace('"', '\\"')
+                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", expr("{spark_expr_escaped}"))')
             
             return "\n".join(lines)
     
@@ -669,38 +691,36 @@ def generate_glue(dag, output_path, xfr_rules=None):
                 f.write(f'# [~] JOIN: {log_name}\n')
                 if len(parents) >= 2:
                     join_key = rule.get("join_key", None) if rule else None
-                    join_type = rule.get("join_type", "inner") if rule else "inner"
+                    join_type = rule.get("join_type", None) if rule else None
                     
                     # If no explicit key, try to extract from embedded keys_by_vertex
                     if not join_key:
-                        # Check for keys in xfr_rules for this node
                         node_rule = xfr_rules.get(var_id.lower()) or xfr_rules.get(log_name.lower()) or {}
                         join_key = node_rule.get("join_key", None)
                     
-                    if not join_key:
-                        # No key found — generate without default, add comment
-                        join_key = None
-                        f.write(f'# ⚠️ WARNING: join key not found in .mp — provide .xfr with join key or check key parameter\n')
+                    # Determine join type from rule or default to "left" (safer than inner)
+                    if not join_type:
+                        node_rule = xfr_rules.get(var_id.lower()) or xfr_rules.get(log_name.lower()) or {}
+                        join_type = node_rule.get("join_type", "left")
                     
-                    # Handle multi-column join keys
-                    if join_key is None:
-                        # No key resolved — use common columns between both DataFrames
-                        f.write(f'# Auto-detecting common columns for join key\n')
-                        f.write(f'_common_cols = list(set({parents[0]}_df.columns) & set({parents[1]}_df.columns))\n')
-                        f.write(f'{var_id}_df = {parents[0]}_df.join({parents[1]}_df, on=_common_cols, how="{join_type}")\n')
-                    elif isinstance(join_key, list):
+                    if not join_key:
+                        f.write(f'# ⚠️ WARNING: join key not found in .mp — sube el .xfr o revisa key={{}} en el MP\n')
+                    
+                    # Generate join
+                    if join_key and isinstance(join_key, list):
                         keys_list = "[" + ", ".join(f'"{k}"' for k in join_key) + "]"
                         f.write(f'{var_id}_df = {parents[0]}_df.join({parents[1]}_df, on={keys_list}, how="{join_type}")\n')
-                    else:
+                        for ep in parents[2:]:
+                            f.write(f'{var_id}_df = {var_id}_df.join({ep}_df, on={keys_list}, how="{join_type}")\n')
+                    elif join_key:
                         f.write(f'{var_id}_df = {parents[0]}_df.join({parents[1]}_df, on="{join_key}", how="{join_type}")\n')
-                    # Chained joins for additional parents
-                    for extra_parent in parents[2:]:
-                        if join_key is None:
-                            f.write(f'{var_id}_df = {var_id}_df.join({extra_parent}_df, on=_common_cols, how="{join_type}")\n')
-                        elif isinstance(join_key, list):
-                            f.write(f'{var_id}_df = {var_id}_df.join({extra_parent}_df, on={keys_list}, how="{join_type}")\n')
-                        else:
-                            f.write(f'{var_id}_df = {var_id}_df.join({extra_parent}_df, on="{join_key}", how="{join_type}")\n')
+                        for ep in parents[2:]:
+                            f.write(f'{var_id}_df = {var_id}_df.join({ep}_df, on="{join_key}", how="{join_type}")\n')
+                    else:
+                        # No key at all — leave placeholder that user must fill
+                        f.write(f'{var_id}_df = {parents[0]}_df.join({parents[1]}_df, on=["TODO_JOIN_KEY"], how="{join_type}")  # TODO: specify join key\n')
+                        for ep in parents[2:]:
+                            f.write(f'{var_id}_df = {var_id}_df.join({ep}_df, on=["TODO_JOIN_KEY"], how="{join_type}")\n')
                 elif len(parents) == 1:
                     f.write(f'{var_id}_df = {parents[0]}_df\n')
                 else:
