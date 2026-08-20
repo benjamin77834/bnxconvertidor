@@ -56,7 +56,7 @@ def _map_component_type(name):
         return "TRANSFORM"
     if any(k in n for k in ["reformat", "transform", "compute", "copy",
                              "replicate", "leading", "run_dml", "create_data",
-                             "dml_script"]):
+                             "dml_script", "run_program"]):
         return "TRANSFORM"
     return "TRANSFORM"
 
@@ -1097,6 +1097,22 @@ def _extract_embedded_transforms(content):
         print(f"  [dbg] Transform #{current_component_idx}: type={rules['type']}, fields={len(rules['fields'])}, aggs={len(rules['aggregations'])}, vertex={owning_vertex}")
         current_component_idx += 1
     
+    # Extract commandline parameters (for Run_Program components)
+    commandlines_by_vertex = {}
+    cmd_positions = [(m.start(), m.group(1)) for m in re.finditer(r'XXparameter\|commandline\|([^|]+)\|', content)]
+    for cpos, cval in cmd_positions:
+        owning_vertex = None
+        for vpos, vid in vertex_positions:
+            if vpos < cpos:
+                owning_vertex = vid
+            else:
+                break
+        if owning_vertex and cval.strip():
+            commandlines_by_vertex[owning_vertex] = cval.strip()
+    
+    if commandlines_by_vertex:
+        print(f"  [dbg] Commandlines by vertex: {commandlines_by_vertex}")
+    
     # Build xfr_rules dict
     # We'll match these to components by order later
     # For now, store with index keys
@@ -1108,6 +1124,7 @@ def _extract_embedded_transforms(content):
         "filters": filters,
         "filters_by_vertex": filters_by_vertex,
         "keeps": keeps,
+        "commandlines_by_vertex": commandlines_by_vertex,
     }
     
     return result
@@ -1131,6 +1148,16 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
     transforms = embedded.get("transforms", {})
     transforms_by_vertex = embedded.get("transforms_by_vertex", {})
     keeps = embedded.get("keeps", [])
+    commandlines_by_vertex = embedded.get("commandlines_by_vertex", {})
+    
+    # Apply commandlines to Run_Program vertices as raw_transform
+    for vid, cmd in commandlines_by_vertex.items():
+        if vid in node_by_id:
+            comp_name = node_by_id[vid]["name"]
+            name_lower = comp_name.lower()
+            if name_lower not in xfr_rules:
+                xfr_rules[name_lower] = {"raw_transform": cmd}
+                print(f"  [dbg] Commandline assigned: {comp_name} ({vid}) → {cmd[:80]}")
     
     # FIRST PASS: Direct vertex-based assignment (highest priority)
     # transforms_by_vertex maps vertex_id -> parsed transform rules

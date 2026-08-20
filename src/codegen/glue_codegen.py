@@ -402,11 +402,50 @@ def generate_glue(dag, output_path, xfr_rules=None):
 
     with open(output_path, "w") as f:
         f.write(f'"""\n[*] BNX V54 GENERATED GLUE JOB\n? Generated at: {datetime.now()}\n"""\n\n')
+        f.write("import os\n")
         f.write("from awsglue.context import GlueContext\n")
         f.write("from pyspark.context import SparkContext\n")
-        f.write("from pyspark.sql.functions import *\n\n")
+        f.write("from pyspark.sql.functions import *\n")
+        f.write("from pyspark.sql import functions as F\n\n")
         f.write("sc = SparkContext()\nglueContext = GlueContext(sc)\nspark = glueContext.spark_session\n\n")
+        f.write('# =========================\n# PARAMETERS\n# =========================\n')
+        f.write('class PARAMS:\n')
+        f.write('    BASE_PATH = "s3://datalake-bnx-scripts-dev"  # Override via Glue Job parameters\n\n')
         f.write('print("[*] BNX Glue Job V54 Started")\n\n')
+        f.write("# =========================\n# HELPER FUNCTIONS\n# =========================\n\n")
+        # Generate filter_by_expression helper for header/trailer detection
+        f.write("def filter_by_expression_hdr_trl(df, field, start, length, exclude_values):\n")
+        f.write('    """Filter rows where substring(field, start, length) is NOT in exclude_values.\n')
+        f.write('    Used to remove header/trailer records from flat files.\n')
+        f.write('    """\n')
+        f.write("    return df.filter(~F.substring(F.col(field), start, length).isin(exclude_values))\n\n\n")
+        # Generate is_valid_record helper
+        f.write("def is_valid_record(df, validation_rules=None):\n")
+        f.write('    """Validate records based on Ab Initio _vrule validation rules.\n')
+        f.write('    Returns tuple: (valid_df, invalid_df)\n')
+        f.write('    """\n')
+        f.write('    if validation_rules is None:\n')
+        f.write('        return df, spark.createDataFrame([], df.schema)\n')
+        f.write('    condition = None\n')
+        f.write('    for rule in validation_rules:\n')
+        f.write('        field = rule["field"]\n')
+        f.write('        rule_type = rule.get("type", "not_null")\n')
+        f.write('        if rule_type == "not_null":\n')
+        f.write('            c = F.col(field).isNotNull()\n')
+        f.write('        elif rule_type == "length":\n')
+        f.write('            c = F.length(F.col(field)) <= rule["max_length"]\n')
+        f.write('        elif rule_type == "range":\n')
+        f.write('            c = (F.col(field) >= rule["min"]) & (F.col(field) <= rule["max"])\n')
+        f.write('        elif rule_type == "in_list":\n')
+        f.write('            c = F.col(field).isin(rule["values"])\n')
+        f.write('        else:\n')
+        f.write('            continue\n')
+        f.write('        condition = c if condition is None else condition & c\n')
+        f.write('    if condition is None:\n')
+        f.write('        return df, spark.createDataFrame([], df.schema)\n')
+        f.write('    valid_df = df.filter(condition)\n')
+        f.write('    invalid_df = df.filter(~condition)\n')
+        f.write('    return valid_df, invalid_df\n\n\n')
         f.write("# =========================\n# DAG EXECUTION V54\n# =========================\n\n")
 
         # Track graph boundaries for Mega-DAG
@@ -436,7 +475,7 @@ def generate_glue(dag, output_path, xfr_rules=None):
             if ntype == "SOURCE":
                 f.write(f'# [+] SOURCE: {log_name}\n')
                 src_type = rule.get("source_type", "s3") if rule else "s3"
-                path = rule.get("path", f"s3://bnx/raw/{var_id.lower()}") if rule else f"s3://bnx/raw/{var_id.lower()}"
+                path = rule.get("path") if rule else None
                 fmt = rule.get("format", "parquet") if rule else "parquet"
                 topic = rule.get("topic") if rule else None
                 table = rule.get("table") if rule else None
@@ -457,7 +496,7 @@ def generate_glue(dag, output_path, xfr_rules=None):
                     query_clean = _re.sub(r'\$\{([^}]+)\}', r'${\1}', query_clean)
                     f.write(f'# Original DB: {dbms}\n')
                     f.write(f'# Original Query: {query_clean[:200]}\n')
-                    f.write(f'{var_id}_df = spark.read.format("parquet").load("s3://bnx/landing/{var_id.lower()}/")\n')
+                    f.write(f'{var_id}_df = spark.read.parquet(f"{{PARAMS.BASE_PATH}}/landing/{var_id.lower()}")\n')
                     # Apply WHERE clause from original query if present
                     where_match = _re.search(r'where\s+(.+)', query_clean, _re.IGNORECASE | _re.DOTALL)
                     if where_match:
@@ -474,10 +513,22 @@ def generate_glue(dag, output_path, xfr_rules=None):
                     f.write(f'.option("url", "{conn or "jdbc:mysql://localhost:3306/db"}")')
                     f.write(f'.option("dbtable", "{table or var_id.lower()}").load()\n')
                 else:
-                    if fmt == "csv":
-                        f.write(f'{var_id}_df = spark.read.format("csv").option("header", "true").option("inferSchema", "true").load("{path}")\n')
+                    src_name = var_id.lower()
+                    if path:
+                        # Use explicit path from layout (already has s3:// prefix)
+                        read_path = path
                     else:
-                        f.write(f'{var_id}_df = spark.read.format("{fmt}").load("{path}")\n')
+                        read_path = f'f"{{PARAMS.BASE_PATH}}/raw/{src_name}"'
+                    if fmt == "csv":
+                        if path:
+                            f.write(f'{var_id}_df = spark.read.format("csv").option("header", "true").option("inferSchema", "true").load("{read_path}")\n')
+                        else:
+                            f.write(f'{var_id}_df = spark.read.format("csv").option("header", "true").option("inferSchema", "true").load({read_path})\n')
+                    else:
+                        if path:
+                            f.write(f'{var_id}_df = spark.read.parquet("{read_path}")\n')
+                        else:
+                            f.write(f'{var_id}_df = spark.read.parquet({read_path})\n')
                 # Partition filter (Scan with date filter)
                 partition_filter = rule.get("partition_filter") if rule else None
                 scan_year = rule.get("scan_year") if rule else None
@@ -497,7 +548,27 @@ def generate_glue(dag, output_path, xfr_rules=None):
                 f.write(f'# [.] {label}: {log_name}\n')
                 if parents:
                     src = f'{parents[0]}_df'
-                    if rule:
+                    # Detect Run_Program components (shell commands)
+                    is_run_program = ("run_program" in log_name.lower() or 
+                                      "run_program" in var_id.lower())
+                    if is_run_program and rule and rule.get("raw_transform"):
+                        # Extract commandline from raw_transform
+                        raw_cmd = rule.get("raw_transform", "")
+                        # Clean Ab Initio variables: $AI_SERIAL -> PARAMS paths
+                        cmd_clean = re.sub(r'\$AI_SERIAL_BKP', f'{{PARAMS.BASE_PATH}}/backup', raw_cmd)
+                        cmd_clean = re.sub(r'\$AI_SERIAL', f'{{PARAMS.BASE_PATH}}/raw', cmd_clean)
+                        cmd_clean = re.sub(r'\$\{?AI_SERIAL_BKP\}?', f'{{PARAMS.BASE_PATH}}/backup', cmd_clean)
+                        cmd_clean = re.sub(r'\$\{?AI_SERIAL\}?', f'{{PARAMS.BASE_PATH}}/raw', cmd_clean)
+                        # Replace other $VAR references with {PARAMS.VAR}
+                        cmd_clean = re.sub(r'\$\{?(\w+)\}?', r'{PARAMS.\1}', cmd_clean)
+                        f.write(f'# Run_Program: shell command from Ab Initio\n')
+                        f.write(f'{var_id}_df = {src}  # passthrough data\n')
+                        f.write(f'os.system(f"{cmd_clean}")\n')
+                    elif is_run_program:
+                        f.write(f'# Run_Program: no commandline extracted\n')
+                        f.write(f'{var_id}_df = {src}  # passthrough (Run_Program)\n')
+                        f.write(f'# os.system(f"{{PARAMS.BASE_PATH}}/scripts/{var_id.lower()}.sh")\n')
+                    elif rule:
                         f.write(_build_transform(var_id, src, rule) + "\n")
                     else:
                         f.write(f'{var_id}_df = {src}.selectExpr("*")  # passthrough\n')
@@ -508,11 +579,11 @@ def generate_glue(dag, output_path, xfr_rules=None):
                     if db_src:
                         query = db_src.get("query", "").replace("$\\{EDW_TER_DEFAULT_DB\\}", "${EDW_TER_DEFAULT_DB}")
                         f.write(f'# DB Source: {db_src.get("dbms", "unknown")}\n')
-                        f.write(f'{var_id}_df = spark.read.format("parquet").load("s3://bnx/landing/{var_id.lower()}/")\n')
+                        f.write(f'{var_id}_df = spark.read.parquet(f"{{PARAMS.BASE_PATH}}/landing/{var_id.lower()}")\n')
                     elif rule and rule.get("path"):
-                        f.write(f'{var_id}_df = spark.read.format("parquet").load("{rule["path"]}")\n')
+                        f.write(f'{var_id}_df = spark.read.parquet("{rule["path"]}")\n')
                     else:
-                        f.write(f'{var_id}_df = spark.read.format("parquet").load("s3://bnx/landing/{var_id.lower()}/")\n')
+                        f.write(f'{var_id}_df = spark.read.parquet(f"{{PARAMS.BASE_PATH}}/landing/{var_id.lower()}")\n')
                 f.write(f'print("[~] {label}: {log_name}")\n\n')
 
             # JOIN
@@ -661,14 +732,31 @@ def generate_glue(dag, output_path, xfr_rules=None):
                     src = f'{parents[0]}_df'
                     where = rule.get("where") if rule else None
                     if where:
-                        # Translate Ab Initio expression to Spark SQL
-                        spark_where = _translate_abinitio_expr(where)
-                        
-                        if "next_in_sequence()" in where:
+                        # Detect Ab Initio header/trailer filter pattern:
+                        # string_substring(field, 1, N) not member [ vector "X", "Y" ]
+                        hdr_trl_match = re.search(
+                            r'string_substring\(([^,]+),\s*(\d+),\s*(\d+)\)\s+not\s+member\s*\[\s*vector\s+(.*?)\]',
+                            where, re.IGNORECASE
+                        )
+                        if hdr_trl_match:
+                            field = hdr_trl_match.group(1).strip()
+                            # Strip in. prefix
+                            field = re.sub(r'^in\d*\.', '', field)
+                            start = hdr_trl_match.group(2)
+                            length = hdr_trl_match.group(3)
+                            values_raw = hdr_trl_match.group(4).strip()
+                            # Parse values: "X", "Y", "Z" -> ["X", "Y", "Z"]
+                            values_list = re.findall(r'"([^"]*)"', values_raw)
+                            values_str = ", ".join(f'"{v}"' for v in values_list)
+                            f.write(f'{var_id}_df = filter_by_expression_hdr_trl({src}, "{field}", {start}, {length}, [{values_str}])\n')
+                            f.write(f'{var_id}_reject_df = {src}.filter(F.substring(F.col("{field}"), {start}, {length}).isin([{values_str}]))\n')
+                        elif "next_in_sequence()" in where:
                             f.write(f'# next_in_sequence() filter: no-op for structured formats\n')
                             f.write(f'{var_id}_df = {src}\n')
                             f.write(f'{var_id}_reject_df = spark.createDataFrame([], {src}.schema)\n')
                         else:
+                            # Translate Ab Initio expression to Spark SQL
+                            spark_where = _translate_abinitio_expr(where)
                             spark_where_escaped = spark_where.replace('"', '\\"')
                             f.write(f'{var_id}_df = {src}.where("{spark_where_escaped}")\n')
                             f.write(f'{var_id}_reject_df = {src}.where("NOT ({spark_where_escaped})")\n')
@@ -685,7 +773,7 @@ def generate_glue(dag, output_path, xfr_rules=None):
                 if parents:
                     src = f'{parents[0]}_df'
                     sink_type = rule.get("sink_type", "s3") if rule else "s3"
-                    path = rule.get("path", f"s3://bnx/output/{var_id.lower()}") if rule else f"s3://bnx/output/{var_id.lower()}"
+                    path = rule.get("path") if rule else None
                     fmt = rule.get("format", "parquet") if rule else "parquet"
                     topic = rule.get("topic") if rule else None
                     table = rule.get("table") if rule else None
@@ -702,7 +790,10 @@ def generate_glue(dag, output_path, xfr_rules=None):
                         f.write(f'.option("url", "{conn or "jdbc:mysql://localhost:3306/db"}")')
                         f.write(f'.option("dbtable", "{table or var_id.lower()}").save()\n')
                     else:
-                        f.write(f'{src}.write.mode("{mode}").format("{fmt}").save("{path}")\n')
+                        if path:
+                            f.write(f'{src}.write.mode("{mode}").parquet("{path}")\n')
+                        else:
+                            f.write(f'{src}.write.mode("{mode}").parquet(f"{{PARAMS.BASE_PATH}}/output/{var_id.lower()}")\n')
                 else:
                     f.write(f'# [!] SINK {log_name} has no parent\n')
                 f.write(f'print("[>] SINK: {log_name}")\n\n')
