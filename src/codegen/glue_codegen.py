@@ -491,7 +491,7 @@ def generate_glue(dag, output_path, xfr_rules=None):
                 needs_filter_hdr_trl = True
             if "is_valid" in where:
                 needs_is_valid = True
-        if (node.type.upper() in ("TRANSFORM", "XFR") and len(node.children) > 1
+        if (node.type.upper() in ("TRANSFORM", "XFR") and len(node.children) > 2
             and not rule and ("reformat" in node.name.lower() or "rfmt" in node.name.lower())):
             needs_output_split = True
 
@@ -655,9 +655,18 @@ def generate_glue(dag, output_path, xfr_rules=None):
                     is_run_program = ("run_program" in log_name.lower() or 
                                       "run_program" in var_id.lower())
                     # Detect multi-output Reformat with output_indexes
-                    has_multi_output = (len(node.children) > 1 and 
-                                        not rule and
-                                        ("reformat" in log_name.lower() or "rfmt" in log_name.lower()))
+                    # Only true multi-output splits have >2 children (out0+out1+...+reject != multi-output)
+                    # A reformat with 2 children where one goes to SINK (reject file) is NOT multi-output
+                    has_multi_output = False
+                    if (len(node.children) > 2 and not rule and
+                        ("reformat" in log_name.lower() or "rfmt" in log_name.lower())):
+                        has_multi_output = True
+                    elif (len(node.children) == 2 and not rule and
+                          ("reformat" in log_name.lower() or "rfmt" in log_name.lower())):
+                        # Check if BOTH children are non-SINK (true split) vs one is SINK (out+reject pattern)
+                        child_types = [dag.nodes[c].type.upper() for c in node.children if c in dag.nodes]
+                        if "SINK" not in child_types:
+                            has_multi_output = True
                     if is_run_program and rule and rule.get("raw_transform"):
                         # Extract commandline from raw_transform
                         raw_cmd = rule.get("raw_transform", "")
