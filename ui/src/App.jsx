@@ -107,6 +107,7 @@ export default function App() {
       form.append('xfr', selected.xfr)
     }
     if (selected.dml) form.append('dml', selected.dml)
+    if (selected.pset) form.append('pset', selected.pset)
     form.append('target', target)
     try {
       const res = await fetch(COMPILE_URL, { method: 'POST', body: form })

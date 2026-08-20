@@ -16,12 +16,13 @@ export default function FileUpload({ files, setFiles, onCompile, loading, theme 
   const handleAdd = (e) => {
     Array.from(e.target.files).forEach(f => {
       const ext = f.name.split('.').pop().toLowerCase()
-      if (['mp', 'xfr', 'dml'].includes(ext)) {
+      const mappedExt = ext === 'plan' ? 'mp' : ext  // .plan files treated as .mp
+      if (['mp', 'xfr', 'dml', 'pset'].includes(mappedExt)) {
         setFiles(prev => {
-          const list = prev[ext] || []
+          const list = prev[mappedExt] || []
           if (list.some(x => x.name === f.name)) return prev
-          const updated = { ...prev, [ext]: [...list, f] }
-          if (!prev[`selected_${ext}`]) updated[`selected_${ext}`] = f.name
+          const updated = { ...prev, [mappedExt]: [...list, f] }
+          if (!prev[`selected_${mappedExt}`]) updated[`selected_${mappedExt}`] = f.name
           return updated
         })
       }
@@ -52,6 +53,7 @@ export default function FileUpload({ files, setFiles, onCompile, loading, theme 
     mp:  { label: 'Graph', desc: 'Nodos, edges y subgraphs del pipeline', required: true },
     xfr: { label: 'Transform Rules', desc: 'SELECT, WHERE, GROUP BY, JOIN keys (sube múltiples .xfr)', required: false },
     dml: { label: 'Schema', desc: 'Tipos de datos y keys por tabla', required: false },
+    pset: { label: 'Parameters', desc: 'Variables del grafo (.pset): rutas, fechas, nombres', required: false },
   }
 
   return (
@@ -67,10 +69,10 @@ export default function FileUpload({ files, setFiles, onCompile, loading, theme 
           }}
           onClick={() => addRef.current.click()}
         >+ Add files</button>
-        <input ref={addRef} type="file" multiple accept=".mp,.xfr,.dml" hidden onChange={handleAdd} />
+        <input ref={addRef} type="file" multiple accept=".mp,.xfr,.dml,.plan,.pset" hidden onChange={handleAdd} />
       </div>
 
-      {['mp', 'xfr', 'dml'].map(ext => {
+      {['mp', 'xfr', 'dml', 'pset'].map(ext => {
         const list = files[ext] || []
         const selected = files[`selected_${ext}`]
         const info = fileInfo[ext]
@@ -136,7 +138,7 @@ export default function FileUpload({ files, setFiles, onCompile, loading, theme 
         onClick={() => {
           console.log('Compiling with xfr files:', (files.xfr || []).map(f => f.name))
           onCompile({
-            mp: getSelected('mp'), xfr: files.xfr || [], dml: getSelected('dml'), allXfr: true,
+            mp: getSelected('mp'), xfr: files.xfr || [], dml: getSelected('dml'), pset: getSelected('pset'), allXfr: true,
           })
         }}
         disabled={!canCompile}
