@@ -340,25 +340,46 @@ def _build_transform(var_id, src_df, rule):
                 # Generate PySpark-native API when possible instead of expr()
                 # Pattern: CAST(field AS TYPE) → col("field").cast("type")
                 cast_match = re.match(r'^CAST\((\w+)\s+AS\s+(\w+)\)$', spark_expr)
-                # Pattern: trim(field) → trim(col("field"))
+                # Pattern: trim(CAST(field AS STRING)) → F.trim(col("field").cast("string"))
+                trim_cast_match = re.match(r'^trim\(CAST\((\w+)\s+AS\s+(\w+)\)\)$', spark_expr)
+                # Pattern: CAST(trim(field) AS TYPE) → F.trim(col("field")).cast("type")
+                cast_trim_match = re.match(r'^CAST\(trim\((\w+)\)\s+AS\s+(\w+)\)$', spark_expr)
+                # Pattern: trim(field) → F.trim(col("field"))
                 trim_match = re.match(r'^trim\((\w+)\)$', spark_expr)
-                # Pattern: substring(field, start, len) → substring(col("field"), start, len)
+                # Pattern: substring(field, start, len) → F.substring(col("field"), start, len)
                 substr_match = re.match(r'^substring\((\w+),\s*(\d+),\s*(\d+)\)$', spark_expr)
+                # Pattern: lpad(substring(field, s, l), n, c) → F.lpad(F.substring(...), n, c)
+                lpad_substr_match = re.match(r'^lpad\(substring\((\w+),\s*(\d+),\s*(\d+)\),\s*(\d+),\s*"([^"]*)"\)$', spark_expr)
                 
-                if cast_match:
+                if trim_cast_match:
+                    src_col = trim_cast_match.group(1)
+                    cast_type = trim_cast_match.group(2).lower()
+                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", F.trim(F.col("{src_col}").cast("{cast_type}")))')
+                elif cast_trim_match:
+                    src_col = cast_trim_match.group(1)
+                    cast_type = cast_trim_match.group(2).lower()
+                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", F.trim(F.col("{src_col}")).cast("{cast_type}"))')
+                elif cast_match:
                     src_col = cast_match.group(1)
                     cast_type = cast_match.group(2).lower()
-                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", col("{src_col}").cast("{cast_type}"))')
+                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", F.col("{src_col}").cast("{cast_type}"))')
                 elif trim_match:
                     src_col = trim_match.group(1)
-                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", trim(col("{src_col}")))')
+                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", F.trim(F.col("{src_col}")))')
                 elif substr_match:
                     src_col = substr_match.group(1)
                     start = substr_match.group(2)
                     length = substr_match.group(3)
-                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", substring(col("{src_col}"), {start}, {length}))')
+                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", F.substring(F.col("{src_col}"), {start}, {length}))')
+                elif lpad_substr_match:
+                    src_col = lpad_substr_match.group(1)
+                    s = lpad_substr_match.group(2)
+                    l = lpad_substr_match.group(3)
+                    n = lpad_substr_match.group(4)
+                    c = lpad_substr_match.group(5)
+                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", F.lpad(F.substring(F.col("{src_col}"), {s}, {l}), {n}, "{c}"))')
                 else:
-                    # General case: use expr()
+                    # General case: use expr() — but wrap with F. functions where possible
                     spark_expr_escaped = spark_expr.replace('"', '\\"')
                     lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", expr("{spark_expr_escaped}"))')
             
@@ -458,6 +479,22 @@ def _build_transform(var_id, src_df, rule):
 def generate_glue(dag, output_path, xfr_rules=None):
     xfr_rules = xfr_rules or {}
 
+    # Pre-scan: determine which helpers are needed
+    needs_filter_hdr_trl = False
+    needs_is_valid = False
+    needs_output_split = False
+    for node in dag.execution_order:
+        rule = xfr_rules.get(node.id.lower()) or xfr_rules.get(node.name.lower())
+        if node.type.upper() == "FILTER" and rule and rule.get("where"):
+            where = rule["where"]
+            if re.search(r"string_substring\(\w+,\s*\d+,\s*\d+\)\s*!=\s*'", where):
+                needs_filter_hdr_trl = True
+            if "is_valid" in where:
+                needs_is_valid = True
+        if (node.type.upper() in ("TRANSFORM", "XFR") and len(node.children) > 1
+            and not rule and ("reformat" in node.name.lower() or "rfmt" in node.name.lower())):
+            needs_output_split = True
+
     with open(output_path, "w") as f:
         f.write(f'"""\n[*] BNX V54 GENERATED GLUE JOB\n? Generated at: {datetime.now()}\n"""\n\n')
         f.write("import os\n")
@@ -468,52 +505,47 @@ def generate_glue(dag, output_path, xfr_rules=None):
         f.write("sc = SparkContext()\nglueContext = GlueContext(sc)\nspark = glueContext.spark_session\n\n")
         f.write('# =========================\n# PARAMETERS\n# =========================\n')
         f.write('class PARAMS:\n')
-        f.write('    BASE_PATH = "s3://datalake-bnx-scripts-dev"  # Override via Glue Job parameters\n\n')
+        f.write('    BASE_PATH = os.environ.get("BNX_BASE_PATH", "s3://datalake-bnx-scripts-dev")\n\n')
         f.write('print("[*] BNX Glue Job V54 Started")\n\n')
-        f.write("# =========================\n# HELPER FUNCTIONS\n# =========================\n\n")
-        # Generate filter_by_expression helper for header/trailer detection
-        f.write("def filter_by_expression_hdr_trl(df, field, start, length, exclude_values):\n")
-        f.write('    """Filter rows where substring(field, start, length) is NOT in exclude_values.\n')
-        f.write('    Used to remove header/trailer records from flat files.\n')
-        f.write('    """\n')
-        f.write("    return df.filter(~F.substring(F.col(field), start, length).isin(exclude_values))\n\n\n")
-        # Generate is_valid_record helper
-        f.write("def is_valid_record(df, validation_rules=None):\n")
-        f.write('    """Validate records based on Ab Initio _vrule validation rules.\n')
-        f.write('    Returns tuple: (valid_df, invalid_df)\n')
-        f.write('    """\n')
-        f.write('    if validation_rules is None:\n')
-        f.write('        return df, spark.createDataFrame([], df.schema)\n')
-        f.write('    condition = None\n')
-        f.write('    for rule in validation_rules:\n')
-        f.write('        field = rule["field"]\n')
-        f.write('        rule_type = rule.get("type", "not_null")\n')
-        f.write('        if rule_type == "not_null":\n')
-        f.write('            c = F.col(field).isNotNull()\n')
-        f.write('        elif rule_type == "length":\n')
-        f.write('            c = F.length(F.col(field)) <= rule["max_length"]\n')
-        f.write('        elif rule_type == "range":\n')
-        f.write('            c = (F.col(field) >= rule["min"]) & (F.col(field) <= rule["max"])\n')
-        f.write('        elif rule_type == "in_list":\n')
-        f.write('            c = F.col(field).isin(rule["values"])\n')
-        f.write('        else:\n')
-        f.write('            continue\n')
-        f.write('        condition = c if condition is None else condition & c\n')
-        f.write('    if condition is None:\n')
-        f.write('        return df, spark.createDataFrame([], df.schema)\n')
-        f.write('    valid_df = df.filter(condition)\n')
-        f.write('    invalid_df = df.filter(~condition)\n')
-        f.write('    return valid_df, invalid_df\n\n\n')
-        # Generate output_indexes_split helper for multi-output Reformats
-        f.write("def output_indexes_split(df, index_expr, num_outputs):\n")
-        f.write('    """Split a DataFrame into multiple outputs based on an index expression.\n')
-        f.write('    Used for Ab Initio Reformat with output_indexes (multi-port fan-out).\n')
-        f.write('    Returns list of DataFrames, one per output port.\n')
-        f.write('    """\n')
-        f.write('    results = []\n')
-        f.write('    for i in range(num_outputs):\n')
-        f.write('        results.append(df.filter(F.expr(f"{index_expr} = {i}")))\n')
-        f.write('    return results\n\n\n')
+        
+        # Emit only the helpers that are actually used in this graph
+        if needs_filter_hdr_trl or needs_is_valid or needs_output_split:
+            f.write("# =========================\n# HELPER FUNCTIONS\n# =========================\n\n")
+        
+        if needs_filter_hdr_trl:
+            f.write("def filter_by_expression_hdr_trl(df, field, start, length, exclude_values):\n")
+            f.write('    """Filter rows where substring(field, start, length) is NOT in exclude_values."""\n')
+            f.write("    return df.filter(~F.substring(F.col(field), start, length).isin(exclude_values))\n\n\n")
+        
+        if needs_is_valid:
+            f.write("def is_valid_record(df, validation_rules=None):\n")
+            f.write('    """Validate records. Returns tuple: (valid_df, invalid_df)"""\n')
+            f.write('    if validation_rules is None:\n')
+            f.write('        return df, spark.createDataFrame([], df.schema)\n')
+            f.write('    condition = None\n')
+            f.write('    for rule in validation_rules:\n')
+            f.write('        field = rule["field"]\n')
+            f.write('        rule_type = rule.get("type", "not_null")\n')
+            f.write('        if rule_type == "not_null":\n')
+            f.write('            c = F.col(field).isNotNull()\n')
+            f.write('        elif rule_type == "length":\n')
+            f.write('            c = F.length(F.col(field)) <= rule["max_length"]\n')
+            f.write('        elif rule_type == "range":\n')
+            f.write('            c = (F.col(field) >= rule["min"]) & (F.col(field) <= rule["max"])\n')
+            f.write('        elif rule_type == "in_list":\n')
+            f.write('            c = F.col(field).isin(rule["values"])\n')
+            f.write('        else:\n')
+            f.write('            continue\n')
+            f.write('        condition = c if condition is None else condition & c\n')
+            f.write('    if condition is None:\n')
+            f.write('        return df, spark.createDataFrame([], df.schema)\n')
+            f.write('    return df.filter(condition), df.filter(~condition)\n\n\n')
+        
+        if needs_output_split:
+            f.write("def output_indexes_split(df, index_expr, num_outputs):\n")
+            f.write('    """Split DataFrame into N outputs based on index expression."""\n')
+            f.write('    return [df.filter(F.expr(f"{index_expr} = {i}")) for i in range(num_outputs)]\n\n\n')
+        
         f.write("# =========================\n# DAG EXECUTION V54\n# =========================\n\n")
 
         # Track graph boundaries for Mega-DAG
@@ -625,7 +657,7 @@ def generate_glue(dag, output_path, xfr_rules=None):
                     # Detect multi-output Reformat with output_indexes
                     has_multi_output = (len(node.children) > 1 and 
                                         not rule and
-                                        "reformat" in log_name.lower() or "rfmt" in log_name.lower())
+                                        ("reformat" in log_name.lower() or "rfmt" in log_name.lower()))
                     if is_run_program and rule and rule.get("raw_transform"):
                         # Extract commandline from raw_transform
                         raw_cmd = rule.get("raw_transform", "")

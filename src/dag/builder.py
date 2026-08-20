@@ -57,11 +57,19 @@ class DAG:
             if node_id in visited:
                 return
             visited.add(node_id)
+            # Visit parents first (ensure all dependencies are processed)
             for p in self.nodes[node_id].parents:
                 visit(p)
             order.append(self.nodes[node_id])
 
-        for n in self.nodes:
+        # Sort nodes by vertex_id (numeric) for stable ordering that respects
+        # the visual layout of the Ab Initio graph (lower vertex IDs first)
+        sorted_ids = sorted(self.nodes.keys(), key=lambda x: (
+            # Extract numeric suffix for stable sort
+            int(''.join(c for c in x if c.isdigit()) or '0'),
+            x
+        ))
+        for n in sorted_ids:
             visit(n)
         return order
 
