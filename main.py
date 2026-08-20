@@ -1646,14 +1646,25 @@ def main(project_path, output_path, xfr_path=None, dml_path=None, pset_path=None
         if "data_path" in node_data:
             ntype = node_data["type"].upper()
             node_id_lower = node_data["id"].lower()
+            # Clean the path: remove system prefixes, normalize slashes
+            raw_path = node_data["data_path"]
+            clean = raw_path
+            clean = re.sub(r'^file:', '', clean)
+            clean = re.sub(r'\$\\?\{?\w+\\?\}?/', '', clean)
+            clean = re.sub(r'/+', '/', clean)
+            clean = clean.lstrip('/')
+            if not clean:
+                clean = node_id_lower
             if ntype == "SOURCE":
                 if node_id_lower not in xfr_rules:
                     xfr_rules[node_id_lower] = {}
-                xfr_rules[node_id_lower]["path"] = f"s3://bnx/raw{node_data['data_path']}"
+                xfr_rules[node_id_lower]["path"] = clean
+                xfr_rules[node_id_lower]["path_resolved"] = True
             elif ntype == "SINK":
                 if node_id_lower not in xfr_rules:
                     xfr_rules[node_id_lower] = {}
-                xfr_rules[node_id_lower]["path"] = f"s3://bnx/output{node_data['data_path']}"
+                xfr_rules[node_id_lower]["path"] = clean
+                xfr_rules[node_id_lower]["path_resolved"] = True
 
     # Apply _global_dml_fields to TRANSFORM nodes that don't have rules
     if "_global_dml_fields" in xfr_rules:
