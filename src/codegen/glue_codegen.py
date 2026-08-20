@@ -76,14 +76,47 @@ def _translate_abinitio_expr(raw_expr):
     
     expr = raw_expr.strip()
     
-    # Remove Ab Initio type casts: (type("format"))value → value
-    # Examples: (date("YYYY-MM-DD"))in.contact_date → in.contact_date
-    #           (string(10))string_prefix(...) → string_prefix(...)
-    #           (datetime("YYYY-MM-DD"))now() → current_timestamp()
+    # Translate Ab Initio type casts to Spark SQL CAST
+    # (string(N))expr → CAST(expr AS STRING)
+    # (decimal(N))expr → CAST(expr AS DECIMAL)
+    # (integer(N))expr → CAST(expr AS INT)
+    # (date("fmt"))expr → to_date(expr, "fmt")  
+    # (datetime("fmt"))expr → to_timestamp(expr, "fmt")
+    # Pattern: (type(arg))followed_by_expression
+    def _replace_cast(m):
+        cast_type = m.group(1)
+        cast_arg = m.group(2)
+        following = m.group(3)
+        if cast_type == 'string':
+            return f'CAST({following} AS STRING)'
+        elif cast_type == 'decimal':
+            return f'CAST({following} AS DECIMAL({cast_arg}))'
+        elif cast_type == 'integer':
+            return f'CAST({following} AS INT)'
+        elif cast_type == 'date':
+            return f'to_date({following}, {cast_arg})'
+        elif cast_type == 'datetime':
+            return f'to_timestamp({following}, {cast_arg})'
+        return following
+    
+    # Match (type(arg))expression — expression is the next token (word, function call, or quoted string)
+    # We need to capture what follows the cast. It can be: field_name, function(...), or "literal"
+    # Simple approach: remove the cast wrapper, keep the value — but wrap with CAST when it's string/decimal
+    expr = re.sub(r'\(string\((\d+)\)\)(\w[\w.]*)', r'CAST(\2 AS STRING)', expr)
+    expr = re.sub(r'\(decimal\((\d+)\)\)(\w[\w.]*)', r'CAST(\2 AS DECIMAL(\1))', expr)
+    expr = re.sub(r'\(integer\(\d+\)\)(\w[\w.]*)', r'CAST(\1 AS INT)', expr)
+    # For function calls after cast: (string(10))some_func(...) → CAST(some_func(...) AS STRING)
+    expr = re.sub(r'\(string\(\d+\)\)([\w]+\([^)]*\))', r'CAST(\1 AS STRING)', expr)
+    expr = re.sub(r'\(decimal\((\d+)\)\)([\w]+\([^)]*\))', r'CAST(\2 AS DECIMAL(\1))', expr)
+    # Date casts with format → to_date/to_timestamp
+    expr = re.sub(r'\(date\("([^"]+)"\)\)(\w[\w.]*)', r'to_date(\2, "\1")', expr)
+    expr = re.sub(r'\(datetime\("([^"]+)"\)\)(\w[\w.]*)', r'to_timestamp(\2, "\1")', expr)
+    # Fallback: just remove unmatched cast wrappers
     expr = re.sub(r'\(date\("[^"]*"\)\)', '', expr)
     expr = re.sub(r'\(datetime\("[^"]*"\)\)', '', expr)
     expr = re.sub(r'\(string\(\d+\)\)', '', expr)
     expr = re.sub(r'\(decimal\(\d+\)\)', '', expr)
+    expr = re.sub(r'\(integer\(\d+\)\)', '', expr)
     
     # Strip "in." and "in0." and "in1." prefixes
     expr = re.sub(r'\bin\d*\.(\w+)', r'\1', expr)
@@ -289,7 +322,10 @@ def _build_transform(var_id, src_df, rule):
             where = rule.get("where")
             if where:
                 where = _translate_abinitio_expr(where)
+                lines.append(f'{var_id}_reject_df = {var_id}_df.where("NOT ({where})")')
                 lines.append(f'{var_id}_df = {var_id}_df.where("{where}")')
+            else:
+                lines.append(f'{var_id}_reject_df = spark.createDataFrame([], {var_id}_df.schema)')
             
             for field_name, raw_expr in field_matches:
                 if field_name in ("newline", "*", "V_FILLER"):
@@ -642,19 +678,26 @@ def generate_glue(dag, output_path, xfr_rules=None):
                         join_key = node_rule.get("join_key", None)
                     
                     if not join_key:
-                        # Default fallback — try "id" but warn
-                        join_key = "id"
-                        f.write(f'# WARNING: join key not resolved from plan, defaulting to "id"\n')
+                        # No key found — generate without default, add comment
+                        join_key = None
+                        f.write(f'# ⚠️ WARNING: join key not found in .mp — provide .xfr with join key or check key parameter\n')
                     
                     # Handle multi-column join keys
-                    if isinstance(join_key, list):
+                    if join_key is None:
+                        # No key resolved — use common columns between both DataFrames
+                        f.write(f'# Auto-detecting common columns for join key\n')
+                        f.write(f'_common_cols = list(set({parents[0]}_df.columns) & set({parents[1]}_df.columns))\n')
+                        f.write(f'{var_id}_df = {parents[0]}_df.join({parents[1]}_df, on=_common_cols, how="{join_type}")\n')
+                    elif isinstance(join_key, list):
                         keys_list = "[" + ", ".join(f'"{k}"' for k in join_key) + "]"
                         f.write(f'{var_id}_df = {parents[0]}_df.join({parents[1]}_df, on={keys_list}, how="{join_type}")\n')
                     else:
                         f.write(f'{var_id}_df = {parents[0]}_df.join({parents[1]}_df, on="{join_key}", how="{join_type}")\n')
                     # Chained joins for additional parents
                     for extra_parent in parents[2:]:
-                        if isinstance(join_key, list):
+                        if join_key is None:
+                            f.write(f'{var_id}_df = {var_id}_df.join({extra_parent}_df, on=_common_cols, how="{join_type}")\n')
+                        elif isinstance(join_key, list):
                             f.write(f'{var_id}_df = {var_id}_df.join({extra_parent}_df, on={keys_list}, how="{join_type}")\n')
                         else:
                             f.write(f'{var_id}_df = {var_id}_df.join({extra_parent}_df, on="{join_key}", how="{join_type}")\n')
