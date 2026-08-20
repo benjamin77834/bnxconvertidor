@@ -193,11 +193,51 @@ def generate_spark(dag, output_path, xfr_rules=None):
 
     with open(output_path, "w") as f:
         f.write(f'"""\n[*] BNX V54 GENERATED PYSPARK JOB\n? Generated at: {datetime.now()}\n"""\n\n')
+        f.write("import os\n")
         f.write("from pyspark.sql import SparkSession\n")
         f.write("from pyspark.sql.functions import *\n")
+        f.write("from pyspark.sql import functions as F\n")
         f.write("from pyspark.sql.window import Window\n\n")
         f.write('spark = SparkSession.builder.appName("BNX_Pipeline").getOrCreate()\n\n')
+        f.write('# =========================\n# PARAMETERS\n# =========================\n')
+        f.write('class PARAMS:\n')
+        f.write('    BASE_PATH = "s3://datalake-bnx-scripts-dev"  # Override via spark-submit --conf\n\n')
         f.write('print("[*] BNX PySpark Job Started")\n\n')
+        f.write("# =========================\n# HELPER FUNCTIONS\n# =========================\n\n")
+        # Generate filter_by_expression helper for header/trailer detection
+        f.write("def filter_by_expression_hdr_trl(df, field, start, length, exclude_values):\n")
+        f.write('    """Filter rows where substring(field, start, length) is NOT in exclude_values.\n')
+        f.write('    Used to remove header/trailer records from flat files.\n')
+        f.write('    """\n')
+        f.write("    return df.filter(~F.substring(F.col(field), start, length).isin(exclude_values))\n\n\n")
+        # Generate is_valid_record helper
+        f.write("def is_valid_record(df, validation_rules=None):\n")
+        f.write('    """Validate records based on Ab Initio _vrule validation rules.\n')
+        f.write('    Returns tuple: (valid_df, invalid_df)\n')
+        f.write('    """\n')
+        f.write('    if validation_rules is None:\n')
+        f.write('        return df, spark.createDataFrame([], df.schema)\n')
+        f.write('    condition = None\n')
+        f.write('    for rule in validation_rules:\n')
+        f.write('        field = rule["field"]\n')
+        f.write('        rule_type = rule.get("type", "not_null")\n')
+        f.write('        if rule_type == "not_null":\n')
+        f.write('            c = F.col(field).isNotNull()\n')
+        f.write('        elif rule_type == "length":\n')
+        f.write('            c = F.length(F.col(field)) <= rule["max_length"]\n')
+        f.write('        elif rule_type == "range":\n')
+        f.write('            c = (F.col(field) >= rule["min"]) & (F.col(field) <= rule["max"])\n')
+        f.write('        elif rule_type == "in_list":\n')
+        f.write('            c = F.col(field).isin(rule["values"])\n')
+        f.write('        else:\n')
+        f.write('            continue\n')
+        f.write('        condition = c if condition is None else condition & c\n')
+        f.write('    if condition is None:\n')
+        f.write('        return df, spark.createDataFrame([], df.schema)\n')
+        f.write('    valid_df = df.filter(condition)\n')
+        f.write('    invalid_df = df.filter(~condition)\n')
+        f.write('    return valid_df, invalid_df\n\n\n')
+        f.write("# =========================\n# DAG EXECUTION V54\n# =========================\n\n")
 
         # Track graph boundaries for Mega-DAG
         graph_boundaries = getattr(dag, 'graph_boundaries', {})
@@ -224,7 +264,7 @@ def generate_spark(dag, output_path, xfr_rules=None):
             if ntype == "SOURCE":
                 f.write(f'# [+] SOURCE: {log_name}\n')
                 src_type = rule.get("source_type", "s3") if rule else "s3"
-                path = rule.get("path", f"s3a://bnx/raw/{var_id.lower()}") if rule else f"s3a://bnx/raw/{var_id.lower()}"
+                path = rule.get("path") if rule else None
                 fmt = rule.get("format", "parquet") if rule else "parquet"
                 topic = rule.get("topic") if rule else None
                 table = rule.get("table") if rule else None
@@ -240,12 +280,26 @@ def generate_spark(dag, output_path, xfr_rules=None):
                     f.write(f'.option("url", "{conn or "jdbc:mysql://localhost:3306/db"}")')
                     f.write(f'.option("dbtable", "{table or var_id.lower()}").load()\n')
                 else:
-                    if fmt == "csv":
-                        f.write(f'{var_id}_df = spark.read.option("header", "true").option("inferSchema", "true").csv("{path}")\n')
-                    elif fmt == "json":
-                        f.write(f'{var_id}_df = spark.read.json("{path}")\n')
+                    src_name = var_id.lower()
+                    if path:
+                        read_path = path
                     else:
-                        f.write(f'{var_id}_df = spark.read.parquet("{path}")\n')
+                        read_path = None
+                    if fmt == "csv":
+                        if read_path:
+                            f.write(f'{var_id}_df = spark.read.option("header", "true").option("inferSchema", "true").csv("{read_path}")\n')
+                        else:
+                            f.write(f'{var_id}_df = spark.read.option("header", "true").option("inferSchema", "true").csv(f"{{PARAMS.BASE_PATH}}/raw/{src_name}")\n')
+                    elif fmt == "json":
+                        if read_path:
+                            f.write(f'{var_id}_df = spark.read.json("{read_path}")\n')
+                        else:
+                            f.write(f'{var_id}_df = spark.read.json(f"{{PARAMS.BASE_PATH}}/raw/{src_name}")\n')
+                    else:
+                        if read_path:
+                            f.write(f'{var_id}_df = spark.read.parquet("{read_path}")\n')
+                        else:
+                            f.write(f'{var_id}_df = spark.read.parquet(f"{{PARAMS.BASE_PATH}}/raw/{src_name}")\n')
                 # Partition filter (Scan with date filter)
                 partition_filter = rule.get("partition_filter") if rule else None
                 scan_year = rule.get("scan_year") if rule else None
@@ -263,7 +317,24 @@ def generate_spark(dag, output_path, xfr_rules=None):
                 f.write(f'# [.] TRANSFORM: {log_name}\n')
                 if parents:
                     src = f'{parents[0]}_df'
-                    if rule:
+                    # Detect Run_Program components
+                    is_run_program = ("run_program" in log_name.lower() or
+                                      "run_program" in var_id.lower())
+                    if is_run_program and rule and rule.get("raw_transform"):
+                        raw_cmd = rule.get("raw_transform", "")
+                        cmd_clean = re.sub(r'\$AI_SERIAL_BKP', f'{{PARAMS.BASE_PATH}}/backup', raw_cmd)
+                        cmd_clean = re.sub(r'\$AI_SERIAL', f'{{PARAMS.BASE_PATH}}/raw', cmd_clean)
+                        cmd_clean = re.sub(r'\$\{?AI_SERIAL_BKP\}?', f'{{PARAMS.BASE_PATH}}/backup', cmd_clean)
+                        cmd_clean = re.sub(r'\$\{?AI_SERIAL\}?', f'{{PARAMS.BASE_PATH}}/raw', cmd_clean)
+                        cmd_clean = re.sub(r'\$\{?(\w+)\}?', r'{PARAMS.\1}', cmd_clean)
+                        f.write(f'# Run_Program: shell command from Ab Initio\n')
+                        f.write(f'{var_id}_df = {src}  # passthrough data\n')
+                        f.write(f'os.system(f"{cmd_clean}")\n')
+                    elif is_run_program:
+                        f.write(f'# Run_Program: no commandline extracted\n')
+                        f.write(f'{var_id}_df = {src}  # passthrough (Run_Program)\n')
+                        f.write(f'# os.system(f"{{PARAMS.BASE_PATH}}/scripts/{var_id.lower()}.sh")\n')
+                    elif rule:
                         f.write(_build_transform(var_id, src, rule) + "\n")
                     else:
                         f.write(f'{var_id}_df = {src}.selectExpr("*")\n')
@@ -277,27 +348,45 @@ def generate_spark(dag, output_path, xfr_rules=None):
                     src = f'{parents[0]}_df'
                     where = rule.get("where", "") if rule else ""
                     if where:
-                        # Translate Ab Initio functions to Spark equivalents
-                        if "next_in_sequence()" in where:
-                            # next_in_sequence() > 1 in Ab Initio typically skips header rows
-                            # in raw/fixed-width files. When reading CSV/parquet with header=true,
-                            # this filter is a no-op (header already handled by reader).
-                            f.write(f'# next_in_sequence() filter: no-op for structured formats (CSV/parquet with header)\n')
+                        # Detect header/trailer filter pattern:
+                        # string_substring(field, 1, N) not member [ vector "X", "Y" ]
+                        hdr_trl_match = re.search(
+                            r'string_substring\(([^,]+),\s*(\d+),\s*(\d+)\)\s+not\s+member\s*\[\s*vector\s+(.*?)\]',
+                            where, re.IGNORECASE
+                        )
+                        if hdr_trl_match:
+                            field = hdr_trl_match.group(1).strip()
+                            field = re.sub(r'^in\d*\.', '', field)
+                            start = hdr_trl_match.group(2)
+                            length = hdr_trl_match.group(3)
+                            values_raw = hdr_trl_match.group(4).strip()
+                            values_list = re.findall(r'"([^"]*)"', values_raw)
+                            values_str = ", ".join(f'"{v}"' for v in values_list)
+                            f.write(f'{var_id}_df = filter_by_expression_hdr_trl({src}, "{field}", {start}, {length}, [{values_str}])\n')
+                            f.write(f'{var_id}_reject_df = {src}.filter(F.substring(F.col("{field}"), {start}, {length}).isin([{values_str}]))\n')
+                        elif "next_in_sequence()" in where:
+                            f.write(f'# next_in_sequence() filter: no-op for structured formats\n')
                             f.write(f'{var_id}_df = {src}\n')
                         elif re.search(r'\b(string_|decimal_|integer_|is_blank|is_defined)', where):
-                            # Ab Initio type-check functions - map common ones
                             mapped = _map_date_functions(where)
+                            mapped = _map_string_functions(mapped)
                             mapped = re.sub(r'is_blank\((\w+)\)', r'\1 IS NULL OR \1 = ""', mapped)
                             mapped = re.sub(r'is_defined\((\w+)\)', r'\1 IS NOT NULL', mapped)
-                            f.write(f'{var_id}_df = {src}.where("{mapped}")\n')
+                            mapped_escaped = mapped.replace('"', '\\"')
+                            f.write(f'{var_id}_df = {src}.where("{mapped_escaped}")\n')
+                            f.write(f'{var_id}_reject_df = {src}.where("NOT ({mapped_escaped})")\n')
                         else:
-                            where = _map_date_functions(where)
-                            f.write(f'{var_id}_df = {src}.where("{where}")\n')
+                            where_mapped = _map_date_functions(where)
+                            where_mapped = _map_string_functions(where_mapped)
+                            where_escaped = where_mapped.replace('"', '\\"')
+                            f.write(f'{var_id}_df = {src}.where("{where_escaped}")\n')
+                            f.write(f'{var_id}_reject_df = {src}.where("NOT ({where_escaped})")\n')
                     else:
-                        f.write(f'{var_id}_df = {src}.selectExpr("*")\n')
+                        f.write(f'{var_id}_df = {src}\n')
+                        f.write(f'{var_id}_reject_df = spark.createDataFrame([], {src}.schema)\n')
                 else:
                     f.write(f'{var_id}_df = None\n')
-                f.write(f'print("[~] FILTER: {log_name}")\n\n')
+                f.write(f'print("[-] FILTER: {log_name}")\n\n')
 
             elif ntype == "JOIN":
                 f.write(f'# [~] JOIN: {log_name}\n')
@@ -366,7 +455,7 @@ def generate_spark(dag, output_path, xfr_rules=None):
                 if parents:
                     src = f'{parents[0]}_df'
                     sink_type = rule.get("sink_type", "s3") if rule else "s3"
-                    path = rule.get("path", f"s3a://bnx/output/{var_id.lower()}") if rule else f"s3a://bnx/output/{var_id.lower()}"
+                    path = rule.get("path") if rule else None
                     fmt = rule.get("format", "parquet") if rule else "parquet"
                     topic = rule.get("topic") if rule else None
                     table = rule.get("table") if rule else None
@@ -382,7 +471,12 @@ def generate_spark(dag, output_path, xfr_rules=None):
                         f.write(f'.option("url", "{conn or "jdbc:mysql://localhost:3306/db"}")')
                         f.write(f'.option("dbtable", "{table or var_id.lower()}").save()\n')
                     else:
-                        f.write(f'{src}.write.mode("{mode}").parquet("{path}")\n')
+                        if path:
+                            f.write(f'{src}.write.mode("{mode}").parquet("{path}")\n')
+                        else:
+                            f.write(f'{src}.write.mode("{mode}").parquet(f"{{PARAMS.BASE_PATH}}/output/{var_id.lower()}")\n')
+                else:
+                    f.write(f'# [!] SINK {log_name} has no parent\n')
                 f.write(f'print("[>] SINK: {log_name}")\n\n')
 
             else:
