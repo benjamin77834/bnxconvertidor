@@ -314,8 +314,27 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                         xfr_rules[nid_lower]["path"] = clean
                         xfr_rules[nid_lower]["path_resolved"] = True
 
+            # Detect missing external .xfr references and add warnings
+            missing_xfr = []
+            with open(mp_path, "r", errors="replace") as f_mp:
+                mp_raw = f_mp.read().replace('\x00', '')
+            for m in re.finditer(r'XXparameter\|transform\d*\|\$([^|]+\.xfr)\|', mp_raw):
+                xfr_ref = m.group(1)
+                # Check if any xfr content was provided that might cover this
+                if not xfr_content:
+                    missing_xfr.append(xfr_ref)
+            # Deduplicate
+            missing_xfr = list(dict.fromkeys(missing_xfr))
+
             # Validate
             errors, warnings = validate(dag, xfr_rules, dml_schema)
+            
+            # Add missing xfr warnings
+            if missing_xfr and not xfr_content:
+                for xf in missing_xfr[:5]:
+                    warnings.insert(0, f"⚠️ XFR externo no proporcionado: {xf}")
+                if len(missing_xfr) > 5:
+                    warnings.insert(0, f"⚠️ {len(missing_xfr)} archivos .xfr externos referenciados — sube los .xfr para generar transforms completos")
 
             # Generate code
             code = ""
@@ -398,6 +417,10 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 ext_lines.append('print("[ok] BNX Extractor Finished")')
                 extractor_code = "\n".join(ext_lines)
 
+            # Extract graph name from params
+            graph_params = ast.get("abinitio_params", {})
+            graph_name = graph_params.get("AI_JOBNAME", "") or graph_params.get("PLAN_NAME", "") or ""
+
             self._json_response(200, {
                 "nodes": nodes,
                 "edges": edges,
@@ -408,6 +431,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 "has_db_sources": bool(db_nodes),
                 "db_sources_count": len(db_nodes),
                 "accuracy": acc,
+                "graph_name": graph_name,
                 "params": {k: v for k, v in list(ast.get("abinitio_params", {}).items())[:20]},
             })
 
