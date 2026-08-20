@@ -867,6 +867,7 @@ export default function App() {
                   fontSize: 15, fontWeight: 700, color: t.text,
                   marginRight: 8,
                 }}>
+                  {result.graph_name && <span style={{ color: t.accent || '#6366f1' }}>{result.graph_name} — </span>}
                   {result.nodes.length} nodes · {result.edges.length} edges
                   {result.subgraphs?.length > 0 && ` · ${result.subgraphs.length} subgraphs`}
                 </span>
