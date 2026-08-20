@@ -480,27 +480,31 @@ def generate_spark(dag, output_path, xfr_rules=None):
                 f.write(f'# [~] JOIN: {log_name}\n')
                 if len(parents) >= 2:
                     jk = rule.get("join_key", None) if rule else None
-                    jt = rule.get("join_type", "inner") if rule else "inner"
+                    jt = rule.get("join_type", None) if rule else None
                     # Also check xfr_rules for this node
                     if not jk:
                         node_rule = xfr_rules.get(var_id.lower()) or xfr_rules.get(log_name.lower()) or {}
                         jk = node_rule.get("join_key", None)
-                    if jk is None:
-                        f.write(f'# ⚠️ WARNING: join key not found in .mp — provide .xfr or check key parameter\n')
-                        f.write(f'_common_cols = list(set({parents[0]}_df.columns) & set({parents[1]}_df.columns))\n')
-                        f.write(f'{var_id}_df = {parents[0]}_df.join({parents[1]}_df, on=_common_cols, how="{jt}")\n')
-                    elif isinstance(jk, list):
+                    if not jt:
+                        node_rule = xfr_rules.get(var_id.lower()) or xfr_rules.get(log_name.lower()) or {}
+                        jt = node_rule.get("join_type", "left")
+                    
+                    if not jk:
+                        f.write(f'# ⚠️ WARNING: join key not found in .mp — sube el .xfr o revisa key={{}} en el MP\n')
+                    
+                    if jk and isinstance(jk, list):
                         keys_list = "[" + ", ".join(f'"{k}"' for k in jk) + "]"
                         f.write(f'{var_id}_df = {parents[0]}_df.join({parents[1]}_df, on={keys_list}, how="{jt}")\n')
-                    else:
-                        f.write(f'{var_id}_df = {parents[0]}_df.join({parents[1]}_df, on="{jk}", how="{jt}")\n')
-                    for ep in parents[2:]:
-                        if jk is None:
-                            f.write(f'{var_id}_df = {var_id}_df.join({ep}_df, on=_common_cols, how="{jt}")\n')
-                        elif isinstance(jk, list):
+                        for ep in parents[2:]:
                             f.write(f'{var_id}_df = {var_id}_df.join({ep}_df, on={keys_list}, how="{jt}")\n')
-                        else:
+                    elif jk:
+                        f.write(f'{var_id}_df = {parents[0]}_df.join({parents[1]}_df, on="{jk}", how="{jt}")\n')
+                        for ep in parents[2:]:
                             f.write(f'{var_id}_df = {var_id}_df.join({ep}_df, on="{jk}", how="{jt}")\n')
+                    else:
+                        f.write(f'{var_id}_df = {parents[0]}_df.join({parents[1]}_df, on=["TODO_JOIN_KEY"], how="{jt}")  # TODO: specify join key\n')
+                        for ep in parents[2:]:
+                            f.write(f'{var_id}_df = {var_id}_df.join({ep}_df, on=["TODO_JOIN_KEY"], how="{jt}")\n')
                 elif len(parents) == 1:
                     f.write(f'{var_id}_df = {parents[0]}_df\n')
                 else:

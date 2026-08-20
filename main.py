@@ -1162,6 +1162,29 @@ def _extract_embedded_transforms(content):
     if commandlines_by_vertex:
         print(f"  [dbg] Commandlines by vertex: {commandlines_by_vertex}")
     
+    # Extract record_match_required for Join components (determines left vs inner join)
+    # Pattern: record_match_required1|False| or record_match_required|Explicit| etc.
+    join_types_by_vertex = {}
+    rmr_positions = [(m.start(), m.group(1)) for m in re.finditer(
+        r'XXparameter\|record_match_required\d*\|([^|]+)\|', content
+    )]
+    for rpos, rval in rmr_positions:
+        owning_vertex = None
+        for vpos, vid in vertex_positions:
+            if vpos < rpos:
+                owning_vertex = vid
+            else:
+                break
+        if owning_vertex:
+            rval_lower = rval.strip().lower()
+            if rval_lower == "false" or "optional" in rval_lower:
+                join_types_by_vertex[owning_vertex] = "left"
+            elif "inner" in rval_lower or rval_lower == "true":
+                join_types_by_vertex[owning_vertex] = "inner"
+    
+    if join_types_by_vertex:
+        print(f"  [dbg] Join types by vertex: {join_types_by_vertex}")
+    
     # Build xfr_rules dict
     # We'll match these to components by order later
     # For now, store with index keys
@@ -1174,6 +1197,7 @@ def _extract_embedded_transforms(content):
         "filters_by_vertex": filters_by_vertex,
         "keeps": keeps,
         "commandlines_by_vertex": commandlines_by_vertex,
+        "join_types_by_vertex": join_types_by_vertex,
     }
     
     return result
@@ -1198,6 +1222,7 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
     transforms_by_vertex = embedded.get("transforms_by_vertex", {})
     keeps = embedded.get("keeps", [])
     commandlines_by_vertex = embedded.get("commandlines_by_vertex", {})
+    join_types_by_vertex = embedded.get("join_types_by_vertex", {})
     
     # Apply commandlines to Run_Program vertices as raw_transform
     for vid, cmd in commandlines_by_vertex.items():
@@ -1207,6 +1232,15 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
             if name_lower not in xfr_rules:
                 xfr_rules[name_lower] = {"raw_transform": cmd}
                 print(f"  [dbg] Commandline assigned: {comp_name} ({vid}) → {cmd[:80]}")
+    
+    # Apply join_types to JOIN vertices
+    for vid, jtype in join_types_by_vertex.items():
+        if vid in node_by_id:
+            comp_name = node_by_id[vid]["name"]
+            name_lower = comp_name.lower()
+            if name_lower not in xfr_rules:
+                xfr_rules[name_lower] = {}
+            xfr_rules[name_lower]["join_type"] = jtype
     
     # FIRST PASS: Direct vertex-based assignment (highest priority)
     # transforms_by_vertex maps vertex_id -> parsed transform rules
