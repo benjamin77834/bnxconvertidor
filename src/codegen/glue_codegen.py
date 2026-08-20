@@ -573,17 +573,35 @@ def generate_glue(dag, output_path, xfr_rules=None):
                     else:
                         f.write(f'{var_id}_df = {src}.selectExpr("*")  # passthrough\n')
                 else:
-                    # Check if this node has a db_source (Input_Table without edges resolved)
-                    node_data = next((n for n in dag.execution_order if n.id == var_id), None)
-                    db_src = getattr(node_data, 'db_source', None) if node_data else None
-                    if db_src:
-                        query = db_src.get("query", "").replace("$\\{EDW_TER_DEFAULT_DB\\}", "${EDW_TER_DEFAULT_DB}")
-                        f.write(f'# DB Source: {db_src.get("dbms", "unknown")}\n')
-                        f.write(f'{var_id}_df = spark.read.parquet(f"{{PARAMS.BASE_PATH}}/landing/{var_id.lower()}")\n')
-                    elif rule and rule.get("path"):
-                        f.write(f'{var_id}_df = spark.read.parquet("{rule["path"]}")\n')
+                    # No parents — check if Run_Program
+                    is_run_program_nop = ("run_program" in log_name.lower() or
+                                          "run_program" in var_id.lower())
+                    if is_run_program_nop and rule and rule.get("raw_transform"):
+                        raw_cmd = rule.get("raw_transform", "")
+                        cmd_clean = re.sub(r'\$AI_SERIAL_BKP', f'{{PARAMS.BASE_PATH}}/backup', raw_cmd)
+                        cmd_clean = re.sub(r'\$AI_SERIAL', f'{{PARAMS.BASE_PATH}}/raw', cmd_clean)
+                        cmd_clean = re.sub(r'\$\{?AI_SERIAL_BKP\}?', f'{{PARAMS.BASE_PATH}}/backup', cmd_clean)
+                        cmd_clean = re.sub(r'\$\{?AI_SERIAL\}?', f'{{PARAMS.BASE_PATH}}/raw', cmd_clean)
+                        cmd_clean = re.sub(r'\$\{?(\w+)\}?', r'{PARAMS.\1}', cmd_clean)
+                        f.write(f'# Run_Program: shell command (no data dependency)\n')
+                        f.write(f'os.system(f"{cmd_clean}")\n')
+                        f.write(f'{var_id}_df = None  # Run_Program has no dataframe output\n')
+                    elif is_run_program_nop:
+                        f.write(f'# Run_Program: no commandline extracted from MP\n')
+                        f.write(f'# os.system(f"{{PARAMS.BASE_PATH}}/scripts/{var_id.lower()}.sh")\n')
+                        f.write(f'{var_id}_df = None  # Run_Program has no dataframe output\n')
                     else:
-                        f.write(f'{var_id}_df = spark.read.parquet(f"{{PARAMS.BASE_PATH}}/landing/{var_id.lower()}")\n')
+                        # Check if this node has a db_source (Input_Table without edges resolved)
+                        node_data = next((n for n in dag.execution_order if n.id == var_id), None)
+                        db_src = getattr(node_data, 'db_source', None) if node_data else None
+                        if db_src:
+                            query = db_src.get("query", "").replace("$\\{EDW_TER_DEFAULT_DB\\}", "${EDW_TER_DEFAULT_DB}")
+                            f.write(f'# DB Source: {db_src.get("dbms", "unknown")}\n')
+                            f.write(f'{var_id}_df = spark.read.parquet(f"{{PARAMS.BASE_PATH}}/landing/{var_id.lower()}")\n')
+                        elif rule and rule.get("path"):
+                            f.write(f'{var_id}_df = spark.read.parquet("{rule["path"]}")\n')
+                        else:
+                            f.write(f'{var_id}_df = spark.read.parquet(f"{{PARAMS.BASE_PATH}}/landing/{var_id.lower()}")\n')
                 f.write(f'print("[~] {label}: {log_name}")\n\n')
 
             # JOIN
@@ -733,29 +751,65 @@ def generate_glue(dag, output_path, xfr_rules=None):
                     where = rule.get("where") if rule else None
                     if where:
                         # Detect Ab Initio header/trailer filter pattern:
-                        # string_substring(field, 1, N) not member [ vector "X", "Y" ]
+                        # Pattern 1: string_substring(field, 1, N) not member [ vector "X", "Y" ]
                         hdr_trl_match = re.search(
                             r'string_substring\(([^,]+),\s*(\d+),\s*(\d+)\)\s+not\s+member\s*\[\s*vector\s+(.*?)\]',
                             where, re.IGNORECASE
                         )
+                        # Pattern 2: if((string_substring(field,1,N)!='HDR' and ...))
+                        hdr_trl_if_match = None
+                        if not hdr_trl_match:
+                            hdr_trl_if_match = re.search(
+                                r"string_substring\((\w+),\s*(\d+),\s*(\d+)\)\s*!=\s*'([^']+)'",
+                                where, re.IGNORECASE
+                            )
+                        
                         if hdr_trl_match:
                             field = hdr_trl_match.group(1).strip()
-                            # Strip in. prefix
                             field = re.sub(r'^in\d*\.', '', field)
                             start = hdr_trl_match.group(2)
                             length = hdr_trl_match.group(3)
                             values_raw = hdr_trl_match.group(4).strip()
-                            # Parse values: "X", "Y", "Z" -> ["X", "Y", "Z"]
                             values_list = re.findall(r'"([^"]*)"', values_raw)
                             values_str = ", ".join(f'"{v}"' for v in values_list)
                             f.write(f'{var_id}_df = filter_by_expression_hdr_trl({src}, "{field}", {start}, {length}, [{values_str}])\n')
                             f.write(f'{var_id}_reject_df = {src}.filter(F.substring(F.col("{field}"), {start}, {length}).isin([{values_str}]))\n')
+                        elif hdr_trl_if_match:
+                            field = hdr_trl_if_match.group(1).strip()
+                            field = re.sub(r'^in\d*\.', '', field)
+                            all_checks = re.findall(
+                                r"string_substring\(\w+,\s*(\d+),\s*(\d+)\)\s*!=\s*'([^']+)'",
+                                where
+                            )
+                            exclude_groups = {}
+                            for start, length, val in all_checks:
+                                key = (start, length)
+                                if key not in exclude_groups:
+                                    exclude_groups[key] = []
+                                if val not in exclude_groups[key]:
+                                    exclude_groups[key].append(val)
+                            
+                            has_is_valid = "is_valid" in where
+                            
+                            if exclude_groups:
+                                main_key = max(exclude_groups, key=lambda k: len(exclude_groups[k]))
+                                start, length = main_key
+                                values_list = exclude_groups[main_key]
+                                values_str = ", ".join(f'"{v}"' for v in values_list)
+                                f.write(f'{var_id}_df = filter_by_expression_hdr_trl({src}, "{field}", {start}, {length}, [{values_str}])\n')
+                                if has_is_valid:
+                                    f.write(f'# is_valid(this_record) — apply record validation\n')
+                                    f.write(f'{var_id}_df, {var_id}_reject_df = is_valid_record({var_id}_df)\n')
+                                else:
+                                    f.write(f'{var_id}_reject_df = {src}.filter(F.substring(F.col("{field}"), {start}, {length}).isin([{values_str}]))\n')
+                            else:
+                                f.write(f'{var_id}_df = {src}\n')
+                                f.write(f'{var_id}_reject_df = spark.createDataFrame([], {src}.schema)\n')
                         elif "next_in_sequence()" in where:
                             f.write(f'# next_in_sequence() filter: no-op for structured formats\n')
                             f.write(f'{var_id}_df = {src}\n')
                             f.write(f'{var_id}_reject_df = spark.createDataFrame([], {src}.schema)\n')
                         else:
-                            # Translate Ab Initio expression to Spark SQL
                             spark_where = _translate_abinitio_expr(where)
                             spark_where_escaped = spark_where.replace('"', '\\"')
                             f.write(f'{var_id}_df = {src}.where("{spark_where_escaped}")\n')
