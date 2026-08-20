@@ -446,6 +446,16 @@ def generate_glue(dag, output_path, xfr_rules=None):
         f.write('    valid_df = df.filter(condition)\n')
         f.write('    invalid_df = df.filter(~condition)\n')
         f.write('    return valid_df, invalid_df\n\n\n')
+        # Generate output_indexes_split helper for multi-output Reformats
+        f.write("def output_indexes_split(df, index_expr, num_outputs):\n")
+        f.write('    """Split a DataFrame into multiple outputs based on an index expression.\n')
+        f.write('    Used for Ab Initio Reformat with output_indexes (multi-port fan-out).\n')
+        f.write('    Returns list of DataFrames, one per output port.\n')
+        f.write('    """\n')
+        f.write('    results = []\n')
+        f.write('    for i in range(num_outputs):\n')
+        f.write('        results.append(df.filter(F.expr(f"{index_expr} = {i}")))\n')
+        f.write('    return results\n\n\n')
         f.write("# =========================\n# DAG EXECUTION V54\n# =========================\n\n")
 
         # Track graph boundaries for Mega-DAG
@@ -514,21 +524,24 @@ def generate_glue(dag, output_path, xfr_rules=None):
                     f.write(f'.option("dbtable", "{table or var_id.lower()}").load()\n')
                 else:
                     src_name = var_id.lower()
-                    if path:
-                        # Use explicit path from layout (already has s3:// prefix)
-                        read_path = path
-                    else:
-                        read_path = f'f"{{PARAMS.BASE_PATH}}/raw/{src_name}"'
-                    if fmt == "csv":
-                        if path:
-                            f.write(f'{var_id}_df = spark.read.format("csv").option("header", "true").option("inferSchema", "true").load("{read_path}")\n')
+                    path_resolved = rule.get("path_resolved") if rule else False
+                    if path and path_resolved:
+                        # Path from Layout, use PARAMS.BASE_PATH + relative path
+                        if fmt == "csv":
+                            f.write(f'{var_id}_df = spark.read.format("csv").option("header", "true").option("inferSchema", "true").load(f"{{PARAMS.BASE_PATH}}/raw/{path}")\n')
                         else:
-                            f.write(f'{var_id}_df = spark.read.format("csv").option("header", "true").option("inferSchema", "true").load({read_path})\n')
-                    else:
-                        if path:
-                            f.write(f'{var_id}_df = spark.read.parquet("{read_path}")\n')
+                            f.write(f'{var_id}_df = spark.read.parquet(f"{{PARAMS.BASE_PATH}}/raw/{path}")\n')
+                    elif path:
+                        # Explicit full path (e.g. s3://...)
+                        if fmt == "csv":
+                            f.write(f'{var_id}_df = spark.read.format("csv").option("header", "true").option("inferSchema", "true").load("{path}")\n')
                         else:
-                            f.write(f'{var_id}_df = spark.read.parquet({read_path})\n')
+                            f.write(f'{var_id}_df = spark.read.parquet("{path}")\n')
+                    else:
+                        if fmt == "csv":
+                            f.write(f'{var_id}_df = spark.read.format("csv").option("header", "true").option("inferSchema", "true").load(f"{{PARAMS.BASE_PATH}}/raw/{src_name}")\n')
+                        else:
+                            f.write(f'{var_id}_df = spark.read.parquet(f"{{PARAMS.BASE_PATH}}/raw/{src_name}")\n')
                 # Partition filter (Scan with date filter)
                 partition_filter = rule.get("partition_filter") if rule else None
                 scan_year = rule.get("scan_year") if rule else None
@@ -551,6 +564,10 @@ def generate_glue(dag, output_path, xfr_rules=None):
                     # Detect Run_Program components (shell commands)
                     is_run_program = ("run_program" in log_name.lower() or 
                                       "run_program" in var_id.lower())
+                    # Detect multi-output Reformat with output_indexes
+                    has_multi_output = (len(node.children) > 1 and 
+                                        not rule and
+                                        "reformat" in log_name.lower() or "rfmt" in log_name.lower())
                     if is_run_program and rule and rule.get("raw_transform"):
                         # Extract commandline from raw_transform
                         raw_cmd = rule.get("raw_transform", "")
@@ -568,6 +585,13 @@ def generate_glue(dag, output_path, xfr_rules=None):
                         f.write(f'# Run_Program: no commandline extracted\n')
                         f.write(f'{var_id}_df = {src}  # passthrough (Run_Program)\n')
                         f.write(f'# os.system(f"{{PARAMS.BASE_PATH}}/scripts/{var_id.lower()}.sh")\n')
+                    elif has_multi_output and not rule:
+                        # Multi-output Reformat with output_indexes: split into N outputs
+                        num_outputs = len(node.children)
+                        f.write(f'# Multi-output Reformat (output_indexes): splits into {num_outputs} streams\n')
+                        f.write(f'_{var_id}_splits = output_indexes_split({src}, "output_port_index", {num_outputs})\n')
+                        for idx, child_id in enumerate(node.children):
+                            f.write(f'{child_id}_df = _{var_id}_splits[{idx}]  # port {idx}\n')
                     elif rule:
                         f.write(_build_transform(var_id, src, rule) + "\n")
                     else:
@@ -844,7 +868,10 @@ def generate_glue(dag, output_path, xfr_rules=None):
                         f.write(f'.option("url", "{conn or "jdbc:mysql://localhost:3306/db"}")')
                         f.write(f'.option("dbtable", "{table or var_id.lower()}").save()\n')
                     else:
-                        if path:
+                        path_resolved = rule.get("path_resolved") if rule else False
+                        if path and path_resolved:
+                            f.write(f'{src}.write.mode("{mode}").parquet(f"{{PARAMS.BASE_PATH}}/output/{path}")\n')
+                        elif path:
                             f.write(f'{src}.write.mode("{mode}").parquet("{path}")\n')
                         else:
                             f.write(f'{src}.write.mode("{mode}").parquet(f"{{PARAMS.BASE_PATH}}/output/{var_id.lower()}")\n')

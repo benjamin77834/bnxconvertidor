@@ -14,6 +14,7 @@ Prerequisitos:
 import os
 import sys
 import json
+import re
 import tempfile
 import http.server
 import socketserver
@@ -289,14 +290,29 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 if "data_path" in nd:
                     ntype = nd["type"].upper()
                     nid_lower = nd["id"].lower()
+                    # Clean the path: extract just the filename/relative part
+                    raw_path = nd["data_path"]
+                    # Remove system prefixes that shouldn't be in S3 paths
+                    clean = raw_path
+                    clean = re.sub(r'^file:', '', clean)
+                    # Remove unresolved $VAR and $\{VAR\} references (system dirs like AI_SERIAL)
+                    clean = re.sub(r'\$\\?\{?\w+\\?\}?/', '', clean)
+                    # Normalize double slashes
+                    clean = re.sub(r'/+', '/', clean)
+                    # Strip leading slash
+                    clean = clean.lstrip('/')
+                    if not clean:
+                        clean = nid_lower
                     if ntype == "SOURCE":
                         if nid_lower not in xfr_rules:
                             xfr_rules[nid_lower] = {}
-                        xfr_rules[nid_lower]["path"] = f"s3://bnx/raw{nd['data_path']}"
+                        xfr_rules[nid_lower]["path"] = clean  # relative path, codegen adds PARAMS.BASE_PATH
+                        xfr_rules[nid_lower]["path_resolved"] = True
                     elif ntype == "SINK":
                         if nid_lower not in xfr_rules:
                             xfr_rules[nid_lower] = {}
-                        xfr_rules[nid_lower]["path"] = f"s3://bnx/output{nd['data_path']}"
+                        xfr_rules[nid_lower]["path"] = clean
+                        xfr_rules[nid_lower]["path_resolved"] = True
 
             # Validate
             errors, warnings = validate(dag, xfr_rules, dml_schema)

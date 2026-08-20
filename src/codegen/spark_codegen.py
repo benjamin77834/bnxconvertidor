@@ -237,6 +237,16 @@ def generate_spark(dag, output_path, xfr_rules=None):
         f.write('    valid_df = df.filter(condition)\n')
         f.write('    invalid_df = df.filter(~condition)\n')
         f.write('    return valid_df, invalid_df\n\n\n')
+        # Generate output_indexes_split helper
+        f.write("def output_indexes_split(df, index_expr, num_outputs):\n")
+        f.write('    """Split a DataFrame into multiple outputs based on an index expression.\n')
+        f.write('    Used for Ab Initio Reformat with output_indexes (multi-port fan-out).\n')
+        f.write('    Returns list of DataFrames, one per output port.\n')
+        f.write('    """\n')
+        f.write('    results = []\n')
+        f.write('    for i in range(num_outputs):\n')
+        f.write('        results.append(df.filter(F.expr(f"{index_expr} = {i}")))\n')
+        f.write('    return results\n\n\n')
         f.write("# =========================\n# DAG EXECUTION V54\n# =========================\n\n")
 
         # Track graph boundaries for Mega-DAG
@@ -281,23 +291,28 @@ def generate_spark(dag, output_path, xfr_rules=None):
                     f.write(f'.option("dbtable", "{table or var_id.lower()}").load()\n')
                 else:
                     src_name = var_id.lower()
-                    if path:
-                        read_path = path
-                    else:
-                        read_path = None
-                    if fmt == "csv":
-                        if read_path:
-                            f.write(f'{var_id}_df = spark.read.option("header", "true").option("inferSchema", "true").csv("{read_path}")\n')
+                    path_resolved = rule.get("path_resolved") if rule else False
+                    if path and path_resolved:
+                        # Layout-derived path, prefix with PARAMS.BASE_PATH
+                        if fmt == "csv":
+                            f.write(f'{var_id}_df = spark.read.option("header", "true").option("inferSchema", "true").csv(f"{{PARAMS.BASE_PATH}}/raw/{path}")\n')
+                        elif fmt == "json":
+                            f.write(f'{var_id}_df = spark.read.json(f"{{PARAMS.BASE_PATH}}/raw/{path}")\n')
                         else:
+                            f.write(f'{var_id}_df = spark.read.parquet(f"{{PARAMS.BASE_PATH}}/raw/{path}")\n')
+                    elif path:
+                        # Explicit full path
+                        if fmt == "csv":
+                            f.write(f'{var_id}_df = spark.read.option("header", "true").option("inferSchema", "true").csv("{path}")\n')
+                        elif fmt == "json":
+                            f.write(f'{var_id}_df = spark.read.json("{path}")\n')
+                        else:
+                            f.write(f'{var_id}_df = spark.read.parquet("{path}")\n')
+                    else:
+                        if fmt == "csv":
                             f.write(f'{var_id}_df = spark.read.option("header", "true").option("inferSchema", "true").csv(f"{{PARAMS.BASE_PATH}}/raw/{src_name}")\n')
-                    elif fmt == "json":
-                        if read_path:
-                            f.write(f'{var_id}_df = spark.read.json("{read_path}")\n')
-                        else:
+                        elif fmt == "json":
                             f.write(f'{var_id}_df = spark.read.json(f"{{PARAMS.BASE_PATH}}/raw/{src_name}")\n')
-                    else:
-                        if read_path:
-                            f.write(f'{var_id}_df = spark.read.parquet("{read_path}")\n')
                         else:
                             f.write(f'{var_id}_df = spark.read.parquet(f"{{PARAMS.BASE_PATH}}/raw/{src_name}")\n')
                 # Partition filter (Scan with date filter)
@@ -320,6 +335,10 @@ def generate_spark(dag, output_path, xfr_rules=None):
                     # Detect Run_Program components
                     is_run_program = ("run_program" in log_name.lower() or
                                       "run_program" in var_id.lower())
+                    # Detect multi-output Reformat
+                    has_multi_output = (len(node.children) > 1 and
+                                        not rule and
+                                        ("reformat" in log_name.lower() or "rfmt" in log_name.lower()))
                     if is_run_program and rule and rule.get("raw_transform"):
                         raw_cmd = rule.get("raw_transform", "")
                         cmd_clean = re.sub(r'\$AI_SERIAL_BKP', f'{{PARAMS.BASE_PATH}}/backup', raw_cmd)
@@ -334,6 +353,12 @@ def generate_spark(dag, output_path, xfr_rules=None):
                         f.write(f'# Run_Program: no commandline extracted\n')
                         f.write(f'{var_id}_df = {src}  # passthrough (Run_Program)\n')
                         f.write(f'# os.system(f"{{PARAMS.BASE_PATH}}/scripts/{var_id.lower()}.sh")\n')
+                    elif has_multi_output:
+                        num_outputs = len(node.children)
+                        f.write(f'# Multi-output Reformat (output_indexes): splits into {num_outputs} streams\n')
+                        f.write(f'_{var_id}_splits = output_indexes_split({src}, "output_port_index", {num_outputs})\n')
+                        for idx, child_id in enumerate(node.children):
+                            f.write(f'{child_id}_df = _{var_id}_splits[{idx}]  # port {idx}\n')
                     elif rule:
                         f.write(_build_transform(var_id, src, rule) + "\n")
                     else:
@@ -534,7 +559,10 @@ def generate_spark(dag, output_path, xfr_rules=None):
                         f.write(f'.option("url", "{conn or "jdbc:mysql://localhost:3306/db"}")')
                         f.write(f'.option("dbtable", "{table or var_id.lower()}").save()\n')
                     else:
-                        if path:
+                        path_resolved = rule.get("path_resolved") if rule else False
+                        if path and path_resolved:
+                            f.write(f'{src}.write.mode("{mode}").parquet(f"{{PARAMS.BASE_PATH}}/output/{path}")\n')
+                        elif path:
                             f.write(f'{src}.write.mode("{mode}").parquet("{path}")\n')
                         else:
                             f.write(f'{src}.write.mode("{mode}").parquet(f"{{PARAMS.BASE_PATH}}/output/{var_id.lower()}")\n')
