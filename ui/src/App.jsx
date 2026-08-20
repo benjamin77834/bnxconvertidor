@@ -63,6 +63,7 @@ export default function App() {
   const [isDark, setIsDark]     = useState(true)
   const [target, setTarget]     = useState('glue')
   const [page, setPage]         = useState('compiler')
+  const [expandedPanel, setExpandedPanel] = useState(null)  // 'code' | 'dag' | 'editor-mp' | 'editor-xfr' | 'editor-pset' | null
   const dagRef                  = useRef(null)
   const cobolRef                = useRef(null)
   const planRef                 = useRef(null)
@@ -291,6 +292,92 @@ export default function App() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: t.bg, color: t.text, transition: 'background .4s ease, color .4s ease' }}>
       <style>{`@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.4} }`}</style>
+
+      {/* Fullscreen Overlay */}
+      {expandedPanel && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 9999,
+          background: t.bg, display: 'flex', flexDirection: 'column',
+        }}>
+          {/* Fullscreen header */}
+          <div style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            padding: '10px 20px', background: t.header, borderBottom: `1px solid ${t.border}`,
+          }}>
+            <span style={{ fontSize: 16, fontWeight: 700, color: t.headerText || t.text }}>
+              {expandedPanel === 'code' && `📄 Generated ${target === 'flink' ? 'Flink' : target === 'spark' ? 'Spark' : 'Glue'} Code`}
+              {expandedPanel === 'dag' && '🔀 DAG Graph'}
+              {expandedPanel === 'editor-mp' && '📄 Editor .mp'}
+              {expandedPanel === 'editor-xfr' && '🔄 Editor .xfr'}
+              {expandedPanel === 'editor-pset' && '⚙️ Editor .pset'}
+            </span>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {expandedPanel === 'code' && result?.code && (
+                <button onClick={downloadCode} style={{
+                  padding: '6px 14px', borderRadius: 6, fontSize: 13, cursor: 'pointer',
+                  background: '#22c55e20', border: '1px solid #22c55e', color: '#22c55e', fontWeight: 600,
+                }}>📥 Download</button>
+              )}
+              <button onClick={() => setExpandedPanel(null)} style={{
+                padding: '6px 14px', borderRadius: 6, fontSize: 13, cursor: 'pointer',
+                background: '#ef444420', border: '1px solid #ef4444', color: '#ef4444', fontWeight: 600,
+              }}>✕ Cerrar</button>
+            </div>
+          </div>
+          {/* Fullscreen content */}
+          <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+            {expandedPanel === 'code' && result?.code && (
+              <pre style={{
+                flex: 1, padding: 20, fontSize: 14, color: t.muted,
+                fontFamily: 'monospace', whiteSpace: 'pre', overflowY: 'auto',
+                lineHeight: 1.6, margin: 0, background: t.codeBg,
+              }}>{result.code}</pre>
+            )}
+            {expandedPanel === 'dag' && result?.nodes?.length > 0 && (
+              <div style={{ flex: 1 }}>
+                <DagViewer data={result} theme={t} />
+              </div>
+            )}
+            {expandedPanel === 'editor-mp' && (
+              <textarea
+                value={editorMp}
+                onChange={e => setEditorMp(e.target.value)}
+                placeholder="Pega tu contenido .mp aquí..."
+                style={{
+                  flex: 1, padding: 20, margin: 0, border: 'none', outline: 'none', resize: 'none',
+                  background: t.codeBg || '#081220', color: '#22c55e',
+                  fontSize: 14, fontFamily: 'monospace', lineHeight: 1.6,
+                }}
+              />
+            )}
+            {expandedPanel === 'editor-xfr' && (
+              <textarea
+                value={editorXfr}
+                onChange={e => setEditorXfr(e.target.value)}
+                placeholder="Pega tu contenido .xfr aquí..."
+                style={{
+                  flex: 1, padding: 20, margin: 0, border: 'none', outline: 'none', resize: 'none',
+                  background: t.codeBg || '#081220', color: '#6366f1',
+                  fontSize: 14, fontFamily: 'monospace', lineHeight: 1.6,
+                }}
+              />
+            )}
+            {expandedPanel === 'editor-pset' && (
+              <textarea
+                value={editorPset}
+                onChange={e => setEditorPset(e.target.value)}
+                placeholder="Pega tu contenido .pset aquí..."
+                style={{
+                  flex: 1, padding: 20, margin: 0, border: 'none', outline: 'none', resize: 'none',
+                  background: t.codeBg || '#081220', color: '#f59e0b',
+                  fontSize: 14, fontFamily: 'monospace', lineHeight: 1.6,
+                }}
+              />
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <header style={{
         padding: '12px 24px', background: t.header, borderBottom: `1px solid ${t.border}`,
@@ -447,6 +534,10 @@ export default function App() {
                 {editorTab === 'mp' && (
                   <>
                   <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                    <button onClick={() => setExpandedPanel('editor-mp')} style={{
+                      padding: '2px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer',
+                      background: 'transparent', border: `1px solid #22c55e40`, color: '#22c55e',
+                    }}>🔲 Expandir</button>
                     <button onClick={() => { navigator.clipboard.writeText(editorMp) }} style={{
                       padding: '2px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer',
                       background: 'transparent', border: `1px solid #22c55e40`, color: '#22c55e',
@@ -478,6 +569,10 @@ export default function App() {
                       </div>
                     )}
                     <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                      <button onClick={() => setExpandedPanel('editor-xfr')} style={{
+                        padding: '2px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer',
+                        background: 'transparent', border: `1px solid #6366f140`, color: '#6366f1',
+                      }}>🔲 Expandir</button>
                       <button onClick={() => { navigator.clipboard.writeText(editorXfr) }} style={{
                         padding: '2px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer',
                         background: 'transparent', border: `1px solid #6366f140`, color: '#6366f1',
@@ -504,6 +599,10 @@ export default function App() {
                 {editorTab === 'pset' && (
                   <>
                   <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                    <button onClick={() => setExpandedPanel('editor-pset')} style={{
+                      padding: '2px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer',
+                      background: 'transparent', border: `1px solid #f59e0b40`, color: '#f59e0b',
+                    }}>🔲 Expandir</button>
                     <button onClick={() => { navigator.clipboard.writeText(editorPset) }} style={{
                       padding: '2px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer',
                       background: 'transparent', border: `1px solid #f59e0b40`, color: '#f59e0b',
@@ -931,6 +1030,14 @@ export default function App() {
             )
           })()}
           <div ref={dagRef} style={{ flex: 1, position: 'relative', minHeight: 0 }}>
+            {result?.nodes?.length > 0 && (
+              <button onClick={() => setExpandedPanel('dag')} style={{
+                position: 'absolute', top: 10, right: 10, zIndex: 10,
+                padding: '6px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                background: t.card, border: `1px solid ${t.border}`, color: t.muted,
+                display: 'flex', alignItems: 'center', gap: 4,
+              }}>🔲 Fullscreen</button>
+            )}
             {result?.nodes?.length > 0
               ? <DagViewer data={result} theme={t} onEditNode={(nodeId, newRule) => {
                   // Update the node rule in result and recompile
@@ -1033,6 +1140,10 @@ export default function App() {
                   }
                 </span>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <button
+                    style={{ ...iconBtn, padding: '4px 10px', fontSize: 13 }}
+                    onClick={(e) => { e.stopPropagation(); setExpandedPanel('code') }}
+                  >🔲 Fullscreen</button>
                   <button
                     style={{ ...iconBtn, padding: '4px 10px', fontSize: 13 }}
                     onClick={(e) => { e.stopPropagation(); downloadCode() }}
