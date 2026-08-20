@@ -28,6 +28,11 @@ def _is_gde_format(content):
 def _map_component_type(name):
     """Map Ab Initio component/vertex name to BNX node type."""
     n = name.lower()
+    # REFORMAT/TRANSFORM must be checked FIRST (e.g. "RFMT_CImp_Read_DRI" contains "read" but is a transform)
+    if any(k in n for k in ["reformat", "rfmt", "transform", "compute", "copy",
+                             "replicate", "leading", "run_dml", "create_data",
+                             "dml_script", "run_program"]):
+        return "TRANSFORM"
     if any(k in n for k in ["read", "input", "scan", "source", "extract", "ingest"]):
         return "SOURCE"
     if n.startswith("v") and "_src_" in n:
@@ -53,10 +58,6 @@ def _map_component_type(name):
     if any(k in n for k in ["rollup", "aggregate", "summary"]):
         return "ROLLUP"
     if any(k in n for k in ["sort", "sort_within"]):
-        return "TRANSFORM"
-    if any(k in n for k in ["reformat", "transform", "compute", "copy",
-                             "replicate", "leading", "run_dml", "create_data",
-                             "dml_script", "run_program"]):
         return "TRANSFORM"
     return "TRANSFORM"
 
