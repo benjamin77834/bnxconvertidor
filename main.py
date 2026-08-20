@@ -1308,29 +1308,45 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
                     xfr_rules[name_lower] = {
                         "transform": "lookup_join",
                         "lookup_name": lookup_name,
-                        "raw_transform": raw_body[:500],
+                        "raw_transform": raw_body[:2000],
                     }
                 elif fields:
-                    select_parts = []
-                    literal_parts = []
-                    for f in fields:
-                        if "literal" in f:
-                            literal_parts.append(f)
-                        elif "expression" in f:
-                            select_parts.append(f'{f["expression"]} as {f["field"]}')
-                        elif "source" in f:
-                            if f["source"] == f["field"]:
-                                select_parts.append(f["field"])
-                            else:
-                                select_parts.append(f'{f["source"]} as {f["field"]}')
-                    rule = {}
-                    if select_parts:
-                        rule["select"] = ", ".join(select_parts)
-                    if literal_parts:
-                        rule["literals"] = literal_parts
-                    if rule:
-                        xfr_rules[name_lower] = rule
-                        print(f"  [dbg] Direct vertex match: {comp_name} ({vid}) → reformat ({len(fields)} fields)")
+                    # Check if expressions are complex (Ab Initio DML functions)
+                    has_complex = any(
+                        f.get("expression") and (
+                            "if(" in f["expression"] or
+                            "string_" in f["expression"] or
+                            "is_null" in f["expression"] or
+                            "lookup(" in f["expression"] or
+                            "date_" in f["expression"] or
+                            "let " in f["expression"]
+                        )
+                        for f in fields
+                    )
+                    if has_complex and len(raw_body) > 50:
+                        xfr_rules[name_lower] = {"raw_transform": raw_body[:3000]}
+                        print(f"  [dbg] Direct vertex match: {comp_name} ({vid}) → complex reformat (raw DML)")
+                    else:
+                        select_parts = []
+                        literal_parts = []
+                        for f in fields:
+                            if "literal" in f:
+                                literal_parts.append(f)
+                            elif "expression" in f:
+                                select_parts.append(f'{f["expression"]} as {f["field"]}')
+                            elif "source" in f:
+                                if f["source"] == f["field"]:
+                                    select_parts.append(f["field"])
+                                else:
+                                    select_parts.append(f'{f["source"]} as {f["field"]}')
+                        rule = {}
+                        if select_parts:
+                            rule["select"] = ", ".join(select_parts)
+                        if literal_parts:
+                            rule["literals"] = literal_parts
+                        if rule:
+                            xfr_rules[name_lower] = rule
+                            print(f"  [dbg] Direct vertex match: {comp_name} ({vid}) → reformat ({len(fields)} fields)")
                 elif len(raw_body) > 50:
                     # Large reformat — store raw for reference
                     xfr_rules[name_lower] = {"raw_transform": raw_body[:500]}
@@ -1352,8 +1368,14 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
         name_lower = comp_name.lower()
         
         # Skip if already assigned by direct vertex match (first pass)
+        # BUT allow JOIN nodes that only have join_type (still need join_key)
+        existing_rule = xfr_rules.get(name_lower, {})
         if name_lower in xfr_rules:
-            continue
+            is_join = ("join" in comp_type or "join" in comp_name.lower() or info.get("proto_type") == "JOIN")
+            if is_join and not existing_rule.get("join_key"):
+                pass  # Allow join key assignment below
+            else:
+                continue
         
         # Get keys specific to this vertex (from position-based extraction)
         vertex_keys = keys_by_vertex.get(vid, [])
@@ -1446,13 +1468,17 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
                 for k in vertex_keys:
                     join_fields.extend([f.strip() for f in k.replace(';', ',').split(',') if f.strip()])
                 if join_fields:
-                    xfr_rules[name_lower] = {"join_key": join_fields[0] if len(join_fields) == 1 else join_fields}
+                    if name_lower not in xfr_rules:
+                        xfr_rules[name_lower] = {}
+                    xfr_rules[name_lower]["join_key"] = join_fields[0] if len(join_fields) == 1 else join_fields
                     print(f"  [dbg] Join key assigned: {comp_name} -> join_key={join_fields}")
             elif keys and key_idx < len(keys):
                 key_str = keys[key_idx]
                 join_fields = [f.strip().rstrip('}').lstrip('{') for f in key_str.replace(';', ',').split(',') if f.strip()]
                 if join_fields:
-                    xfr_rules[name_lower] = {"join_key": join_fields[0] if len(join_fields) == 1 else join_fields}
+                    if name_lower not in xfr_rules:
+                        xfr_rules[name_lower] = {}
+                    xfr_rules[name_lower]["join_key"] = join_fields[0] if len(join_fields) == 1 else join_fields
                     print(f"  [dbg] Join key assigned (positional): {comp_name} -> join_key={join_fields}")
                 key_idx += 1
         
