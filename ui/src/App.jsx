@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import FileUpload from './components/FileUpload'
 import DagViewer from './components/DagViewer'
 import MetricsPage from './components/MetricsPage'
@@ -64,6 +64,15 @@ export default function App() {
   const [target, setTarget]     = useState('glue')
   const [page, setPage]         = useState('compiler')
   const [expandedPanel, setExpandedPanel] = useState(null)  // 'code' | 'dag' | 'editor-mp' | 'editor-xfr' | 'editor-pset' | null
+
+  // Cerrar fullscreen con Escape
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') setExpandedPanel(null)
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [])
   const dagRef                  = useRef(null)
   const cobolRef                = useRef(null)
   const planRef                 = useRef(null)
@@ -334,7 +343,7 @@ export default function App() {
               }}>{result.code}</pre>
             )}
             {expandedPanel === 'dag' && result?.nodes?.length > 0 && (
-              <div style={{ flex: 1 }}>
+              <div style={{ flex: 1, width: '100%', height: '100%' }}>
                 <DagViewer data={result} theme={t} />
               </div>
             )}
