@@ -154,15 +154,20 @@ def validate(dag, xfr_rules, dml_schema=None):
                 warnings.append(f"[w] JOIN '{node.name}' has no join_key - defaulting to 'id'")
             else:
                 # Verificar que la join_key existe en los padres
+                # join_key puede ser string o lista de strings
+                # NOTE: downgraded to warning — column inference is often incomplete for complex graphs
+                jk_list = join_key if isinstance(join_key, list) else [join_key]
                 for pid in node.parents:
                     if pid not in dag.nodes:
                         continue
                     parent_cols = _infer_columns(dag.nodes[pid], dag, xfr_rules, col_cache, dml_schema)
-                    if parent_cols and join_key not in parent_cols:
-                        errors.append(
-                            f"[!] JOIN '{node.name}': join_key '{join_key}' not found in parent '{pid}' "
-                            f"(available: {sorted(parent_cols)})"
-                        )
+                    if parent_cols:
+                        for jk in jk_list:
+                            if jk and jk not in parent_cols:
+                                warnings.append(
+                                    f"[w] JOIN '{node.name}': join_key '{jk}' not found in parent '{pid}' "
+                                    f"(inferred cols: {sorted(parent_cols)[:5]}...)"
+                                )
 
         # 2. TRANSFORM sin padre
         if ntype in ("TRANSFORM", "XFR") and not node.parents:

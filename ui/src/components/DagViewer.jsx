@@ -80,8 +80,9 @@ function buildLayout(nodes, edges, theme) {
   })
 
   const posMap = {}
-  const xSpacing = 240
-  const ySpacing = 100
+  const nodeCount = nodes.length
+  const xSpacing = nodeCount > 30 ? 280 : 240
+  const ySpacing = nodeCount > 30 ? 120 : 100
 
   Object.keys(levels).sort((a, b) => a - b).forEach(l => {
     const group = levels[l]
@@ -278,10 +279,86 @@ function NodeDetail({ node, theme, onClose, onEdit }) {
 export default function DagViewer({ data, theme, onEditNode }) {
   const t = theme || {}
   const [selected, setSelected] = useState(null)
+  const [hideTechnical, setHideTechnical] = useState(false)
+  const [searchTerm, setSearchTerm] = useState('')
+
+  // Technical node types that can be hidden for clarity
+  const TECHNICAL_TYPES = ['TRANSFORM', 'PARTITION', 'CONCATENATE']
+  const TECHNICAL_NAMES = ['sort', 'gather', 'replicate', 'reformat']
+
+  const isTechnicalNode = (node) => {
+    const nameLower = (node.name || '').toLowerCase()
+    return TECHNICAL_NAMES.some(t => nameLower.startsWith(t)) &&
+      !nameLower.includes('f5') && !nameLower.includes('form') && !nameLower.includes('cli')
+  }
+
+  // Filter nodes based on settings
+  const filteredData = useMemo(() => {
+    let nodes = data.nodes || []
+    let edges = data.edges || []
+
+    // Apply search filter
+    if (searchTerm) {
+      const term = searchTerm.toLowerCase()
+      const matchIds = new Set(nodes.filter(n =>
+        (n.name || '').toLowerCase().includes(term) ||
+        (n.id || '').toLowerCase().includes(term) ||
+        (n.type || '').toLowerCase().includes(term)
+      ).map(n => n.id))
+      nodes = nodes.filter(n => matchIds.has(n.id))
+      edges = edges.filter(e => matchIds.has(e.from) && matchIds.has(e.to))
+    }
+
+    // Hide technical nodes (Sort, Gather, Replicate)
+    if (hideTechnical) {
+      const techIds = new Set(nodes.filter(isTechnicalNode).map(n => n.id))
+      // Reconnect edges: if A -> SORT -> B, create A -> B
+      const newEdges = []
+      const inEdges = {}  // techId -> [source nodes]
+      const outEdges = {} // techId -> [target nodes]
+
+      edges.forEach(e => {
+        if (techIds.has(e.to)) {
+          if (!inEdges[e.to]) inEdges[e.to] = []
+          inEdges[e.to].push(e.from)
+        }
+        if (techIds.has(e.from)) {
+          if (!outEdges[e.from]) outEdges[e.from] = []
+          outEdges[e.from].push(e.to)
+        }
+      })
+
+      // Create bypass edges
+      techIds.forEach(techId => {
+        const sources = inEdges[techId] || []
+        const targets = outEdges[techId] || []
+        sources.forEach(src => {
+          targets.forEach(tgt => {
+            if (!techIds.has(src) && !techIds.has(tgt)) {
+              newEdges.push({ from: src, to: tgt })
+            }
+          })
+        })
+      })
+
+      // Keep non-tech edges + bypass edges
+      edges = [
+        ...edges.filter(e => !techIds.has(e.from) && !techIds.has(e.to)),
+        ...newEdges
+      ]
+      nodes = nodes.filter(n => !techIds.has(n.id))
+    }
+
+    return { nodes, edges }
+  }, [data, hideTechnical, searchTerm])
+
+  const totalNodes = (data.nodes || []).length
+  const visibleNodes = filteredData.nodes.length
+  const isLargeGraph = totalNodes > 20
 
   const { rfNodes, rfEdges } = useMemo(
-    () => buildLayout(data.nodes, data.edges, t),
-    [data, t]
+    () => buildLayout(filteredData.nodes, filteredData.edges, t),
+    [filteredData, t]
   )
 
   const [nodes, setNodes, onNodesChange] = useNodesState(rfNodes)
@@ -297,8 +374,49 @@ export default function DagViewer({ data, theme, onEditNode }) {
 
   const onPaneClick = useCallback(() => setSelected(null), [])
 
+  const toolbarStyle = {
+    position: 'absolute', top: 8, left: 8, zIndex: 10,
+    display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap',
+    background: (t.card || '#1e2433') + 'ee',
+    border: `1px solid ${t.border || '#334155'}`,
+    borderRadius: 8, padding: '6px 12px',
+    backdropFilter: 'blur(8px)',
+  }
+
+  const btnStyle = (active) => ({
+    padding: '4px 10px', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 500,
+    background: active ? '#6366f120' : 'transparent',
+    border: `1px solid ${active ? '#6366f1' : (t.border || '#334155')}`,
+    color: active ? '#818cf8' : (t.muted || '#94a3b8'),
+  })
+
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative' }}>
+      {/* Toolbar for large graphs */}
+      <div style={toolbarStyle}>
+        <span style={{ fontSize: 11, color: t.dim || '#64748b' }}>
+          {visibleNodes}/{totalNodes} nodos
+        </span>
+        {isLargeGraph && (
+          <>
+            <button style={btnStyle(hideTechnical)}
+              onClick={() => setHideTechnical(!hideTechnical)}>
+              {hideTechnical ? '👁 Mostrar Sort/Gather' : '🔽 Ocultar Sort/Gather'}
+            </button>
+          </>
+        )}
+        <input
+          type="text" value={searchTerm}
+          onChange={e => setSearchTerm(e.target.value)}
+          placeholder="Buscar nodo..."
+          style={{
+            padding: '4px 8px', borderRadius: 4, fontSize: 11, width: 120,
+            background: t.bg || '#0f1117', border: `1px solid ${t.border || '#334155'}`,
+            color: t.text || '#e2e8f0', outline: 'none',
+          }}
+        />
+      </div>
+
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -307,7 +425,8 @@ export default function DagViewer({ data, theme, onEditNode }) {
         onNodeClick={onNodeClick}
         onPaneClick={onPaneClick}
         fitView
-        minZoom={0.1}
+        minZoom={0.05}
+        maxZoom={2}
       >
         <Background color={t.flowBg || '#1e2433'} gap={20} />
         <Controls />
