@@ -1,68 +1,10 @@
 # src/codegen/glue_codegen.py
 import re
 from datetime import datetime
+from src.codegen.spark_codegen import _translate_dml_expr, _map_date_functions, _map_string_functions
 
 
-def _map_date_functions(expr):
-    """Map Ab Initio date functions to Spark SQL equivalents."""
-    if not expr:
-        return expr
-    # date_to_string(date, format) ? date_format(date, format)
-    expr = re.sub(r'date_to_string\(', 'date_format(', expr)
-    # string_to_date(str, format) ? to_date(str, format)
-    expr = re.sub(r'string_to_date\(', 'to_date(', expr)
-    # string_to_datetime(str, format) ? to_timestamp(str, format)
-    expr = re.sub(r'string_to_datetime\(', 'to_timestamp(', expr)
-    # datetime_to_string(dt, format) ? date_format(dt, format)
-    expr = re.sub(r'datetime_to_string\(', 'date_format(', expr)
-    # date_diff(d1, d2) ? datediff(d1, d2)
-    expr = re.sub(r'date_diff\(', 'datediff(', expr)
-    # date_add_days(date, n) ? date_add(date, n)
-    expr = re.sub(r'date_add_days\(', 'date_add(', expr)
-    # date_sub_days(date, n) ? date_sub(date, n)
-    expr = re.sub(r'date_sub_days\(', 'date_sub(', expr)
-    # today() ? current_date()
-    expr = re.sub(r'\btoday\(\)', 'current_date()', expr)
-    # now() ? current_timestamp()
-    expr = re.sub(r'\bnow\(\)', 'current_timestamp()', expr)
-    # year_of(date) ? year(date)
-    expr = re.sub(r'year_of\(', 'year(', expr)
-    # month_of(date) ? month(date)
-    expr = re.sub(r'month_of\(', 'month(', expr)
-    # day_of(date) ? dayofmonth(date)
-    expr = re.sub(r'day_of\(', 'dayofmonth(', expr)
-    # truncate_date(date, "MONTH") ? trunc(date, "MM")
-    expr = re.sub(r'truncate_date\(([^,]+),\s*"MONTH"\)', r'trunc(\1, "MM")', expr)
-    expr = re.sub(r'truncate_date\(([^,]+),\s*"YEAR"\)', r'trunc(\1, "yyyy")', expr)
-    # last_day_of_month(date) ? last_day(date)
-    expr = re.sub(r'last_day_of_month\(', 'last_day(', expr)
-    return expr
-
-
-def _map_string_functions(expr):
-    """Map Ab Initio string functions to Spark SQL equivalents."""
-    if not expr:
-        return expr
-    expr = re.sub(r'string_upcase\(', 'upper(', expr)
-    expr = re.sub(r'string_downcase\(', 'lower(', expr)
-    expr = re.sub(r'string_lrtrim\(', 'trim(', expr)
-    expr = re.sub(r'string_ltrim\(', 'ltrim(', expr)
-    expr = re.sub(r'string_rtrim\(', 'rtrim(', expr)
-    expr = re.sub(r'string_length\(', 'length(', expr)
-    expr = re.sub(r'string_substring\(', 'substring(', expr)
-    expr = re.sub(r'string_replace\(', 'replace(', expr)
-    expr = re.sub(r'string_concat\(', 'concat(', expr)
-    expr = re.sub(r'string_lpad\(', 'lpad(', expr)
-    expr = re.sub(r'string_rpad\(', 'rpad(', expr)
-    expr = re.sub(r'string_index\(', 'instr(', expr)
-    expr = re.sub(r'string_reverse\(', 'reverse(', expr)
-    # string_suffix(str, n) → right(str, n)
-    expr = re.sub(r'string_suffix\(', 'right(', expr)
-    # string_prefix(str, n) → left(str, n)
-    expr = re.sub(r'string_prefix\(', 'left(', expr)
-    # Strip "in." prefix from field references
-    expr = re.sub(r'\bin\.(\w+)', r'\1', expr)
-    return expr
+# Local functions removed — using improved versions from spark_codegen
 
 
 def _translate_abinitio_expr(raw_expr):
@@ -75,6 +17,14 @@ def _translate_abinitio_expr(raw_expr):
         return raw_expr
     
     expr = raw_expr.strip()
+    
+    # Delegate to _translate_dml_expr for expressions that start with type-cast patterns
+    # e.g. (date("YYYY-MM-DD")) (string("|")) field_name
+    # The _translate_dml_expr handles these correctly by stripping all casts first
+    if re.match(r'\([a-z]+\(', expr):
+        result = _translate_dml_expr(expr)
+        if result != expr:
+            return result
     
     # Translate Ab Initio type casts to Spark SQL CAST
     # (string(N))expr → CAST(expr AS STRING)
@@ -425,8 +375,9 @@ def _build_transform(var_id, src_df, rule):
     where = rule.get("where")
     group_by = rule.get("group_by")
 
-    # Map Ab Initio functions to Spark SQL
-    select = _translate_abinitio_expr(select) if select != "*" else select
+    # NOTE: Do NOT translate the full select string here — it contains multiple
+    # comma-separated expressions that must be translated individually after splitting.
+    # Only translate for group_by aggregation (which expects already-split parts).
     if where:
         where = _translate_abinitio_expr(where)
 
@@ -461,10 +412,12 @@ def _build_transform(var_id, src_df, rule):
         for c in cols_raw:
             m = re.match(r'(.+?)\s+as\s+(\w+)', c.strip(), re.I)
             if m:
-                spark_expr = m.group(1).strip()
+                raw_expr = m.group(1).strip()
                 alias = m.group(2)
-                spark_expr_escaped = spark_expr.replace('"', '\\"')
-                lines.append(f'{var_id}_df = {var_id}_df.withColumn("{alias}", expr("{spark_expr_escaped}"))')
+                # Apply DML→Spark translation
+                translated = _translate_dml_expr(raw_expr)
+                translated_escaped = translated.replace('"', '\\"')
+                lines.append(f'{var_id}_df = {var_id}_df.withColumn("{alias}", expr("{translated_escaped}"))')
             else:
                 pass
         code = "\n".join(lines)
@@ -973,10 +926,17 @@ def generate_glue(dag, output_path, xfr_rules=None):
                         f.write(f'.option("dbtable", "{table or var_id.lower()}").save()\n')
                     else:
                         path_resolved = rule.get("path_resolved") if rule else False
+                        # Clean Ab Initio path expressions
+                        if path:
+                            path = re.sub(r'\$\[\(date\("YYYYMMDD"\)\)now\(\)\]', '{date_str}', path)
+                            path = re.sub(r'\$FILE_DATE', '{date_str}', path)
+                            path = re.sub(r'\$\{?(\w+)\}?', r'{\1}', path)
                         if path and path_resolved:
+                            f.write(f'_date_str = spark.sql("SELECT date_format(current_date(), \'yyyyMMdd\')").collect()[0][0]\n')
                             f.write(f'{src}.write.mode("{mode}").parquet(f"{{PARAMS.BASE_PATH}}/output/{path}")\n')
                         elif path:
-                            f.write(f'{src}.write.mode("{mode}").parquet("{path}")\n')
+                            f.write(f'_date_str = spark.sql("SELECT date_format(current_date(), \'yyyyMMdd\')").collect()[0][0]\n')
+                            f.write(f'{src}.write.mode("{mode}").parquet(f"{{PARAMS.BASE_PATH}}/output/{path}")\n')
                         else:
                             f.write(f'{src}.write.mode("{mode}").parquet(f"{{PARAMS.BASE_PATH}}/output/{var_id.lower()}")\n')
                 else:

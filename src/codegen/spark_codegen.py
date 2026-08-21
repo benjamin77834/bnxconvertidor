@@ -11,6 +11,31 @@ def _map_date_functions(expr):
     """Map Ab Initio date functions to Spark SQL equivalents."""
     if not expr:
         return expr
+    # Ab Initio date casting: (date("YYYY-MM-DD"))field → to_date(field, "yyyy-MM-dd")
+    # Pattern: (date("FORMAT"))expr or (date("FORMAT"))(type)expr
+    expr = re.sub(
+        r'\(date\("YYYY-MM-DD"\)\)\s*\(([^)]+)\)\s*(\w+)',
+        r'to_date(cast(\2 as string), "yyyy-MM-dd")',
+        expr
+    )
+    expr = re.sub(
+        r'\(date\("YYYY-MM-DD"\)\)\s*(\w+)',
+        r'to_date(\1, "yyyy-MM-dd")',
+        expr
+    )
+    expr = re.sub(
+        r'\(date\("YYYYMMDD"\)\)\s*(\w+)',
+        r'date_format(\1, "yyyyMMdd")',
+        expr
+    )
+    # (datetime("YYYY-MM-DDTHH24:MI:SS"))expr → to_timestamp(expr)
+    expr = re.sub(
+        r'\(datetime\("[^"]+"\)\)\s*(\w+)',
+        r'to_timestamp(\1)',
+        expr
+    )
+    # date_add_months(date, N) → add_months(date, N)
+    expr = re.sub(r'date_add_months\(', 'add_months(', expr)
     expr = re.sub(r'date_to_string\(', 'date_format(', expr)
     expr = re.sub(r'string_to_date\(', 'to_date(', expr)
     expr = re.sub(r'string_to_datetime\(', 'to_timestamp(', expr)
@@ -26,6 +51,12 @@ def _map_date_functions(expr):
     expr = re.sub(r'truncate_date\(([^,]+),\s*"MONTH"\)', r'trunc(\1, "MM")', expr)
     expr = re.sub(r'truncate_date\(([^,]+),\s*"YEAR"\)', r'trunc(\1, "yyyy")', expr)
     expr = re.sub(r'last_day_of_month\(', 'last_day(', expr)
+    # $[(date("YYYYMMDD"))now()] → date_format(current_date(), "yyyyMMdd")
+    expr = re.sub(
+        r'\$\[\(date\("YYYYMMDD"\)\)now\(\)\]',
+        'date_format(current_date(), "yyyyMMdd")',
+        expr
+    )
     return expr
 
 
@@ -33,35 +64,125 @@ def _map_string_functions(expr):
     """Map Ab Initio string functions to Spark SQL equivalents."""
     if not expr:
         return expr
-    # string_upcase(x) -> upper(x)
+    # first_defined(a, b) → coalesce(a, b)
+    expr = re.sub(r'first_defined\(', 'coalesce(', expr)
+    # length_of(x) → size(x) for arrays, length(x) for strings
+    expr = re.sub(r'length_of\(', 'size(', expr)
+    # decimal_strip(x) → trim(cast(x as string))  
+    expr = re.sub(r'decimal_strip\(([^)]+)\)', r'cast(trim(cast(\1 as string)) as decimal(18,2))', expr)
+    # is_null(x) → x IS NULL
+    expr = re.sub(r'is_null\(([^)]+)\)', r'\1 IS NULL', expr)
+    # is_defined(x) → x IS NOT NULL
+    expr = re.sub(r'is_defined\(([^)]+)\)', r'\1 IS NOT NULL', expr)
+    # is_blank(x) → (x IS NULL OR x = "")
+    expr = re.sub(r'is_blank\(([^)]+)\)', r'(\1 IS NULL OR \1 = "")', expr)
+    # lookup_match("NAME", key) → true  (simplified — actual lookup resolved at join level)
+    expr = re.sub(r'lookup_match\("[^"]+",\s*[^)]+\)', 'true', expr)
+    # string_upcase(x) → upper(x)
     expr = re.sub(r'string_upcase\(', 'upper(', expr)
-    # string_downcase(x) -> lower(x)
+    # string_downcase(x) → lower(x)
     expr = re.sub(r'string_downcase\(', 'lower(', expr)
-    # string_lrtrim(x) -> trim(x)
+    # string_lrtrim(x) → trim(x)
     expr = re.sub(r'string_lrtrim\(', 'trim(', expr)
-    # string_ltrim(x) -> ltrim(x)
+    # string_ltrim(x) → ltrim(x)
     expr = re.sub(r'string_ltrim\(', 'ltrim(', expr)
-    # string_rtrim(x) -> rtrim(x)
+    # string_rtrim(x) → rtrim(x)
     expr = re.sub(r'string_rtrim\(', 'rtrim(', expr)
-    # string_length(x) -> length(x)
+    # string_length(x) → length(x)
     expr = re.sub(r'string_length\(', 'length(', expr)
-    # string_substring(x, start, len) -> substring(x, start, len)
+    # string_substring(x, start, len) → substring(x, start, len)
     expr = re.sub(r'string_substring\(', 'substring(', expr)
-    # string_replace(x, old, new) -> replace(x, old, new)
+    # string_replace(x, old, new) → replace(x, old, new)
     expr = re.sub(r'string_replace\(', 'replace(', expr)
-    # string_concat(a, b) -> concat(a, b)
+    # string_replace_first(x, old, new) → regexp_replace(x, old, new)
+    expr = re.sub(r'string_replace_first\(', 'regexp_replace(', expr)
+    # string_concat(a, b) → concat(a, b)
     expr = re.sub(r'string_concat\(', 'concat(', expr)
-    # string_lpad(x, n, c) -> lpad(x, n, c)
+    # string_lpad(x, n, c) → lpad(x, n, c)
     expr = re.sub(r'string_lpad\(', 'lpad(', expr)
-    # string_rpad(x, n, c) -> rpad(x, n, c)
+    # string_rpad(x, n, c) → rpad(x, n, c)
     expr = re.sub(r'string_rpad\(', 'rpad(', expr)
-    # string_index(x, sub) -> instr(x, sub)
+    # string_index(x, sub) → instr(x, sub)
     expr = re.sub(r'string_index\(', 'instr(', expr)
-    # string_reverse(x) -> reverse(x)
+    # string_reverse(x) → reverse(x)
     expr = re.sub(r'string_reverse\(', 'reverse(', expr)
-    # Strip "in." prefix from field references (Ab Initio uses in.field)
-    expr = re.sub(r'\bin\.(\w+)', r'\1', expr)
+    # string_split(x, delim) → split(x, delim)
+    expr = re.sub(r'string_split\(', 'split(', expr)
+    # string_filter_out(x, pattern) → regexp_replace(x, pattern, "")
+    expr = re.sub(r'string_filter_out\(([^,]+),\s*([^)]+)\)', r'regexp_replace(\1, \2, "")', expr)
+    # string_join(arr, sep) → array_join(arr, sep)
+    expr = re.sub(r'string_join\(', 'array_join(', expr)
+    # (string("|"))expr → cast(expr as string) (Ab Initio type casting)
+    expr = re.sub(r'\(string\("[^"]*"\)\)\s*', 'cast(', expr)
+    # (decimal("|"))expr → cast(expr as decimal)
+    expr = re.sub(r'\(decimal\("[^"]*"\)\)\s*', 'cast(', expr)
+    # member [vector ...] → IN (...)
+    expr = re.sub(r'\s+member\s+\[vector\s+([^\]]+)\]', r' IN (\1)', expr)
+    # Strip "in." and "in0." prefix from field references (Ab Initio uses in.field)
+    expr = re.sub(r'\bin\d*\.(\w+)', r'\1', expr)
+    # Strip "out." prefix
+    expr = re.sub(r'\bout\.(\w+)', r'\1', expr)
     return expr
+
+
+def _translate_dml_expr(expr_clean):
+    """Translate a single Ab Initio DML expression to Spark SQL."""
+    mapped = expr_clean
+    # Clean up Ab Initio syntax FIRST (before function mapping)
+    mapped = re.sub(r'\bin\d*\.', '', mapped)   # remove in./in0./in1. prefix
+    mapped = re.sub(r'\bout\.', '', mapped)     # remove out. prefix
+    # Remove :1: (priority operator in Ab Initio)
+    mapped = re.sub(r'\s*:1:\s*', ' ', mapped)
+    
+    # Handle Ab Initio type casting patterns BEFORE function mapping:
+    # Pattern: (date("FORMAT"))(string("delim"))field → to_date(cast(field as string), "spark_fmt")
+    # Pattern: (date("YYYY-MM-DD"))field → to_date(field, "yyyy-MM-dd")
+    # Pattern: (string("|"))field → cast(field as string)
+    # Strategy: remove ALL type cast prefixes, then wrap result appropriately
+    
+    # Detect if this is a date cast expression
+    has_date_cast = bool(re.search(r'\(date\("([^"]+)"\)\)', mapped))
+    date_fmt = None
+    if has_date_cast:
+        fmt_match = re.search(r'\(date\("([^"]+)"\)\)', mapped)
+        if fmt_match:
+            ab_fmt = fmt_match.group(1)
+            # Convert Ab Initio date format to Spark
+            date_fmt = ab_fmt.replace("YYYY", "yyyy").replace("MM", "MM").replace("DD", "dd")
+    
+    # Remove ALL type cast prefixes: (type("delim"[, opts]))
+    mapped = re.sub(r'\([a-z]+\("[^"]*"[^)]*\)\)\s*', '', mapped)
+    mapped = mapped.strip()
+    
+    # If it was a date cast, wrap the remaining expression
+    if has_date_cast and date_fmt and mapped and '(' not in mapped:
+        mapped = f'to_date({mapped}, "{date_fmt}")'
+    
+    # Now apply standard function mappings
+    mapped = _map_date_functions(mapped)
+    mapped = _map_string_functions(mapped)
+    
+    # Ab Initio if(cond) val1 else val2 → CASE WHEN cond THEN val1 ELSE val2 END
+    if_match = re.match(r'^if\s*\((.+?)\)\s*(.+?)\s+else\s+(.+)$', mapped, re.IGNORECASE)
+    if if_match:
+        cond, then_val, else_val = if_match.group(1), if_match.group(2), if_match.group(3)
+        mapped = f'CASE WHEN {cond} THEN {then_val} ELSE {else_val} END'
+    
+    # Ab Initio ternary: expr ? val1 : val2 → CASE WHEN expr THEN val1 ELSE val2 END
+    ternary = re.match(r'^(.+?)\s*\?\s*([^?:]+?)\s*:\s*([^?]+)$', mapped)
+    if ternary and 'CASE' not in mapped:
+        cond, then_val, else_val = ternary.group(1).strip(), ternary.group(2).strip(), ternary.group(3).strip()
+        mapped = f'CASE WHEN {cond} THEN {then_val} ELSE {else_val} END'
+    
+    # Clean double spaces
+    mapped = re.sub(r'\s+', ' ', mapped).strip()
+    # Fix unbalanced parens
+    if mapped.count('(') != mapped.count(')'):
+        while mapped.endswith(')') and mapped.count(')') > mapped.count('('):
+            mapped = mapped[:-1]
+        while mapped.startswith('(') and mapped.count('(') > mapped.count(')'):
+            mapped = mapped[1:]
+    return mapped
 
 
 def _build_transform(var_id, src_df, rule):
@@ -70,6 +191,75 @@ def _build_transform(var_id, src_df, rule):
     if sort_by:
         sort_cols = ", ".join(f'"{c}"' for c in sort_by)
         return f'{var_id}_df = {src_df}.orderBy({sort_cols})'
+    
+    # --- RAW DML TRANSFORM (complex reformat with Ab Initio DML) ---
+    raw_transform = rule.get("raw_transform")
+    if raw_transform and not rule.get("transform") == "lookup_join":
+        lines = []
+        lines.append(f'{var_id}_df = {src_df}')
+        
+        # Detect if this is a complex transform with loops/vectors (not simple field mapping)
+        has_loops = 'for(' in raw_transform or 'for (' in raw_transform or 'while(' in raw_transform
+        has_let_complex = raw_transform.count('let ') > 3
+        has_vector_ops = 'vector_slice' in raw_transform or 'allocate()' in raw_transform
+        
+        if has_loops or has_vector_ops or has_let_complex:
+            # Complex DML with procedural logic — generate TODO with key field extractions
+            lines.append(f'# TODO: Complex DML transform with loops/vectors — requires manual Spark UDF translation')
+            lines.append(f'# Original Ab Initio DML contains: {"loops" if has_loops else ""} {"vector ops" if has_vector_ops else ""} {"complex logic" if has_let_complex else ""}')
+            
+            # Still extract simple assignments that don't reference local variables
+            field_assigns = re.findall(r'out\.(\w+)\s*::\s*([^;]+);', raw_transform)
+            simple_assigns = []
+            for field_name, expression in field_assigns:
+                if field_name in ("newline", "*", "V_FILLER"):
+                    continue
+                expr_clean = expression.strip()
+                # Skip vector assignments (contain [])
+                if '[' in expr_clean and 'vector' in expr_clean.lower():
+                    continue
+                # Skip assignments referencing local let variables (RISK_SCORES, etc.)
+                if re.match(r'^[A-Z_]+\[', expr_clean) or 'vector_slice' in expr_clean:
+                    lines.append(f'# {field_name}: {expr_clean[:80]}  # → needs UDF')
+                    continue
+                # Simple field mappings (in.field, literals, basic functions)
+                if re.match(r'^in\d*\.\*$', expr_clean) or expr_clean == 'in.*':
+                    continue
+                if re.match(r'^in\d*\.' + field_name + r'$', expr_clean):
+                    continue
+                # Apply mappings to simple expressions
+                mapped = _translate_dml_expr(expr_clean)
+                if mapped and len(mapped) < 150:
+                    simple_assigns.append((field_name, mapped))
+                else:
+                    lines.append(f'# {field_name}: {expr_clean[:80]}  # → needs manual translation')
+            
+            for field_name, mapped in simple_assigns:
+                mapped_escaped = mapped.replace('"', '\\"')
+                lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", expr("{mapped_escaped}"))')
+        else:
+            # Simple DML — extract all field assignments
+            field_assigns = re.findall(r'out\.(\w+)\s*::\s*([^;]+);', raw_transform)
+            for field_name, expression in field_assigns:
+                if field_name in ("newline", "*", "V_FILLER"):
+                    continue
+                expr_clean = expression.strip()
+                if expr_clean == "in.*" or re.match(r'^in\d*\.\*$', expr_clean):
+                    continue
+                if re.match(r'^in\d*\.' + field_name + r'$', expr_clean):
+                    continue
+                mapped = _translate_dml_expr(expr_clean)
+                mapped_escaped = mapped.replace('"', '\\"')
+                if len(mapped_escaped) < 200:
+                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", expr("{mapped_escaped}"))')
+                else:
+                    lines.append(f'# TODO: Complex expression for {field_name}')
+                    lines.append(f'# {expr_clean[:100]}...')
+        
+        if len(lines) == 1:
+            lines.append(f'# Raw DML transform — review for manual translation:')
+            lines.append(f'# {raw_transform[:150]}...')
+        return "\n".join(lines)
     
     # --- LOOKUP JOIN ---
     if rule.get("transform") == "lookup_join":
@@ -136,9 +326,10 @@ def _build_transform(var_id, src_df, rule):
     where = rule.get("where")
     group_by = rule.get("group_by")
 
-    # Map Ab Initio date functions to Spark
-    select = _map_date_functions(select)
-    select = _map_string_functions(select)
+    # NOTE: Do NOT apply _map_date_functions/_map_string_functions to the full select
+    # string here — it contains multiple comma-separated expressions and translating
+    # them together corrupts expressions like (date("YYYY-MM-DD")) (string("|")) field.
+    # Each expression is translated individually after splitting in the has_as branch.
     if where:
         where = _map_date_functions(where)
         where = _map_string_functions(where)
@@ -173,8 +364,11 @@ def _build_transform(var_id, src_df, rule):
         for c in cols_raw:
             m = re.match(r'(.+?)\s+as\s+(\w+)', c.strip(), re.I)
             if m:
-                expr, alias = m.group(1).strip(), m.group(2)
-                lines.append(f'{var_id}_df = {var_id}_df.withColumn("{alias}", expr("{expr}"))')
+                raw_expr, alias = m.group(1).strip(), m.group(2)
+                # Apply DML→Spark translation
+                translated = _translate_dml_expr(raw_expr)
+                translated_escaped = translated.replace('"', '\\"')
+                lines.append(f'{var_id}_df = {var_id}_df.withColumn("{alias}", expr("{translated_escaped}"))')
             else:
                 # plain column reference, skip (already exists)
                 pass
@@ -191,6 +385,22 @@ def _build_transform(var_id, src_df, rule):
 def generate_spark(dag, output_path, xfr_rules=None):
     xfr_rules = xfr_rules or {}
 
+    # Pre-scan: determine which helpers are needed
+    needs_filter_hdr_trl = False
+    needs_is_valid = False
+    needs_output_split = False
+    for node in dag.execution_order:
+        rule = xfr_rules.get(node.id.lower()) or xfr_rules.get(node.name.lower())
+        if node.type.upper() == "FILTER" and rule and rule.get("where"):
+            where = rule["where"]
+            if re.search(r"string_substring\(\w+,\s*\d+,\s*\d+\)\s*!=\s*'", where):
+                needs_filter_hdr_trl = True
+            if "is_valid" in where:
+                needs_is_valid = True
+        if (node.type.upper() in ("TRANSFORM", "XFR") and len(node.children) > 1
+            and not rule and ("reformat" in node.name.lower() or "rfmt" in node.name.lower())):
+            needs_output_split = True
+
     with open(output_path, "w") as f:
         f.write(f'"""\n[*] BNX V54 GENERATED PYSPARK JOB\n? Generated at: {datetime.now()}\n"""\n\n')
         f.write("import os\n")
@@ -201,52 +411,47 @@ def generate_spark(dag, output_path, xfr_rules=None):
         f.write('spark = SparkSession.builder.appName("BNX_Pipeline").getOrCreate()\n\n')
         f.write('# =========================\n# PARAMETERS\n# =========================\n')
         f.write('class PARAMS:\n')
-        f.write('    BASE_PATH = "s3://datalake-bnx-scripts-dev"  # Override via spark-submit --conf\n\n')
+        f.write('    BASE_PATH = os.environ.get("BNX_BASE_PATH", "s3://datalake-bnx-scripts-dev")\n\n')
         f.write('print("[*] BNX PySpark Job Started")\n\n')
-        f.write("# =========================\n# HELPER FUNCTIONS\n# =========================\n\n")
-        # Generate filter_by_expression helper for header/trailer detection
-        f.write("def filter_by_expression_hdr_trl(df, field, start, length, exclude_values):\n")
-        f.write('    """Filter rows where substring(field, start, length) is NOT in exclude_values.\n')
-        f.write('    Used to remove header/trailer records from flat files.\n')
-        f.write('    """\n')
-        f.write("    return df.filter(~F.substring(F.col(field), start, length).isin(exclude_values))\n\n\n")
-        # Generate is_valid_record helper
-        f.write("def is_valid_record(df, validation_rules=None):\n")
-        f.write('    """Validate records based on Ab Initio _vrule validation rules.\n')
-        f.write('    Returns tuple: (valid_df, invalid_df)\n')
-        f.write('    """\n')
-        f.write('    if validation_rules is None:\n')
-        f.write('        return df, spark.createDataFrame([], df.schema)\n')
-        f.write('    condition = None\n')
-        f.write('    for rule in validation_rules:\n')
-        f.write('        field = rule["field"]\n')
-        f.write('        rule_type = rule.get("type", "not_null")\n')
-        f.write('        if rule_type == "not_null":\n')
-        f.write('            c = F.col(field).isNotNull()\n')
-        f.write('        elif rule_type == "length":\n')
-        f.write('            c = F.length(F.col(field)) <= rule["max_length"]\n')
-        f.write('        elif rule_type == "range":\n')
-        f.write('            c = (F.col(field) >= rule["min"]) & (F.col(field) <= rule["max"])\n')
-        f.write('        elif rule_type == "in_list":\n')
-        f.write('            c = F.col(field).isin(rule["values"])\n')
-        f.write('        else:\n')
-        f.write('            continue\n')
-        f.write('        condition = c if condition is None else condition & c\n')
-        f.write('    if condition is None:\n')
-        f.write('        return df, spark.createDataFrame([], df.schema)\n')
-        f.write('    valid_df = df.filter(condition)\n')
-        f.write('    invalid_df = df.filter(~condition)\n')
-        f.write('    return valid_df, invalid_df\n\n\n')
-        # Generate output_indexes_split helper
-        f.write("def output_indexes_split(df, index_expr, num_outputs):\n")
-        f.write('    """Split a DataFrame into multiple outputs based on an index expression.\n')
-        f.write('    Used for Ab Initio Reformat with output_indexes (multi-port fan-out).\n')
-        f.write('    Returns list of DataFrames, one per output port.\n')
-        f.write('    """\n')
-        f.write('    results = []\n')
-        f.write('    for i in range(num_outputs):\n')
-        f.write('        results.append(df.filter(F.expr(f"{index_expr} = {i}")))\n')
-        f.write('    return results\n\n\n')
+        
+        # Emit only the helpers that are actually used
+        if needs_filter_hdr_trl or needs_is_valid or needs_output_split:
+            f.write("# =========================\n# HELPER FUNCTIONS\n# =========================\n\n")
+        
+        if needs_filter_hdr_trl:
+            f.write("def filter_by_expression_hdr_trl(df, field, start, length, exclude_values):\n")
+            f.write('    """Filter rows where substring(field, start, length) is NOT in exclude_values."""\n')
+            f.write("    return df.filter(~F.substring(F.col(field), start, length).isin(exclude_values))\n\n\n")
+        
+        if needs_is_valid:
+            f.write("def is_valid_record(df, validation_rules=None):\n")
+            f.write('    """Validate records. Returns tuple: (valid_df, invalid_df)"""\n')
+            f.write('    if validation_rules is None:\n')
+            f.write('        return df, spark.createDataFrame([], df.schema)\n')
+            f.write('    condition = None\n')
+            f.write('    for rule in validation_rules:\n')
+            f.write('        field = rule["field"]\n')
+            f.write('        rule_type = rule.get("type", "not_null")\n')
+            f.write('        if rule_type == "not_null":\n')
+            f.write('            c = F.col(field).isNotNull()\n')
+            f.write('        elif rule_type == "length":\n')
+            f.write('            c = F.length(F.col(field)) <= rule["max_length"]\n')
+            f.write('        elif rule_type == "range":\n')
+            f.write('            c = (F.col(field) >= rule["min"]) & (F.col(field) <= rule["max"])\n')
+            f.write('        elif rule_type == "in_list":\n')
+            f.write('            c = F.col(field).isin(rule["values"])\n')
+            f.write('        else:\n')
+            f.write('            continue\n')
+            f.write('        condition = c if condition is None else condition & c\n')
+            f.write('    if condition is None:\n')
+            f.write('        return df, spark.createDataFrame([], df.schema)\n')
+            f.write('    return df.filter(condition), df.filter(~condition)\n\n\n')
+        
+        if needs_output_split:
+            f.write("def output_indexes_split(df, index_expr, num_outputs):\n")
+            f.write('    """Split DataFrame into N outputs based on index expression."""\n')
+            f.write('    return [df.filter(F.expr(f"{index_expr} = {i}")) for i in range(num_outputs)]\n\n\n')
+        
         f.write("# =========================\n# DAG EXECUTION V54\n# =========================\n\n")
 
         # Track graph boundaries for Mega-DAG
@@ -581,10 +786,15 @@ def generate_spark(dag, output_path, xfr_rules=None):
                         f.write(f'.option("dbtable", "{table or var_id.lower()}").save()\n')
                     else:
                         path_resolved = rule.get("path_resolved") if rule else False
+                        # Clean Ab Initio path expressions
+                        if path:
+                            path = re.sub(r'\$\[\(date\("YYYYMMDD"\)\)now\(\)\]', '{date_format(current_date(), "yyyyMMdd")}', path)
+                            path = re.sub(r'\$FILE_DATE', '{PARAMS.FILE_DATE}', path)
+                            path = re.sub(r'\$\{?(\w+)\}?', r'{\1}', path)
                         if path and path_resolved:
                             f.write(f'{src}.write.mode("{mode}").parquet(f"{{PARAMS.BASE_PATH}}/output/{path}")\n')
                         elif path:
-                            f.write(f'{src}.write.mode("{mode}").parquet("{path}")\n')
+                            f.write(f'{src}.write.mode("{mode}").parquet(f"{{PARAMS.BASE_PATH}}/output/{path}")\n')
                         else:
                             f.write(f'{src}.write.mode("{mode}").parquet(f"{{PARAMS.BASE_PATH}}/output/{var_id.lower()}")\n')
                 else:
