@@ -287,6 +287,18 @@ const MECHANISMS = [
       { name: 'Sin backend local', desc: 'El frontend apunta a la Lambda URL en producción. No necesitas correr Python localmente.' },
     ]
   },
+  {
+    category: '🔁 Ciclo de Prueba (Data Redactada → AWS)',
+    items: [
+      { name: '1. Grafo → Esquema real', desc: 'Al compilar, se extrae el record format real del .mp GDE (record string(N) campo; ... end;) por vértice. Las columnas que el pipeline usa aguas abajo (join keys, sort keys, campos in. de reformats) se propagan hacia los SOURCE trazando los edges. Así cada SOURCE conoce sus columnas reales (numero_de_cliente, cta_num, etc.).' },
+      { name: '2. Datos Redactados', desc: 'Genera datos sintéticos por nodo: tipos respetados (string/decimal/date/integer), PII enmascarada por nombre de campo (nombre→X****, cuenta→ACCT****, tarjeta→****-****, email, ssn/rfc, etc.). Separa datasets de ENTRADA (lo que el job lee) y SALIDA (lo que produce). Modo desde grafo o manual (tabla editable de columnas).' },
+      { name: '3. Valores de Join compartidos', desc: 'Las columnas que son clave de join se generan desde un pool determinístico por nombre (PREFIX0001..N). Distintas fuentes que se unen por la misma clave producen los mismos valores → el join empareja datos reales en vez de dejar columnas en NULL.' },
+      { name: '4. Prueba local (PySpark)', desc: 'Ejecuta el PySpark generado localmente con los datos sintéticos. Reemplaza lecturas S3 por DataFrames en memoria y neutraliza escrituras/shell. Tolera limitaciones estructurales (nodos None, join keys ausentes, lookups sin traducir) pero NO oculta errores reales del código.' },
+      { name: '5. Consola en vivo', desc: 'La ejecución se transmite línea por línea vía Server-Sent Events. La UI muestra una consola tipo terminal con colores por tipo (SOURCE verde, JOIN naranja, SINK rojo, errores) y estado final ✅/❌ con conteo de lecturas/escrituras.' },
+      { name: '6. Enviar a AWS', desc: 'Empaqueta el PySpark con los datos sintéticos EMBEBIDOS (lecturas S3 → DataFrames inline; escrituras S3 reales). Este código autocontenido se despacha al pipeline Glue existente (sube a S3 + crea/ejecuta el job) con polling de estado. No requiere upload de datos separado ni credenciales locales.' },
+      { name: 'Bugs de codegen detectados', desc: 'El ciclo de prueba encontró y se corrigieron bugs reales del generador: expresiones de fecha (date cast), string_like/instr sin traducir, if/else con paréntesis anidados que se rompía, casts con longitud numérica (string(40)), e inferencia de tipos mezclados. Cada corrección mejora el código para todos los grafos.' },
+    ]
+  },
 ]
 
 const CODE_EXAMPLES = {
@@ -675,6 +687,13 @@ const COMPONENTS = [
   // Deploy
   { id: 'AMPLIFY', label: '☁️ AWS Amplify\n(Static Hosting)', x: 1120, y: 100, group: 'deploy', desc: 'Hosting del React build. CDN, dominio custom, auto-deploy desde Git' },
   { id: 'LAMBDA_DEPLOY', label: '⚡ Lambda URL\n(Serverless API)', x: 1120, y: 250, group: 'deploy', desc: 'Function URL pública. 256MB, Python 3.11, ~$5/mes' },
+
+  // Ciclo de prueba: Data Redactada → Prueba local → AWS
+  { id: 'DATAGEN', label: '🧪 Data Redactada\n(datagen.py)', x: 660, y: 560, group: 'datagen', desc: 'Infiere el esquema real del grafo (record format del .mp + propagación de columnas por edges) y genera datos sintéticos con PII enmascarada. Separa entrada (in.) y salida (out.). Valores de join compartidos para que los joins emparejen.' },
+  { id: 'TEST_RUNNER', label: '▶️ Test Runner\n(test_runner.py)', x: 900, y: 500, group: 'datagen', desc: 'Ejecuta el PySpark generado localmente con los datos sintéticos: reemplaza lecturas S3 por DataFrames en memoria, neutraliza escrituras/shell, tolera nodos None y joins con clave ausente. Streaming de la salida en vivo (consola SSE).' },
+  { id: 'DATAGEN_UI', label: '🧪 Data Redactada UI\n(DataGenPage.jsx)', x: 900, y: 580, group: 'datagen', desc: 'Pestaña que carga el grafo del Compiler, genera datos (auto o manual), corre la prueba local con consola en vivo, y despacha a AWS.' },
+  { id: 'AWS_SELFCONTAINED', label: '☁️ Código Autocontenido\n(build_aws_selfcontained_code)', x: 900, y: 660, group: 'datagen', desc: 'Empaqueta el PySpark con los datos sintéticos embebidos: lecturas S3 → DataFrames inline, escrituras S3 reales. Autocontenido para correr en AWS Glue sin dependencias de datos externos.' },
+  { id: 'AWS_PIPELINE', label: '🚀 Pipeline AWS Glue\n(/pipeline Lambda)', x: 1120, y: 620, group: 'datagen', desc: 'Sube el código autocontenido a S3, crea/actualiza el Glue job, lo ejecuta y hace polling del estado. El resultado se escribe a S3. Reusa el pipeline existente sin credenciales locales.' },
 ]
 
 const EDGES_DEF = [
@@ -705,15 +724,29 @@ const EDGES_DEF = [
   ['COMPILER_UI', 'AMPLIFY'], ['DESIGNER_UI', 'AMPLIFY'], ['BANKING_UI', 'AMPLIFY'],
   ['GOVERNANCE_UI', 'AMPLIFY'], ['METRICS_UI', 'AMPLIFY'], ['ARCHITECTURE_UI', 'AMPLIFY'],
   ['LAMBDA', 'LAMBDA_DEPLOY'],
+
+  // Ciclo de prueba: codigo generado + grafo → datos → prueba local → AWS
+  ['SPARK_CODEGEN', 'DATAGEN'],       // el codegen alimenta el esquema/datos
+  ['DAG_BUILDER', 'DATAGEN'],         // esquema real desde el grafo/record format
+  ['DATAGEN', 'TEST_RUNNER'],         // datos sinteticos → prueba local
+  ['DATAGEN', 'DATAGEN_UI'],
+  ['TEST_RUNNER', 'DATAGEN_UI'],      // consola en vivo
+  ['DATAGEN', 'AWS_SELFCONTAINED'],   // datos embebidos en el codigo
+  ['SPARK_CODEGEN', 'AWS_SELFCONTAINED'],
+  ['AWS_SELFCONTAINED', 'AWS_PIPELINE'],
+  ['DATAGEN_UI', 'AWS_PIPELINE'],     // boton Enviar a AWS
+  ['AWS_PIPELINE', 'LAMBDA_DEPLOY'],
 ]
 
 const GROUP_COLOR = {
   input: '#22c55e', parser: '#06b6d4', core: '#6366f1',
   codegen: '#f59e0b', api: '#ec4899', ui: '#a855f7', deploy: '#ef4444',
+  datagen: '#14b8a6',
 }
 const GROUP_LABEL = {
   input: 'Input Files', parser: 'Parsers', core: 'Core Engine',
   codegen: 'Code Generation', api: 'API Layer', ui: 'UI (React)', deploy: 'AWS Deploy',
+  datagen: 'Ciclo de Prueba (Data Redactada → AWS)',
 }
 
 function buildArch(theme) {
