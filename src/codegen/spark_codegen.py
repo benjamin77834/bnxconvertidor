@@ -504,6 +504,17 @@ def _build_transform(var_id, src_df, rule):
     where = rule.get("where")
     group_by = rule.get("group_by")
 
+    # Si el 'select' en realidad es DML crudo de Ab Initio (out::reformat(in)= begin...end;
+    # o contiene out.FIELD ::), lo tratamos como raw_transform en vez de meterlo en
+    # selectExpr (que generaria Python invalido).
+    if select and select != "*" and (
+        re.search(r'out\s*::\s*\w+\s*\(', select) or
+        'begin' in select.lower() and '::' in select or
+        re.search(r'out\.\w+\s*::', select)
+    ):
+        return _build_transform(var_id, src_df, {"raw_transform": select,
+                                                 **{k: v for k, v in rule.items() if k != "select"}})
+
     # NOTE: Do NOT apply _map_date_functions/_map_string_functions to the full select
     # string here — it contains multiple comma-separated expressions and translating
     # them together corrupts expressions like (date("YYYY-MM-DD")) (string("|")) field.
