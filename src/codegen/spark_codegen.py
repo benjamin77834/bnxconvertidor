@@ -51,6 +51,17 @@ def _map_date_functions(expr):
     expr = re.sub(r'truncate_date\(([^,]+),\s*"MONTH"\)', r'trunc(\1, "MM")', expr)
     expr = re.sub(r'truncate_date\(([^,]+),\s*"YEAR"\)', r'trunc(\1, "yyyy")', expr)
     expr = re.sub(r'last_day_of_month\(', 'last_day(', expr)
+    # Familia date_*of* de Ab Initio (extraen componentes de una fecha).
+    # ORDEN: los mas especificos primero para no romper prefijos comunes.
+    expr = re.sub(r'date_week_of_year\(', 'weekofyear(', expr)
+    expr = re.sub(r'date_day_of_week\(', 'dayofweek(', expr)
+    expr = re.sub(r'date_day_of_year\(', 'dayofyear(', expr)
+    expr = re.sub(r'date_day_of_month\(', 'dayofmonth(', expr)
+    expr = re.sub(r'date_month_of_year\(', 'month(', expr)
+    # Componentes simples (despues de los compuestos)
+    expr = re.sub(r'\bdate_year\(', 'year(', expr)
+    expr = re.sub(r'\bdate_month\(', 'month(', expr)
+    expr = re.sub(r'\bdate_day\(', 'dayofmonth(', expr)
     # $[(date("YYYYMMDD"))now()] → date_format(current_date(), "yyyyMMdd")
     expr = re.sub(
         r'\$\[\(date\("YYYYMMDD"\)\)now\(\)\]',
