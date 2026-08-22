@@ -1,7 +1,7 @@
 # src/codegen/glue_codegen.py
 import re
 from datetime import datetime
-from src.codegen.spark_codegen import _translate_dml_expr, _map_date_functions, _map_string_functions
+from src.codegen.spark_codegen import _translate_dml_expr, _map_date_functions, _map_string_functions, _sanitize_generated_file
 
 
 # Local functions removed — using improved versions from spark_codegen
@@ -993,3 +993,7 @@ def generate_glue(dag, output_path, xfr_rules=None):
             f.write(f'    print(f"  [ok] Iteration {{_iteration + 1}} complete")\n\n')
 
         f.write('print("[ok] BNX Glue Job V54 Finished")\n')
+
+    # --- GUARDARRAIL: comentar DML crudo Ab Initio que se haya colado sin traducir,
+    # garantizando que el codigo Glue generado sea SIEMPRE Python valido.
+    _sanitize_generated_file(output_path)

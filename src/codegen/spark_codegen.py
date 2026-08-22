@@ -1028,3 +1028,54 @@ def generate_spark(dag, output_path, xfr_rules=None):
 
         f.write('spark.stop()\n')
         f.write('print("[ok] BNX PySpark Job Finished")\n')
+
+    # --- GUARDARRAIL: comentar cualquier linea de DML crudo Ab Initio que se haya
+    # colado sin traducir (out::reformat(in)=, out.X ::, begin/end;), para que el
+    # codigo generado SIEMPRE sea Python valido. Es un cinturon de seguridad.
+    _sanitize_generated_file(output_path)
+
+
+def _sanitize_generated_file(output_path):
+    """Post-proceso de seguridad: comenta lineas de DML crudo Ab Initio que hayan
+    quedado sin traducir en el codigo generado, para garantizar Python valido.
+
+    Detecta lineas que empiezan (ignorando indentacion) con patrones de DML nativo:
+      out::reformat(in)=, out :: rollup(in)=, begin, end;, out.CAMPO :: ...
+    y las convierte en comentarios. Preserva las lineas ya validas (asignaciones,
+    withColumn, def, comentarios, etc.).
+    """
+    try:
+        with open(output_path, "r", encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return
+
+    # Patrones de DML crudo Ab Initio que NO son Python valido
+    dml_line = re.compile(
+        r'^\s*('
+        r'out\s*::\s*\w+\s*\('          # out::reformat(in)= , out :: rollup(in)=
+        r'|out\.\w+\s*::'               # out.CAMPO :: expr
+        r'|begin\s*$'                   # begin
+        r'|end\s*;'                     # end;
+        r'|let\s+\w+'                   # let VAR ... (declaracion DML)
+        r'|:\s*\w+\s*\(int'             # tipos de retorno DML
+        r')'
+    )
+    changed = False
+    out = []
+    for ln in lines:
+        stripped = ln.rstrip("\n")
+        # No tocar comentarios ni lineas ya validas
+        if stripped.lstrip().startswith("#"):
+            out.append(ln)
+            continue
+        if dml_line.match(stripped):
+            indent = ln[:len(ln) - len(ln.lstrip())]
+            out.append(f"{indent}# [BNX] DML crudo sin traducir (revisar): {stripped.strip()}\n")
+            changed = True
+        else:
+            out.append(ln)
+
+    if changed:
+        with open(output_path, "w", encoding="utf-8") as fh:
+            fh.writelines(out)
