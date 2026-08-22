@@ -3,11 +3,19 @@ import { COMPILE_URL } from '../config'
 
 // El endpoint /datagen vive en el mismo origen que /compile
 const DATAGEN_URL = COMPILE_URL.replace(/\/compile$/, '/datagen')
+const RUNTEST_URL = COMPILE_URL.replace(/\/compile$/, '/runtest')
 
 const TYPES = ['string', 'integer', 'decimal', 'date', 'datetime', 'boolean']
 const PII_CATEGORIES = ['', 'name', 'email', 'phone', 'card', 'account', 'ssn', 'address', 'dob', 'id']
 
-export default function DataGenPage({ theme }) {
+// Etiqueta visual para entrada/salida
+const IO_META = {
+  input: { label: '⬇️ Entrada', color: '#22c55e' },
+  output: { label: '⬆️ Salida', color: '#f59e0b' },
+}
+const ioMeta = (io) => IO_META[io] || IO_META.output
+
+export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compiledCode = '', compiledTarget = '' }) {
   const t = theme || {}
   const [mode, setMode] = useState('graph') // 'graph' | 'manual'
 
@@ -15,6 +23,15 @@ export default function DataGenPage({ theme }) {
   const [mp, setMp] = useState('')
   const [xfr, setXfr] = useState('')
   const [dml, setDml] = useState('')
+
+  const hasCompilerGraph = Boolean((graphMp || '').trim())
+
+  // Trae el grafo actual del Compiler a los campos de esta seccion
+  const useCompilerGraph = () => {
+    setMp(graphMp || '')
+    setXfr(graphXfr || '')
+    setMode('graph')
+  }
 
   // --- Modo manual ---
   const [columns, setColumns] = useState([
@@ -31,6 +48,36 @@ export default function DataGenPage({ theme }) {
   const [error, setError] = useState('')
   const [result, setResult] = useState(null) // {mode, schema, datasets}
   const [activeDataset, setActiveDataset] = useState(0)
+  const [ioFilter, setIoFilter] = useState('all') // 'all' | 'input' | 'output'
+
+  // --- Ejecutar prueba PySpark ---
+  const [running, setRunning] = useState(false)
+  const [runResult, setRunResult] = useState(null) // {ok, summary, stdout, stderr, reads, writes}
+
+  const isPySpark = compiledTarget === 'spark'
+  const hasCode = Boolean((compiledCode || '').trim())
+
+  const runTest = async () => {
+    setRunning(true)
+    setRunResult(null)
+    try {
+      // Usar solo datasets de entrada para alimentar el job
+      const inputs = (result?.datasets || []).filter(d => d.io === 'input')
+      const datasets = inputs.length ? inputs : (result?.datasets || [])
+      const res = await fetch(RUNTEST_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: compiledCode, datasets, timeout: 180 }),
+      })
+      const data = await res.json()
+      if (data.error) { setRunResult({ ok: false, summary: data.error, stderr: '', stdout: '' }) }
+      else setRunResult(data)
+    } catch (e) {
+      setRunResult({ ok: false, summary: `Error de red: ${e.message}`, stderr: '', stdout: '' })
+    } finally {
+      setRunning(false)
+    }
+  }
 
   const card = {
     background: t.card || '#1e2433',
@@ -137,7 +184,14 @@ export default function DataGenPage({ theme }) {
     reader.readAsText(f)
   }
 
-  const ds = result?.datasets?.[activeDataset]
+  // Datasets filtrados por entrada/salida
+  const allDatasets = result?.datasets || []
+  const hasInput = allDatasets.some(d => d.io === 'input')
+  const hasOutput = allDatasets.some(d => d.io === 'output')
+  const visibleDatasets = allDatasets.filter(d =>
+    ioFilter === 'all' ? true : d.io === ioFilter
+  )
+  const ds = visibleDatasets[activeDataset] || visibleDatasets[0]
 
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: 24, display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -158,7 +212,14 @@ export default function DataGenPage({ theme }) {
       {/* --- MODO GRAFO --- */}
       {mode === 'graph' && (
         <div style={{ ...card, display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <span style={label}>Grafo (.mp requerido, .xfr y .dml opcionales)</span>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span style={label}>Grafo (.mp requerido, .xfr y .dml opcionales)</span>
+            {hasCompilerGraph && (
+              <button onClick={useCompilerGraph} style={btn(true, '#22c55e')}>
+                🔗 Usar grafo del Compiler
+              </button>
+            )}
+          </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
             {[
               { lbl: '.mp', val: mp, set: setMp, color: '#22c55e' },
@@ -250,12 +311,25 @@ export default function DataGenPage({ theme }) {
         </div>
       )}
 
+      {/* --- SIN DATASETS: mensaje --- */}
+      {result && result.datasets && result.datasets.length === 0 && (
+        <div style={{ ...card, borderColor: '#f59e0b40', background: '#f59e0b10', color: '#f59e0b', fontSize: 13, lineHeight: 1.5 }}>
+          ℹ️ {result.message || 'No se generaron datos. El grafo no expone campos. Usa el modo Manual o adjunta un .dml/.xfr.'}
+          <div style={{ marginTop: 10 }}>
+            <button onClick={() => setMode('manual')} style={btn(true, '#f59e0b')}>
+              ✏️ Cambiar a modo Manual
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* --- RESULTADO --- */}
-      {result?.datasets?.length > 0 && (
+      {allDatasets.length > 0 && (
         <div style={{ ...card, display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
             <span style={label}>
-              Resultado · {result.mode === 'graph' ? `${result.datasets.length} nodo(s)` : 'manual'}
+              Resultado · {result.mode === 'graph' ? `${allDatasets.length} dataset(s)` : 'manual'}
+              {hasInput && hasOutput && ' · entrada + salida'}
             </span>
             {ds && (
               <button onClick={() => downloadDataset(ds)} style={btn(true, '#22c55e')}>
@@ -264,22 +338,47 @@ export default function DataGenPage({ theme }) {
             )}
           </div>
 
-          {/* Selector de dataset (cuando hay varios nodos) */}
-          {result.datasets.length > 1 && (
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              {result.datasets.map((d, i) => (
-                <button key={i} style={btn(activeDataset === i)} onClick={() => setActiveDataset(i)}>
-                  {d.node} ({d.columns.length})
-                </button>
-              ))}
+          {/* Filtro entrada / salida (solo si hay de ambos) */}
+          {hasInput && hasOutput && (
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button style={btn(ioFilter === 'all')} onClick={() => { setIoFilter('all'); setActiveDataset(0) }}>Todos</button>
+              <button style={btn(ioFilter === 'input', '#22c55e')} onClick={() => { setIoFilter('input'); setActiveDataset(0) }}>⬇️ Entrada</button>
+              <button style={btn(ioFilter === 'output', '#f59e0b')} onClick={() => { setIoFilter('output'); setActiveDataset(0) }}>⬆️ Salida</button>
             </div>
           )}
 
-          {/* Botón para traer este esquema al editor manual */}
+          {/* Selector de dataset (cuando hay varios) */}
+          {visibleDatasets.length > 1 && (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {visibleDatasets.map((d, i) => {
+                const io = ioMeta(d.io)
+                return (
+                  <button key={i} style={btn(ds === d, io.color)} onClick={() => setActiveDataset(i)}>
+                    <span style={{ fontSize: 10 }}>{io.label}</span> {d.node} ({d.columns.length})
+                  </button>
+                )
+              })}
+            </div>
+          )}
+
+          {/* Etiqueta del dataset activo (entrada/salida) */}
           {ds && (
-            <button onClick={() => importSchemaToManual(ds.columns, ds.node)} style={{ ...btn(false), alignSelf: 'flex-start', fontSize: 11 }}>
-              ✏️ Editar este esquema manualmente
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <span style={{
+                padding: '3px 10px', borderRadius: 6, fontSize: 12, fontWeight: 600,
+                background: ioMeta(ds.io).color + '20', color: ioMeta(ds.io).color,
+                border: `1px solid ${ioMeta(ds.io).color}40`,
+              }}>{ioMeta(ds.io).label} · {ds.node}</span>
+              <span style={{ fontSize: 11, color: t.dim }}>
+                {ds.io === 'input'
+                  ? 'Datos que alimentan el job (lo que se lee).'
+                  : 'Datos que el job produce (resultado esperado).'}
+              </span>
+              <div style={{ flex: 1 }} />
+              <button onClick={() => importSchemaToManual(ds.columns, ds.node)} style={{ ...btn(false), fontSize: 11 }}>
+                ✏️ Editar este esquema manualmente
+              </button>
+            </div>
           )}
 
           {/* Vista previa de tabla */}
@@ -321,6 +420,87 @@ export default function DataGenPage({ theme }) {
             <span style={{ fontSize: 11, color: t.dim }}>
               Mostrando 50 de {ds.rows.length} filas. Descarga para ver todas.
             </span>
+          )}
+        </div>
+      )}
+
+      {/* --- EJECUTAR PRUEBA PYSPARK --- */}
+      {result?.datasets?.length > 0 && (
+        <div style={{ ...card, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <span style={label}>▶️ Ejecutar prueba local (PySpark)</span>
+              <span style={{ fontSize: 11, color: t.dim }}>
+                Corre el código del Compiler con estos datos de entrada y comprueba si funciona.
+              </span>
+            </div>
+            <button
+              onClick={runTest}
+              disabled={running || !hasCode || !isPySpark}
+              style={{
+                padding: '10px 20px', borderRadius: 8,
+                cursor: (running || !hasCode || !isPySpark) ? 'not-allowed' : 'pointer',
+                background: (!hasCode || !isPySpark) ? (t.border || '#334155') : '#6366f1',
+                color: '#fff', border: 'none', fontSize: 14, fontWeight: 700,
+                opacity: running ? 0.6 : 1,
+              }}
+            >{running ? '⏳ Ejecutando...' : '▶️ Ejecutar prueba'}</button>
+          </div>
+
+          {/* Avisos de precondición */}
+          {!hasCode && (
+            <span style={{ fontSize: 12, color: '#f59e0b' }}>
+              ⚠️ No hay código compilado. Compila un grafo en el Compiler primero.
+            </span>
+          )}
+          {hasCode && !isPySpark && (
+            <span style={{ fontSize: 12, color: '#f59e0b' }}>
+              ⚠️ El target actual es "{compiledTarget}". La ejecución local solo soporta PySpark —
+              cambia el target a "Spark" en el Compiler y recompila.
+            </span>
+          )}
+
+          {/* Resultado de la ejecución */}
+          {runResult && (
+            <div style={{
+              borderRadius: 8, padding: 12,
+              background: runResult.ok ? '#22c55e10' : '#ef444410',
+              border: `1px solid ${runResult.ok ? '#22c55e40' : '#ef444440'}`,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <span style={{ fontSize: 18 }}>{runResult.ok ? '✅' : '❌'}</span>
+                <span style={{ fontSize: 14, fontWeight: 700, color: runResult.ok ? '#22c55e' : '#ef4444' }}>
+                  {runResult.summary}
+                </span>
+              </div>
+
+              {/* Lecturas / escrituras */}
+              {(runResult.reads?.length > 0 || runResult.writes?.length > 0) && (
+                <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12, color: t.muted, marginBottom: 8 }}>
+                  {runResult.reads?.map((r, i) => (
+                    <span key={'r' + i}>⬇️ {r.node || r.var}: {r.rows} filas</span>
+                  ))}
+                  {runResult.writes?.map((w, i) => (
+                    <span key={'w' + i} style={{ color: '#f59e0b' }}>⬆️ {w.var}: {w.rows} filas</span>
+                  ))}
+                </div>
+              )}
+
+              {/* Logs */}
+              {(runResult.stderr || runResult.stdout) && (
+                <details open={!runResult.ok}>
+                  <summary style={{ cursor: 'pointer', fontSize: 12, color: t.dim }}>
+                    {runResult.ok ? 'Ver logs' : 'Ver error'}
+                  </summary>
+                  <pre style={{
+                    marginTop: 8, padding: 10, borderRadius: 6, maxHeight: 300, overflow: 'auto',
+                    background: t.bg || '#0f1117', border: `1px solid ${t.border || '#334155'}`,
+                    fontSize: 11, color: runResult.ok ? (t.muted || '#94a3b8') : '#fca5a5',
+                    whiteSpace: 'pre-wrap', margin: 0,
+                  }}>{(runResult.stderr && !runResult.ok ? runResult.stderr : runResult.stdout) || '(sin salida)'}</pre>
+                </details>
+              )}
+            </div>
           )}
         </div>
       )}
