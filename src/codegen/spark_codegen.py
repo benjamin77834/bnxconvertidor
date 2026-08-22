@@ -351,6 +351,13 @@ def _translate_dml_expr(expr_clean):
             mapped = mapped[:-1]
         while mapped.startswith('(') and mapped.count('(') > mapped.count(')'):
             mapped = mapped[1:]
+    # Fechas tolerantes: to_date/to_timestamp fallan con strings vacios o invalidos
+    # (CANNOT_PARSE_TIMESTAMP). Usamos try_to_date/try_to_timestamp que devuelven NULL
+    # en vez de romper — comportamiento correcto para datos sucios en produccion.
+    mapped = re.sub(r'\bto_date\(', 'try_to_date(', mapped)
+    mapped = re.sub(r'\bto_timestamp\(', 'try_to_timestamp(', mapped)
+    # Evitar doble prefijo si ya venia try_
+    mapped = mapped.replace('try_try_to_date(', 'try_to_date(').replace('try_try_to_timestamp(', 'try_to_timestamp(')
     return mapped
 
 
