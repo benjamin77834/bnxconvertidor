@@ -693,7 +693,8 @@ def generate_spark(dag, output_path, xfr_rules=None):
                     elif has_multi_output:
                         num_outputs = len(node.children)
                         f.write(f'# Multi-output Reformat (output_indexes): splits into {num_outputs} streams\n')
-                        f.write(f'_{var_id}_splits = output_indexes_split({src}, "output_port_index", {num_outputs})\n')
+                        f.write(f'{var_id}_df = {src}  # el nodo en si (por si se referencia)\n')
+                        f.write(f'_{var_id}_splits = output_indexes_split({var_id}_df, "output_port_index", {num_outputs})\n')
                         for idx, child_id in enumerate(node.children):
                             f.write(f'{child_id}_df = _{var_id}_splits[{idx}]  # port {idx}\n')
                     elif rule:
