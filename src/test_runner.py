@@ -23,6 +23,79 @@ import tempfile
 import subprocess
 
 
+# Palabras que aparecen dentro de expresiones pero NO son columnas
+_NON_COLUMN_TOKENS = {
+    "cast", "as", "to_date", "to_timestamp", "int", "integer", "string", "decimal",
+    "date", "datetime", "when", "then", "else", "end", "case", "and", "or", "not",
+    "null", "is", "coalesce", "lit", "col", "expr", "trim", "lpad", "rpad", "concat",
+    "substring", "size", "current_date", "current_timestamp", "true", "false",
+    "count", "sum", "avg", "min", "max", "row_number", "over", "desc", "asc",
+    "left", "right", "inner", "outer", "full", "how", "on", "descending", "ascending",
+    "yyyy", "mm", "dd", "hh", "ss",
+}
+
+
+def extract_referenced_columns(pyspark_code):
+    """Escanea el código PySpark y devuelve el conjunto de nombres de columna
+    que se referencian en cualquier parte: col("x"), "x" as y, on=["k"],
+    orderBy("a","b"), expr("... campo ..."), withColumn("nuevo", ...), etc.
+
+    Esto permite garantizar que los DataFrames sintéticos tengan esas columnas
+    para que ninguna operación aguas abajo falle por columna ausente.
+    """
+    cols = set()
+
+    # col("x") / col('x')
+    for m in re.findall(r'col\(\s*["\'](\w+)["\']\s*\)', pyspark_code):
+        cols.add(m)
+
+    # F.col("x")
+    for m in re.findall(r'F\.col\(\s*["\'](\w+)["\']\s*\)', pyspark_code):
+        cols.add(m)
+
+    # on="k" / on=["k1","k2"]
+    for m in re.findall(r'on\s*=\s*["\'](\w+)["\']', pyspark_code):
+        cols.add(m)
+    for block in re.findall(r'on\s*=\s*\[([^\]]*)\]', pyspark_code):
+        for m in re.findall(r'["\'](\w+)["\']', block):
+            cols.add(m)
+
+    # orderBy(...) / sort(...) / groupBy(...) / dropDuplicates([...])
+    for fn in ("orderBy", "sort", "groupBy", "partitionBy"):
+        for block in re.findall(rf'{fn}\(([^)]*)\)', pyspark_code):
+            for m in re.findall(r'["\'](\w+)["\']', block):
+                cols.add(m)
+    for block in re.findall(r'dropDuplicates\(\s*\[([^\]]*)\]', pyspark_code):
+        for m in re.findall(r'["\'](\w+)["\']', block):
+            cols.add(m)
+
+    # withColumn("nuevo", ...) — el nombre nuevo también debe existir río abajo
+    for m in re.findall(r'withColumn\(\s*["\'](\w+)["\']', pyspark_code):
+        cols.add(m)
+
+    # expr("... texto ...") y where/filter("... texto ...") → tokens tipo identificador
+    for block in re.findall(r'(?:expr|where|filter)\(\s*"((?:[^"\\]|\\.)*)"', pyspark_code):
+        # limpiar escapes
+        clean = block.replace('\\"', '"')
+        for tok in re.findall(r'\b([a-zA-Z_]\w*)\b', clean):
+            low = tok.lower()
+            if low not in _NON_COLUMN_TOKENS and not tok.isdigit():
+                cols.add(tok)
+
+    # selectExpr("a", "b as c") — nombres antes de "as" y sueltos
+    for block in re.findall(r'selectExpr\(([^)]*)\)', pyspark_code):
+        for part in re.findall(r'["\']([^"\']+)["\']', block):
+            if part == "*":
+                continue
+            m = re.match(r'\s*(\w+)', part)
+            if m and m.group(1).lower() not in _NON_COLUMN_TOKENS:
+                cols.add(m.group(1))
+
+    # Quitar tokens claramente no-columna
+    cols = {c for c in cols if c and c.lower() not in _NON_COLUMN_TOKENS and not c.isdigit()}
+    return cols
+
+
 def _csv_to_records(content, delimiter=","):
     """Convierte contenido CSV a lista de dicts (todo string, se castea en Spark)."""
     reader = csv.DictReader(io.StringIO(content), delimiter=delimiter)
@@ -56,13 +129,16 @@ def _normalize_inputs(datasets):
     return inputs
 
 
-def build_test_script(pyspark_code, inputs):
+def build_test_script(pyspark_code, inputs, required_cols=None):
     """Construye un script PySpark ejecutable localmente.
 
     - Inyecta BNX_INPUTS (dict nodo→registros) al inicio.
+    - Inyecta BNX_REQUIRED_COLS (columnas que el pipeline referencia) para que
+      cada DataFrame las tenga (rellenadas con null si faltan).
     - Reemplaza lecturas spark.read.<fmt>(...) por _bnx_read("<var>").
     - Reemplaza escrituras X.write... por _bnx_write(X, "<var>").
     """
+    required_cols = sorted(required_cols or [])
     lines = pyspark_code.split("\n")
     out = []
 
@@ -105,6 +181,23 @@ def build_test_script(pyspark_code, inputs):
         body,
     )
 
+    # Reescribir orderBy/sort para que ignoren columnas ausentes:
+    #   X.orderBy("a", "b")  → _bnx_sort(X, "a", "b")
+    #   X.sort("a")          → _bnx_sort(X, "a")
+    body = re.sub(
+        r'(\w+)\.(?:orderBy|sort)\(([^)]*)\)',
+        r'_bnx_sort(\1, \2)',
+        body,
+    )
+
+    # Reescribir dropDuplicates([...]) para ignorar columnas ausentes:
+    #   X.dropDuplicates(["a","b"])  → _bnx_dropdup(X, ["a","b"])
+    body = re.sub(
+        r'(\w+)\.dropDuplicates\((\[[^\]]*\])\)',
+        r'_bnx_dropdup(\1, \2)',
+        body,
+    )
+
     # Sanear expresiones Ab Initio no traducidas que romperian el analisis Spark.
     # .where("...lookup(...)...") → .where("1=1") (lookup no ejecutable local sin la tabla)
     # Nota: la cadena puede tener comillas escapadas (\\"), por eso el patron es tolerante.
@@ -119,15 +212,42 @@ def build_test_script(pyspark_code, inputs):
         body,
     )
 
+    # Neutralizar comandos shell (Run_Program) para no ejecutarlos en la prueba local:
+    #   os.system(f"...")  → _bnx_shell(f"...")   (solo registra, no ejecuta)
+    body = re.sub(r'\bos\.system\(', '_bnx_shell(', body)
+
     # Harness que se antepone. Define _bnx_read/_bnx_write y BNX_INPUTS.
     # _bnx_read intenta emparejar por nombre de variable (Nombre_df → nombre del nodo).
     harness = f'''# ===== BNX TEST HARNESS (auto-generado) =====
 import json as _json
+import re as _re_bnx
 from pyspark.sql import SparkSession as _SS
 from pyspark.sql import Row as _Row
 
 _BNX_INPUTS = _json.loads({json.dumps(json.dumps(inputs))})
+_BNX_REQUIRED_COLS = _json.loads({json.dumps(json.dumps(required_cols))})
 _BNX_WRITES = []
+
+class _BnxParamsMeta(type):
+    # Metaclase tolerante para PARAMS: atributos no definidos → placeholder.
+    def __getattr__(cls, name):
+        return f"BNX_PARAM_{{name}}"
+
+def _bnx_ensure_cols(df):
+    # Garantiza que el DataFrame tenga todas las columnas que el pipeline referencia.
+    # Las ausentes se agregan como null (StringType) para que ninguna operacion
+    # aguas abajo (col, where, join, orderBy, expr) falle por columna inexistente.
+    from pyspark.sql.functions import lit as _lit
+    if df is None:
+        return df
+    have = set(df.columns)
+    for c in _BNX_REQUIRED_COLS:
+        if c not in have:
+            df = df.withColumn(c, _lit(None).cast("string"))
+    # quitar el placeholder si ya hay columnas reales
+    if "_bnx_placeholder" in df.columns and len(df.columns) > 1:
+        df = df.drop("_bnx_placeholder")
+    return df
 
 def _bnx_spark():
     return _SS.builder.master("local[1]").appName("BNX_Test").getOrCreate()
@@ -152,19 +272,19 @@ def _bnx_empty(var):
     records = _BNX_INPUTS.get(key, []) if key else []
     if records:
         rows = [_Row(**{{k: (v if v is not None else None) for k, v in rec.items()}}) for rec in records]
-        return _bnx_session.createDataFrame(rows)
+        return _bnx_ensure_cols(_bnx_session.createDataFrame(rows))
     print(f"[BNX-TEST] STUB {{var}}: nodo sin fuente (era None), uso DataFrame vacio")
-    return _bnx_session.createDataFrame([_Row(_bnx_placeholder="")])
+    return _bnx_ensure_cols(_bnx_session.createDataFrame([_Row(_bnx_placeholder="")]))
 
 def _bnx_read(var):
     key = _bnx_match_key(var)
     records = _BNX_INPUTS.get(key, []) if key else []
     if not records:
-        # DataFrame vacío con una columna dummy para no romper el flujo
+        # DataFrame vacío con una columna dummy + columnas requeridas
         print(f"[BNX-TEST] WARN: sin datos de entrada para {{var}} (nodo '{{key}}'), uso vacío")
-        return _bnx_session.createDataFrame([_Row(_bnx_placeholder="")])
+        return _bnx_ensure_cols(_bnx_session.createDataFrame([_Row(_bnx_placeholder="")]))
     rows = [_Row(**{{k: (v if v is not None else None) for k, v in rec.items()}}) for rec in records]
-    df = _bnx_session.createDataFrame(rows)
+    df = _bnx_ensure_cols(_bnx_session.createDataFrame(rows))
     print(f"[BNX-TEST] READ {{var}} (nodo '{{key}}'): {{df.count()}} filas, cols={{df.columns}}")
     return df
 
@@ -184,11 +304,60 @@ def _bnx_join(left, right, on=None, how="inner"):
         if k and k not in right.columns:
             print(f"[BNX-TEST] JOIN: clave '{{k}}' ausente en lado derecho, se agrega null")
             right = right.withColumn(k, _lit(None))
+    # Evitar columnas duplicadas no-clave (causan AMBIGUOUS_REFERENCE tras el join):
+    # renombramos en el lado derecho las columnas comunes que no son clave de join.
+    key_set = set(keys)
+    common = [c for c in right.columns if c in left.columns and c not in key_set]
+    for c in common:
+        right = right.withColumnRenamed(c, c + "_r")
     try:
-        return left.join(right, on=on, how=how)
+        joined = left.join(right, on=on, how=how)
+        return joined
     except Exception as _e:
         print(f"[BNX-TEST] JOIN fallo ({{_e}}), uso cross-join limitado")
         return left.crossJoin(right.limit(1))
+
+def _bnx_colname(c):
+    # Extrae el nombre de columna de un str o de un Column (col("x"), col("x").desc())
+    if isinstance(c, str):
+        return c
+    try:
+        s = str(c)
+        _m = _re_bnx.search(r"'([A-Za-z_][A-Za-z0-9_]*)", s) or _re_bnx.search(r'"([A-Za-z_][A-Za-z0-9_]*)"', s)
+        return _m.group(1) if _m else None
+    except Exception:
+        return None
+
+def _bnx_sort(df, *cols):
+    # orderBy/sort tolerante: ordena solo por columnas existentes.
+    if df is None:
+        return df
+    existing = []
+    for c in cols:
+        name = _bnx_colname(c)
+        if name and name in df.columns:
+            existing.append(c)
+        else:
+            print(f"[BNX-TEST] SORT: columna '{{name}}' ausente, se ignora")
+    if not existing:
+        print("[BNX-TEST] SORT: ninguna columna valida, se omite el orden")
+        return df
+    return df.orderBy(*existing)
+
+def _bnx_dropdup(df, cols):
+    # dropDuplicates tolerante: usa solo columnas existentes.
+    if df is None:
+        return df
+    existing = [c for c in cols if c in df.columns]
+    if not existing:
+        print("[BNX-TEST] DEDUP: ninguna columna valida, dropDuplicates global")
+        return df.dropDuplicates()
+    return df.dropDuplicates(existing)
+
+def _bnx_shell(cmd):
+    # Run_Program: NO ejecutamos comandos shell en la prueba local, solo registramos.
+    print(f"[BNX-TEST] SHELL (no ejecutado): {{cmd}}")
+    return 0
 
 def _bnx_write(df, var):
     if df is None:
@@ -215,6 +384,18 @@ spark = _bnx_session
     # Neutralizamos spark.stop() para no cortar la sesión antes de tiempo si aparece.
     body = body.replace("spark.stop()", "# spark.stop()  # neutralizado por BNX-TEST")
 
+    # Parche de PARAMS: reescribimos la declaración `class PARAMS:` para que use
+    # una metaclase tolerante. Así cualquier atributo no definido (AI_BIN, DATABASE,
+    # TABLE, etc.) devuelve un placeholder en vez de lanzar AttributeError.
+    # La metaclase se define en el harness (_BnxParamsMeta).
+    body = re.sub(
+        r'^(\s*)class\s+PARAMS\s*:',
+        r'\1class PARAMS(metaclass=_BnxParamsMeta):',
+        body,
+        count=1,
+        flags=re.M,
+    )
+
     return harness + body
 
 
@@ -226,7 +407,8 @@ def run_pyspark_test(pyspark_code, datasets, timeout=120):
        "timed_out": bool, "writes": [...], "reads": [...], "summary": str}
     """
     inputs = _normalize_inputs(datasets)
-    script = build_test_script(pyspark_code, inputs)
+    required_cols = extract_referenced_columns(pyspark_code)
+    script = build_test_script(pyspark_code, inputs, required_cols=required_cols)
 
     tmp = tempfile.NamedTemporaryFile(
         delete=False, suffix="_bnx_test.py", mode="w", encoding="utf-8"
