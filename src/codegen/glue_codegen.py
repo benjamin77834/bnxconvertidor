@@ -543,6 +543,8 @@ def generate_glue(dag, output_path, xfr_rules=None, pset_params=None):
                 f.write(f'# [+] SOURCE: {log_name}\n')
                 src_type = rule.get("source_type", "s3") if rule else "s3"
                 path = rule.get("path") if rule else None
+                if path:  # quitar backslashes de escape Ab Initio ($\{VAR\} -> ${VAR})
+                    path = path.replace("\\{", "{").replace("\\}", "}").replace("\\$", "$")
                 fmt = rule.get("format", "parquet") if rule else "parquet"
                 topic = rule.get("topic") if rule else None
                 table = rule.get("table") if rule else None
@@ -637,6 +639,7 @@ def generate_glue(dag, output_path, xfr_rules=None, pset_params=None):
                     if is_run_program and rule and rule.get("raw_transform"):
                         # Extract commandline from raw_transform
                         raw_cmd = rule.get("raw_transform", "")
+                        raw_cmd = raw_cmd.replace("\\{", "{").replace("\\}", "}").replace("\\$", "$")
                         # Clean Ab Initio variables: $AI_SERIAL -> PARAMS paths
                         cmd_clean = re.sub(r'\$AI_SERIAL_BKP', f'{{PARAMS.BASE_PATH}}/backup', raw_cmd)
                         cmd_clean = re.sub(r'\$AI_SERIAL', f'{{PARAMS.BASE_PATH}}/raw', cmd_clean)
@@ -669,6 +672,7 @@ def generate_glue(dag, output_path, xfr_rules=None, pset_params=None):
                                           "run_program" in var_id.lower())
                     if is_run_program_nop and rule and rule.get("raw_transform"):
                         raw_cmd = rule.get("raw_transform", "")
+                        raw_cmd = raw_cmd.replace("\\{", "{").replace("\\}", "}").replace("\\$", "$")
                         cmd_clean = re.sub(r'\$AI_SERIAL_BKP', f'{{PARAMS.BASE_PATH}}/backup', raw_cmd)
                         cmd_clean = re.sub(r'\$AI_SERIAL', f'{{PARAMS.BASE_PATH}}/raw', cmd_clean)
                         cmd_clean = re.sub(r'\$\{?AI_SERIAL_BKP\}?', f'{{PARAMS.BASE_PATH}}/backup', cmd_clean)
@@ -924,6 +928,10 @@ def generate_glue(dag, output_path, xfr_rules=None, pset_params=None):
                     src = f'{parents[0]}_df'
                     sink_type = rule.get("sink_type", "s3") if rule else "s3"
                     path = rule.get("path") if rule else None
+                    if path:  # quitar backslashes de escape Ab Initio
+                        path = path.replace("\\{", "{").replace("\\}", "}").replace("\\$", "$")
+                if path:  # quitar backslashes de escape Ab Initio ($\{VAR\} -> ${VAR})
+                    path = path.replace("\\{", "{").replace("\\}", "}").replace("\\$", "$")
                     fmt = rule.get("format", "parquet") if rule else "parquet"
                     topic = rule.get("topic") if rule else None
                     table = rule.get("table") if rule else None
@@ -945,7 +953,7 @@ def generate_glue(dag, output_path, xfr_rules=None, pset_params=None):
                         if path:
                             path = re.sub(r'\$\[\(date\("YYYYMMDD"\)\)now\(\)\]', '{date_str}', path)
                             path = re.sub(r'\$FILE_DATE', '{date_str}', path)
-                            path = re.sub(r'\$\{?(\w+)\}?', r'{\1}', path)
+                            path = re.sub(r'\$\{?(\w+)\}?', r'{PARAMS.\1}', path)
                         if path and path_resolved:
                             f.write(f'_date_str = spark.sql("SELECT date_format(current_date(), \'yyyyMMdd\')").collect()[0][0]\n')
                             f.write(f'{src}.write.mode("{mode}").parquet(f"{{PARAMS.BASE_PATH}}/output/{path}")\n')
