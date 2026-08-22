@@ -90,6 +90,12 @@ from src.codegen.spark_codegen import generate_spark
 from src.codegen.flink_codegen import generate_flink
 from src.validator.semantic import validate
 from src.accuracy import compute_accuracy
+from src.datagen import (
+    infer_schema_from_graph,
+    build_synthetic_data,
+    detect_pii,
+    normalize_type,
+)
 
 PORT = 8080
 UI_DIR = os.path.join(os.path.dirname(__file__), "ui", "dist")
@@ -119,6 +125,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
 
         if "/library" in path or "/pipeline" in path:
             self._proxy_to_datalab(path)
+        elif "/datagen" in path:
+            self._handle_datagen()
         elif "/compile" in path or "/api" in path:
             self._handle_compile()
         else:
@@ -167,6 +175,175 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 self.wfile.write(result)
         except Exception as e:
             self._json_response(502, {"error": f"Proxy error: {str(e)}"})
+
+    def _handle_datagen(self):
+        """Genera datos sintéticos redactados.
+
+        Acepta JSON con dos modos:
+        1. Desde grafo:  {"mp": "...", "xfr": "...", "dml": "...",
+                          "n_rows": 10, "format": "csv"|"json"}
+           → infiere el esquema por nodo y genera datos para cada nodo con columnas.
+        2. Manual:       {"columns": [{"name","type","pii"?}, ...],
+                          "n_rows": 10, "format": "csv"|"json"}
+           → genera datos directamente para el esquema provisto.
+
+        Respuesta:
+        {
+          "schema": [{"node","node_type","columns":[{"name","type","pii"}]}],
+          "datasets": [{"node","format","content","columns","rows"}],
+          "mode": "graph"|"manual"
+        }
+        """
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+
+        try:
+            try:
+                data = json.loads(body.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                self._json_response(400, {"error": "Invalid JSON body"})
+                return
+
+            n_rows = int(data.get("n_rows", 10))
+            n_rows = max(1, min(n_rows, 10000))  # límite de seguridad
+            fmt = data.get("format", "csv")
+            seed = data.get("seed")
+            delimiter = data.get("delimiter", ",")
+
+            # --- MODO MANUAL: columnas provistas directamente ---
+            manual_columns = data.get("columns")
+            if manual_columns:
+                gen = build_synthetic_data(
+                    manual_columns, n_rows=n_rows, fmt=fmt, seed=seed, delimiter=delimiter
+                )
+                self._json_response(200, {
+                    "mode": "manual",
+                    "schema": [{
+                        "node": data.get("node_name", "manual"),
+                        "node_type": "MANUAL",
+                        "columns": gen["columns"],
+                    }],
+                    "datasets": [{
+                        "node": data.get("node_name", "manual"),
+                        "format": gen["format"],
+                        "content": gen["content"],
+                        "columns": gen["columns"],
+                        "rows": gen["rows"],
+                    }],
+                })
+                return
+
+            # --- MODO GRAFO: inferir esquema del grafo ---
+            mp_content = data.get("mp", "")
+            if not mp_content:
+                self._json_response(400, {
+                    "error": "Provide either 'columns' (manual) or 'mp' (graph)"
+                })
+                return
+
+            xfr_content = data.get("xfr", "")
+            dml_content = data.get("dml", "")
+
+            mp_path = self._save_temp(mp_content, ".mp")
+            xfr_path = self._save_temp(xfr_content, ".xfr") if xfr_content else None
+            dml_path = self._save_temp(dml_content, ".dml") if dml_content else None
+
+            try:
+                ast = parse_project(mp_path)
+                xfr_rules = parse_xfr(xfr_path) if xfr_path else {}
+                # Desempaquetar reglas especiales (igual que en /compile)
+                xfr_rules = self._prepare_xfr_rules(xfr_rules, ast, mp_path)
+                dml_data = parse_dml(dml_path) if dml_path else {}
+                dml_schema = dml_data.get("schema", {})
+
+                schema = infer_schema_from_graph(ast, xfr_rules, dml_schema)
+
+                # Filtrar solo nodos objetivo (opcional): por defecto todos con columnas
+                target_node = data.get("target_node")
+                if target_node:
+                    schema = [s for s in schema
+                              if s["node"].lower() == target_node.lower()]
+
+                datasets = []
+                for node_schema in schema:
+                    gen = build_synthetic_data(
+                        node_schema["columns"], n_rows=n_rows, fmt=fmt,
+                        seed=seed, delimiter=delimiter,
+                    )
+                    datasets.append({
+                        "node": node_schema["node"],
+                        "format": gen["format"],
+                        "content": gen["content"],
+                        "columns": gen["columns"],
+                        "rows": gen["rows"],
+                    })
+
+                self._json_response(200, {
+                    "mode": "graph",
+                    "schema": schema,
+                    "datasets": datasets,
+                })
+            finally:
+                os.unlink(mp_path)
+                if xfr_path:
+                    os.unlink(xfr_path)
+                if dml_path:
+                    os.unlink(dml_path)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": str(e)})
+
+    def _prepare_xfr_rules(self, xfr_rules, ast, mp_path):
+        """Desempaqueta _multi_xfr / _raw_dml / _global_dml_fields y aplica
+        embedded transforms, igual que /compile, para que la inferencia de
+        esquema vea las mismas reglas que el codegen."""
+        if "_multi_xfr" in xfr_rules:
+            multi = xfr_rules.pop("_multi_xfr")
+            transform_nodes = [n for n in ast.get("nodes", [])
+                               if n["type"].upper() == "TRANSFORM"]
+            from main import _assign_multi_xfr
+            _assign_multi_xfr(multi, transform_nodes, xfr_rules)
+        elif "_raw_dml" in xfr_rules:
+            raw_rule = xfr_rules.pop("_raw_dml")
+            if raw_rule.get("dml_fields"):
+                xfr_rules["_global_dml_fields"] = raw_rule["dml_fields"]
+            else:
+                xfr_rules["_global_raw_dml"] = raw_rule
+
+        if "_global_dml_fields" in xfr_rules:
+            dml_fields_list = xfr_rules.pop("_global_dml_fields")
+            for nd in ast.get("nodes", []):
+                if nd["type"].upper() == "TRANSFORM":
+                    nid = nd["id"].lower()
+                    if nid not in xfr_rules:
+                        xfr_rules[nid] = {"dml_fields": dml_fields_list}
+                        break
+
+        # Embedded transforms (GDE)
+        try:
+            from main import _extract_embedded_transforms, _apply_embedded_transforms
+            with open(mp_path, "r", errors="replace") as f:
+                raw = f.read().replace('\x00', '')
+            embedded = _extract_embedded_transforms(raw)
+            if (embedded.get("transforms") or embedded.get("keys")
+                    or embedded.get("keys_by_vertex") or embedded.get("filters")
+                    or embedded.get("filters_by_vertex") or embedded.get("keeps")):
+                node_map = {}
+                for nd in ast.get("nodes", []):
+                    vid = nd.get("vertex_id", nd["id"])
+                    node_map[vid] = {
+                        "name": nd["id"],
+                        "comp_type": nd.get("name", nd["id"]),
+                        "proto_type": nd.get("type", "TRANSFORM"),
+                        "is_sort": nd.get("is_sort", False),
+                    }
+                _apply_embedded_transforms(node_map, embedded, xfr_rules)
+        except Exception as e:
+            print(f"  [datagen] embedded transforms skipped: {e}")
+
+        return xfr_rules
 
     def _handle_compile(self):
         content_length = int(self.headers.get("Content-Length", 0))
