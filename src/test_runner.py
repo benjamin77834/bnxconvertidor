@@ -235,6 +235,15 @@ def build_test_script(pyspark_code, inputs, required_cols=None):
     #   os.system(f"...")  → _bnx_shell(f"...")   (solo registra, no ejecuta)
     body = re.sub(r'\bos\.system\(', '_bnx_shell(', body)
 
+    # Reemplazar el helper de multi-output (output_indexes_split) por uno tolerante:
+    # la columna interna 'output_port_index' de Ab Initio no existe en los datos.
+    # Se elimina la definicion generada y se usa _bnx_output_split del harness.
+    body = re.sub(
+        r'def output_indexes_split\([^)]*\):\n(?:[ \t].*\n)+',
+        '', body,
+    )
+    body = re.sub(r'\boutput_indexes_split\(', '_bnx_output_split(', body)
+
     # Harness que se antepone. Define _bnx_read/_bnx_write y BNX_INPUTS.
     # _bnx_read intenta emparejar por nombre de variable (Nombre_df → nombre del nodo).
     harness = f'''# ===== BNX TEST HARNESS (auto-generado) =====
@@ -405,6 +414,20 @@ def _bnx_shell(cmd):
     # Run_Program: NO ejecutamos comandos shell en la prueba local, solo registramos.
     print(f"[BNX-TEST] SHELL (no ejecutado): {{cmd}}")
     return 0
+
+def _bnx_output_split(df, index_expr, num_outputs):
+    # Multi-output reformat tolerante. La columna interna de Ab Initio (p.ej.
+    # 'output_port_index') no existe en los datos sinteticos: si falta, repartimos
+    # las filas de forma round-robin entre los N puertos para que la prueba avance.
+    from pyspark.sql.functions import expr as _expr, monotonically_increasing_id as _mid
+    if df is None:
+        return [None] * num_outputs
+    col = index_expr.strip().strip('"').strip("'")
+    if col in df.columns:
+        return [df.filter(_expr(f"{{index_expr}} = {{i}}")) for i in range(num_outputs)]
+    print(f"[BNX-TEST] OUTPUT-SPLIT: columna '{{col}}' ausente, reparto round-robin en {{num_outputs}} puertos")
+    dfx = df.withColumn("_bnx_rr", _mid() % num_outputs)
+    return [dfx.filter(_expr(f"_bnx_rr = {{i}}")).drop("_bnx_rr") for i in range(num_outputs)]
 
 def _bnx_write(df, var):
     if df is None:
@@ -703,6 +726,8 @@ def build_aws_selfcontained_code(pyspark_code, datasets, keep_writes=True):
         '.filter("1=1")  # AWS: lookup no traducido, filtro neutralizado', body,
     )
     body = re.sub(r'\bos\.system\(', '_bnx_shell(', body)
+    body = re.sub(r'def output_indexes_split\([^)]*\):\n(?:[ \t].*\n)+', '', body)
+    body = re.sub(r'\boutput_indexes_split\(', '_bnx_output_split(', body)
     body = re.sub(
         r'^(\s*)class\s+PARAMS\s*:', r'\1class PARAMS(metaclass=_BnxParamsMeta):',
         body, count=1, flags=re.M,
@@ -768,6 +793,16 @@ def _bnx_src(var):
 def _bnx_shell(cmd):
     print(f"[AWS] SHELL (no ejecutado): {{cmd}}")
     return 0
+
+def _bnx_output_split(df, index_expr, num_outputs):
+    from pyspark.sql.functions import expr as _expr, monotonically_increasing_id as _mid
+    if df is None:
+        return [None] * num_outputs
+    col = index_expr.strip().strip('"').strip("'")
+    if col in df.columns:
+        return [df.filter(_expr(f"{{index_expr}} = {{i}}")) for i in range(num_outputs)]
+    dfx = df.withColumn("_bnx_rr", _mid() % num_outputs)
+    return [dfx.filter(_expr(f"_bnx_rr = {{i}}")).drop("_bnx_rr") for i in range(num_outputs)]
 
 def _bnx_colname(c):
     if isinstance(c, str):
