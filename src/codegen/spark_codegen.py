@@ -1149,7 +1149,8 @@ def _sanitize_generated_file(output_path):
     # Patrones de DML crudo Ab Initio que NO son Python valido
     dml_line = re.compile(
         r'^\s*('
-        r'out\s*::\s*\w+\s*\('          # out::reformat(in)= , out :: rollup(in)=
+        r'//'                           # comentario de Ab Initio (// ...)
+        r'|out\s*::\s*\w+\s*\('         # out::reformat(in)= , out :: rollup(in)=
         r'|out\.\w+\s*::'               # out.CAMPO :: expr
         r'|begin\s*$'                   # begin
         r'|end\s*;'                     # end;
