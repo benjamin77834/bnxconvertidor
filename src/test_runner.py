@@ -265,16 +265,38 @@ def _bnx_match_key(var):
             return k
     return None
 
+def _bnx_make_df(records):
+    # Construye un DataFrame con TODAS las columnas como string y esquema explicito.
+    # Asi Spark no falla al inferir tipos mezclados (Double vs Long) entre filas;
+    # el codigo generado ya castea con CAST(...) cuando necesita tipos.
+    from pyspark.sql.types import StructType as _ST, StructField as _SF, StringType as _StrT
+    # Union de todas las columnas presentes, preservando orden de aparicion
+    col_order = []
+    seen = set()
+    for rec in records:
+        for k in rec.keys():
+            if k not in seen:
+                seen.add(k)
+                col_order.append(k)
+    if not col_order:
+        col_order = ["_bnx_placeholder"]
+    schema = _ST([_SF(c, _StrT(), True) for c in col_order])
+    norm_rows = []
+    for rec in records:
+        norm_rows.append(tuple(
+            (None if rec.get(c) is None else str(rec.get(c))) for c in col_order
+        ))
+    return _bnx_session.createDataFrame(norm_rows, schema=schema)
+
 def _bnx_empty(var):
     # Nodo sin fuente de datos (era None en el codigo generado).
     # Devolvemos un DataFrame vacio placeholder para que los hijos no fallen.
     key = _bnx_match_key(var)
     records = _BNX_INPUTS.get(key, []) if key else []
     if records:
-        rows = [_Row(**{{k: (v if v is not None else None) for k, v in rec.items()}}) for rec in records]
-        return _bnx_ensure_cols(_bnx_session.createDataFrame(rows))
+        return _bnx_ensure_cols(_bnx_make_df(records))
     print(f"[BNX-TEST] STUB {{var}}: nodo sin fuente (era None), uso DataFrame vacio")
-    return _bnx_ensure_cols(_bnx_session.createDataFrame([_Row(_bnx_placeholder="")]))
+    return _bnx_ensure_cols(_bnx_make_df([{{"_bnx_placeholder": ""}}]))
 
 def _bnx_read(var):
     key = _bnx_match_key(var)
@@ -282,9 +304,8 @@ def _bnx_read(var):
     if not records:
         # DataFrame vacío con una columna dummy + columnas requeridas
         print(f"[BNX-TEST] WARN: sin datos de entrada para {{var}} (nodo '{{key}}'), uso vacío")
-        return _bnx_ensure_cols(_bnx_session.createDataFrame([_Row(_bnx_placeholder="")]))
-    rows = [_Row(**{{k: (v if v is not None else None) for k, v in rec.items()}}) for rec in records]
-    df = _bnx_ensure_cols(_bnx_session.createDataFrame(rows))
+        return _bnx_ensure_cols(_bnx_make_df([{{"_bnx_placeholder": ""}}]))
+    df = _bnx_ensure_cols(_bnx_make_df(records))
     print(f"[BNX-TEST] READ {{var}} (nodo '{{key}}'): {{df.count()}} filas, cols={{df.columns}}")
     return df
 
