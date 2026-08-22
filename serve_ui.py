@@ -314,9 +314,16 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
 
         datasets = data.get("datasets", []) or []
         keep_writes = bool(data.get("keep_writes", True))
+        bucket = data.get("bucket")
+        job_name = data.get("job_name")
         try:
-            aws_code = build_aws_selfcontained_code(code, datasets, keep_writes=keep_writes)
-            self._json_response(200, {"code": aws_code})
+            result = build_aws_selfcontained_code(
+                code, datasets, keep_writes=keep_writes, bucket=bucket, job_name=job_name,
+            )
+            self._json_response(200, {
+                "code": result["code"],
+                "output_paths": result["output_paths"],
+            })
         except Exception as e:
             import traceback
             traceback.print_exc()
