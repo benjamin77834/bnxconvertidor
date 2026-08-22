@@ -451,7 +451,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             embedded = _extract_embedded_transforms(raw)
             if (embedded.get("transforms") or embedded.get("keys")
                     or embedded.get("keys_by_vertex") or embedded.get("filters")
-                    or embedded.get("filters_by_vertex") or embedded.get("keeps")):
+                    or embedded.get("filters_by_vertex") or embedded.get("keeps")
+                    or embedded.get("record_by_vertex")):
                 node_map = {}
                 for nd in ast.get("nodes", []):
                     vid = nd.get("vertex_id", nd["id"])
