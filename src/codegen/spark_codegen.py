@@ -248,8 +248,43 @@ def _translate_dml_expr(expr_clean):
             # Convert Ab Initio date format to Spark
             date_fmt = ab_fmt.replace("YYYY", "yyyy").replace("MM", "MM").replace("DD", "dd")
     
-    # Remove ALL type cast prefixes: (type("delim"[, opts]))
+    # Remove ALL type cast prefixes con delimitador entre comillas: (type("delim"[, opts]))
     mapped = re.sub(r'\([a-z]+\("[^"]*"[^)]*\)\)\s*', '', mapped)
+
+    # Type casts con LONGITUD numerica: (string(40))x, (decimal(18,2))x, (integer(4))x
+    # Ab Initio: (tipo(largo))expr  →  Spark: CAST(expr AS TIPO)
+    # expr puede ser: un identificador, o una llamada a funcion (se toma el token siguiente).
+    def _cast_num(m):
+        tipo = m.group(1)
+        args = m.group(2).strip()  # el (largo) o (precision,escala)
+        target = m.group(3)
+        if tipo == "decimal":
+            # (decimal(18,2)) → DECIMAL(18,2); (decimal(18)) → DECIMAL(18,0)
+            parts = [p.strip() for p in args.split(",") if p.strip()]
+            if len(parts) == 2:
+                spark_type = f"DECIMAL({parts[0]},{parts[1]})"
+            elif len(parts) == 1:
+                spark_type = f"DECIMAL({parts[0]},0)"
+            else:
+                spark_type = "DECIMAL(38,10)"
+        else:
+            spark_type = {
+                "string": "STRING", "integer": "INT",
+                "int": "INT", "long": "BIGINT", "double": "DOUBLE", "real": "DOUBLE",
+            }.get(tipo, "STRING")
+        return f'CAST({target} AS {spark_type})'
+
+    # (tipo(numeros))seguido_de_identificador_o_funcion
+    # Aplicar repetidamente por si hay varios.
+    _cast_num_re = re.compile(r'\((string|decimal|integer|int|long|double|real)\(\s*([\d,\s]+)\)\)\s*([A-Za-z_]\w*(?:\([^()]*\))?)')
+    prev = None
+    while prev != mapped:
+        prev = mapped
+        mapped = _cast_num_re.sub(_cast_num, mapped)
+
+    # Limpiar cualquier cast numerico remanente sin target claro: (string(40)) → nada
+    mapped = re.sub(r'\((?:string|decimal|integer|int|long|double|real)\(\s*[\d,\s]+\)\)\s*', '', mapped)
+
     mapped = mapped.strip()
     
     # If it was a date cast, wrap the remaining expression
