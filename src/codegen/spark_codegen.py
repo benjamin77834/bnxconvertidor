@@ -244,18 +244,20 @@ def _translate_dml_expr(expr_clean):
     # Pattern: (string("|"))field → cast(field as string)
     # Strategy: remove ALL type cast prefixes, then wrap result appropriately
     
-    # Detect if this is a date cast expression
-    has_date_cast = bool(re.search(r'\(date\("([^"]+)"\)\)', mapped))
+    # Detect if this is a date cast expression (comillas dobles O simples).
+    # Puede haber varios casts de fecha encadenados; tomamos el ULTIMO formato,
+    # que es el que aplica al campo (p.ej. (date('YYYY-MM-DD'))(date('YYYYMMDD'))campo).
+    has_date_cast = bool(re.search(r'''\(date\(['"][^'"]+['"]\)\)''', mapped))
     date_fmt = None
     if has_date_cast:
-        fmt_match = re.search(r'\(date\("([^"]+)"\)\)', mapped)
-        if fmt_match:
-            ab_fmt = fmt_match.group(1)
-            # Convert Ab Initio date format to Spark
+        fmt_matches = re.findall(r'''\(date\(['"]([^'"]+)['"]\)\)''', mapped)
+        if fmt_matches:
+            ab_fmt = fmt_matches[-1]  # el ultimo cast es el formato de origen del campo
             date_fmt = ab_fmt.replace("YYYY", "yyyy").replace("MM", "MM").replace("DD", "dd")
     
-    # Remove ALL type cast prefixes con delimitador entre comillas: (type("delim"[, opts]))
-    mapped = re.sub(r'\([a-z]+\("[^"]*"[^)]*\)\)\s*', '', mapped)
+    # Remove ALL type cast prefixes con delimitador entre comillas (dobles o simples):
+    # (type("delim"[, opts]))  o  (type('delim'[, opts]))
+    mapped = re.sub(r'''\([a-z]+\(['"][^'"]*['"][^)]*\)\)\s*''', '', mapped)
 
     # Type casts con LONGITUD numerica: (string(40))x, (decimal(18,2))x, (integer(4))x
     # Ab Initio: (tipo(largo))expr  →  Spark: CAST(expr AS TIPO)
@@ -292,7 +294,12 @@ def _translate_dml_expr(expr_clean):
     mapped = re.sub(r'\((?:string|decimal|integer|int|long|double|real)\(\s*[\d,\s]+\)\)\s*', '', mapped)
 
     mapped = mapped.strip()
-    
+
+    # Notacion record.campo de Ab Initio (p.ej. fechad.FEC_INFO): tomamos el ultimo
+    # segmento como nombre de columna. Solo si es un identificador punteado simple.
+    if re.fullmatch(r'[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+', mapped):
+        mapped = mapped.split('.')[-1]
+
     # If it was a date cast, wrap the remaining expression
     if has_date_cast and date_fmt and mapped and '(' not in mapped:
         mapped = f'to_date({mapped}, "{date_fmt}")'
