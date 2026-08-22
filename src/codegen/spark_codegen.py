@@ -229,6 +229,12 @@ def _translate_dml_expr(expr_clean):
     # Clean up Ab Initio syntax FIRST (before function mapping)
     mapped = re.sub(r'\bin\d*\.', '', mapped)   # remove in./in0./in1. prefix
     mapped = re.sub(r'\bout\.', '', mapped)     # remove out. prefix
+    # Variables/parametros Ab Initio: $VAR o ${VAR}. Dentro de una expresion se
+    # refieren a un campo/parametro; quitamos el $ para que sea un identificador
+    # valido en Spark SQL (evita "Syntax error at or near '$'").
+    # NOTA: $[...] (expresion inline con corchetes) se maneja aparte mas abajo.
+    mapped = re.sub(r'\$\{(\w+)\}', r'\1', mapped)
+    mapped = re.sub(r'\$(?![\[\{])(\w+)', r'\1', mapped)
     # Remove :1: (priority operator in Ab Initio)
     mapped = re.sub(r'\s*:1:\s*', ' ', mapped)
     
