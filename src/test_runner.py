@@ -282,9 +282,20 @@ def _bnx_ensure_cols(df):
     return df
 
 def _bnx_spark():
-    return _SS.builder.master("local[1]").appName("BNX_Test").getOrCreate()
+    # ANSI off: casts invalidos (p.ej. string no-numerico a bigint) devuelven NULL
+    # en vez de explotar, igual que Ab Initio y que AWS Glue 3.3 (ANSI off por
+    # defecto). Alinea el comportamiento local con el del target.
+    return (_SS.builder.master("local[1]").appName("BNX_Test")
+            .config("spark.sql.ansi.enabled", "false")
+            .config("spark.sql.storeAssignmentPolicy", "LEGACY")
+            .getOrCreate())
 
 _bnx_session = _bnx_spark()
+# Forzar ANSI off en runtime por si la sesion ya existia (getOrCreate reutiliza).
+try:
+    _bnx_session.conf.set("spark.sql.ansi.enabled", "false")
+except Exception:
+    pass
 
 def _bnx_match_key(var):
     # var suele ser "NombreNodo_df" → buscamos "nombrenodo"
