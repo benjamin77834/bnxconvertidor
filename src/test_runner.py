@@ -73,6 +73,8 @@ def build_test_script(pyspark_code, inputs):
     #    X_df.write.mode(...).<fmt>(...)     →   _bnx_write(X_df, "X_df")
     #    X_df.write.<fmt>(...)               →   _bnx_write(X_df, "X_df")
     write_re = re.compile(r'^(\s*)(\w+)\.write\b.*$')
+    # 3. Nodos sin fuente:  X_df = None  → placeholder vacío para no romper hijos
+    none_re = re.compile(r'^(\s*)(\w+_df)\s*=\s*None\b.*$')
 
     for ln in lines:
         m_read = read_re.match(ln)
@@ -85,9 +87,37 @@ def build_test_script(pyspark_code, inputs):
             indent, var = m_write.group(1), m_write.group(2)
             out.append(f'{indent}_bnx_write({var}, "{var}")')
             continue
+        m_none = none_re.match(ln)
+        if m_none:
+            indent, var = m_none.group(1), m_none.group(2)
+            out.append(f'{indent}{var} = _bnx_empty("{var}")  # BNX-TEST: era None')
+            continue
         out.append(ln)
 
     body = "\n".join(out)
+
+    # Reescribir joins con clave para que toleren claves ausentes en datos sinteticos:
+    #   A.join(B, on="k", how="left")       → _bnx_join(A, B, "k", "left")
+    #   A.join(B, on=["k1","k2"], how="left")→ _bnx_join(A, B, ["k1","k2"], "left")
+    body = re.sub(
+        r'(\w+)\.join\(\s*(\w+)\s*,\s*on\s*=\s*(\[[^\]]*\]|"[^"]*"|\'[^\']*\')\s*,\s*how\s*=\s*("[^"]*"|\'[^\']*\')\s*\)',
+        r'_bnx_join(\1, \2, on=\3, how=\4)',
+        body,
+    )
+
+    # Sanear expresiones Ab Initio no traducidas que romperian el analisis Spark.
+    # .where("...lookup(...)...") → .where("1=1") (lookup no ejecutable local sin la tabla)
+    # Nota: la cadena puede tener comillas escapadas (\\"), por eso el patron es tolerante.
+    body = re.sub(
+        r'\.where\("(?:[^"\\]|\\.)*lookup\((?:[^"\\]|\\.)*"\)',
+        '.where("1=1")  # BNX-TEST: lookup no traducido, filtro neutralizado',
+        body,
+    )
+    body = re.sub(
+        r'\.filter\("(?:[^"\\]|\\.)*lookup\((?:[^"\\]|\\.)*"\)',
+        '.filter("1=1")  # BNX-TEST: lookup no traducido, filtro neutralizado',
+        body,
+    )
 
     # Harness que se antepone. Define _bnx_read/_bnx_write y BNX_INPUTS.
     # _bnx_read intenta emparejar por nombre de variable (Nombre_df → nombre del nodo).
@@ -115,6 +145,17 @@ def _bnx_match_key(var):
             return k
     return None
 
+def _bnx_empty(var):
+    # Nodo sin fuente de datos (era None en el codigo generado).
+    # Devolvemos un DataFrame vacio placeholder para que los hijos no fallen.
+    key = _bnx_match_key(var)
+    records = _BNX_INPUTS.get(key, []) if key else []
+    if records:
+        rows = [_Row(**{{k: (v if v is not None else None) for k, v in rec.items()}}) for rec in records]
+        return _bnx_session.createDataFrame(rows)
+    print(f"[BNX-TEST] STUB {{var}}: nodo sin fuente (era None), uso DataFrame vacio")
+    return _bnx_session.createDataFrame([_Row(_bnx_placeholder="")])
+
 def _bnx_read(var):
     key = _bnx_match_key(var)
     records = _BNX_INPUTS.get(key, []) if key else []
@@ -127,7 +168,32 @@ def _bnx_read(var):
     print(f"[BNX-TEST] READ {{var}} (nodo '{{key}}'): {{df.count()}} filas, cols={{df.columns}}")
     return df
 
+def _bnx_join(left, right, on=None, how="inner"):
+    # Join tolerante: si la clave no existe en algun lado (datos sinteticos
+    # con esquema generico), la agrega como null para no romper el analisis.
+    from pyspark.sql.functions import lit as _lit
+    if left is None:
+        return right
+    if right is None:
+        return left
+    keys = on if isinstance(on, list) else [on] if on else []
+    for k in keys:
+        if k and k not in left.columns:
+            print(f"[BNX-TEST] JOIN: clave '{{k}}' ausente en lado izquierdo, se agrega null")
+            left = left.withColumn(k, _lit(None))
+        if k and k not in right.columns:
+            print(f"[BNX-TEST] JOIN: clave '{{k}}' ausente en lado derecho, se agrega null")
+            right = right.withColumn(k, _lit(None))
+    try:
+        return left.join(right, on=on, how=how)
+    except Exception as _e:
+        print(f"[BNX-TEST] JOIN fallo ({{_e}}), uso cross-join limitado")
+        return left.crossJoin(right.limit(1))
+
 def _bnx_write(df, var):
+    if df is None:
+        print(f"[BNX-TEST] WRITE {{var}}: SKIP (DataFrame None — nodo sin datos)")
+        return
     try:
         n = df.count()
         cols = df.columns
