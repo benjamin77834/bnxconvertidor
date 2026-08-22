@@ -365,13 +365,39 @@ def _translate_dml_expr(expr_clean):
             }.get(tipo, "STRING")
         return f'CAST({target} AS {spark_type})'
 
-    # (tipo(numeros))seguido_de_identificador_o_funcion
-    # Aplicar repetidamente por si hay varios.
-    _cast_num_re = re.compile(r'\((string|decimal|integer|int|long|double|real)\(\s*([\d,\s]+)\)\)\s*([A-Za-z_]\w*(?:\([^()]*\))?)')
-    prev = None
-    while prev != mapped:
-        prev = mapped
-        mapped = _cast_num_re.sub(_cast_num, mapped)
+    # (tipo(numeros))seguido_de_identificador_o_funcion (incluye llamadas con
+    # parentesis ANIDADOS, p.ej. (string(10))string_prefix(trim(x),10)).
+    # Detectamos el prefijo de cast y luego tomamos el target balanceando parentesis.
+    _cast_prefix_re = re.compile(r'\((string|decimal|integer|int|long|double|real)\(\s*([\d,\s]+)\)\)\s*')
+    guard = 0
+    while guard < 50:
+        guard += 1
+        m = _cast_prefix_re.search(mapped)
+        if not m:
+            break
+        tipo = m.group(1)
+        args = m.group(2).strip()
+        rest = mapped[m.end():]
+        # Tomar el identificador/llamada que sigue, balanceando parentesis anidados
+        tm = re.match(r'[A-Za-z_][\w.]*', rest)
+        if not tm:
+            # No hay target claro: eliminar el prefijo de cast y seguir
+            mapped = mapped[:m.start()] + rest
+            continue
+        target = tm.group(0)
+        after = rest[tm.end():]
+        # Si es una llamada de funcion, capturar los argumentos balanceados
+        if after.startswith('('):
+            close = _match_paren(after, 0)
+            if close != -1:
+                target = target + after[:close + 1]
+                after = after[close + 1:]
+        # Construir el CAST usando la logica de _cast_num sobre 'target'
+        class _M:
+            def group(self, i):
+                return [None, tipo, args, target][i]
+        cast_sql = _cast_num(_M())
+        mapped = mapped[:m.start()] + cast_sql + after
 
     # Limpiar cualquier cast numerico remanente sin target claro: (string(40)) → nada
     mapped = re.sub(r'\((?:string|decimal|integer|int|long|double|real)\(\s*[\d,\s]+\)\)\s*', '', mapped)
