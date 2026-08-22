@@ -521,3 +521,120 @@ def _tail(text, max_chars):
     if len(text) <= max_chars:
         return text
     return "...[truncado]...\n" + text[-max_chars:]
+
+
+def stream_pyspark_test(pyspark_code, datasets, timeout=180):
+    """Ejecuta el PySpark de prueba y hace *yield* de cada linea de salida en vivo.
+
+    Cada yield es un dict:
+      {"type": "line", "text": "..."}     — una linea de stdout/stderr
+      {"type": "done", "ok": bool, "summary": str, "reads": [...], "writes": [...]}
+
+    Permite que la UI muestre una consola en tiempo real mientras el job corre.
+    """
+    import threading
+    import time as _time
+
+    inputs = _normalize_inputs(datasets)
+    required_cols = extract_referenced_columns(pyspark_code)
+    script = build_test_script(pyspark_code, inputs, required_cols=required_cols)
+
+    tmp = tempfile.NamedTemporaryFile(
+        delete=False, suffix="_bnx_test.py", mode="w", encoding="utf-8"
+    )
+    tmp.write(script)
+    tmp.close()
+
+    env = dict(os.environ)
+    env.setdefault("PYSPARK_PYTHON", sys.executable)
+    # Forzar salida sin buffer para ver el progreso en vivo
+    env["PYTHONUNBUFFERED"] = "1"
+
+    reads_all = []
+    writes_all = []
+
+    proc = subprocess.Popen(
+        [sys.executable, "-u", tmp.name],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, bufsize=1, env=env,
+    )
+
+    start = _time.time()
+    timed_out = False
+
+    # Watchdog para el timeout
+    def _kill_on_timeout():
+        while proc.poll() is None:
+            if _time.time() - start > timeout:
+                proc.kill()
+                return
+            _time.sleep(1)
+
+    watcher = threading.Thread(target=_kill_on_timeout, daemon=True)
+    watcher.start()
+
+    try:
+        for raw_line in iter(proc.stdout.readline, ""):
+            line = raw_line.rstrip("\n")
+            # Filtrar ruido de Spark que no aporta al usuario
+            if _is_noise(line):
+                continue
+            # Acumular reads/writes para el resumen final
+            mr = re.match(r"\[BNX-TEST\] READ (\S+) \(nodo '([^']*)'\): (\d+) filas", line)
+            if mr:
+                reads_all.append({"var": mr.group(1), "node": mr.group(2), "rows": int(mr.group(3))})
+            mw = re.match(r"\[BNX-TEST\] WRITE (\S+): (\d+) filas", line)
+            if mw:
+                writes_all.append({"var": mw.group(1), "rows": int(mw.group(2))})
+            yield {"type": "line", "text": line}
+    finally:
+        proc.stdout.close()
+        proc.wait()
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+    if _time.time() - start > timeout:
+        timed_out = True
+
+    exit_code = proc.returncode
+    ok = (not timed_out) and exit_code == 0
+    if ok:
+        summary = f"Ejecución OK · {len(reads_all)} lectura(s), {len(writes_all)} escritura(s)"
+    elif timed_out:
+        summary = f"Timeout tras {timeout}s — el job tardó demasiado"
+    else:
+        summary = "Falló la ejecución — revisa el error arriba"
+
+    yield {
+        "type": "done",
+        "ok": ok,
+        "exit_code": exit_code,
+        "timed_out": timed_out,
+        "summary": summary,
+        "reads": reads_all,
+        "writes": writes_all,
+    }
+
+
+# Lineas de log de Spark/JVM que no aportan valor al usuario
+_NOISE_PATTERNS = (
+    "log4j", "SLF4J", "Using Spark's default", "Setting default log level",
+    "To adjust logging level", "NativeCodeLoader", "Unable to load native-hadoop",
+    "WARN SparkSession: Using an existing", "incubator", "WARNING: Using incubator",
+)
+
+
+def _is_noise(line):
+    s = line.strip()
+    if not s:
+        return True
+    # Barras de progreso de Spark: [Stage 0:> ...]
+    if s.startswith("[Stage") or s.startswith("["):
+        if "Stage" in s:
+            return True
+    for pat in _NOISE_PATTERNS:
+        if pat in line:
+            return True
+    return False
