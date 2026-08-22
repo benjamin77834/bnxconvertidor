@@ -581,7 +581,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                     if "abinitio_params" not in ast:
                         ast["abinitio_params"] = {}
                     ast["abinitio_params"].update(pset_params)
-                    print(f"  [pset] Loaded {len(pset_params)} parameters from .pset")
+                    print(f"  [pset] Loaded {len(pset_params)} parameters from .pset: {list(pset_params.keys())[:20]}")
                 except Exception as e:
                     print(f"  [pset] Warning: could not parse pset: {e}")
                 finally:

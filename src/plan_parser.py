@@ -111,17 +111,23 @@ def parse_pset(path):
             # Skip prototype header
             if line.startswith("!prototype"):
                 continue
-            # Native Ab Initio format: KEY||||VALUE
-            m = re.match(r"(\w+)\|{3,4}(.*)", line)
+            # Formato nativo Ab Initio. El separador entre NOMBRE y VALOR puede ser:
+            #   NOMBRE||||VALOR         (4 pipes, sin flag de tipo)
+            #   NOMBRE|FLAG|||VALOR     (1 pipe + flag de 1 char + 3 pipes)
+            # donde FLAG es un caracter de tipo/scope (p.ej. $, c, P, |c|).
+            # Ejemplos reales:
+            #   V_FILE_NAME||||ALS_ACCRL_MAST_D
+            #   V_MF_FILE_NAME|$|||$ECS_FILE_TRALS.BXM...
+            #   OUT_FILE_DML|c|||DRI_${S_CNTRY_CDE}_${V_FILE_NAME}_OUT.dml
+            m = re.match(r"(\w+)\|(?:[^|]?)\|{3}(.*)", line)  # NOMBRE|FLAG|||VALOR
+            if not m:
+                m = re.match(r"(\w+)\|{4}(.*)", line)          # NOMBRE||||VALOR
             if m:
                 key = m.group(1).strip()
                 val = m.group(2).strip()
-                # Resolve simple ${VAR} references but keep $[pdl...] as-is
-                if val and not val.startswith("$["):
-                    params[key] = val
-                elif val.startswith("$["):
-                    # Store PDL expressions as comments for reference
-                    params[key] = val
+                # Guardamos el valor tal cual (puede referenciar otras vars $ECS_*,
+                # ${VAR} o PDL $[...]); la resolucion final la hace el entorno del job.
+                params[key] = val
                 continue
         else:
             # BNX simple format: KEY = VALUE
@@ -129,7 +135,24 @@ def parse_pset(path):
             if m:
                 params[m.group(1)] = m.group(2).strip()
                 continue
-                params[m.group(1)] = m.group(2).strip()
+
+    # Resolver referencias internas ${VAR} usando los valores del propio pset.
+    # Ej: OUT_FILE_DML = DRI_${S_CNTRY_CDE}_${V_FILE_NAME}_OUT.dml
+    #     -> DRI_484_ALS_ACCRL_MAST_D_OUT.dml
+    # Las referencias a variables externas ($ECS_*, ${VAR} no definida en el pset)
+    # se dejan tal cual: se resuelven en el entorno del job.
+    def _resolve(val, seen):
+        if not isinstance(val, str) or "${" not in val:
+            return val
+        def _rep(mm):
+            name = mm.group(1)
+            if name in params and name not in seen:
+                return _resolve(params[name], seen | {name})
+            return mm.group(0)  # no definida: dejar ${VAR}
+        return re.sub(r"\$\{(\w+)\}", _rep, val)
+
+    for k in list(params.keys()):
+        params[k] = _resolve(params[k], {k})
 
     return params
 
