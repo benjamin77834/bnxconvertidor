@@ -1,10 +1,11 @@
 import { useState, useRef, useEffect } from 'react'
-import { COMPILE_URL } from '../config'
+import { COMPILE_URL, PIPELINE_URL, PIPELINE_STATUS_URL } from '../config'
 
 // El endpoint /datagen vive en el mismo origen que /compile
 const DATAGEN_URL = COMPILE_URL.replace(/\/compile$/, '/datagen')
 const RUNTEST_URL = COMPILE_URL.replace(/\/compile$/, '/runtest')
 const RUNTEST_STREAM_URL = COMPILE_URL.replace(/\/compile$/, '/runtest/stream')
+const AWSCODE_URL = COMPILE_URL.replace(/\/compile$/, '/datagen/awscode')
 
 const TYPES = ['string', 'integer', 'decimal', 'date', 'datetime', 'boolean']
 const PII_CATEGORIES = ['', 'name', 'email', 'phone', 'card', 'account', 'ssn', 'address', 'dob', 'id']
@@ -56,8 +57,104 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
   const [runResult, setRunResult] = useState(null) // {ok, summary, reads, writes}
   const [consoleLines, setConsoleLines] = useState([]) // lineas en vivo
 
+  // --- Enviar a AWS ---
+  const [awsSending, setAwsSending] = useState(false)
+  const [awsLogs, setAwsLogs] = useState([])
+  const [awsStatus, setAwsStatus] = useState('') // '', 'running', 'ok', 'error'
+  const awsPollRef = useRef(null)
+  const [awsBucket, setAwsBucket] = useState('datalake-bnx-scripts-dev')
+  const [awsRegion] = useState('us-east-1')
+  const [awsRole] = useState('arn:aws:iam::107094296911:role/datalake-glue-role-dev')
+  const [awsJobName, setAwsJobName] = useState('datalake-bnx-datagen-spark-dev')
+
   const isPySpark = compiledTarget === 'spark'
   const hasCode = Boolean((compiledCode || '').trim())
+
+  const awsLog = (m) => setAwsLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${m}`])
+
+  useEffect(() => () => { if (awsPollRef.current) clearInterval(awsPollRef.current) }, [])
+
+  const sendToAWS = async () => {
+    setAwsSending(true)
+    setAwsStatus('running')
+    setAwsLogs([])
+    try {
+      const inputs = (result?.datasets || []).filter(d => d.io === 'input')
+      const datasets = inputs.length ? inputs : (result?.datasets || [])
+
+      // 1. Generar codigo autocontenido (datos embebidos + escrituras S3 reales)
+      awsLog('Generando codigo autocontenido (datos sinteticos embebidos)...')
+      const genRes = await fetch(AWSCODE_URL, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: compiledCode, datasets, keep_writes: true }),
+      })
+      const genData = await genRes.json()
+      if (genData.error) { awsLog('ERROR: ' + genData.error); setAwsStatus('error'); setAwsSending(false); return }
+      const awsCode = genData.code
+      awsLog(`Codigo listo: ${awsCode.split('\n').length} lineas`)
+
+      // 2. Despachar al pipeline AWS (mismo flujo que PipelinePage)
+      awsLog('Subiendo a S3 y ejecutando en AWS Glue...')
+      const form = new FormData()
+      form.append('code', awsCode)
+      form.append('target', 'spark')
+      form.append('bucket', awsBucket)
+      form.append('region', awsRegion)
+      form.append('job_name', awsJobName)
+      form.append('role', awsRole)
+      form.append('action', 'run')
+
+      const res = await fetch(PIPELINE_URL, { method: 'POST', body: form })
+      const data = await res.json()
+      for (const step of (data.steps || [])) {
+        awsLog(`${step.step}: ${step.status} — ${step.detail || ''}`)
+      }
+      if (data.status === 'started' && data.run_id) {
+        awsLog(`Job iniciado! RunId: ${data.run_id}`)
+        startAwsPolling(data.job_name || awsJobName, data.run_id)
+      } else if (data.status === 'failed') {
+        awsLog('Pipeline FALLO en la preparacion')
+        setAwsStatus('error')
+        setAwsSending(false)
+      } else {
+        awsLog('Respuesta inesperada del pipeline: ' + JSON.stringify(data).slice(0, 200))
+        setAwsStatus('error')
+        setAwsSending(false)
+      }
+    } catch (e) {
+      awsLog('ERROR de red: ' + e.message)
+      setAwsStatus('error')
+      setAwsSending(false)
+    }
+  }
+
+  const startAwsPolling = (jn, rid) => {
+    let attempts = 0
+    awsPollRef.current = setInterval(async () => {
+      attempts++
+      try {
+        const form = new FormData()
+        form.append('job_name', jn)
+        form.append('run_id', rid)
+        form.append('region', awsRegion)
+        const res = await fetch(PIPELINE_STATUS_URL, { method: 'POST', body: form })
+        const data = await res.json()
+        awsLog(`[${attempts}] Status: ${data.status}${data.duration ? ` (${data.duration}s)` : ''}`)
+        if (data.status === 'SUCCEEDED') {
+          awsLog(`JOB EXITOSO en ${data.duration}s — output en S3`)
+          setAwsStatus('ok'); clearInterval(awsPollRef.current); setAwsSending(false)
+        } else if (data.status === 'FAILED' || data.status === 'STOPPED') {
+          awsLog(`JOB FALLO: ${data.error || data.status}`)
+          setAwsStatus('error'); clearInterval(awsPollRef.current); setAwsSending(false)
+        } else if (attempts > 40) {
+          awsLog('TIMEOUT: 10 min sin completar')
+          clearInterval(awsPollRef.current); setAwsSending(false)
+        }
+      } catch (e) {
+        awsLog('Error polling: ' + e.message)
+      }
+    }, 15000)
+  }
 
   const runTest = async () => {
     setRunning(true)
@@ -528,6 +625,75 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
           {/* Consola en vivo */}
           {(running || consoleLines.length > 0) && (
             <LiveConsole lines={consoleLines} running={running} theme={t} />
+          )}
+
+          {/* --- ENVIAR A AWS --- */}
+          <div style={{ height: 1, background: t.border || '#334155', margin: '4px 0' }} />
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <span style={label}>☁️ Enviar a AWS (Glue)</span>
+              <span style={{ fontSize: 11, color: t.dim }}>
+                Empaqueta el código con los datos sintéticos y lo ejecuta en AWS Glue. El resultado se escribe a S3.
+              </span>
+            </div>
+            <button
+              onClick={sendToAWS}
+              disabled={awsSending || !hasCode || !isPySpark}
+              style={{
+                padding: '10px 20px', borderRadius: 8,
+                cursor: (awsSending || !hasCode || !isPySpark) ? 'not-allowed' : 'pointer',
+                background: (!hasCode || !isPySpark) ? (t.border || '#334155') : '#f59e0b',
+                color: '#000', border: 'none', fontSize: 14, fontWeight: 700,
+                opacity: awsSending ? 0.6 : 1,
+              }}
+            >{awsSending ? '☁️ Enviando/ejecutando...' : '☁️ Enviar a AWS'}</button>
+          </div>
+
+          {/* Config AWS minima (editable) */}
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <span style={{ fontSize: 10, color: t.dim }}>Bucket S3</span>
+              <input value={awsBucket} onChange={e => setAwsBucket(e.target.value)}
+                style={{ ...inputStyle, width: 240, fontSize: 11, fontFamily: 'monospace' }} />
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <span style={{ fontSize: 10, color: t.dim }}>Job Name</span>
+              <input value={awsJobName} onChange={e => setAwsJobName(e.target.value)}
+                style={{ ...inputStyle, width: 260, fontSize: 11, fontFamily: 'monospace' }} />
+            </div>
+          </div>
+
+          {/* Estado AWS */}
+          {awsStatus && (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 8, borderRadius: 8, padding: '8px 12px',
+              background: awsStatus === 'ok' ? '#22c55e10' : awsStatus === 'error' ? '#ef444410' : '#f59e0b10',
+              border: `1px solid ${awsStatus === 'ok' ? '#22c55e40' : awsStatus === 'error' ? '#ef444440' : '#f59e0b40'}`,
+            }}>
+              <span style={{ fontSize: 16 }}>{awsStatus === 'ok' ? '✅' : awsStatus === 'error' ? '❌' : '☁️'}</span>
+              <span style={{ fontSize: 13, fontWeight: 600, color: awsStatus === 'ok' ? '#22c55e' : awsStatus === 'error' ? '#ef4444' : '#f59e0b' }}>
+                {awsStatus === 'ok' ? 'Job completado en AWS' : awsStatus === 'error' ? 'Falló en AWS' : 'Ejecutando en AWS...'}
+              </span>
+            </div>
+          )}
+
+          {/* Logs AWS */}
+          {awsLogs.length > 0 && (
+            <div ref={null} style={{
+              background: '#0a0e17', border: `1px solid ${t.border || '#334155'}`,
+              borderRadius: 8, padding: 12, maxHeight: 260, overflow: 'auto',
+              fontFamily: 'monospace', fontSize: 11, lineHeight: 1.6,
+            }}>
+              {awsLogs.map((l, i) => (
+                <div key={i} style={{
+                  color: /ERROR|FALLO/.test(l) ? '#fca5a5'
+                       : /EXITOSO|SUCCEEDED/.test(l) ? '#4ade80'
+                       : /Status:/.test(l) ? '#fbbf24'
+                       : (t.muted || '#cbd5e1'),
+                  whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+                }}>{l}</div>
+              ))}
+            </div>
           )}
         </div>
       )}

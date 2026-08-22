@@ -638,3 +638,186 @@ def _is_noise(line):
         if pat in line:
             return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# Código autocontenido para AWS: datos sintéticos embebidos, escrituras reales
+# ---------------------------------------------------------------------------
+def build_aws_selfcontained_code(pyspark_code, datasets, keep_writes=True):
+    """Genera un PySpark AUTOCONTENIDO para ejecutar en AWS Glue/EMR.
+
+    - Reemplaza las lecturas spark.read.<fmt>(...) por DataFrames construidos
+      a partir de los datos sintéticos (embebidos como JSON en el propio script).
+    - Mantiene las escrituras a S3 reales (keep_writes=True) para ver el output,
+      o las neutraliza a .show() (keep_writes=False) si se quiere una corrida seca.
+    - Aplica las mismas defensas que el runner local (nodos None, joins tolerantes,
+      lookups no traducidos, PARAMS tolerante, columnas requeridas) para que corra.
+
+    Devuelve el código Python como string, listo para subir al pipeline.
+    """
+    inputs = _normalize_inputs(datasets)
+    required_cols = extract_referenced_columns(pyspark_code)
+
+    lines = pyspark_code.split("\n")
+    out = []
+
+    read_re = re.compile(r'^(\s*)(\w+)\s*=\s*spark\.read\.[\w.]+\(.*\)\s*$')
+    write_re = re.compile(r'^(\s*)(\w+)\.write\b.*$')
+    none_re = re.compile(r'^(\s*)(\w+_df)\s*=\s*None\b.*$')
+
+    for ln in lines:
+        m_read = read_re.match(ln)
+        if m_read:
+            indent, var = m_read.group(1), m_read.group(2)
+            out.append(f'{indent}{var} = _bnx_src("{var}")')
+            continue
+        m_none = none_re.match(ln)
+        if m_none:
+            indent, var = m_none.group(1), m_none.group(2)
+            out.append(f'{indent}{var} = _bnx_src("{var}")  # AWS: nodo sin fuente')
+            continue
+        if not keep_writes:
+            m_write = write_re.match(ln)
+            if m_write:
+                indent, var = m_write.group(1), m_write.group(2)
+                out.append(f'{indent}{var}.show(10, truncate=False)  # AWS: escritura neutralizada')
+                continue
+        out.append(ln)
+
+    body = "\n".join(out)
+
+    # Reescrituras de robustez (igual que el runner local)
+    body = re.sub(
+        r'(\w+)\.join\(\s*(\w+)\s*,\s*on\s*=\s*(\[[^\]]*\]|"[^"]*"|\'[^\']*\')\s*,\s*how\s*=\s*("[^"]*"|\'[^\']*\')\s*\)',
+        r'_bnx_join(\1, \2, on=\3, how=\4)',
+        body,
+    )
+    body = re.sub(r'(\w+)\.(?:orderBy|sort)\(([^)]*)\)', r'_bnx_sort(\1, \2)', body)
+    body = re.sub(r'(\w+)\.dropDuplicates\((\[[^\]]*\])\)', r'_bnx_dropdup(\1, \2)', body)
+    body = re.sub(
+        r'\.where\("(?:[^"\\]|\\.)*lookup\((?:[^"\\]|\\.)*"\)',
+        '.where("1=1")  # AWS: lookup no traducido, filtro neutralizado', body,
+    )
+    body = re.sub(
+        r'\.filter\("(?:[^"\\]|\\.)*lookup\((?:[^"\\]|\\.)*"\)',
+        '.filter("1=1")  # AWS: lookup no traducido, filtro neutralizado', body,
+    )
+    body = re.sub(r'\bos\.system\(', '_bnx_shell(', body)
+    body = re.sub(
+        r'^(\s*)class\s+PARAMS\s*:', r'\1class PARAMS(metaclass=_BnxParamsMeta):',
+        body, count=1, flags=re.M,
+    )
+
+    header = f'''# ============================================================
+# BNX — PySpark AUTOCONTENIDO para AWS (datos sinteticos embebidos)
+# Generado por Data Redactada. Las lecturas S3 se reemplazan por datos
+# sinteticos redactados; las escrituras van a S3 real.
+# ============================================================
+import json as _json
+import re as _re_bnx
+
+_BNX_INPUTS = _json.loads({json.dumps(json.dumps(inputs))})
+_BNX_REQUIRED_COLS = _json.loads({json.dumps(json.dumps(sorted(required_cols)))})
+
+class _BnxParamsMeta(type):
+    def __getattr__(cls, name):
+        return f"BNX_PARAM_{{name}}"
+
+def _bnx_ensure_cols(df):
+    from pyspark.sql.functions import lit as _lit
+    if df is None:
+        return df
+    have = set(df.columns)
+    for c in _BNX_REQUIRED_COLS:
+        if c not in have:
+            df = df.withColumn(c, _lit(None).cast("string"))
+    if "_bnx_placeholder" in df.columns and len(df.columns) > 1:
+        df = df.drop("_bnx_placeholder")
+    return df
+
+def _bnx_make_df(records):
+    from pyspark.sql.types import StructType as _ST, StructField as _SF, StringType as _StrT
+    from pyspark.sql import Row as _Row
+    col_order, seen = [], set()
+    for rec in records:
+        for k in rec.keys():
+            if k not in seen:
+                seen.add(k); col_order.append(k)
+    if not col_order:
+        col_order = ["_bnx_placeholder"]
+    schema = _ST([_SF(c, _StrT(), True) for c in col_order])
+    rows = [tuple((None if rec.get(c) is None else str(rec.get(c))) for c in col_order) for rec in records]
+    return spark.createDataFrame(rows, schema=schema)
+
+def _bnx_match_key(var):
+    base = var[:-3].lower() if var.lower().endswith("_df") else var.lower()
+    if base in _BNX_INPUTS:
+        return base
+    for k in _BNX_INPUTS:
+        if k == base or base.startswith(k) or k.startswith(base):
+            return k
+    return None
+
+def _bnx_src(var):
+    key = _bnx_match_key(var)
+    records = _BNX_INPUTS.get(key, []) if key else []
+    if not records:
+        records = [{{"_bnx_placeholder": ""}}]
+    return _bnx_ensure_cols(_bnx_make_df(records))
+
+def _bnx_shell(cmd):
+    print(f"[AWS] SHELL (no ejecutado): {{cmd}}")
+    return 0
+
+def _bnx_colname(c):
+    if isinstance(c, str):
+        return c
+    try:
+        s = str(c)
+        _m = _re_bnx.search(r"'([A-Za-z_][A-Za-z0-9_]*)", s) or _re_bnx.search(r'"([A-Za-z_][A-Za-z0-9_]*)"', s)
+        return _m.group(1) if _m else None
+    except Exception:
+        return None
+
+def _bnx_sort(df, *cols):
+    if df is None:
+        return df
+    existing = [c for c in cols if (_bnx_colname(c) in df.columns)]
+    return df.orderBy(*existing) if existing else df
+
+def _bnx_dropdup(df, cols):
+    if df is None:
+        return df
+    existing = [c for c in cols if c in df.columns]
+    return df.dropDuplicates(existing) if existing else df.dropDuplicates()
+
+def _bnx_join(left, right, on=None, how="inner"):
+    from pyspark.sql.functions import lit as _lit
+    if left is None:
+        return right
+    if right is None:
+        return left
+    keys = on if isinstance(on, list) else [on] if on else []
+    for k in keys:
+        if k and k not in left.columns:
+            left = left.withColumn(k, _lit(None))
+        if k and k not in right.columns:
+            right = right.withColumn(k, _lit(None))
+    key_set = set(keys)
+    left_cols = set(left.columns)
+    for c in list(right.columns):
+        if c in left_cols and c not in key_set:
+            new_name = c + "_r"; n = 2
+            taken = set(left.columns) | set(right.columns)
+            while new_name in taken:
+                new_name = f"{{c}}_r{{n}}"; n += 1
+            right = right.withColumnRenamed(c, new_name)
+    try:
+        return left.join(right, on=on, how=how)
+    except Exception:
+        return left.crossJoin(right.limit(1))
+# ============================================================
+
+'''
+
+    return header + body

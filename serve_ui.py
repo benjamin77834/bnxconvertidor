@@ -96,7 +96,7 @@ from src.datagen import (
     detect_pii,
     normalize_type,
 )
-from src.test_runner import run_pyspark_test, stream_pyspark_test
+from src.test_runner import run_pyspark_test, stream_pyspark_test, build_aws_selfcontained_code
 
 PORT = 8080
 UI_DIR = os.path.join(os.path.dirname(__file__), "ui", "dist")
@@ -126,6 +126,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
 
         if "/library" in path or "/pipeline" in path:
             self._proxy_to_datalab(path)
+        elif "/datagen/awscode" in path:
+            self._handle_awscode()
         elif "/datagen" in path:
             self._handle_datagen()
         elif "/runtest/stream" in path:
@@ -283,6 +285,42 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                        "reads": [], "writes": []})
             except Exception:
                 pass
+
+    def _handle_awscode(self):
+        """Genera el código PySpark AUTOCONTENIDO (datos sintéticos embebidos)
+        listo para subir al pipeline AWS.
+
+        Body JSON: {"code": "<pyspark>", "datasets": [...], "keep_writes": true}
+        Respuesta: {"code": "<pyspark autocontenido>"}
+        """
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._json_response(400, {"error": "Invalid JSON body"})
+            return
+
+        code = data.get("code", "")
+        if not code.strip():
+            self._json_response(400, {"error": "Falta 'code' (PySpark)"})
+            return
+        if "awsglue" in code or "GlueContext" in code:
+            self._json_response(400, {
+                "error": "El código autocontenido solo se genera para target PySpark. "
+                         "Compila con target 'spark'."
+            })
+            return
+
+        datasets = data.get("datasets", []) or []
+        keep_writes = bool(data.get("keep_writes", True))
+        try:
+            aws_code = build_aws_selfcontained_code(code, datasets, keep_writes=keep_writes)
+            self._json_response(200, {"code": aws_code})
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": str(e)})
 
     def _handle_datagen(self):
         """Genera datos sintéticos redactados.
