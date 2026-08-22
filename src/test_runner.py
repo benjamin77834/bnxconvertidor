@@ -24,14 +24,33 @@ import subprocess
 
 
 # Palabras que aparecen dentro de expresiones pero NO son columnas
+# (keywords SQL, funciones Spark y funciones Ab Initio que se traducen)
 _NON_COLUMN_TOKENS = {
-    "cast", "as", "to_date", "to_timestamp", "int", "integer", "string", "decimal",
-    "date", "datetime", "when", "then", "else", "end", "case", "and", "or", "not",
-    "null", "is", "coalesce", "lit", "col", "expr", "trim", "lpad", "rpad", "concat",
-    "substring", "size", "current_date", "current_timestamp", "true", "false",
-    "count", "sum", "avg", "min", "max", "row_number", "over", "desc", "asc",
-    "left", "right", "inner", "outer", "full", "how", "on", "descending", "ascending",
+    # keywords SQL
+    "cast", "as", "when", "then", "else", "end", "case", "and", "or", "not",
+    "null", "is", "in", "like", "rlike", "between", "distinct", "over", "partition",
+    "by", "order", "group", "having", "select", "from", "where", "join", "on", "how",
+    "asc", "desc", "descending", "ascending", "escape",
+    # tipos
+    "int", "integer", "string", "decimal", "date", "datetime", "timestamp",
+    "double", "float", "long", "bigint", "boolean", "true", "false",
+    # funciones Spark comunes
+    "to_date", "to_timestamp", "coalesce", "lit", "col", "expr", "trim", "ltrim",
+    "rtrim", "lpad", "rpad", "concat", "concat_ws", "substring", "substr", "size",
+    "length", "instr", "locate", "replace", "regexp_replace", "split", "reverse",
+    "upper", "lower", "current_date", "current_timestamp", "count", "sum", "avg",
+    "min", "max", "row_number", "rank", "dense_rank", "when", "nvl", "isnull",
+    "array_join", "datediff", "year", "month", "day", "weekofyear", "dayofmonth",
+    # funciones Ab Initio (se traducen, no son columnas)
+    "string_like", "string_lrtrim", "string_ltrim", "string_rtrim", "string_length",
+    "string_substring", "string_index", "string_upcase", "string_downcase",
+    "string_concat", "string_replace", "string_lpad", "string_rpad", "string_char",
+    "string_is_alphabetic", "string_is_numeric", "is_null", "is_blank", "is_defined",
+    "lookup", "lookup_match", "lookup_count", "first_defined", "now", "now1",
+    # patrones de formato de fecha
     "yyyy", "mm", "dd", "hh", "ss",
+    # direcciones/tipos de join
+    "left", "right", "inner", "outer", "full",
 }
 
 
@@ -326,14 +345,21 @@ def _bnx_join(left, right, on=None, how="inner"):
             print(f"[BNX-TEST] JOIN: clave '{{k}}' ausente en lado derecho, se agrega null")
             right = right.withColumn(k, _lit(None))
     # Evitar columnas duplicadas no-clave (causan AMBIGUOUS_REFERENCE tras el join):
-    # renombramos en el lado derecho las columnas comunes que no son clave de join.
+    # renombramos en el lado derecho las comunes que no son clave, con sufijo unico
+    # para no colisionar si ya existe un "_r" de un join previo.
     key_set = set(keys)
-    common = [c for c in right.columns if c in left.columns and c not in key_set]
-    for c in common:
-        right = right.withColumnRenamed(c, c + "_r")
+    left_cols = set(left.columns)
+    for c in list(right.columns):
+        if c in left_cols and c not in key_set:
+            new_name = c + "_r"
+            n = 2
+            taken = set(left.columns) | set(right.columns)
+            while new_name in taken:
+                new_name = f"{{c}}_r{{n}}"
+                n += 1
+            right = right.withColumnRenamed(c, new_name)
     try:
-        joined = left.join(right, on=on, how=how)
-        return joined
+        return left.join(right, on=on, how=how)
     except Exception as _e:
         print(f"[BNX-TEST] JOIN fallo ({{_e}}), uso cross-join limitado")
         return left.crossJoin(right.limit(1))
