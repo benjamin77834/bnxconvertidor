@@ -1,7 +1,7 @@
 # src/codegen/glue_codegen.py
 import re
 from datetime import datetime
-from src.codegen.spark_codegen import _translate_dml_expr, _map_date_functions, _map_string_functions, _sanitize_generated_file
+from src.codegen.spark_codegen import _translate_dml_expr, _map_date_functions, _map_string_functions, _sanitize_generated_file, _emit_pset_params
 
 
 # Local functions removed — using improved versions from spark_codegen
@@ -441,8 +441,9 @@ def _build_transform(var_id, src_df, rule):
         code += f'\n{var_id}_df = {var_id}_df.where("{where}")'
     return code
 
-def generate_glue(dag, output_path, xfr_rules=None):
+def generate_glue(dag, output_path, xfr_rules=None, pset_params=None):
     xfr_rules = xfr_rules or {}
+    pset_params = pset_params or {}
 
     # Pre-scan: determine which helpers are needed
     needs_filter_hdr_trl = False
@@ -470,7 +471,10 @@ def generate_glue(dag, output_path, xfr_rules=None):
         f.write("sc = SparkContext()\nglueContext = GlueContext(sc)\nspark = glueContext.spark_session\n\n")
         f.write('# =========================\n# PARAMETERS\n# =========================\n')
         f.write('class PARAMS:\n')
-        f.write('    BASE_PATH = os.environ.get("BNX_BASE_PATH", "s3://datalake-bnx-scripts-dev")\n\n')
+        f.write('    BASE_PATH = os.environ.get("BNX_BASE_PATH", "s3://datalake-bnx-scripts-dev")\n')
+        # Parametros del .pset (ver _emit_pset_params en spark_codegen).
+        _emit_pset_params(f, pset_params)
+        f.write('\n')
         f.write('print("[*] BNX Glue Job V54 Started")\n\n')
         
         # Emit helpers SIEMPRE: el pre-scan puede no detectar todos los patrones que

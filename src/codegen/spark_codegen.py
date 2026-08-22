@@ -667,8 +667,9 @@ def _build_transform(var_id, src_df, rule):
     return code
 
 
-def generate_spark(dag, output_path, xfr_rules=None):
+def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
     xfr_rules = xfr_rules or {}
+    pset_params = pset_params or {}
 
     # Pre-scan: determine which helpers are needed
     needs_filter_hdr_trl = False
@@ -696,7 +697,12 @@ def generate_spark(dag, output_path, xfr_rules=None):
         f.write('spark = SparkSession.builder.appName("BNX_Pipeline").getOrCreate()\n\n')
         f.write('# =========================\n# PARAMETERS\n# =========================\n')
         f.write('class PARAMS:\n')
-        f.write('    BASE_PATH = os.environ.get("BNX_BASE_PATH", "s3://datalake-bnx-scripts-dev")\n\n')
+        f.write('    BASE_PATH = os.environ.get("BNX_BASE_PATH", "s3://datalake-bnx-scripts-dev")\n')
+        # Parametros del .pset: cada uno resoluble por variable de entorno, con el
+        # valor del pset como default. Asi PARAMS.V_MF_FILE_NAME etc. resuelven al
+        # valor real en vez de caer al placeholder BNX_PARAM_<VAR>.
+        _emit_pset_params(f, pset_params)
+        f.write('\n')
         f.write('print("[*] BNX PySpark Job Started")\n\n')
         
         # Emit helpers SIEMPRE: el pre-scan puede no detectar todos los patrones que
@@ -1129,6 +1135,37 @@ def generate_spark(dag, output_path, xfr_rules=None):
     # colado sin traducir (out::reformat(in)=, out.X ::, begin/end;), para que el
     # codigo generado SIEMPRE sea Python valido. Es un cinturon de seguridad.
     _sanitize_generated_file(output_path)
+
+
+def _emit_pset_params(f, pset_params):
+    """Emite los parametros del .pset como atributos de la clase PARAMS.
+
+    Cada parametro se escribe como:
+        VAR = os.environ.get("VAR", "<valor del pset>")
+    de modo que en AWS/Glue se puede sobreescribir por variable de entorno, pero
+    por defecto usa el valor real del pset (no el placeholder BNX_PARAM_<VAR>).
+
+    Se omiten:
+      - claves que no son identificadores Python validos
+      - BASE_PATH (ya emitido)
+      - valores PDL Ab Initio ($[...]) que no son literales resolubles
+    """
+    import re as _re
+    if not pset_params:
+        return
+    ident = _re.compile(r'^[A-Za-z_]\w*$')
+    for k, v in pset_params.items():
+        if not k or not ident.match(k):
+            continue
+        if k == "BASE_PATH":
+            continue
+        val = "" if v is None else str(v)
+        # PDL sin resolver: dejar como comentario para referencia, no como valor.
+        if val.startswith("$["):
+            f.write(f'    # {k} = {val!r}  # PDL Ab Initio (no resuelto)\n')
+            f.write(f'    {k} = os.environ.get("{k}", "")\n')
+            continue
+        f.write(f'    {k} = os.environ.get("{k}", {val!r})\n')
 
 
 def _sanitize_generated_file(output_path):
