@@ -74,6 +74,9 @@ def _map_string_functions(expr):
     expr = re.sub(r'is_null\(([^)]+)\)', r'\1 IS NULL', expr)
     # is_defined(x) → x IS NOT NULL
     expr = re.sub(r'is_defined\(([^)]+)\)', r'\1 IS NOT NULL', expr)
+    # is_valid(x) → (x IS NOT NULL) — Ab Initio valida formato; en Spark aproximamos a no-null.
+    # Debe ir ANTES de is_blank para no colisionar. Soporta parentesis anidados (CAST(...)).
+    expr = _replace_balanced_call(expr, "is_valid", lambda inner: f"({inner} IS NOT NULL)")
     # is_blank(x) → (x IS NULL OR x = "")
     expr = re.sub(r'is_blank\(([^)]+)\)', r'(\1 IS NULL OR \1 = "")', expr)
     # lookup_match("NAME", key) → true  (simplified — actual lookup resolved at join level)
@@ -143,6 +146,27 @@ def _map_string_functions(expr):
     # Strip "out." prefix
     expr = re.sub(r'\bout\.(\w+)', r'\1', expr)
     return expr
+
+
+def _replace_balanced_call(expr, func_name, transform):
+    """Reemplaza func_name(...) respetando parentesis anidados.
+    transform recibe el contenido interno y devuelve el reemplazo."""
+    result = expr
+    pattern = re.compile(r'\b' + re.escape(func_name) + r'\s*\(')
+    guard = 0
+    while guard < 50:
+        guard += 1
+        m = pattern.search(result)
+        if not m:
+            break
+        open_idx = m.end() - 1  # posicion del '('
+        close_idx = _match_paren(result, open_idx)
+        if close_idx == -1:
+            break
+        inner = result[open_idx + 1:close_idx]
+        replacement = transform(inner.strip())
+        result = result[:m.start()] + replacement + result[close_idx + 1:]
+    return result
 
 
 def _match_paren(s, open_idx):
