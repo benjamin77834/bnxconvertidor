@@ -148,15 +148,57 @@ const TIMELINE = [
     tags: ['codegen', 'pandas'],
     color: '#6366f1',
   },
+  {
+    date: '21 Ago 2026',
+    title: 'Dia 29: Fix codegen de fechas + UI grafos grandes',
+    desc: 'Correccion de expresiones de cast de fecha Ab Initio (date("YYYY-MM-DD"))(string("|"))campo → to_date() en Glue y PySpark. Causa raiz: se traducia el SELECT completo antes de dividir por columnas. Fix de join_key como lista en el validador (de error bloqueante a warning). Toolbar en DagViewer para grafos grandes (ocultar Sort/Gather, busqueda, zoom).',
+    tags: ['codegen', 'dates', 'ui', 'fix'],
+    color: '#f59e0b',
+  },
+  {
+    date: '21 Ago 2026',
+    title: 'Dia 30: Data Redactada (datos sinteticos)',
+    desc: 'Nueva herramienta: genera datos sinteticos con PII enmascarada desde el grafo o manual. Detecta PII por nombre (nombre, cuenta, tarjeta, email, ssn/rfc, etc.). Infiere esquema del grafo (dml_fields, casts, select). Separa entrada (in.) y salida (out.). Modo manual con tabla editable. Salida CSV/JSON. Conectada al grafo del Compiler.',
+    tags: ['datagen', 'pii', 'ui'],
+    color: '#14b8a6',
+  },
+  {
+    date: '22 Ago 2026',
+    title: 'Dia 31: Ejecutor de prueba local PySpark',
+    desc: 'Corre el PySpark generado localmente con los datos sinteticos: reemplaza lecturas S3 por DataFrames en memoria, neutraliza escrituras/shell. Tolera limitaciones estructurales (nodos None, join keys ausentes, lookups sin traducir, PARAMS faltantes, tipos mezclados) pero NO oculta errores reales. Consola en vivo via Server-Sent Events con colores por tipo de nodo.',
+    tags: ['datagen', 'test', 'pyspark'],
+    color: '#14b8a6',
+  },
+  {
+    date: '22 Ago 2026',
+    title: 'Dia 32: Bugs de codegen detectados por la prueba',
+    desc: 'La prueba local encontro y se corrigieron bugs reales del generador: string_like/instr sin traducir, if/else con parentesis anidados que se rompia (THEN )), casts con longitud numerica (string(40))campo, y string_like con 3er argumento (escape). Cada correccion mejora Glue y PySpark para todos los grafos.',
+    tags: ['codegen', 'fix', 'test'],
+    color: '#ef4444',
+  },
+  {
+    date: '22 Ago 2026',
+    title: 'Dia 33: Esquema real + valores de join compartidos',
+    desc: 'Extraccion del record format real del .mp GDE (record string(N) campo; ... end;). Propagacion de columnas hacia los SOURCE trazando los edges: las join keys y campos de reformat aparecen en las fuentes reales. Valores de join compartidos (pool determinístico por nombre) para que los joins emparejen datos en vez de dejar columnas en NULL.',
+    tags: ['datagen', 'gde', 'schema', 'join'],
+    color: '#14b8a6',
+  },
+  {
+    date: '22 Ago 2026',
+    title: 'Dia 34: Enviar a AWS + ciclo en Arquitectura',
+    desc: 'Boton Enviar a AWS desde Data Redactada: empaqueta el PySpark con datos sinteticos EMBEBIDOS (codigo autocontenido) y lo despacha al pipeline Glue existente con polling de estado, sin credenciales locales. Documentado el ciclo completo (grafo → datos → prueba → AWS) en la pagina de Arquitectura y en este historial.',
+    tags: ['datagen', 'aws', 'pipeline', 'architecture'],
+    color: '#14b8a6',
+  },
 ]
 
 const STATS = [
-  { label: 'Dias de desarrollo', value: '28', color: '#6366f1' },
-  { label: 'Commits', value: '120+', color: '#22c55e' },
-  { label: 'Componentes', value: '22+', color: '#f59e0b' },
+  { label: 'Dias de desarrollo', value: '34', color: '#6366f1' },
+  { label: 'Commits', value: '135+', color: '#22c55e' },
+  { label: 'Componentes', value: '25+', color: '#f59e0b' },
   { label: 'Parsers', value: '6', color: '#a855f7' },
   { label: 'Code Generators', value: '7', color: '#ec4899' },
-  { label: 'Paginas UI', value: '8', color: '#06b6d4' },
+  { label: 'Paginas UI', value: '9', color: '#06b6d4' },
 ]
 
 const TAG_COLORS = {
@@ -173,6 +215,8 @@ const TAG_COLORS = {
   compliance: '#f59e0b', cli: '#a855f7', packaging: '#a855f7',
   ocr: '#ec4899', ai: '#ec4899', costs: '#f59e0b',
   roadmap: '#22c55e', complete: '#22c55e', pandas: '#6366f1',
+  datagen: '#14b8a6', pii: '#14b8a6', test: '#14b8a6', pyspark: '#6366f1',
+  schema: '#14b8a6', join: '#f59e0b', pipeline: '#14b8a6', fix: '#ef4444',
 }
 
 export default function HistoryPage({ theme }) {
@@ -313,7 +357,9 @@ export default function HistoryPage({ theme }) {
             'Codegen Glue', 'Codegen Spark', 'Codegen Flink', 'Codegen Step Functions',
             'Codegen Terraform', 'Codegen Airflow', 'Codegen Python/Pandas',
             'Motor de refactorizacion', 'Motor OCR', 'Motor de accuracy',
-            'UI React (8 tabs)', 'API FastAPI + Lambda', 'CLI batch', 'Packaging portable',
+            'Data Redactada (datos sinteticos)', 'Ejecutor de prueba PySpark',
+            'Consola en vivo (SSE)', 'Esquema real + join compartido', 'Enviar a AWS (pipeline)',
+            'UI React (9 tabs)', 'API FastAPI + Lambda', 'CLI batch', 'Packaging portable',
           ].map(comp => (
             <div key={comp} style={{
               display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px',
