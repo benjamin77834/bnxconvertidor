@@ -1153,8 +1153,15 @@ def _sanitize_generated_file(output_path):
         r'|out\.\w+\s*::'               # out.CAMPO :: expr
         r'|begin\s*$'                   # begin
         r'|end\s*;'                     # end;
+        r'|end\s*$'                     # end (sin ;)
         r'|let\s+\w+'                   # let VAR ... (declaracion DML)
         r'|:\s*\w+\s*\(int'             # tipos de retorno DML
+        r'|include\s+["\']'             # include "..."; (inclusion de DML)
+        r'|type\s+\w+\s*='              # type NAME = ... (definicion de tipo DML)
+        r'|record\b'                    # record ... end; (definicion de registro)
+        r'|metadata\b'                  # metadata ...
+        r'|(?:decimal|integer|string|date|datetime|void|char|real|double|long)'
+        r'\s*(?:\([^)]*\))?\s+\w+\s*;'  # decl. de campo DML: "decimal x;" / "string(10) y;"
         r')'
     )
     changed = False
