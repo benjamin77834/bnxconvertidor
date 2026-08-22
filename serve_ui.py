@@ -689,14 +689,14 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             if not blocking:
                 out_path = self._save_temp("", ".py")
                 if target == "spark":
-                    generate_spark(dag, out_path, xfr_rules)
+                    generate_spark(dag, out_path, xfr_rules, pset_params=pset_params)
                 elif target == "flink":
                     generate_flink(dag, out_path, xfr_rules)
                 elif target == "python":
                     from main import _generate_pandas
                     _generate_pandas(dag, out_path, xfr_rules)
                 else:
-                    generate_glue(dag, out_path, xfr_rules)
+                    generate_glue(dag, out_path, xfr_rules, pset_params=pset_params)
                 with open(out_path, "r") as f:
                     code = f.read()
                 os.unlink(out_path)
