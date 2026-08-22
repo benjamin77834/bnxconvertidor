@@ -96,6 +96,7 @@ from src.datagen import (
     detect_pii,
     normalize_type,
 )
+from src.test_runner import run_pyspark_test
 
 PORT = 8080
 UI_DIR = os.path.join(os.path.dirname(__file__), "ui", "dist")
@@ -127,6 +128,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._proxy_to_datalab(path)
         elif "/datagen" in path:
             self._handle_datagen()
+        elif "/runtest" in path:
+            self._handle_runtest()
         elif "/compile" in path or "/api" in path:
             self._handle_compile()
         else:
@@ -176,6 +179,50 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             self._json_response(502, {"error": f"Proxy error: {str(e)}"})
 
+    def _handle_runtest(self):
+        """Ejecuta una prueba local del código PySpark con datos sintéticos.
+
+        Body JSON:
+        {
+          "code": "<codigo pyspark>",          # requerido (target spark)
+          "datasets": [{"node","io","rows"|"content","format"}],  # datos de entrada
+          "timeout": 120                         # opcional
+        }
+        Respuesta: {ok, exit_code, timed_out, stdout, stderr, reads, writes, summary}
+        """
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        try:
+            try:
+                data = json.loads(body.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                self._json_response(400, {"error": "Invalid JSON body"})
+                return
+
+            code = data.get("code", "")
+            if not code.strip():
+                self._json_response(400, {"error": "Falta 'code' (PySpark)"})
+                return
+
+            # Guardar de correr codigo Glue: requiere awsglue/AWS, no ejecutable local
+            if "awsglue" in code or "GlueContext" in code:
+                self._json_response(400, {
+                    "error": "Solo se puede ejecutar localmente el target PySpark. "
+                             "El código Glue necesita AWS. Compila con target 'spark'."
+                })
+                return
+
+            datasets = data.get("datasets", []) or []
+            timeout = int(data.get("timeout", 120))
+            timeout = max(10, min(timeout, 600))
+
+            result = run_pyspark_test(code, datasets, timeout=timeout)
+            self._json_response(200, result)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": str(e)})
+
     def _handle_datagen(self):
         """Genera datos sintéticos redactados.
 
@@ -216,15 +263,19 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 gen = build_synthetic_data(
                     manual_columns, n_rows=n_rows, fmt=fmt, seed=seed, delimiter=delimiter
                 )
+                manual_io = data.get("io", "output")
                 self._json_response(200, {
                     "mode": "manual",
                     "schema": [{
                         "node": data.get("node_name", "manual"),
                         "node_type": "MANUAL",
+                        "io": manual_io,
                         "columns": gen["columns"],
                     }],
                     "datasets": [{
                         "node": data.get("node_name", "manual"),
+                        "node_type": "MANUAL",
+                        "io": manual_io,
                         "format": gen["format"],
                         "content": gen["content"],
                         "columns": gen["columns"],
@@ -272,17 +323,27 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                     )
                     datasets.append({
                         "node": node_schema["node"],
+                        "node_type": node_schema.get("node_type"),
+                        "io": node_schema.get("io", "output"),
                         "format": gen["format"],
                         "content": gen["content"],
                         "columns": gen["columns"],
                         "rows": gen["rows"],
                     })
 
-                self._json_response(200, {
+                resp = {
                     "mode": "graph",
                     "schema": schema,
                     "datasets": datasets,
-                })
+                }
+                if not datasets:
+                    resp["message"] = (
+                        "No se pudo inferir el esquema de ningun nodo. "
+                        "Este grafo no incluye definiciones de campos (.dml o transformaciones "
+                        "con columnas). Usa el modo Manual para definir el esquema, "
+                        "o adjunta un .dml/.xfr con los campos."
+                    )
+                self._json_response(200, resp)
             finally:
                 os.unlink(mp_path)
                 if xfr_path:

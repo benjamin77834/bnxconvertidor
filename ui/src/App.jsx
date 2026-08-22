@@ -489,7 +489,8 @@ export default function App() {
             }, 500)
           }} />
         ) : page === 'datagen' ? (
-          <DataGenPage theme={t} />
+          <DataGenPage theme={t} graphMp={editorMp} graphXfr={editorXfr}
+            compiledCode={result?.code || ''} compiledTarget={target} />
         ) : page === 'designer' ? (
           <DesignerPage theme={t} />
         ) : page === 'ocr' ? (

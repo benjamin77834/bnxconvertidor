@@ -99,17 +99,29 @@ def _infer_type_from_expr(expr):
     return "string"
 
 
+_GENERIC_COLUMNS = [
+    ("id", "integer"),
+    ("record_date", "date"),
+    ("amount", "decimal"),
+    ("status", "string"),
+    ("description", "string"),
+]
+
+
 def infer_schema_from_graph(ast, xfr_rules, dml_schema=None):
-    """Extrae un esquema por nodo a partir del grafo convertido.
+    """Extrae el esquema de ENTRADA y SALIDA por nodo a partir del grafo.
 
-    Devuelve una lista de dicts:
-        [{"node": "cust_seg_func", "node_type": "TRANSFORM",
-          "columns": [{"name": "last_updated_date", "type": "date", "pii": "dob"|None}, ...]}]
+    Distingue:
+      - ENTRADA (io="input"): lo que el nodo CONSUME. Columnas de SOURCE,
+        y las referencias in.CAMPO de las expresiones de transformación.
+      - SALIDA (io="output"): lo que el nodo PRODUCE. Los out.CAMPO de
+        reformats/dml_fields, los alias del select, y columnas de SINK.
 
-    Fuentes por prioridad:
-      1. dml_schema (.dml)  → tipos explícitos
-      2. dml_fields (xfr)   → campo + expresión (inferimos tipo)
-      3. select "a as b, c" → nombres de campo (tipo string por defecto)
+    Devuelve una lista de dicts, uno por (nodo, io) con columnas:
+        [{"node": "cust_seg_func", "node_type": "TRANSFORM", "io": "input",
+          "columns": [{"name", "type", "pii"}]},
+         {"node": "cust_seg_func", "node_type": "TRANSFORM", "io": "output",
+          "columns": [...]}]
     """
     dml_schema = dml_schema or {}
     result = []
@@ -119,64 +131,124 @@ def infer_schema_from_graph(ast, xfr_rules, dml_schema=None):
         nid = nd.get("id", "")
         nname = nd.get("name", nid)
         ntype = nd.get("type", "TRANSFORM")
-        columns = []
-        seen = set()
 
-        def add_col(name, ctype):
-            key = name.lower()
+        input_cols, input_seen = [], set()
+        output_cols, output_seen = [], set()
+
+        def _add(cols, seen, name, ctype):
+            key = (name or "").lower()
             if not name or key in seen:
                 return
             seen.add(key)
-            ntype_norm = normalize_type(ctype)
-            columns.append({
+            cols.append({
                 "name": name,
-                "type": ntype_norm,
+                "type": normalize_type(ctype),
                 "pii": detect_pii(name),
             })
 
-        # 1. .dml schema (busca por id o name)
+        def add_input(name, ctype="string"):
+            _add(input_cols, input_seen, name, ctype)
+
+        def add_output(name, ctype="string"):
+            _add(output_cols, output_seen, name, ctype)
+
+        rule = xfr_rules.get(nid.lower()) or xfr_rules.get(nname.lower()) or {}
+        if not isinstance(rule, dict):
+            rule = {}
+
+        # --- SALIDA ---
+        # 1. .dml schema define el esquema de salida del nodo
         for schema_key in (nid, nname):
             if schema_key in dml_schema:
                 for col, ctype in dml_schema[schema_key].items():
-                    add_col(col, ctype)
+                    add_output(col, ctype)
 
-        # 2. xfr_rules: dml_fields / select
-        rule = xfr_rules.get(nid.lower()) or xfr_rules.get(nname.lower()) or {}
-        if isinstance(rule, dict):
-            # dml_fields: [{"field": ..., "expr": ...}]
-            for f in rule.get("dml_fields", []) or []:
-                fname = f.get("field")
-                ftype = _infer_type_from_expr(f.get("expr"))
-                add_col(fname, ftype)
+        # 2. dml_fields: field = salida; su expr referencia entradas
+        for f in rule.get("dml_fields", []) or []:
+            fname = f.get("field")
+            fexpr = f.get("expr")
+            add_output(fname, _infer_type_from_expr(fexpr))
+            for src in re.findall(r'col\("(\w+)"\)', str(fexpr or "")):
+                add_input(src, "string")
 
-            # select: "a as A, b, to_date(x) as d"
-            select = rule.get("select")
-            if select and select != "*":
-                for part in _split_select(select):
-                    m = re.match(r"(.+?)\s+as\s+(\w+)\s*$", part.strip(), re.I)
-                    if m:
-                        expr_part, alias = m.group(1).strip(), m.group(2)
-                        add_col(alias, _infer_type_from_expr(expr_part))
-                    else:
-                        col = part.strip().strip('"').split(".")[-1]
-                        if re.match(r"^\w+$", col):
-                            add_col(col, "string")
+        # 3. select "expr as alias" → alias es salida; expr referencia entradas
+        select = rule.get("select")
+        if select and select != "*":
+            for part in _split_select(select):
+                m = re.match(r"(.+?)\s+as\s+(\w+)\s*$", part.strip(), re.I)
+                if m:
+                    expr_part, alias = m.group(1).strip(), m.group(2)
+                    add_output(alias, _infer_type_from_expr(expr_part))
+                    # campos de entrada referenciados en la expresión
+                    for src in re.findall(r'\b(?:in\d*\.)?(\w+)\b', expr_part):
+                        if src.lower() not in _SQL_KEYWORDS and not src.isdigit():
+                            add_input(src, "string")
+                else:
+                    col = part.strip().strip('"').split(".")[-1]
+                    if re.match(r"^\w+$", col):
+                        add_output(col, "string")
+                        add_input(col, "string")
 
-            # group_by / dedup_keys / join_key add plain columns
-            for key in ("group_by", "dedup_keys"):
-                val = rule.get(key)
-                if isinstance(val, list):
-                    for c in val:
-                        add_col(str(c).strip(), "string")
+        # 4. raw_transform: out.FIELD :: expr(in.OTRO)
+        raw = rule.get("raw_transform")
+        if raw:
+            for fname, fexpr in re.findall(r"out\.(\w+)\s*::\s*(.+?);", raw):
+                if fname not in ("newline", "V_FILLER"):
+                    add_output(fname, _infer_type_from_expr(fexpr))
+            for src in re.findall(r"in\d*\.(\w+)", raw):
+                add_input(src, "string")
 
-        if columns:
-            result.append({
-                "node": nname,
-                "node_type": ntype,
-                "columns": columns,
-            })
+        # --- ENTRADA/CLAVES: keys que aportan columnas usadas (entrada) ---
+        for key in ("group_by", "dedup_keys", "join_key", "sort_by"):
+            val = rule.get(key)
+            names = []
+            if isinstance(val, list):
+                for c in val:
+                    names += [s.strip() for s in re.split(r"[;,]", str(c)) if s.strip()]
+            elif isinstance(val, str):
+                names += [s.strip() for s in re.split(r"[;,]", val) if s.strip()]
+            for nm in names:
+                # limpiar sufijos como "descending"/"ascending"
+                nm = re.sub(r"\s+(descending|ascending|desc|asc)$", "", nm, flags=re.I).strip()
+                if re.match(r"^\w+$", nm):
+                    add_input(nm, "string")
+                    add_output(nm, "string")
+
+        # --- Fallback SOURCE/SINK sin columnas ---
+        if ntype == "SOURCE" and not output_cols and not input_cols:
+            for gn, gt in _GENERIC_COLUMNS:
+                add_output(gn, gt)
+        if ntype == "SINK" and not input_cols and not output_cols:
+            for gn, gt in _GENERIC_COLUMNS:
+                add_input(gn, gt)
+
+        # Emitir datasets. SOURCE: sus columnas son "salida" (lo que emite),
+        # pero para alimentar el pipeline las tratamos como ENTRADA del job.
+        if ntype == "SOURCE":
+            cols = output_cols or input_cols
+            if cols:
+                result.append({"node": nname, "node_type": ntype, "io": "input", "columns": cols})
+        elif ntype == "SINK":
+            cols = input_cols or output_cols
+            if cols:
+                result.append({"node": nname, "node_type": ntype, "io": "output", "columns": cols})
+        else:
+            if input_cols:
+                result.append({"node": nname, "node_type": ntype, "io": "input", "columns": input_cols})
+            if output_cols:
+                result.append({"node": nname, "node_type": ntype, "io": "output", "columns": output_cols})
 
     return result
+
+
+# Palabras que no son nombres de columna al escanear expresiones
+_SQL_KEYWORDS = {
+    "cast", "as", "to_date", "to_timestamp", "int", "integer", "string", "decimal",
+    "date", "datetime", "when", "then", "else", "end", "case", "and", "or", "not",
+    "null", "is", "coalesce", "lit", "col", "expr", "trim", "lpad", "rpad",
+    "substring", "concat", "size", "current_date", "current_timestamp", "yyyy",
+    "mm", "dd", "true", "false",
+}
 
 
 def _split_select(select):
