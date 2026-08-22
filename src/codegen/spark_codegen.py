@@ -104,6 +104,18 @@ def _map_string_functions(expr):
     expr = re.sub(r'string_rpad\(', 'rpad(', expr)
     # string_index(x, sub) → instr(x, sub)
     expr = re.sub(r'string_index\(', 'instr(', expr)
+    # string_like(x, pattern) → x LIKE pattern (patrones Ab Initio usan % y _)
+    expr = re.sub(
+        r'string_like\(\s*([^,]+?)\s*,\s*("(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\')\s*\)',
+        r'(\1 LIKE \2)',
+        expr,
+    )
+    # string_is_alphabetic(x) → x rlike "^[A-Za-z]*$"
+    expr = re.sub(r'string_is_alphabetic\(\s*([^)]+?)\s*\)', r'(\1 rlike "^[A-Za-z]*$")', expr)
+    # string_is_numeric(x) → x rlike "^[0-9]*$"
+    expr = re.sub(r'string_is_numeric\(\s*([^)]+?)\s*\)', r'(\1 rlike "^[0-9]*$")', expr)
+    # string_char(x, n) → substring(x, n, 1)
+    expr = re.sub(r'string_char\(\s*([^,]+?)\s*,\s*([^)]+?)\s*\)', r'substring(\1, \2, 1)', expr)
     # string_reverse(x) → reverse(x)
     expr = re.sub(r'string_reverse\(', 'reverse(', expr)
     # string_split(x, delim) → split(x, delim)
@@ -123,6 +135,84 @@ def _map_string_functions(expr):
     # Strip "out." prefix
     expr = re.sub(r'\bout\.(\w+)', r'\1', expr)
     return expr
+
+
+def _match_paren(s, open_idx):
+    """Dado el índice de un '(' devuelve el índice de su ')' balanceado, o -1.
+    Respeta comillas simples/dobles para no contar paréntesis dentro de strings."""
+    depth = 0
+    quote = None
+    i = open_idx
+    while i < len(s):
+        ch = s[i]
+        if quote:
+            if ch == quote and s[i - 1] != '\\':
+                quote = None
+        elif ch in ('"', "'"):
+            quote = ch
+        elif ch == '(':
+            depth += 1
+        elif ch == ')':
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return -1
+
+
+def _split_else(s):
+    """Divide 'val1 else val2' respetando parentesis/comillas y anidamiento de if.
+    Devuelve (then_part, else_part) o (s, None) si no hay else de nivel superior."""
+    depth = 0
+    quote = None
+    i = 0
+    while i < len(s):
+        ch = s[i]
+        if quote:
+            if ch == quote and s[i - 1] != '\\':
+                quote = None
+        elif ch in ('"', "'"):
+            quote = ch
+        elif ch == '(':
+            depth += 1
+        elif ch == ')':
+            depth -= 1
+        elif depth == 0:
+            # Buscar 'else' como palabra completa en nivel superior
+            m = re.match(r'\belse\b', s[i:], re.IGNORECASE)
+            if m:
+                return s[:i].strip(), s[i + m.end():].strip()
+        i += 1
+    return s.strip(), None
+
+
+def _translate_if_else(expr):
+    """Convierte if(cond) then_val else else_val (posiblemente anidado) a CASE WHEN,
+    respetando parentesis balanceados. Soporta cadenas if...else if...else."""
+    e = expr.strip()
+    m = re.match(r'^if\s*\(', e, re.IGNORECASE)
+    if not m:
+        return expr
+
+    open_idx = e.index('(', m.start())
+    close_idx = _match_paren(e, open_idx)
+    if close_idx == -1:
+        return expr  # parentesis desbalanceado, no tocar
+
+    cond = e[open_idx + 1:close_idx].strip()
+    rest = e[close_idx + 1:].strip()
+
+    then_part, else_part = _split_else(rest)
+    if else_part is None:
+        # if sin else → CASE WHEN cond THEN then END
+        return f'CASE WHEN {cond} THEN {then_part} END'
+
+    # else if... encadenado → traducir recursivamente el else
+    if re.match(r'^if\s*\(', else_part, re.IGNORECASE):
+        inner = _translate_if_else(else_part)
+        return f'CASE WHEN {cond} THEN {then_part} ELSE {inner} END'
+
+    return f'CASE WHEN {cond} THEN {then_part} ELSE {else_part} END'
 
 
 def _translate_dml_expr(expr_clean):
@@ -163,10 +253,9 @@ def _translate_dml_expr(expr_clean):
     mapped = _map_string_functions(mapped)
     
     # Ab Initio if(cond) val1 else val2 → CASE WHEN cond THEN val1 ELSE val2 END
-    if_match = re.match(r'^if\s*\((.+?)\)\s*(.+?)\s+else\s+(.+)$', mapped, re.IGNORECASE)
-    if if_match:
-        cond, then_val, else_val = if_match.group(1), if_match.group(2), if_match.group(3)
-        mapped = f'CASE WHEN {cond} THEN {then_val} ELSE {else_val} END'
+    # Usa un parser con parentesis balanceados (la condicion puede tener funciones
+    # anidadas como string_like(x, "% %") cuyo ) NO cierra el if).
+    mapped = _translate_if_else(mapped)
     
     # Ab Initio ternary: expr ? val1 : val2 → CASE WHEN expr THEN val1 ELSE val2 END
     ternary = re.match(r'^(.+?)\s*\?\s*([^?:]+?)\s*:\s*([^?]+)$', mapped)
