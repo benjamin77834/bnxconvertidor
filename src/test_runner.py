@@ -269,9 +269,13 @@ def _bnx_ensure_cols(df):
     if df is None:
         return df
     have = set(df.columns)
+    # Chequeo case-insensitive: si ya existe la columna con OTRO caso (p.ej.
+    # 'Memo_Time' vs 'memo_time'), NO crear un duplicado que causaria ambiguedad.
+    have_lower = {{x.lower() for x in have}}
     for c in _BNX_REQUIRED_COLS:
-        if c not in have:
+        if c not in have and c.lower() not in have_lower:
             df = df.withColumn(c, _lit(None).cast("string"))
+            have_lower.add(c.lower())
     # quitar el placeholder si ya hay columnas reales
     if "_bnx_placeholder" in df.columns and len(df.columns) > 1:
         df = df.drop("_bnx_placeholder")
@@ -386,13 +390,26 @@ def _bnx_colname(c):
 
 def _bnx_sort(df, *cols):
     # orderBy/sort tolerante: ordena solo por columnas existentes.
+    # Resuelve nombres sin distinguir mayus/minus (case-insensitive) contra las
+    # columnas reales, para evitar UNRESOLVED_COLUMN cuando el codegen bajo el
+    # nombre a minusculas (p.ej. 'memo_time' vs 'Memo_Time').
+    from pyspark.sql.functions import col as _col
     if df is None:
         return df
+    real_cols = list(df.columns)
+    lower_map = {{}}
+    for rc in real_cols:
+        lower_map.setdefault(rc.lower(), rc)  # primer match gana
     existing = []
     for c in cols:
         name = _bnx_colname(c)
-        if name and name in df.columns:
-            existing.append(c)
+        if not name:
+            continue
+        if name in real_cols:
+            existing.append(_col("`" + name + "`"))
+        elif name.lower() in lower_map:
+            resolved = lower_map[name.lower()]
+            existing.append(_col("`" + resolved + "`"))
         else:
             print(f"[BNX-TEST] SORT: columna '{{name}}' ausente, se ignora")
     if not existing:
@@ -773,9 +790,11 @@ def _bnx_ensure_cols(df):
     if df is None:
         return df
     have = set(df.columns)
+    have_lower = {{x.lower() for x in have}}
     for c in _BNX_REQUIRED_COLS:
-        if c not in have:
+        if c not in have and c.lower() not in have_lower:
             df = df.withColumn(c, _lit(None).cast("string"))
+            have_lower.add(c.lower())
     if "_bnx_placeholder" in df.columns and len(df.columns) > 1:
         df = df.drop("_bnx_placeholder")
     return df
@@ -873,9 +892,22 @@ def _bnx_colname(c):
         return None
 
 def _bnx_sort(df, *cols):
+    from pyspark.sql.functions import col as _col
     if df is None:
         return df
-    existing = [c for c in cols if (_bnx_colname(c) in df.columns)]
+    real_cols = list(df.columns)
+    lower_map = {{}}
+    for rc in real_cols:
+        lower_map.setdefault(rc.lower(), rc)
+    existing = []
+    for c in cols:
+        name = _bnx_colname(c)
+        if not name:
+            continue
+        if name in real_cols:
+            existing.append(_col("`" + name + "`"))
+        elif name.lower() in lower_map:
+            existing.append(_col("`" + lower_map[name.lower()] + "`"))
     return df.orderBy(*existing) if existing else df
 
 def _bnx_dropdup(df, cols):
