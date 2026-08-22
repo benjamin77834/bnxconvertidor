@@ -13,6 +13,7 @@ import HistoryPage from './components/HistoryPage'
 import PipelinePage from './components/PipelinePage'
 import GraphLibrary from './components/GraphLibrary'
 import GrafosPage from './components/GrafosPage'
+import DataGenPage from './components/DataGenPage'
 import { COMPILE_URL } from './config'
 
 // ── Themes ──────────────────────────────────────────────────
@@ -420,6 +421,7 @@ export default function App() {
             { id: 'roadmap', label: '🗺️ Roadmap' },
             { id: 'pipeline', label: '🧪 Pipeline' },
             { id: 'grafos', label: '📁 Grafos' },
+            { id: 'datagen', label: '🧪 Data Redactada' },
             { id: 'history', label: '📜 History' },
           ].map(tab => (
             <button key={tab.id}
@@ -486,6 +488,8 @@ export default function App() {
               if (compileBtn) compileBtn.click()
             }, 500)
           }} />
+        ) : page === 'datagen' ? (
+          <DataGenPage theme={t} />
         ) : page === 'designer' ? (
           <DesignerPage theme={t} />
         ) : page === 'ocr' ? (
