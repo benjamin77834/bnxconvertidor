@@ -1095,9 +1095,57 @@ def _extract_embedded_transforms(content):
     if filters_by_vertex:
         print(f"  [dbg] Filters by vertex: {filters_by_vertex}")
     
-    # Extract record schemas (out_metadata)
-    schemas = re.findall(r'XXparameter\|out_metadata\|record\s*(.*?)(?:end;|\|)', content, re.DOTALL)
-    
+    # Extract record schemas (record format DML) por vertice.
+    # Ab Initio serializa el esquema como: record <tipo> <campo>; ... end;
+    # Aparece en XXparameter|out_metadata|... , |in_metadata|... , o |metadata|...
+    # El in_metadata de un SOURCE (o out_metadata) define sus columnas reales.
+    def _parse_record_fields(record_body):
+        """Parsea un cuerpo 'record ... end;' de Ab Initio a [{name, type}]."""
+        fields = []
+        body = record_body
+        # Cada declaracion: <tipo>(<args>) <nombre> [= default] ;
+        # tipos: string(N) / string("delim") / decimal(p,s) / integer(N) / date("fmt") / datetime(...)
+        for m in re.finditer(
+            r'\b(string|decimal|integer|int|date|datetime|real|double)\s*\(([^)]*)\)\s+([A-Za-z_]\w*)\s*(?:=[^;]+)?;',
+            body,
+        ):
+            atype = m.group(1)
+            aname = m.group(3)
+            if aname in ("newline", "V_FILLER"):
+                continue
+            # Normalizar tipo a algo simple
+            if atype in ("int",):
+                atype = "integer"
+            if atype in ("real",):
+                atype = "double"
+            fields.append({"name": aname, "type": atype})
+        return fields
+
+    record_by_vertex = {}
+    for meta_kind in ("out_metadata", "in_metadata", "metadata"):
+        meta_positions = [
+            (mm.start(), mm.group(1))
+            for mm in re.finditer(
+                r'XXparameter\|' + meta_kind + r'\|record\s*(.*?)end\s*;',
+                content, re.DOTALL,
+            )
+        ]
+        for mpos, body in meta_positions:
+            flds = _parse_record_fields(body)
+            if not flds:
+                continue
+            owning_vertex = None
+            for vpos, vid in [(m.start(), m.group(1)) for m in re.finditer(r'XXG[pft]vertex\|(\d+)\|', content)]:
+                if vpos < mpos:
+                    owning_vertex = vid
+                else:
+                    break
+            if owning_vertex and owning_vertex not in record_by_vertex:
+                record_by_vertex[owning_vertex] = flds
+
+    if record_by_vertex:
+        print(f"  [dbg] Record formats by vertex: {{ {', '.join(f'{k}:{len(v)}f' for k, v in record_by_vertex.items())} }}")
+
     # Parse transform bodies into field mappings
     # Each component gets its own set of rules
     # Map each transform to its owning vertex by position in content
@@ -1233,6 +1281,7 @@ def _extract_embedded_transforms(content):
         "keeps": keeps,
         "commandlines_by_vertex": commandlines_by_vertex,
         "join_types_by_vertex": join_types_by_vertex,
+        "record_by_vertex": record_by_vertex,
     }
     
     return result
@@ -1258,7 +1307,19 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
     keeps = embedded.get("keeps", [])
     commandlines_by_vertex = embedded.get("commandlines_by_vertex", {})
     join_types_by_vertex = embedded.get("join_types_by_vertex", {})
-    
+    record_by_vertex = embedded.get("record_by_vertex", {})
+
+    # Apply record formats (esquema real de columnas) a los nodos que lo tengan.
+    # Esto da a SOURCE/SINK/TRANSFORM su lista real de campos con tipo.
+    for vid, fields in record_by_vertex.items():
+        if vid in node_by_id:
+            comp_name = node_by_id[vid]["name"]
+            name_lower = comp_name.lower()
+            if name_lower not in xfr_rules:
+                xfr_rules[name_lower] = {}
+            xfr_rules[name_lower]["record_fields"] = fields
+            print(f"  [dbg] Record format assigned: {comp_name} ({vid}) → {len(fields)} campos")
+
     # Apply commandlines to Run_Program vertices as raw_transform
     for vid, cmd in commandlines_by_vertex.items():
         if vid in node_by_id:

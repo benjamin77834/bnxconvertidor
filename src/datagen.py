@@ -124,81 +124,84 @@ def infer_schema_from_graph(ast, xfr_rules, dml_schema=None):
           "columns": [...]}]
     """
     dml_schema = dml_schema or {}
-    result = []
-
     nodes = ast.get("nodes", []) if isinstance(ast, dict) else []
+    edges = ast.get("edges", []) if isinstance(ast, dict) else []
+
+    # Info por nodo: cols input/output (dict nombre_lower -> {name,type,pii})
+    node_info = {}       # nname -> {"type", "in": {}, "out": {}}
+    id_to_name = {}      # id/name lower -> nname (para trazar edges)
+
+    def _mk_col(name, ctype):
+        return {"name": name, "type": normalize_type(ctype), "pii": detect_pii(name)}
+
     for nd in nodes:
         nid = nd.get("id", "")
         nname = nd.get("name", nid)
         ntype = nd.get("type", "TRANSFORM")
+        id_to_name[nid.lower()] = nname
+        id_to_name[nname.lower()] = nname
 
-        input_cols, input_seen = [], set()
-        output_cols, output_seen = [], set()
+        in_cols, out_cols = {}, {}
 
-        def _add(cols, seen, name, ctype):
-            key = (name or "").lower()
-            if not name or key in seen:
-                return
-            seen.add(key)
-            cols.append({
-                "name": name,
-                "type": normalize_type(ctype),
-                "pii": detect_pii(name),
-            })
+        def add_in(name, ctype="string"):
+            k = (name or "").lower()
+            if name and k not in in_cols:
+                in_cols[k] = _mk_col(name, ctype)
 
-        def add_input(name, ctype="string"):
-            _add(input_cols, input_seen, name, ctype)
-
-        def add_output(name, ctype="string"):
-            _add(output_cols, output_seen, name, ctype)
+        def add_out(name, ctype="string"):
+            k = (name or "").lower()
+            if name and k not in out_cols:
+                out_cols[k] = _mk_col(name, ctype)
 
         rule = xfr_rules.get(nid.lower()) or xfr_rules.get(nname.lower()) or {}
         if not isinstance(rule, dict):
             rule = {}
 
-        # --- SALIDA ---
-        # 1. .dml schema define el esquema de salida del nodo
+        # 0. record_fields: esquema REAL del nodo (del .mp GDE) — maxima prioridad
+        for f in rule.get("record_fields", []) or []:
+            add_in(f.get("name"), f.get("type", "string"))
+            add_out(f.get("name"), f.get("type", "string"))
+
+        # 1. .dml schema externo
         for schema_key in (nid, nname):
             if schema_key in dml_schema:
                 for col, ctype in dml_schema[schema_key].items():
-                    add_output(col, ctype)
+                    add_out(col, ctype)
+                    add_in(col, ctype)
 
-        # 2. dml_fields: field = salida; su expr referencia entradas
+        # 2. dml_fields
         for f in rule.get("dml_fields", []) or []:
-            fname = f.get("field")
-            fexpr = f.get("expr")
-            add_output(fname, _infer_type_from_expr(fexpr))
-            for src in re.findall(r'col\("(\w+)"\)', str(fexpr or "")):
-                add_input(src, "string")
+            add_out(f.get("field"), _infer_type_from_expr(f.get("expr")))
+            for src in re.findall(r'col\("(\w+)"\)', str(f.get("expr") or "")):
+                add_in(src, "string")
 
-        # 3. select "expr as alias" → alias es salida; expr referencia entradas
+        # 3. select
         select = rule.get("select")
         if select and select != "*":
             for part in _split_select(select):
                 m = re.match(r"(.+?)\s+as\s+(\w+)\s*$", part.strip(), re.I)
                 if m:
                     expr_part, alias = m.group(1).strip(), m.group(2)
-                    add_output(alias, _infer_type_from_expr(expr_part))
-                    # campos de entrada referenciados en la expresión
+                    add_out(alias, _infer_type_from_expr(expr_part))
                     for src in re.findall(r'\b(?:in\d*\.)?(\w+)\b', expr_part):
                         if src.lower() not in _SQL_KEYWORDS and not src.isdigit():
-                            add_input(src, "string")
+                            add_in(src, "string")
                 else:
                     col = part.strip().strip('"').split(".")[-1]
                     if re.match(r"^\w+$", col):
-                        add_output(col, "string")
-                        add_input(col, "string")
+                        add_out(col, "string")
+                        add_in(col, "string")
 
-        # 4. raw_transform: out.FIELD :: expr(in.OTRO)
+        # 4. raw_transform
         raw = rule.get("raw_transform")
         if raw:
             for fname, fexpr in re.findall(r"out\.(\w+)\s*::\s*(.+?);", raw):
                 if fname not in ("newline", "V_FILLER"):
-                    add_output(fname, _infer_type_from_expr(fexpr))
+                    add_out(fname, _infer_type_from_expr(fexpr))
             for src in re.findall(r"in\d*\.(\w+)", raw):
-                add_input(src, "string")
+                add_in(src, "string")
 
-        # --- ENTRADA/CLAVES: keys que aportan columnas usadas (entrada) ---
+        # 5. keys (join/sort/dedup/group)
         for key in ("group_by", "dedup_keys", "join_key", "sort_by"):
             val = rule.get(key)
             names = []
@@ -208,35 +211,76 @@ def infer_schema_from_graph(ast, xfr_rules, dml_schema=None):
             elif isinstance(val, str):
                 names += [s.strip() for s in re.split(r"[;,]", val) if s.strip()]
             for nm in names:
-                # limpiar sufijos como "descending"/"ascending"
                 nm = re.sub(r"\s+(descending|ascending|desc|asc)$", "", nm, flags=re.I).strip()
                 if re.match(r"^\w+$", nm):
-                    add_input(nm, "string")
-                    add_output(nm, "string")
+                    add_in(nm, "string")
+                    add_out(nm, "string")
 
-        # --- Fallback SOURCE/SINK sin columnas ---
-        if ntype == "SOURCE" and not output_cols and not input_cols:
-            for gn, gt in _GENERIC_COLUMNS:
-                add_output(gn, gt)
-        if ntype == "SINK" and not input_cols and not output_cols:
-            for gn, gt in _GENERIC_COLUMNS:
-                add_input(gn, gt)
+        node_info[nname] = {"type": ntype, "in": in_cols, "out": out_cols}
 
-        # Emitir datasets. SOURCE: sus columnas son "salida" (lo que emite),
-        # pero para alimentar el pipeline las tratamos como ENTRADA del job.
+    # --- PROPAGACION upstream: los SOURCE deben tener las columnas que sus
+    # consumidores downstream referencian (join keys, sort keys, in. de reformats).
+    # Construimos el mapa padres->hijos y propagamos las columnas de entrada de
+    # cada hijo hacia sus padres (recursivo, hasta los SOURCE).
+    children = {}  # nname -> [nnames hijos]
+    parents = {}   # nname -> [nnames padres]
+    for e in edges:
+        fr = id_to_name.get(str(e.get("from", "")).lower())
+        to = id_to_name.get(str(e.get("to", "")).lower())
+        if fr and to:
+            children.setdefault(fr, []).append(to)
+            parents.setdefault(to, []).append(fr)
+
+    # Propagar: para cada nodo, sus columnas de entrada deben existir en sus padres.
+    # Iteramos varias veces (hasta estabilizar) porque la cadena puede ser larga.
+    for _ in range(len(node_info) + 2):
+        changed = False
+        for nname, info in node_info.items():
+            # columnas que este nodo consume (entrada) + las que produce que vienen de un padre
+            needed = dict(info["in"])
+            for par in parents.get(nname, []):
+                pinfo = node_info.get(par)
+                if not pinfo:
+                    continue
+                # el padre debe poder entregar lo que este nodo necesita
+                target = pinfo["out"] if pinfo["type"] != "SOURCE" else pinfo["out"]
+                for k, col in needed.items():
+                    if k not in target:
+                        target[k] = col
+                        changed = True
+                    # tambien reflejar en la entrada del padre (para seguir propagando)
+                    if k not in pinfo["in"]:
+                        pinfo["in"][k] = col
+                        changed = True
+        if not changed:
+            break
+
+    # --- Construir resultado ---
+    result = []
+    for nname, info in node_info.items():
+        ntype = info["type"]
+        in_cols = list(info["in"].values())
+        out_cols = list(info["out"].values())
+
+        # Fallback generico si un SOURCE/SINK quedo sin columnas
+        if ntype == "SOURCE" and not out_cols and not in_cols:
+            out_cols = [_mk_col(n, t) for n, t in _GENERIC_COLUMNS]
+        if ntype == "SINK" and not in_cols and not out_cols:
+            in_cols = [_mk_col(n, t) for n, t in _GENERIC_COLUMNS]
+
         if ntype == "SOURCE":
-            cols = output_cols or input_cols
+            cols = out_cols or in_cols
             if cols:
                 result.append({"node": nname, "node_type": ntype, "io": "input", "columns": cols})
         elif ntype == "SINK":
-            cols = input_cols or output_cols
+            cols = in_cols or out_cols
             if cols:
                 result.append({"node": nname, "node_type": ntype, "io": "output", "columns": cols})
         else:
-            if input_cols:
-                result.append({"node": nname, "node_type": ntype, "io": "input", "columns": input_cols})
-            if output_cols:
-                result.append({"node": nname, "node_type": ntype, "io": "output", "columns": output_cols})
+            if in_cols:
+                result.append({"node": nname, "node_type": ntype, "io": "input", "columns": in_cols})
+            if out_cols:
+                result.append({"node": nname, "node_type": ntype, "io": "output", "columns": out_cols})
 
     return result
 
