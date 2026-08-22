@@ -130,6 +130,7 @@ def infer_schema_from_graph(ast, xfr_rules, dml_schema=None):
     # Info por nodo: cols input/output (dict nombre_lower -> {name,type,pii})
     node_info = {}       # nname -> {"type", "in": {}, "out": {}}
     id_to_name = {}      # id/name lower -> nname (para trazar edges)
+    join_key_names = set()  # nombres (lower) de columnas que son clave de join
 
     def _mk_col(name, ctype):
         return {"name": name, "type": normalize_type(ctype), "pii": detect_pii(name)}
@@ -215,6 +216,9 @@ def infer_schema_from_graph(ast, xfr_rules, dml_schema=None):
                 if re.match(r"^\w+$", nm):
                     add_in(nm, "string")
                     add_out(nm, "string")
+                    # Las claves de JOIN se marcan para generar valores compartidos
+                    if key == "join_key":
+                        join_key_names.add(nm.lower())
 
         node_info[nname] = {"type": ntype, "in": in_cols, "out": out_cols}
 
@@ -267,6 +271,11 @@ def infer_schema_from_graph(ast, xfr_rules, dml_schema=None):
             out_cols = [_mk_col(n, t) for n, t in _GENERIC_COLUMNS]
         if ntype == "SINK" and not in_cols and not out_cols:
             in_cols = [_mk_col(n, t) for n, t in _GENERIC_COLUMNS]
+
+        # Marcar columnas que son clave de JOIN → se generan con valores compartidos
+        for col in in_cols + out_cols:
+            if col["name"].lower() in join_key_names:
+                col["join_key"] = True
 
         if ntype == "SOURCE":
             cols = out_cols or in_cols
@@ -357,8 +366,22 @@ def _redact_pii(category, rng, row_idx):
     return "REDACTED"
 
 
+def _join_key_pool(col_name, size=8):
+    """Pool determinístico de valores para una clave de join.
+    El mismo nombre de columna produce SIEMPRE el mismo pool, así distintas
+    fuentes que se unen por esa clave comparten valores y el join empareja."""
+    prefix = re.sub(r'[^A-Za-z0-9]', '', col_name).upper()[:6] or "KEY"
+    return [f"{prefix}{i:04d}" for i in range(1, size + 1)]
+
+
 def _gen_value(col, rng, row_idx):
     """Genera un valor sintético para una columna según tipo y PII."""
+    # Clave de JOIN: valor de un pool compartido pequeño (para que empareje entre fuentes).
+    # Tiene prioridad sobre PII para no romper el emparejamiento del join.
+    if col.get("join_key"):
+        pool = _join_key_pool(col.get("name", "key"))
+        return pool[row_idx % len(pool)]
+
     pii = col.get("pii")
     if pii:
         return _redact_pii(pii, rng, row_idx)
@@ -434,7 +457,11 @@ def build_synthetic_data(columns, n_rows=10, fmt="csv", seed=None, delimiter=","
             pii = detect_pii(name)
         elif pii is False:
             pii = None  # PII explícitamente desactivada
-        norm_columns.append({"name": name, "type": ctype, "pii": pii})
+        norm_col = {"name": name, "type": ctype, "pii": pii}
+        # Preservar la marca de clave de join (valores compartidos entre fuentes)
+        if col.get("join_key"):
+            norm_col["join_key"] = True
+        norm_columns.append(norm_col)
 
     rows = generate_rows(norm_columns, n_rows=n_rows, seed=seed)
 
