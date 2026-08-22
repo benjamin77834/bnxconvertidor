@@ -96,7 +96,7 @@ from src.datagen import (
     detect_pii,
     normalize_type,
 )
-from src.test_runner import run_pyspark_test
+from src.test_runner import run_pyspark_test, stream_pyspark_test
 
 PORT = 8080
 UI_DIR = os.path.join(os.path.dirname(__file__), "ui", "dist")
@@ -128,6 +128,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._proxy_to_datalab(path)
         elif "/datagen" in path:
             self._handle_datagen()
+        elif "/runtest/stream" in path:
+            self._handle_runtest_stream()
         elif "/runtest" in path:
             self._handle_runtest()
         elif "/compile" in path or "/api" in path:
@@ -222,6 +224,65 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             import traceback
             traceback.print_exc()
             self._json_response(500, {"error": str(e)})
+
+    def _handle_runtest_stream(self):
+        """Ejecuta el PySpark de prueba y transmite el output en vivo (SSE).
+
+        Cada evento SSE es una linea JSON:
+          data: {"type":"line","text":"..."}
+          data: {"type":"done","ok":true,"summary":"...","reads":[...],"writes":[...]}
+        """
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._json_response(400, {"error": "Invalid JSON body"})
+            return
+
+        code = data.get("code", "")
+        if not code.strip():
+            self._json_response(400, {"error": "Falta 'code' (PySpark)"})
+            return
+        if "awsglue" in code or "GlueContext" in code:
+            self._json_response(400, {
+                "error": "Solo se puede ejecutar localmente el target PySpark. "
+                         "Compila con target 'spark'."
+            })
+            return
+
+        datasets = data.get("datasets", []) or []
+        timeout = int(data.get("timeout", 180))
+        timeout = max(10, min(timeout, 600))
+
+        # Cabeceras SSE
+        self.send_response(200)
+        self._cors_headers()
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+
+        def _send(obj):
+            payload = "data: " + json.dumps(obj, default=str) + "\n\n"
+            self.wfile.write(payload.encode("utf-8"))
+            self.wfile.flush()
+
+        try:
+            for event in stream_pyspark_test(code, datasets, timeout=timeout):
+                _send(event)
+        except BrokenPipeError:
+            # El cliente cerró la conexión
+            return
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            try:
+                _send({"type": "done", "ok": False, "summary": f"Error interno: {e}",
+                       "reads": [], "writes": []})
+            except Exception:
+                pass
 
     def _handle_datagen(self):
         """Genera datos sintéticos redactados.

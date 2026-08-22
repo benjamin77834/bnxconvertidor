@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { COMPILE_URL } from '../config'
 
 // El endpoint /datagen vive en el mismo origen que /compile
 const DATAGEN_URL = COMPILE_URL.replace(/\/compile$/, '/datagen')
 const RUNTEST_URL = COMPILE_URL.replace(/\/compile$/, '/runtest')
+const RUNTEST_STREAM_URL = COMPILE_URL.replace(/\/compile$/, '/runtest/stream')
 
 const TYPES = ['string', 'integer', 'decimal', 'date', 'datetime', 'boolean']
 const PII_CATEGORIES = ['', 'name', 'email', 'phone', 'card', 'account', 'ssn', 'address', 'dob', 'id']
@@ -50,9 +51,10 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
   const [activeDataset, setActiveDataset] = useState(0)
   const [ioFilter, setIoFilter] = useState('all') // 'all' | 'input' | 'output'
 
-  // --- Ejecutar prueba PySpark ---
+  // --- Ejecutar prueba PySpark (consola en vivo) ---
   const [running, setRunning] = useState(false)
-  const [runResult, setRunResult] = useState(null) // {ok, summary, stdout, stderr, reads, writes}
+  const [runResult, setRunResult] = useState(null) // {ok, summary, reads, writes}
+  const [consoleLines, setConsoleLines] = useState([]) // lineas en vivo
 
   const isPySpark = compiledTarget === 'spark'
   const hasCode = Boolean((compiledCode || '').trim())
@@ -60,23 +62,65 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
   const runTest = async () => {
     setRunning(true)
     setRunResult(null)
+    setConsoleLines([{ text: '[*] Iniciando ejecución de prueba...', kind: 'info' }])
     try {
-      // Usar solo datasets de entrada para alimentar el job
       const inputs = (result?.datasets || []).filter(d => d.io === 'input')
       const datasets = inputs.length ? inputs : (result?.datasets || [])
-      const res = await fetch(RUNTEST_URL, {
+      const res = await fetch(RUNTEST_STREAM_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code: compiledCode, datasets, timeout: 180 }),
       })
-      const data = await res.json()
-      if (data.error) { setRunResult({ ok: false, summary: data.error, stderr: '', stdout: '' }) }
-      else setRunResult(data)
+      if (!res.ok || !res.body) {
+        let msg = `HTTP ${res.status}`
+        try { const j = await res.json(); msg = j.error || msg } catch {}
+        setRunResult({ ok: false, summary: msg })
+        setRunning(false)
+        return
+      }
+
+      // Leer el stream SSE incrementalmente
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let finished = false
+
+      while (!finished) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const parts = buffer.split('\n\n')
+        buffer = parts.pop() // resto incompleto
+        for (const part of parts) {
+          const line = part.replace(/^data:\s*/, '').trim()
+          if (!line) continue
+          let evt
+          try { evt = JSON.parse(line) } catch { continue }
+          if (evt.type === 'line') {
+            setConsoleLines(prev => [...prev, { text: evt.text, kind: classifyLine(evt.text) }])
+          } else if (evt.type === 'done') {
+            setRunResult({ ok: evt.ok, summary: evt.summary, reads: evt.reads, writes: evt.writes })
+            finished = true
+          }
+        }
+      }
     } catch (e) {
-      setRunResult({ ok: false, summary: `Error de red: ${e.message}`, stderr: '', stdout: '' })
+      setRunResult({ ok: false, summary: `Error de red: ${e.message}` })
+      setConsoleLines(prev => [...prev, { text: `Error: ${e.message}`, kind: 'error' }])
     } finally {
       setRunning(false)
     }
+  }
+
+  // Clasifica una linea para colorearla en la consola
+  const classifyLine = (text) => {
+    if (/Traceback|Exception|Error|ERROR|SQLSTATE/.test(text)) return 'error'
+    if (/\[>\] SOURCE|READ /.test(text)) return 'source'
+    if (/\[~\] JOIN|JOIN:/.test(text)) return 'join'
+    if (/\[\*\] SINK|\[>\] SINK|WRITE /.test(text)) return 'sink'
+    if (/\[~\] TRANSFORM|SORT|DEDUP|FILTER/.test(text)) return 'transform'
+    if (/\[ok\]|Ejecución OK/.test(text)) return 'ok'
+    return 'plain'
   }
 
   const card = {
@@ -460,50 +504,83 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
             </span>
           )}
 
-          {/* Resultado de la ejecución */}
+          {/* Estado final */}
           {runResult && (
             <div style={{
-              borderRadius: 8, padding: 12,
+              display: 'flex', alignItems: 'center', gap: 8,
+              borderRadius: 8, padding: '10px 12px',
               background: runResult.ok ? '#22c55e10' : '#ef444410',
               border: `1px solid ${runResult.ok ? '#22c55e40' : '#ef444440'}`,
             }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                <span style={{ fontSize: 18 }}>{runResult.ok ? '✅' : '❌'}</span>
-                <span style={{ fontSize: 14, fontWeight: 700, color: runResult.ok ? '#22c55e' : '#ef4444' }}>
-                  {runResult.summary}
-                </span>
-              </div>
-
-              {/* Lecturas / escrituras */}
+              <span style={{ fontSize: 18 }}>{runResult.ok ? '✅' : '❌'}</span>
+              <span style={{ fontSize: 14, fontWeight: 700, color: runResult.ok ? '#22c55e' : '#ef4444' }}>
+                {runResult.summary}
+              </span>
+              <div style={{ flex: 1 }} />
               {(runResult.reads?.length > 0 || runResult.writes?.length > 0) && (
-                <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12, color: t.muted, marginBottom: 8 }}>
-                  {runResult.reads?.map((r, i) => (
-                    <span key={'r' + i}>⬇️ {r.node || r.var}: {r.rows} filas</span>
-                  ))}
-                  {runResult.writes?.map((w, i) => (
-                    <span key={'w' + i} style={{ color: '#f59e0b' }}>⬆️ {w.var}: {w.rows} filas</span>
-                  ))}
-                </div>
-              )}
-
-              {/* Logs */}
-              {(runResult.stderr || runResult.stdout) && (
-                <details open={!runResult.ok}>
-                  <summary style={{ cursor: 'pointer', fontSize: 12, color: t.dim }}>
-                    {runResult.ok ? 'Ver logs' : 'Ver error'}
-                  </summary>
-                  <pre style={{
-                    marginTop: 8, padding: 10, borderRadius: 6, maxHeight: 300, overflow: 'auto',
-                    background: t.bg || '#0f1117', border: `1px solid ${t.border || '#334155'}`,
-                    fontSize: 11, color: runResult.ok ? (t.muted || '#94a3b8') : '#fca5a5',
-                    whiteSpace: 'pre-wrap', margin: 0,
-                  }}>{(runResult.stderr && !runResult.ok ? runResult.stderr : runResult.stdout) || '(sin salida)'}</pre>
-                </details>
+                <span style={{ fontSize: 12, color: t.muted }}>
+                  {runResult.reads?.length || 0} lectura(s) · {runResult.writes?.length || 0} escritura(s)
+                </span>
               )}
             </div>
           )}
+
+          {/* Consola en vivo */}
+          {(running || consoleLines.length > 0) && (
+            <LiveConsole lines={consoleLines} running={running} theme={t} />
+          )}
         </div>
       )}
+    </div>
+  )
+}
+
+// Consola tipo terminal que auto-scrollea y colorea las lineas por tipo
+function LiveConsole({ lines, running, theme }) {
+  const t = theme || {}
+  const ref = useRef(null)
+  useEffect(() => {
+    if (ref.current) ref.current.scrollTop = ref.current.scrollHeight
+  }, [lines])
+
+  const colorFor = (kind) => ({
+    error: '#fca5a5',
+    source: '#4ade80',
+    join: '#fbbf24',
+    sink: '#f87171',
+    transform: '#818cf8',
+    ok: '#22c55e',
+    info: '#94a3b8',
+    plain: t.muted || '#cbd5e1',
+  }[kind] || (t.muted || '#cbd5e1'))
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+        <span style={{ fontSize: 11, color: t.dim || '#64748b', textTransform: 'uppercase', letterSpacing: 1 }}>
+          🖥️ Consola en vivo
+        </span>
+        {running && (
+          <span style={{ fontSize: 11, color: '#818cf8' }}>
+            <span style={{ display: 'inline-block', animation: 'bnxblink 1s infinite' }}>●</span> ejecutando...
+          </span>
+        )}
+        <style>{`@keyframes bnxblink { 0%,100%{opacity:1} 50%{opacity:0.2} }`}</style>
+      </div>
+      <div ref={ref} style={{
+        background: '#0a0e17', border: `1px solid ${t.border || '#334155'}`,
+        borderRadius: 8, padding: 12, maxHeight: 360, overflow: 'auto',
+        fontFamily: 'monospace', fontSize: 12, lineHeight: 1.5,
+      }}>
+        {lines.map((l, i) => (
+          <div key={i} style={{ color: colorFor(l.kind), whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+            {l.text}
+          </div>
+        ))}
+        {lines.length === 0 && (
+          <span style={{ color: t.dim || '#64748b' }}>Esperando salida...</span>
+        )}
+      </div>
     </div>
   )
 }
