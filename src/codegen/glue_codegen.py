@@ -461,16 +461,15 @@ def generate_glue(dag, output_path, xfr_rules=None):
         f.write('    BASE_PATH = os.environ.get("BNX_BASE_PATH", "s3://datalake-bnx-scripts-dev")\n\n')
         f.write('print("[*] BNX Glue Job V54 Started")\n\n')
         
-        # Emit only the helpers that are actually used in this graph
-        if needs_filter_hdr_trl or needs_is_valid or needs_output_split:
-            f.write("# =========================\n# HELPER FUNCTIONS\n# =========================\n\n")
-        
-        if needs_filter_hdr_trl:
-            f.write("def filter_by_expression_hdr_trl(df, field, start, length, exclude_values):\n")
-            f.write('    """Filter rows where substring(field, start, length) is NOT in exclude_values."""\n')
-            f.write("    return df.filter(~F.substring(F.col(field), start, length).isin(exclude_values))\n\n\n")
-        
-        if needs_is_valid:
+        # Emit helpers SIEMPRE: el pre-scan puede no detectar todos los patrones que
+        # generan la llamada, y faltaria la def (NameError). Son funciones pequenas.
+        f.write("# =========================\n# HELPER FUNCTIONS\n# =========================\n\n")
+
+        f.write("def filter_by_expression_hdr_trl(df, field, start, length, exclude_values):\n")
+        f.write('    """Filter rows where substring(field, start, length) is NOT in exclude_values."""\n')
+        f.write("    return df.filter(~F.substring(F.col(field), start, length).isin(exclude_values))\n\n\n")
+
+        if True:
             f.write("def is_valid_record(df, validation_rules=None):\n")
             f.write('    """Validate records. Returns tuple: (valid_df, invalid_df)"""\n')
             f.write('    if validation_rules is None:\n')
@@ -494,10 +493,9 @@ def generate_glue(dag, output_path, xfr_rules=None):
             f.write('        return df, spark.createDataFrame([], df.schema)\n')
             f.write('    return df.filter(condition), df.filter(~condition)\n\n\n')
         
-        if needs_output_split:
-            f.write("def output_indexes_split(df, index_expr, num_outputs):\n")
-            f.write('    """Split DataFrame into N outputs based on index expression."""\n')
-            f.write('    return [df.filter(F.expr(f"{index_expr} = {i}")) for i in range(num_outputs)]\n\n\n')
+        f.write("def output_indexes_split(df, index_expr, num_outputs):\n")
+        f.write('    """Split DataFrame into N outputs based on index expression."""\n')
+        f.write('    return [df.filter(F.expr(f"{index_expr} = {i}")) for i in range(num_outputs)]\n\n\n')
         
         f.write("# =========================\n# DAG EXECUTION V54\n# =========================\n\n")
 
