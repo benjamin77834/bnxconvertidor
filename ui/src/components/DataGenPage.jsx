@@ -66,6 +66,7 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
   const [awsRegion] = useState('us-east-1')
   const [awsRole] = useState('arn:aws:iam::107094296911:role/datalake-glue-role-dev')
   const [awsJobName, setAwsJobName] = useState('datalake-bnx-datagen-spark-dev')
+  const [awsDownloads, setAwsDownloads] = useState([]) // [{name, url}] presigned URLs
 
   const isPySpark = compiledTarget === 'spark'
   const hasCode = Boolean((compiledCode || '').trim())
@@ -86,12 +87,16 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
       awsLog('Generando codigo autocontenido (datos sinteticos embebidos)...')
       const genRes = await fetch(AWSCODE_URL, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: compiledCode, datasets, keep_writes: true }),
+        body: JSON.stringify({ code: compiledCode, datasets, keep_writes: true, bucket: awsBucket, job_name: awsJobName }),
       })
       const genData = await genRes.json()
       if (genData.error) { awsLog('ERROR: ' + genData.error); setAwsStatus('error'); setAwsSending(false); return }
       const awsCode = genData.code
       awsLog(`Codigo listo: ${awsCode.split('\n').length} lineas`)
+      if (genData.output_paths?.length) {
+        awsLog(`Salida se escribira en: ${genData.output_paths.map(o => o.path).join(', ')}`)
+      }
+      setAwsDownloads([])
 
       // 2. Despachar al pipeline AWS (mismo flujo que PipelinePage)
       awsLog('Subiendo a S3 y ejecutando en AWS Glue...')
@@ -140,6 +145,22 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
         const res = await fetch(PIPELINE_STATUS_URL, { method: 'POST', body: form })
         const data = await res.json()
         awsLog(`[${attempts}] Status: ${data.status}${data.duration ? ` (${data.duration}s)` : ''}`)
+
+        // Extraer presigned URLs de descarga de los logs del job (si el status los trae)
+        const logText = [data.logs, data.output, data.stdout, data.error].filter(Boolean).join('\n')
+        if (logText) {
+          const found = []
+          const re = /\[AWS\]\s*DOWNLOAD\|([^|]+)\|(\S+)/g
+          let m
+          while ((m = re.exec(logText)) !== null) found.push({ name: m[1], url: m[2] })
+          if (found.length) {
+            setAwsDownloads(prev => {
+              const seen = new Set(prev.map(d => d.url))
+              return [...prev, ...found.filter(f => !seen.has(f.url))]
+            })
+          }
+        }
+
         if (data.status === 'SUCCEEDED') {
           awsLog(`JOB EXITOSO en ${data.duration}s — output en S3`)
           setAwsStatus('ok'); clearInterval(awsPollRef.current); setAwsSending(false)
@@ -674,6 +695,24 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
               <span style={{ fontSize: 13, fontWeight: 600, color: awsStatus === 'ok' ? '#22c55e' : awsStatus === 'error' ? '#ef4444' : '#f59e0b' }}>
                 {awsStatus === 'ok' ? 'Job completado en AWS' : awsStatus === 'error' ? 'Falló en AWS' : 'Ejecutando en AWS...'}
               </span>
+            </div>
+          )}
+
+          {/* Descargas del output (presigned URLs de S3) */}
+          {awsDownloads.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <span style={label}>⬇️ Descargar resultado (S3)</span>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {awsDownloads.map((d, i) => (
+                  <a key={i} href={d.url} target="_blank" rel="noopener noreferrer" download
+                    style={{
+                      padding: '8px 14px', borderRadius: 8, fontSize: 12, fontWeight: 700,
+                      background: '#22c55e', color: '#000', textDecoration: 'none',
+                      display: 'inline-flex', alignItems: 'center', gap: 6,
+                    }}>⬇️ {d.name}</a>
+                ))}
+              </div>
+              <span style={{ fontSize: 10, color: t.dim }}>Enlaces de descarga directa desde S3 (válidos 7 días).</span>
             </div>
           )}
 

@@ -670,20 +670,29 @@ def _is_noise(line):
 # ---------------------------------------------------------------------------
 # Código autocontenido para AWS: datos sintéticos embebidos, escrituras reales
 # ---------------------------------------------------------------------------
-def build_aws_selfcontained_code(pyspark_code, datasets, keep_writes=True):
+def build_aws_selfcontained_code(pyspark_code, datasets, keep_writes=True,
+                                 bucket=None, job_name=None):
     """Genera un PySpark AUTOCONTENIDO para ejecutar en AWS Glue/EMR.
 
     - Reemplaza las lecturas spark.read.<fmt>(...) por DataFrames construidos
       a partir de los datos sintéticos (embebidos como JSON en el propio script).
     - Mantiene las escrituras a S3 reales (keep_writes=True) para ver el output,
       o las neutraliza a .show() (keep_writes=False) si se quiere una corrida seca.
+    - Ademas, cada escritura vuelca una copia LEGIBLE (CSV con header, coalesce(1))
+      a una ruta de output conocida: s3://<bucket>/bnx-output/<job>/<var>/ para
+      poder descargar el resultado con aws s3 cp.
     - Aplica las mismas defensas que el runner local (nodos None, joins tolerantes,
       lookups no traducidos, PARAMS tolerante, columnas requeridas) para que corra.
 
-    Devuelve el código Python como string, listo para subir al pipeline.
+    Devuelve dict: {"code": <str>, "output_paths": [{"var","path"}]}
     """
     inputs = _normalize_inputs(datasets)
     required_cols = extract_referenced_columns(pyspark_code)
+
+    bucket = (bucket or "datalake-bnx-scripts-dev").strip().rstrip("/")
+    job = re.sub(r'[^A-Za-z0-9_-]', '_', (job_name or "bnx-datagen").strip())
+    out_prefix = f"s3://{bucket}/bnx-output/{job}"
+    output_paths = []
 
     lines = pyspark_code.split("\n")
     out = []
@@ -703,12 +712,19 @@ def build_aws_selfcontained_code(pyspark_code, datasets, keep_writes=True):
             indent, var = m_none.group(1), m_none.group(2)
             out.append(f'{indent}{var} = _bnx_src("{var}")  # AWS: nodo sin fuente')
             continue
-        if not keep_writes:
-            m_write = write_re.match(ln)
-            if m_write:
-                indent, var = m_write.group(1), m_write.group(2)
+        m_write = write_re.match(ln)
+        if m_write:
+            indent, var = m_write.group(1), m_write.group(2)
+            clean_var = var[:-3] if var.lower().endswith("_df") else var
+            copy_path = f"{out_prefix}/{clean_var}"
+            output_paths.append({"var": clean_var, "path": copy_path})
+            if not keep_writes:
                 out.append(f'{indent}{var}.show(10, truncate=False)  # AWS: escritura neutralizada')
-                continue
+            else:
+                out.append(ln)  # escritura original (a su path S3)
+            # Copia legible CSV single-file a la ruta de output conocida
+            out.append(f'{indent}_bnx_save_output({var}, "{copy_path}")')
+            continue
         out.append(ln)
 
     body = "\n".join(out)
@@ -798,6 +814,44 @@ def _bnx_shell(cmd):
     print(f"[AWS] SHELL (no ejecutado): {{cmd}}")
     return 0
 
+def _bnx_save_output(df, path):
+    # Copia legible del resultado a una ruta de output conocida (CSV single-file)
+    # y genera una PRESIGNED URL de S3 para descargar directo desde el browser.
+    if df is None:
+        print(f"[AWS] OUTPUT SKIP (df None): {{path}}")
+        return
+    try:
+        df.coalesce(1).write.mode("overwrite").option("header", "true").csv(path)
+        n = df.count()
+        print(f"[AWS] OUTPUT escrito: {{path}} ({{n}} filas)")
+        _bnx_presign(path)
+    except Exception as _e:
+        print(f"[AWS] OUTPUT error en {{path}}: {{_e}}")
+
+def _bnx_presign(path):
+    # Genera una presigned URL (valida 7 dias) del archivo CSV escrito en 'path'.
+    # Usa el rol del job (Glue/EMR) — no requiere credenciales del cliente.
+    try:
+        import boto3
+        m = _re_bnx.match(r"s3://([^/]+)/(.+)", path.rstrip("/"))
+        if not m:
+            return
+        bkt, prefix = m.group(1), m.group(2)
+        s3 = boto3.client("s3")
+        # Buscar el archivo part-*.csv que Spark escribio bajo el prefijo
+        resp = s3.list_objects_v2(Bucket=bkt, Prefix=prefix + "/")
+        keys = [o["Key"] for o in resp.get("Contents", []) if o["Key"].endswith(".csv")]
+        if not keys:
+            keys = [o["Key"] for o in resp.get("Contents", []) if "part-" in o["Key"]]
+        for key in keys:
+            url = s3.generate_presigned_url(
+                "get_object", Params={{"Bucket": bkt, "Key": key}}, ExpiresIn=604800,
+            )
+            fname = key.split("/")[-1]
+            print(f"[AWS] DOWNLOAD|{{fname}}|{{url}}")
+    except Exception as _e:
+        print(f"[AWS] PRESIGN error para {{path}}: {{_e}}")
+
 def _bnx_output_split(df, index_expr, num_outputs):
     from pyspark.sql.functions import expr as _expr, monotonically_increasing_id as _mid
     if df is None:
@@ -859,4 +913,4 @@ def _bnx_join(left, right, on=None, how="inner"):
 
 '''
 
-    return header + body
+    return {"code": header + body, "output_paths": output_paths}
