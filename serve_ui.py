@@ -688,15 +688,19 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 print(f"  [!] Blocking errors: {blocking[:3]}")
             if not blocking:
                 out_path = self._save_temp("", ".py")
+                # Parametros para la clase PARAMS: graph params del .mp (abinitio_params)
+                # con el pset mergeado encima (ya se hizo el .update mas arriba).
+                all_params_for_codegen = dict(ast.get("abinitio_params", {}))
+                print(f"  [params] {len(all_params_for_codegen)} params para PARAMS: {list(all_params_for_codegen.keys())[:20]}")
                 if target == "spark":
-                    generate_spark(dag, out_path, xfr_rules, pset_params=pset_params)
+                    generate_spark(dag, out_path, xfr_rules, pset_params=all_params_for_codegen)
                 elif target == "flink":
                     generate_flink(dag, out_path, xfr_rules)
                 elif target == "python":
                     from main import _generate_pandas
                     _generate_pandas(dag, out_path, xfr_rules)
                 else:
-                    generate_glue(dag, out_path, xfr_rules, pset_params=pset_params)
+                    generate_glue(dag, out_path, xfr_rules, pset_params=all_params_for_codegen)
                 with open(out_path, "r") as f:
                     code = f.read()
                 os.unlink(out_path)

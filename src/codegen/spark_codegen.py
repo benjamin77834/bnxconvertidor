@@ -1159,8 +1159,12 @@ def _emit_pset_params(f, pset_params):
             continue
         if k == "BASE_PATH":
             continue
-        val = "" if v is None else str(v)
-        # PDL sin resolver: dejar como comentario para referencia, no como valor.
+        val = "" if v is None else str(v).strip()
+        # Valores marcador que NO son un valor real: dejar resoluble por entorno.
+        if val in ("", "NOT SET", "NOTSET", "None", "null"):
+            f.write(f'    {k} = os.environ.get("{k}", "")\n')
+            continue
+        # PDL sin resolver ($[...]): dejar como comentario para referencia + default vacio.
         if val.startswith("$["):
             f.write(f'    # {k} = {val!r}  # PDL Ab Initio (no resuelto)\n')
             f.write(f'    {k} = os.environ.get("{k}", "")\n')
