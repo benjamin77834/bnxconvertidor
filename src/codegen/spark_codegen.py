@@ -60,6 +60,59 @@ def _map_date_functions(expr):
     return expr
 
 
+def _split_last_arg(inner):
+    """Separa 'str_expr, n' en (str_expr, n) por la ultima coma de nivel superior,
+    respetando parentesis y comillas. Devuelve (head, last) o (inner, None)."""
+    depth = 0
+    quote = None
+    last_comma = -1
+    i = 0
+    while i < len(inner):
+        ch = inner[i]
+        if quote:
+            if ch == quote and (i == 0 or inner[i - 1] != '\\'):
+                quote = None
+        elif ch in ('"', "'"):
+            quote = ch
+        elif ch == '(':
+            depth += 1
+        elif ch == ')':
+            depth -= 1
+        elif ch == ',' and depth == 0:
+            last_comma = i
+        i += 1
+    if last_comma == -1:
+        return inner.strip(), None
+    return inner[:last_comma].strip(), inner[last_comma + 1:].strip()
+
+
+def _rewrite_string_suffix(inner):
+    """string_suffix(x, n) → substring(x, -n): ultimos n caracteres."""
+    head, n = _split_last_arg(inner)
+    if n is None:
+        return f"string_suffix({inner})"  # dejar tal cual si no se puede parsear
+    n = n.strip()
+    # offset negativo = desde el final; si n ya trae signo, respetarlo
+    neg = n if n.startswith('-') else f"-{n}"
+    return f"substring({head}, {neg})"
+
+
+def _rewrite_string_prefix(inner):
+    """string_prefix(x, n) → substring(x, 1, n): primeros n caracteres."""
+    head, n = _split_last_arg(inner)
+    if n is None:
+        return f"string_prefix({inner})"
+    return f"substring({head}, 1, {n.strip()})"
+
+
+def _rewrite_string_char(inner):
+    """string_char(x, n) → substring(x, n, 1): caracter n-esimo."""
+    head, n = _split_last_arg(inner)
+    if n is None:
+        return f"string_char({inner})"
+    return f"substring({head}, {n.strip()}, 1)"
+
+
 def _map_string_functions(expr):
     """Map Ab Initio string functions to Spark SQL equivalents."""
     if not expr:
@@ -95,6 +148,12 @@ def _map_string_functions(expr):
     expr = re.sub(r'string_length\(', 'length(', expr)
     # string_substring(x, start, len) → substring(x, start, len)
     expr = re.sub(r'string_substring\(', 'substring(', expr)
+    # string_suffix(x, n) → substring(x, -n)  (ultimos n caracteres)
+    expr = _replace_balanced_call(expr, "string_suffix", _rewrite_string_suffix)
+    # string_prefix(x, n) → substring(x, 1, n)  (primeros n caracteres)
+    expr = _replace_balanced_call(expr, "string_prefix", _rewrite_string_prefix)
+    # string_char(x, n) → substring(x, n, 1)  (caracter n-esimo)
+    expr = _replace_balanced_call(expr, "string_char", _rewrite_string_char)
     # string_replace(x, old, new) → replace(x, old, new)
     expr = re.sub(r'string_replace\(', 'replace(', expr)
     # string_replace_first(x, old, new) → regexp_replace(x, old, new)
