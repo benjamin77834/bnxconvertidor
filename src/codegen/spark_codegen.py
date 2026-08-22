@@ -104,7 +104,15 @@ def _map_string_functions(expr):
     expr = re.sub(r'string_rpad\(', 'rpad(', expr)
     # string_index(x, sub) → instr(x, sub)
     expr = re.sub(r'string_index\(', 'instr(', expr)
-    # string_like(x, pattern) → x LIKE pattern (patrones Ab Initio usan % y _)
+    # string_like(x, pattern[, escape]) → (x LIKE pattern) (patrones usan % y _)
+    # Ab Initio admite un 3er argumento (caracter de escape) que Spark no necesita en LIKE simple.
+    # 3 argumentos:
+    expr = re.sub(
+        r'string_like\(\s*([^,]+?)\s*,\s*("(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\')\s*,\s*(?:"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\')\s*\)',
+        r'(\1 LIKE \2)',
+        expr,
+    )
+    # 2 argumentos:
     expr = re.sub(
         r'string_like\(\s*([^,]+?)\s*,\s*("(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\')\s*\)',
         r'(\1 LIKE \2)',
