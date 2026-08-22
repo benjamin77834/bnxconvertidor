@@ -375,6 +375,18 @@ def _build_transform(var_id, src_df, rule):
     where = rule.get("where")
     group_by = rule.get("group_by")
 
+    # Si el 'select' es DML crudo de Ab Initio (out::reformat(in)=begin...end; o out.F ::),
+    # redirigir a la ruta raw_transform para no generar Python invalido.
+    if select and select != "*" and (
+        re.search(r'out\s*::\s*\w+\s*\(', select) or
+        ('begin' in select.lower() and '::' in select) or
+        re.search(r'out\.\w+\s*::', select)
+    ):
+        return _build_transform(var_id, src_df, {
+            "raw_transform": select,
+            **{k: v for k, v in rule.items() if k != "select"},
+        })
+
     # NOTE: Do NOT translate the full select string here — it contains multiple
     # comma-separated expressions that must be translated individually after splitting.
     # Only translate for group_by aggregation (which expects already-split parts).
