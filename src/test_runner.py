@@ -646,6 +646,10 @@ _NOISE_PATTERNS = (
     "log4j", "SLF4J", "Using Spark's default", "Setting default log level",
     "To adjust logging level", "NativeCodeLoader", "Unable to load native-hadoop",
     "WARN SparkSession: Using an existing", "incubator", "WARNING: Using incubator",
+    "SparkStringUtils", "Truncated the string representation",
+    # BrokenPipeError de workers de Spark tras df.show() — ruido inofensivo en local
+    "BrokenPipeError", "daemon.py", "outfile.flush", "code = worker(", "Errno 32",
+    "pyspark.zip/pyspark/daemon", "~~~~~~", "^^^^",
 )
 
 
