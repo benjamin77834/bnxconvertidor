@@ -365,8 +365,9 @@ def _translate_dml_expr(expr_clean):
         args = m.group(2).strip()  # el (largo) o (precision,escala)
         target = m.group(3)
         if tipo == "decimal":
-            # (decimal(18,2)) → DECIMAL(18,2); (decimal(18)) → DECIMAL(18,0)
-            parts = [p.strip() for p in args.split(",") if p.strip()]
+            # (decimal(18,2)) o (decimal(18.2)) → DECIMAL(18,2); (decimal(18)) → DECIMAL(18,0)
+            # Ab Initio usa coma O punto como separador precision/escala.
+            parts = [p.strip() for p in re.split(r'[,.]', args) if p.strip()]
             if len(parts) == 2:
                 spark_type = f"DECIMAL({parts[0]},{parts[1]})"
             elif len(parts) == 1:
@@ -383,7 +384,7 @@ def _translate_dml_expr(expr_clean):
     # (tipo(numeros))seguido_de_identificador_o_funcion (incluye llamadas con
     # parentesis ANIDADOS, p.ej. (string(10))string_prefix(trim(x),10)).
     # Detectamos el prefijo de cast y luego tomamos el target balanceando parentesis.
-    _cast_prefix_re = re.compile(r'\((string|decimal|integer|int|long|double|real)\(\s*([\d,\s]+)\)\)\s*')
+    _cast_prefix_re = re.compile(r'\((string|decimal|integer|int|long|double|real)\(\s*([\d,.\s]+)\)\)\s*')
     guard = 0
     while guard < 50:
         guard += 1
@@ -415,7 +416,7 @@ def _translate_dml_expr(expr_clean):
         mapped = mapped[:m.start()] + cast_sql + after
 
     # Limpiar cualquier cast numerico remanente sin target claro: (string(40)) → nada
-    mapped = re.sub(r'\((?:string|decimal|integer|int|long|double|real)\(\s*[\d,\s]+\)\)\s*', '', mapped)
+    mapped = re.sub(r'\((?:string|decimal|integer|int|long|double|real)\(\s*[\d,.\s]+\)\)\s*', '', mapped)
 
     mapped = mapped.strip()
 
