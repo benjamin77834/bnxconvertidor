@@ -199,6 +199,15 @@ def build_test_script(pyspark_code, inputs, required_cols=None):
         r'_bnx_join(\1, \2, on=\3, how=\4)',
         body,
     )
+    # Igual pero con broadcast(X) como lado derecho (lookup joins):
+    #   A.join(broadcast(B), on=..., how=...) -> _bnx_join(A, _bnx_lkp("B"), ...)
+    # _bnx_lkp resuelve la variable de lookup por nombre (case-insensitive) o
+    # devuelve un DataFrame vacio tolerante si el nodo productor nombra distinto.
+    body = re.sub(
+        r'(\w+)\.join\(\s*broadcast\(\s*(\w+)\s*\)\s*,\s*on\s*=\s*(\[[^\]]*\]|"[^"]*"|\'[^\']*\')\s*,\s*how\s*=\s*("[^"]*"|\'[^\']*\')\s*\)',
+        r'_bnx_join(\1, _bnx_lkp("\2"), on=\3, how=\4)',
+        body,
+    )
 
     # Reescribir orderBy/sort para que ignoren columnas ausentes:
     #   X.orderBy("a", "b")  → _bnx_sort(X, "a", "b")
@@ -351,6 +360,26 @@ def _bnx_read(var):
     df = _bnx_ensure_cols(_bnx_make_df(records))
     print(f"[BNX-TEST] READ {{var}} (nodo '{{key}}'): {{df.count()}} filas, cols={{df.columns}}")
     return df
+
+def _bnx_lkp(name):
+    # Resuelve una tabla de lookup por nombre. El codegen puede referenciar
+    # 'connections_lkp_df' cuando el nodo productor se llama 'Connections_Lkp_df'
+    # (difieren en mayus/minus) o cuando la tabla se materializa en otro flujo.
+    # Busca en globals() una variable *_df que coincida (case-insensitive); si no
+    # existe, devuelve un DataFrame vacio tolerante (el join sera un left sin match).
+    g = globals()
+    want = name.lower()
+    if not want.endswith("_df"):
+        want_df = want + "_df"
+    else:
+        want_df = want
+    for vn, vv in list(g.items()):
+        if vn.lower() == want_df and vv is not None and hasattr(vv, "columns"):
+            return vv
+    # No encontrado: DataFrame vacio con una columna placeholder.
+    print(f"[BNX-TEST] LOOKUP: tabla '{{name}}' no materializada, uso vacio tolerante")
+    from pyspark.sql.types import StructType as _ST, StructField as _SF, StringType as _StrT
+    return spark.createDataFrame([], _ST([_SF("_bnx_lkp_empty", _StrT(), True)]))
 
 def _bnx_join(left, right, on=None, how="inner"):
     # Join tolerante: si la clave no existe en algun lado (datos sinteticos
@@ -763,6 +792,15 @@ def build_aws_selfcontained_code(pyspark_code, datasets, keep_writes=True,
         r'_bnx_join(\1, \2, on=\3, how=\4)',
         body,
     )
+    # Igual pero con broadcast(X) como lado derecho (lookup joins):
+    #   A.join(broadcast(B), on=..., how=...) -> _bnx_join(A, _bnx_lkp("B"), ...)
+    # _bnx_lkp resuelve la variable de lookup por nombre (case-insensitive) o
+    # devuelve un DataFrame vacio tolerante si el nodo productor nombra distinto.
+    body = re.sub(
+        r'(\w+)\.join\(\s*broadcast\(\s*(\w+)\s*\)\s*,\s*on\s*=\s*(\[[^\]]*\]|"[^"]*"|\'[^\']*\')\s*,\s*how\s*=\s*("[^"]*"|\'[^\']*\')\s*\)',
+        r'_bnx_join(\1, _bnx_lkp("\2"), on=\3, how=\4)',
+        body,
+    )
     body = re.sub(r'(\w+)\.(?:orderBy|sort)\(([^)]*)\)', r'_bnx_sort(\1, \2)', body)
     body = re.sub(r'(\w+)\.dropDuplicates\((\[[^\]]*\])\)', r'_bnx_dropdup(\1, \2)', body)
     body = re.sub(
@@ -926,6 +964,18 @@ def _bnx_dropdup(df, cols):
         return df
     existing = [c for c in cols if c in df.columns]
     return df.dropDuplicates(existing) if existing else df.dropDuplicates()
+
+def _bnx_lkp(name):
+    # Resuelve tabla de lookup por nombre (case-insensitive) desde globals();
+    # si no existe, DataFrame vacio tolerante.
+    g = globals()
+    want_df = name.lower() if name.lower().endswith("_df") else name.lower() + "_df"
+    for vn, vv in list(g.items()):
+        if vn.lower() == want_df and vv is not None and hasattr(vv, "columns"):
+            return vv
+    print(f"[AWS] LOOKUP: tabla '{{name}}' no materializada, uso vacio tolerante")
+    from pyspark.sql.types import StructType as _ST, StructField as _SF, StringType as _StrT
+    return spark.createDataFrame([], _ST([_SF("_bnx_lkp_empty", _StrT(), True)]))
 
 def _bnx_join(left, right, on=None, how="inner"):
     from pyspark.sql.functions import lit as _lit
