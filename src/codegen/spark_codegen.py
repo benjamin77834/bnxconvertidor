@@ -956,16 +956,16 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                             f.write(f'# next_in_sequence() filter: no-op for structured formats\n')
                             f.write(f'{var_id}_df = {src}\n')
                         elif re.search(r'\b(string_|decimal_|integer_|is_blank|is_defined)', where):
-                            mapped = _map_date_functions(where)
-                            mapped = _map_string_functions(mapped)
+                            # _translate_dml_expr traduce ademas casts numericos
+                            # (decimal(N))x -> CAST(x AS DECIMAL(N)), if/else, etc.
+                            mapped = _translate_dml_expr(where)
                             mapped = re.sub(r'is_blank\((\w+)\)', r'\1 IS NULL OR \1 = ""', mapped)
                             mapped = re.sub(r'is_defined\((\w+)\)', r'\1 IS NOT NULL', mapped)
                             mapped_escaped = mapped.replace('"', '\\"')
                             f.write(f'{var_id}_df = {src}.where("{mapped_escaped}")\n')
                             f.write(f'{var_id}_reject_df = {src}.where("NOT ({mapped_escaped})")\n')
                         else:
-                            where_mapped = _map_date_functions(where)
-                            where_mapped = _map_string_functions(where_mapped)
+                            where_mapped = _translate_dml_expr(where)
                             where_escaped = where_mapped.replace('"', '\\"')
                             f.write(f'{var_id}_df = {src}.where("{where_escaped}")\n')
                             f.write(f'{var_id}_reject_df = {src}.where("NOT ({where_escaped})")\n')
