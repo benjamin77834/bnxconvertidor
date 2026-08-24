@@ -34,12 +34,28 @@ from main import parse_project
 
 def _parse_multipart(event):
     import cgi
-    content_type = event.get("headers", {}).get("content-type", "")
-    body = event.get("body", "")
+    # El header puede venir con distinto case segun el gateway.
+    headers = event.get("headers", {}) or {}
+    content_type = (headers.get("content-type") or headers.get("Content-Type") or "")
+    body = event.get("body", "") or ""
     if event.get("isBase64Encoded"):
         body = base64.b64decode(body)
     elif isinstance(body, str):
         body = body.encode()
+
+    # Si el body NO es multipart (p.ej. JSON o vacio), parsear como JSON y exponer
+    # sus claves como 'fields'. Evita que cgi.FieldStorage falle con
+    # "write() argument must be str, not bytes" ante bodies no-multipart.
+    if "multipart/form-data" not in content_type.lower():
+        fields = {}
+        if body:
+            try:
+                data = json.loads(body.decode("utf-8", errors="replace"))
+                if isinstance(data, dict):
+                    fields = {k: v for k, v in data.items()}
+            except (ValueError, AttributeError):
+                pass
+        return {}, fields, set()
 
     environ = {
         "REQUEST_METHOD": "POST",
@@ -441,7 +457,18 @@ def handler(event, context):
                             projects.append({"name": proj_name, "graphs": file_count})
                     return _response(200, {"projects": projects})
                 except Exception as e:
-                    return _response(200, {"projects": [], "error": str(e)})
+                    err = str(e)
+                    # Distinguir un problema de permisos (SCP/IAM) de "no hay proyectos".
+                    if "AccessDenied" in err or "not authorized" in err or "explicit deny" in err:
+                        return _response(200, {
+                            "projects": [],
+                            "error": err,
+                            "error_kind": "access_denied",
+                            "hint": ("La Lambda no tiene permiso para listar el bucket S3 "
+                                     "(posible explicit deny en una Service Control Policy). "
+                                     "Contacta al administrador de la organizacion AWS."),
+                        })
+                    return _response(200, {"projects": [], "error": err})
 
             elif action == "create_project":
                 # Crear proyecto (carpeta en S3)

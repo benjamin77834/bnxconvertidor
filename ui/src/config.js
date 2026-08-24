@@ -8,4 +8,6 @@ export const COMPILE_URL = `${API_URL}/compile`
 export const PIPELINE_URL = `${DATALAB_API}/pipeline`
 export const PIPELINE_STATUS_URL = `${DATALAB_API}/pipeline/status`
 export const PIPELINE_LOGS_URL = `${DATALAB_API}/pipeline/logs`
-export const LIBRARY_URL = `${DATALAB_API}/library`
+// Library LOCAL: el bucket S3 de DataLab esta bloqueado por una SCP de la org,
+// asi que la biblioteca de grafos se guarda/sirve desde el server local.
+export const LIBRARY_URL = `${API_URL}/library`
