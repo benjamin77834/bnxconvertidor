@@ -124,7 +124,11 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path
 
-        if "/library" in path or "/pipeline" in path:
+        if "/library" in path:
+            # Biblioteca de grafos LOCAL (no depende del bucket S3 de DataLab,
+            # que esta bloqueado por una SCP). Se guarda en ./bnx_library/.
+            self._handle_library()
+        elif "/pipeline" in path:
             self._proxy_to_datalab(path)
         elif "/datagen/awscode" in path:
             self._handle_awscode()
@@ -182,6 +186,170 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 self.wfile.write(result)
         except Exception as e:
             self._json_response(502, {"error": f"Proxy error: {str(e)}"})
+
+    def _handle_library(self):
+        """Biblioteca de grafos LOCAL en disco (./bnx_library/).
+
+        No depende de AWS/S3 (el bucket de DataLab esta bloqueado por una SCP de
+        la organizacion). Soporta los dos contratos que usa la UI:
+          - GraphLibrary.jsx: action = list | save | delete   (grafos planos)
+          - GrafosPage.jsx:   action = list_projects | create_project |
+                              list_files | download | upload | delete  (por proyecto)
+
+        Estructura en disco:
+          bnx_library/
+            _flat/<id>.mp, <id>.xfr        (grafos planos de GraphLibrary)
+            <proyecto>/<archivo>.mp/.xfr   (proyectos de GrafosPage)
+        """
+        import glob as _glob
+
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bnx_library")
+        flat_dir = os.path.join(root, "_flat")
+        os.makedirs(flat_dir, exist_ok=True)
+
+        # Parsear el body (multipart FormData o JSON). Usamos el parse_multipart
+        # propio del modulo (cgi fue removido en Python 3.13+).
+        content_type = self.headers.get("Content-Type", "")
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length) if content_length else b""
+        fields = {}
+        if "multipart/form-data" in content_type:
+            parsed_fields, file_parts = parse_multipart(body, content_type)
+            fields = dict(parsed_fields)
+            # Los archivos (mp/xfr) pueden venir como file_parts (bytes): decodificar.
+            for k, v in (file_parts or {}).items():
+                if k not in fields:
+                    fields[k] = v.decode("utf-8", errors="replace") if isinstance(v, bytes) else v
+        else:
+            try:
+                fields = json.loads(body.decode("utf-8")) if body else {}
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                fields = {}
+
+        action = fields.get("action", "list")
+
+        def _safe(name):
+            return "".join(c if (c.isalnum() or c in "-_.") else "_" for c in str(name)).strip("_") or "item"
+
+        try:
+            # ---- Contrato GraphLibrary.jsx (grafos planos) ----
+            if action == "list":
+                graphs = []
+                for mp_path in sorted(_glob.glob(os.path.join(flat_dir, "*.mp"))):
+                    gid = os.path.splitext(os.path.basename(mp_path))[0]
+                    with open(mp_path, "r", errors="replace") as f:
+                        mp = f.read()
+                    xfr_path = os.path.join(flat_dir, gid + ".xfr")
+                    xfr = ""
+                    if os.path.exists(xfr_path):
+                        with open(xfr_path, "r", errors="replace") as f:
+                            xfr = f.read()
+                    graphs.append({"id": gid, "name": gid, "mp": mp, "xfr": xfr})
+                self._json_response(200, {"graphs": graphs})
+                return
+
+            if action == "save":
+                name = _safe(fields.get("name", "grafo"))
+                mp = fields.get("mp", "") or ""
+                xfr = fields.get("xfr", "") or ""
+                with open(os.path.join(flat_dir, name + ".mp"), "w") as f:
+                    f.write(mp)
+                if xfr:
+                    with open(os.path.join(flat_dir, name + ".xfr"), "w") as f:
+                        f.write(xfr)
+                self._json_response(200, {"saved": {"id": name, "name": name, "mp": mp, "xfr": xfr}})
+                return
+
+            # ---- Contrato GrafosPage.jsx (proyectos) ----
+            if action == "list_projects":
+                projects = []
+                for d in sorted(os.listdir(root)):
+                    dp = os.path.join(root, d)
+                    if os.path.isdir(dp) and d != "_flat":
+                        mp_count = len(_glob.glob(os.path.join(dp, "*.mp")))
+                        projects.append({"name": d, "graphs": mp_count})
+                self._json_response(200, {"projects": projects})
+                return
+
+            if action == "create_project":
+                proj = _safe(fields.get("project", ""))
+                os.makedirs(os.path.join(root, proj), exist_ok=True)
+                self._json_response(200, {"created": proj})
+                return
+
+            if action == "list_files":
+                proj = _safe(fields.get("project", ""))
+                dp = os.path.join(root, proj)
+                files_list = []
+                if os.path.isdir(dp):
+                    for fn in sorted(os.listdir(dp)):
+                        fp = os.path.join(dp, fn)
+                        if os.path.isfile(fp):
+                            files_list.append({"name": fn, "size": os.path.getsize(fp)})
+                self._json_response(200, {"files": files_list})
+                return
+
+            if action == "download":
+                proj = _safe(fields.get("project", ""))
+                fname = _safe(fields.get("file", ""))
+                fp = os.path.join(root, proj, fname)
+                if os.path.isfile(fp):
+                    with open(fp, "r", errors="replace") as f:
+                        content = f.read()
+                    self._json_response(200, {"file": fname, "project": proj, "content": content})
+                else:
+                    self._json_response(200, {"error": "file not found", "content": ""})
+                return
+
+            if action == "upload":
+                proj = _safe(fields.get("project", "default"))
+                os.makedirs(os.path.join(root, proj), exist_ok=True)
+                name = _safe(fields.get("name", "grafo"))
+                uploaded = []
+                mp = fields.get("mp", "") or ""
+                xfr = fields.get("xfr", "") or ""
+                if mp:
+                    with open(os.path.join(root, proj, name + ".mp"), "w") as f:
+                        f.write(mp)
+                    uploaded.append(name + ".mp")
+                if xfr:
+                    with open(os.path.join(root, proj, name + ".xfr"), "w") as f:
+                        f.write(xfr)
+                    uploaded.append(name + ".xfr")
+                self._json_response(200, {"uploaded": uploaded, "project": proj})
+                return
+
+            # ---- delete (ambos contratos) ----
+            if action == "delete":
+                gid = fields.get("id")
+                if gid is not None:  # GraphLibrary plano
+                    gid = _safe(gid)
+                    for ext in (".mp", ".xfr"):
+                        p = os.path.join(flat_dir, gid + ext)
+                        if os.path.exists(p):
+                            os.unlink(p)
+                    self._json_response(200, {"deleted": gid})
+                    return
+                proj = _safe(fields.get("project", ""))
+                fname = fields.get("file")
+                if fname:
+                    p = os.path.join(root, proj, _safe(fname))
+                    if os.path.exists(p):
+                        os.unlink(p)
+                    self._json_response(200, {"deleted": f"{proj}/{fname}"})
+                else:
+                    import shutil
+                    dp = os.path.join(root, proj)
+                    if os.path.isdir(dp):
+                        shutil.rmtree(dp)
+                    self._json_response(200, {"deleted_project": proj})
+                return
+
+            self._json_response(400, {"error": f"accion desconocida: {action}"})
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": str(e)})
 
     def _handle_runtest(self):
         """Ejecuta una prueba local del código PySpark con datos sintéticos.
