@@ -239,6 +239,18 @@ def build_test_script(pyspark_code, inputs, required_cols=None):
         '.filter("1=1")  # BNX-TEST: lookup no traducido, filtro neutralizado',
         body,
     )
+    # withColumn("X", expr("...lookup(...)..."))  o expr con comentario /* roto:
+    # el lookup no es evaluable local (sin la tabla) y los comentarios /* */ de
+    # Ab Initio pueden quedar sin cerrar. Neutralizamos la expr a NULL para que la
+    # columna exista pero no rompa el analisis SQL.
+    def _neutralize_lookup_expr(m):
+        col = m.group(1)
+        return f'.withColumn("{col}", expr("NULL"))  # BNX-TEST: expr con lookup/comentario no traducible, neutralizada'
+    body = re.sub(
+        r'\.withColumn\(\s*"([^"]+)"\s*,\s*expr\("(?:[^"\\]|\\.)*(?:lookup\(|/\*)(?:[^"\\]|\\.)*"\)\s*\)',
+        _neutralize_lookup_expr,
+        body,
+    )
 
     # Neutralizar comandos shell (Run_Program) para no ejecutarlos en la prueba local:
     #   os.system(f"...")  → _bnx_shell(f"...")   (solo registra, no ejecuta)
