@@ -58,11 +58,31 @@ function download(content, filename, mime = 'text/plain') {
 
 export default function App() {
   const [files, setFiles]       = useState({ mp: [], xfr: [], dml: [] })
-  const [result, setResult]     = useState(null)
+  // result persiste en localStorage para que el codigo compilado sobreviva a
+  // recargas de pagina (asi Data Redactada / Pipeline no pierden el codigo).
+  const [result, _setResult]    = useState(() => {
+    try {
+      const saved = localStorage.getItem('bnx_last_result')
+      return saved ? JSON.parse(saved) : null
+    } catch { return null }
+  })
+  const setResult = (val) => {
+    _setResult(val)
+    try {
+      if (val && val.code) localStorage.setItem('bnx_last_result', JSON.stringify(val))
+      else if (!val) localStorage.removeItem('bnx_last_result')
+    } catch { /* localStorage lleno o no disponible: ignorar */ }
+  }
   const [loading, setLoading]   = useState(false)
   const [codeOpen, setCodeOpen] = useState(false)
   const [isDark, setIsDark]     = useState(true)
-  const [target, setTarget]     = useState('glue')
+  const [target, _setTarget]    = useState(() => {
+    try { return localStorage.getItem('bnx_last_target') || 'glue' } catch { return 'glue' }
+  })
+  const setTarget = (val) => {
+    _setTarget(val)
+    try { localStorage.setItem('bnx_last_target', val) } catch { /* ignore */ }
+  }
   const [page, setPage]         = useState('compiler')
   const [expandedPanel, setExpandedPanel] = useState(null)  // 'code' | 'dag' | 'editor-mp' | 'editor-xfr' | 'editor-pset' | null
 
