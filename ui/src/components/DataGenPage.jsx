@@ -365,6 +365,19 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
         </p>
       </div>
 
+      {/* Estado del codigo del Compiler (diagnostico) */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 10, fontSize: 12,
+        borderRadius: 8, padding: '8px 12px',
+        background: hasCode ? '#22c55e10' : '#f59e0b10',
+        border: `1px solid ${hasCode ? '#22c55e40' : '#f59e0b40'}`,
+        color: hasCode ? '#22c55e' : '#f59e0b',
+      }}>
+        {hasCode
+          ? `✅ Código del Compiler cargado: ${compiledCode.split('\n').length} líneas · target=${compiledTarget || '?'}`
+          : '⚠️ No llegó código del Compiler. Compila un grafo (target Spark) en la pestaña Compiler y volvé aquí.'}
+      </div>
+
       {/* Selector de modo */}
       <div style={{ display: 'flex', gap: 8 }}>
         <button style={btn(mode === 'graph')} onClick={() => setMode('graph')}>📊 Desde grafo</button>
