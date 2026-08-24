@@ -85,6 +85,23 @@ print('Open in browser: open ' + out)
     $0 deploy-ui
     ;;
 
+  # ── Servidor UI local (threaded, :8081) con perfil datalab ──
+  serve)
+    PORT="${1:-8081}"
+    echo "🖥️ Starting BNX UI server on :$PORT (AWS_PROFILE=datalab)..."
+    # Usa la cuenta de DataLab (107094296911), no monkey.
+    AWS_PROFILE=datalab python3 -c "
+import serve_ui, socketserver as s
+serve_ui.PORT = $PORT
+class T(s.ThreadingMixIn, s.TCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+h = T(('', $PORT), serve_ui.BNXHandler)
+print('[*] BNX up on http://localhost:$PORT (perfil datalab)')
+h.serve_forever()
+"
+    ;;
+
   # ── Dev local ────────────────────────────────────────────
   dev)
     echo "🖥️ Starting local dev server..."
@@ -121,6 +138,7 @@ print('Open in browser: open ' + out)
     echo "  ./bnx.sh deploy-all       — Lambda + UI"
     echo ""
     echo "DEV:"
+    echo "  ./bnx.sh serve [puerto]   — server UI local (:8081) con perfil datalab"
     echo "  ./bnx.sh dev              — start React dev server"
     echo "  ./bnx.sh api              — start FastAPI local"
     echo ""
