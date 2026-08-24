@@ -108,9 +108,16 @@ export default function App() {
   const [refactorResult, setRefactorResult] = useState(null)
   const [showEditor, setShowEditor] = useState(false)
   const [editorTab, setEditorTab] = useState('mp')
-  const [editorMp, setEditorMp] = useState('')
-  const [editorXfr, setEditorXfr] = useState('')
-  const [editorPset, setEditorPset] = useState('')
+  // Los editores persisten en localStorage para que Data Redactada tenga el
+  // grafo (.mp/.xfr) aun despues de recargar la pagina.
+  const _lsGet = (k) => { try { return localStorage.getItem(k) || '' } catch { return '' } }
+  const _lsSet = (k, v) => { try { if (v) localStorage.setItem(k, v); else localStorage.removeItem(k) } catch { /* ignore */ } }
+  const [editorMp, _setEditorMp] = useState(() => _lsGet('bnx_editor_mp'))
+  const [editorXfr, _setEditorXfr] = useState(() => _lsGet('bnx_editor_xfr'))
+  const [editorPset, _setEditorPset] = useState(() => _lsGet('bnx_editor_pset'))
+  const setEditorMp = (v) => { _setEditorMp(v); _lsSet('bnx_editor_mp', v) }
+  const setEditorXfr = (v) => { _setEditorXfr(v); _lsSet('bnx_editor_xfr', v) }
+  const setEditorPset = (v) => { _setEditorPset(v); _lsSet('bnx_editor_pset', v) }
 
   const t = isDark ? dark : light
 
@@ -124,6 +131,13 @@ export default function App() {
     const startTime = Date.now()
     const form = new FormData()
     form.append('mp', selected.mp)
+    // Guardar el contenido del .mp en el editor para que Data Redactada lo tenga
+    // (aunque se haya compilado subiendo archivos, no pegando en el editor).
+    try {
+      if (selected.mp && typeof selected.mp.text === 'function') {
+        selected.mp.text().then(txt => setEditorMp(txt)).catch(() => {})
+      }
+    } catch { /* ignore */ }
     // Handle multiple .xfr files — concatenate them into one
     if (selected.allXfr && Array.isArray(selected.xfr) && selected.xfr.length > 0) {
       // Read all xfr files and concatenate
@@ -134,8 +148,14 @@ export default function App() {
       }
       const combined = xfrContents.join('\n\n')
       form.append('xfr', new File([combined], 'combined.xfr'))
+      setEditorXfr(combined)
     } else if (selected.xfr && !Array.isArray(selected.xfr)) {
       form.append('xfr', selected.xfr)
+      try {
+        if (typeof selected.xfr.text === 'function') {
+          selected.xfr.text().then(txt => setEditorXfr(txt)).catch(() => {})
+        }
+      } catch { /* ignore */ }
     }
     if (selected.dml) form.append('dml', selected.dml)
     if (selected.pset) form.append('pset', selected.pset)
