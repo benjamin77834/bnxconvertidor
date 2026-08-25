@@ -156,6 +156,43 @@ def _normalize_inputs(datasets):
     return inputs
 
 
+def _extract_write_dest(write_line):
+    """Extrae el nombre de la tabla/destino de una linea de escritura PySpark.
+
+    Ejemplos:
+      X.write.mode("overwrite").parquet(f"{PARAMS.BASE_PATH}/output/tabla_clientes")
+        -> "tabla_clientes"
+      X.write.format("jdbc")...option("dbtable", "cuentas").save()  -> "cuentas"
+      X.write.csv("/tmp/salida_final")                              -> "salida_final"
+
+    Devuelve None si no se reconoce ningun destino (el caller usa el nombre del df).
+    """
+    # dbtable option (JDBC)
+    m = re.search(r'"dbtable"\s*,\s*"([^"]+)"', write_line)
+    if m:
+        return _basename_token(m.group(1))
+    # .parquet(...) / .csv(...) / .json(...) / .save(...) / .orc(...) / .text(...)
+    m = re.search(
+        r'\.(?:parquet|csv|json|orc|text|save)\(\s*f?["\']([^"\']+)["\']',
+        write_line,
+    )
+    if m:
+        return _basename_token(m.group(1))
+    return None
+
+
+def _basename_token(path_str):
+    """Ultimo segmento util de un path, ignorando expresiones {..} interpoladas."""
+    # Quitar cualquier interpolacion f-string {PARAMS.BASE_PATH} etc.
+    cleaned = re.sub(r'\{[^}]*\}', '', path_str)
+    cleaned = cleaned.strip().strip("/")
+    if not cleaned:
+        return None
+    seg = cleaned.split("/")[-1]
+    seg = seg.strip()
+    return seg or None
+
+
 def build_test_script(pyspark_code, inputs, required_cols=None, output_dir=None):
     """Construye un script PySpark ejecutable localmente.
 
@@ -176,8 +213,11 @@ def build_test_script(pyspark_code, inputs, required_cols=None, output_dir=None)
     #    Nombre_df = spark.read.<fmt>(...)   →   Nombre_df = _bnx_read("Nombre_df")
     read_re = re.compile(r'^(\s*)(\w+)\s*=\s*spark\.read\.[\w.]+\(.*\)\s*$')
     # 2. Reemplazar escrituras:
-    #    X_df.write.mode(...).<fmt>(...)     →   _bnx_write(X_df, "X_df")
-    #    X_df.write.<fmt>(...)               →   _bnx_write(X_df, "X_df")
+    #    X_df.write.mode(...).<fmt>("<destino>")  →  _bnx_write(X_df, "X_df", "<destino>")
+    #    X_df.write.<fmt>(...)                    →  _bnx_write(X_df, "X_df", "<destino>")
+    # El "<destino>" es el nombre de la tabla/ruta de salida (ultimo segmento del
+    # path o el dbtable). Se usa para nombrar el CSV descargable, asi cada SINK
+    # produce un archivo distinto con nombre significativo (no el nombre del df).
     write_re = re.compile(r'^(\s*)(\w+)\.write\b.*$')
     # 3. Nodos sin fuente:  X_df = None  → placeholder vacío para no romper hijos
     none_re = re.compile(r'^(\s*)(\w+_df)\s*=\s*None\b.*$')
@@ -207,7 +247,9 @@ def build_test_script(pyspark_code, inputs, required_cols=None, output_dir=None)
         m_write = write_re.match(ln)
         if m_write:
             indent, var = m_write.group(1), m_write.group(2)
-            out.append(f'{indent}_bnx_write({var}, "{var}")')
+            dest = _extract_write_dest(ln) or var
+            dest_arg = dest.replace('"', '\\"')
+            out.append(f'{indent}_bnx_write({var}, "{var}", "{dest_arg}")')
             continue
         m_none = none_re.match(ln)
         if m_none:
@@ -784,7 +826,7 @@ def _bnx_output_split(df, index_expr, num_outputs):
     dfx = df.withColumn("_bnx_rr", _mid() % num_outputs)
     return [dfx.filter(_expr(f"_bnx_rr = {{i}}")).drop("_bnx_rr") for i in range(num_outputs)]
 
-def _bnx_write(df, var):
+def _bnx_write(df, var, dest=None):
     if df is None:
         print(f"[BNX-TEST] WRITE {{var}}: SKIP (DataFrame None — nodo sin datos)")
         return
@@ -795,7 +837,9 @@ def _bnx_write(df, var):
         print(f"[BNX-TEST] WRITE {{var}}: {{n}} filas, cols={{cols}}")
         df.show(5, truncate=False)
         # Volcar una copia CSV a disco para poder descargarla desde la GUI.
-        _bnx_dump_csv(df, var)
+        # El nombre del archivo usa el destino (tabla/ruta del SINK); si no hay,
+        # cae al nombre de la variable del DataFrame.
+        _bnx_dump_csv(df, dest or var)
     except Exception as _e:
         print(f"[BNX-TEST] WRITE {{var}} ERROR: {{_e}}")
         raise
