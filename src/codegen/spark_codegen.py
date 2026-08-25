@@ -364,7 +364,16 @@ def _split_else(s):
 
 def _translate_if_else(expr):
     """Convierte if(cond) then_val else else_val (posiblemente anidado) a CASE WHEN,
-    respetando parentesis balanceados. Soporta cadenas if...else if...else."""
+    respetando parentesis balanceados. Soporta:
+      - cadenas if...else if...else (anidado en el ELSE)
+      - THEN que a su vez es un if(...) (anidado en el THEN)
+
+    Ab Initio: if(c1) if(c2) a else b else c
+      -> el THEN del if externo es 'if(c2) a else b' (consume su propio else),
+         y el ELSE del if externo es 'c'. _split_else NO distingue esto por si
+         solo, por eso primero detectamos si el THEN arranca con un if anidado y
+         consumimos su else correspondiente antes de buscar el else externo.
+    """
     e = expr.strip()
     m = re.match(r'^if\s*\(', e, re.IGNORECASE)
     if not m:
@@ -378,17 +387,36 @@ def _translate_if_else(expr):
     cond = e[open_idx + 1:close_idx].strip()
     rest = e[close_idx + 1:].strip()
 
-    then_part, else_part = _split_else(rest)
+    # Si el THEN arranca con un if anidado, el primer 'else' de nivel superior
+    # pertenece a ESE if interno. Consumimos then_interno + else_interno como el
+    # THEN completo del if externo, y luego buscamos el else externo.
+    if re.match(r'^if\s*\(', rest, re.IGNORECASE):
+        inner_then, inner_after = _split_else(rest)
+        if inner_after is not None:
+            # inner_after = else_interno [else externo ...]
+            inner_else, outer_else = _split_else(inner_after)
+            then_part = f'{inner_then} else {inner_else}'
+            else_part = outer_else
+        else:
+            then_part, else_part = rest, None
+    else:
+        then_part, else_part = _split_else(rest)
+
+    # Traducir recursivamente el THEN si es un if anidado
+    then_out = then_part
+    if re.match(r'^if\s*\(', then_part.strip(), re.IGNORECASE):
+        then_out = _translate_if_else(then_part.strip())
+
     if else_part is None:
         # if sin else → CASE WHEN cond THEN then END
-        return f'CASE WHEN {cond} THEN {then_part} END'
+        return f'CASE WHEN {cond} THEN {then_out} END'
 
     # else if... encadenado → traducir recursivamente el else
-    if re.match(r'^if\s*\(', else_part, re.IGNORECASE):
-        inner = _translate_if_else(else_part)
-        return f'CASE WHEN {cond} THEN {then_part} ELSE {inner} END'
+    if re.match(r'^if\s*\(', else_part.strip(), re.IGNORECASE):
+        inner = _translate_if_else(else_part.strip())
+        return f'CASE WHEN {cond} THEN {then_out} ELSE {inner} END'
 
-    return f'CASE WHEN {cond} THEN {then_part} ELSE {else_part} END'
+    return f'CASE WHEN {cond} THEN {then_out} ELSE {else_part} END'
 
 
 def _translate_dml_expr(expr_clean):
@@ -502,7 +530,16 @@ def _translate_dml_expr(expr_clean):
     # Now apply standard function mappings
     mapped = _map_date_functions(mapped)
     mapped = _map_string_functions(mapped)
-    
+
+    # Spark no acepta "NOT x IS [NOT] NULL" sin parentesis (viene de !is_valid /
+    # !is_defined -> NOT x IS NOT NULL). Envolver el operando: NOT (x IS [NOT] NULL).
+    mapped = re.sub(
+        r'\bNOT\s+([A-Za-z_][\w.]*)\s+IS\s+(NOT\s+)?NULL',
+        lambda m: f'NOT ({m.group(1)} IS {m.group(2) or ""}NULL)',
+        mapped,
+        flags=re.IGNORECASE,
+    )
+
     # Ab Initio if(cond) val1 else val2 → CASE WHEN cond THEN val1 ELSE val2 END
     # Usa un parser con parentesis balanceados (la condicion puede tener funciones
     # anidadas como string_like(x, "% %") cuyo ) NO cierra el if).
