@@ -23,6 +23,14 @@ import tempfile
 import subprocess
 
 
+# Carpeta donde el runner LOCAL vuelca los resultados de cada escritura para que
+# se puedan descargar desde la GUI. Vive en la raiz del proyecto (fuera de git).
+BNX_LOCAL_OUTPUT_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "output", "local_test",
+)
+
+
 # Palabras que aparecen dentro de expresiones pero NO son columnas
 # (keywords SQL, funciones Spark y funciones Ab Initio que se traducen)
 _NON_COLUMN_TOKENS = {
@@ -148,16 +156,19 @@ def _normalize_inputs(datasets):
     return inputs
 
 
-def build_test_script(pyspark_code, inputs, required_cols=None):
+def build_test_script(pyspark_code, inputs, required_cols=None, output_dir=None):
     """Construye un script PySpark ejecutable localmente.
 
     - Inyecta BNX_INPUTS (dict nodo→registros) al inicio.
     - Inyecta BNX_REQUIRED_COLS (columnas que el pipeline referencia) para que
       cada DataFrame las tenga (rellenadas con null si faltan).
+    - Inyecta BNX_OUTPUT_DIR (carpeta donde se vuelcan los CSV de resultado para
+      poder descargarlos desde la GUI).
     - Reemplaza lecturas spark.read.<fmt>(...) por _bnx_read("<var>").
     - Reemplaza escrituras X.write... por _bnx_write(X, "<var>").
     """
     required_cols = sorted(required_cols or [])
+    output_dir = output_dir or BNX_LOCAL_OUTPUT_DIR
     lines = pyspark_code.split("\n")
     out = []
 
@@ -530,6 +541,7 @@ from pyspark.sql import Row as _Row
 _BNX_INPUTS = _json.loads({json.dumps(json.dumps(inputs))})
 _BNX_REQUIRED_COLS = _json.loads({json.dumps(json.dumps(required_cols))})
 _BNX_WRITES = []
+_BNX_OUTPUT_DIR = _json.loads({json.dumps(json.dumps(output_dir))})
 
 class _BnxParamsMeta(type):
     # Metaclase tolerante para PARAMS: atributos no definidos → placeholder.
@@ -782,9 +794,36 @@ def _bnx_write(df, var):
         _BNX_WRITES.append({{"var": var, "rows": n, "columns": cols}})
         print(f"[BNX-TEST] WRITE {{var}}: {{n}} filas, cols={{cols}}")
         df.show(5, truncate=False)
+        # Volcar una copia CSV a disco para poder descargarla desde la GUI.
+        _bnx_dump_csv(df, var)
     except Exception as _e:
         print(f"[BNX-TEST] WRITE {{var}} ERROR: {{_e}}")
         raise
+
+def _bnx_dump_csv(df, var):
+    # Escribe el DataFrame a un unico CSV con header en _BNX_OUTPUT_DIR/<var>.csv.
+    # Recolectamos filas y usamos el modulo csv de la stdlib (sin pandas): los
+    # datasets de prueba son pequenos, asi el archivo tiene un nombre estable y
+    # es comodo de servir desde la GUI. Se limita el volcado por seguridad.
+    import os as _os
+    import csv as _csv
+    _MAX_ROWS = 100000
+    try:
+        _os.makedirs(_BNX_OUTPUT_DIR, exist_ok=True)
+        safe = _re_bnx.sub(r'[^A-Za-z0-9_.-]', '_', str(var))
+        dest = _os.path.join(_BNX_OUTPUT_DIR, safe + ".csv")
+        cols = df.columns
+        rows = df.limit(_MAX_ROWS).collect()
+        with open(dest, "w", newline="", encoding="utf-8") as _fh:
+            w = _csv.writer(_fh)
+            w.writerow(cols)
+            for r in rows:
+                w.writerow(["" if r[c] is None else r[c] for c in cols])
+        # Linea que la GUI parsea para ofrecer el boton de descarga:
+        #   [BNX-TEST] DOWNLOAD|<nombre>|<ruta_absoluta>
+        print(f"[BNX-TEST] DOWNLOAD|{{safe}}.csv|{{dest}}")
+    except Exception as _e:
+        print(f"[BNX-TEST] DUMP {{var}} ERROR (no se guardo CSV): {{_e}}")
 
 # Alias de spark para el código generado
 spark = _bnx_session
@@ -821,7 +860,10 @@ def run_pyspark_test(pyspark_code, datasets, timeout=120):
     """
     inputs = _normalize_inputs(datasets)
     required_cols = extract_referenced_columns(pyspark_code)
-    script = build_test_script(pyspark_code, inputs, required_cols=required_cols)
+    # Limpiar salidas previas para no mezclar resultados de corridas anteriores.
+    _reset_local_output_dir()
+    script = build_test_script(pyspark_code, inputs, required_cols=required_cols,
+                               output_dir=BNX_LOCAL_OUTPUT_DIR)
 
     tmp = tempfile.NamedTemporaryFile(
         delete=False, suffix="_bnx_test.py", mode="w", encoding="utf-8"
@@ -859,6 +901,10 @@ def run_pyspark_test(pyspark_code, datasets, timeout=120):
     # Parsear resúmenes de READ/WRITE desde stdout
     reads = re.findall(r"\[BNX-TEST\] READ (\S+) \(nodo '([^']*)'\): (\d+) filas", stdout)
     writes = re.findall(r"\[BNX-TEST\] WRITE (\S+): (\d+) filas", stdout)
+    downloads = [
+        {"name": d[0], "path": d[1]}
+        for d in re.findall(r"\[BNX-TEST\] DOWNLOAD\|([^|]+)\|(\S+)", stdout)
+    ]
 
     ok = (not timed_out) and exit_code == 0
     if ok:
@@ -876,8 +922,20 @@ def run_pyspark_test(pyspark_code, datasets, timeout=120):
         "stderr": _tail(stderr, 20000),
         "reads": [{"var": r[0], "node": r[1], "rows": int(r[2])} for r in reads],
         "writes": [{"var": w[0], "rows": int(w[1])} for w in writes],
+        "downloads": downloads,
         "summary": summary,
     }
+
+
+def _reset_local_output_dir():
+    """Vacia (o crea) la carpeta de salidas locales antes de cada corrida."""
+    import shutil
+    try:
+        if os.path.isdir(BNX_LOCAL_OUTPUT_DIR):
+            shutil.rmtree(BNX_LOCAL_OUTPUT_DIR)
+        os.makedirs(BNX_LOCAL_OUTPUT_DIR, exist_ok=True)
+    except OSError:
+        pass
 
 
 def _tail(text, max_chars):
@@ -903,7 +961,9 @@ def stream_pyspark_test(pyspark_code, datasets, timeout=180):
 
     inputs = _normalize_inputs(datasets)
     required_cols = extract_referenced_columns(pyspark_code)
-    script = build_test_script(pyspark_code, inputs, required_cols=required_cols)
+    _reset_local_output_dir()
+    script = build_test_script(pyspark_code, inputs, required_cols=required_cols,
+                               output_dir=BNX_LOCAL_OUTPUT_DIR)
 
     tmp = tempfile.NamedTemporaryFile(
         delete=False, suffix="_bnx_test.py", mode="w", encoding="utf-8"
@@ -918,6 +978,7 @@ def stream_pyspark_test(pyspark_code, datasets, timeout=180):
 
     reads_all = []
     writes_all = []
+    downloads_all = []
 
     proc = subprocess.Popen(
         [sys.executable, "-u", tmp.name],
@@ -952,6 +1013,11 @@ def stream_pyspark_test(pyspark_code, datasets, timeout=180):
             mw = re.match(r"\[BNX-TEST\] WRITE (\S+): (\d+) filas", line)
             if mw:
                 writes_all.append({"var": mw.group(1), "rows": int(mw.group(2))})
+            md = re.match(r"\[BNX-TEST\] DOWNLOAD\|([^|]+)\|(\S+)", line)
+            if md:
+                downloads_all.append({"name": md.group(1), "path": md.group(2)})
+                # No mostramos esta linea cruda en la consola (la GUI la usa aparte).
+                continue
             yield {"type": "line", "text": line}
     finally:
         proc.stdout.close()
@@ -981,6 +1047,7 @@ def stream_pyspark_test(pyspark_code, datasets, timeout=180):
         "summary": summary,
         "reads": reads_all,
         "writes": writes_all,
+        "downloads": downloads_all,
     }
 
 

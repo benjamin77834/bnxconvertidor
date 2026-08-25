@@ -6,6 +6,7 @@ const DATAGEN_URL = COMPILE_URL.replace(/\/compile$/, '/datagen')
 const RUNTEST_URL = COMPILE_URL.replace(/\/compile$/, '/runtest')
 const RUNTEST_STREAM_URL = COMPILE_URL.replace(/\/compile$/, '/runtest/stream')
 const AWSCODE_URL = COMPILE_URL.replace(/\/compile$/, '/datagen/awscode')
+const DOWNLOAD_URL = COMPILE_URL.replace(/\/compile$/, '/download')
 
 const TYPES = ['string', 'integer', 'decimal', 'date', 'datetime', 'boolean']
 const PII_CATEGORIES = ['', 'name', 'email', 'phone', 'card', 'account', 'ssn', 'address', 'dob', 'id']
@@ -56,6 +57,7 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
   const [running, setRunning] = useState(false)
   const [runResult, setRunResult] = useState(null) // {ok, summary, reads, writes}
   const [consoleLines, setConsoleLines] = useState([]) // lineas en vivo
+  const [localDownloads, setLocalDownloads] = useState([]) // [{name, path}] CSV de resultado local
 
   // --- Enviar a AWS ---
   const [awsSending, setAwsSending] = useState(false)
@@ -180,6 +182,7 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
   const runTest = async () => {
     setRunning(true)
     setRunResult(null)
+    setLocalDownloads([])
     setConsoleLines([{ text: '[*] Iniciando ejecución de prueba...', kind: 'info' }])
     try {
       const inputs = (result?.datasets || []).filter(d => d.io === 'input')
@@ -218,6 +221,7 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
             setConsoleLines(prev => [...prev, { text: evt.text, kind: classifyLine(evt.text) }])
           } else if (evt.type === 'done') {
             setRunResult({ ok: evt.ok, summary: evt.summary, reads: evt.reads, writes: evt.writes })
+            if (Array.isArray(evt.downloads)) setLocalDownloads(evt.downloads)
             finished = true
           }
         }
@@ -659,6 +663,26 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
           {/* Consola en vivo */}
           {(running || consoleLines.length > 0) && (
             <LiveConsole lines={consoleLines} running={running} theme={t} />
+          )}
+
+          {/* Descargas del resultado de la prueba LOCAL (CSV en disco) */}
+          {localDownloads.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <span style={label}>⬇️ Descargar resultado (local)</span>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {localDownloads.map((d, i) => (
+                  <a key={i} href={`${DOWNLOAD_URL}?f=${encodeURIComponent(d.name)}`} download
+                    style={{
+                      padding: '8px 14px', borderRadius: 8, fontSize: 12, fontWeight: 700,
+                      background: '#22c55e', color: '#000', textDecoration: 'none',
+                      display: 'inline-flex', alignItems: 'center', gap: 6,
+                    }}>⬇️ {d.name}</a>
+                ))}
+              </div>
+              <span style={{ fontSize: 10, color: t.dim }}>
+                CSV generados por la prueba local (se sobrescriben en cada corrida).
+              </span>
+            </div>
           )}
 
           {/* --- ENVIAR A AWS --- */}

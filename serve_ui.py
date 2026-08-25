@@ -96,7 +96,12 @@ from src.datagen import (
     detect_pii,
     normalize_type,
 )
-from src.test_runner import run_pyspark_test, stream_pyspark_test, build_aws_selfcontained_code
+from src.test_runner import (
+    run_pyspark_test,
+    stream_pyspark_test,
+    build_aws_selfcontained_code,
+    BNX_LOCAL_OUTPUT_DIR,
+)
 
 PORT = 8080
 UI_DIR = os.path.join(os.path.dirname(__file__), "ui", "dist")
@@ -149,6 +154,11 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         # API health check
         if path == "/api/health":
             self._json_response(200, {"status": "ok", "version": "V54"})
+            return
+
+        # Descarga de resultados de la prueba LOCAL (CSV generados por el runner).
+        if path == "/download" or path == "/api/download":
+            self._handle_download()
             return
 
         # Serve static UI files
@@ -453,6 +463,46 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                        "reads": [], "writes": []})
             except Exception:
                 pass
+
+    def _handle_download(self):
+        """Sirve un archivo de resultado de la prueba local para descargarlo.
+
+        Query: ?f=<nombre.csv>  (solo el nombre del archivo, no rutas).
+        El archivo debe existir DENTRO de BNX_LOCAL_OUTPUT_DIR. Se valida contra
+        path-traversal comparando la ruta real resuelta con la carpeta permitida.
+        """
+        qs = parse_qs(urlparse(self.path).query)
+        fname = (qs.get("f") or qs.get("file") or [""])[0].strip()
+        if not fname:
+            self._json_response(400, {"error": "Falta parametro 'f' (archivo)"})
+            return
+
+        base = os.path.realpath(BNX_LOCAL_OUTPUT_DIR)
+        # Solo permitimos el nombre base del archivo (sin separadores de ruta).
+        safe_name = os.path.basename(fname)
+        target = os.path.realpath(os.path.join(base, safe_name))
+
+        # Anti path-traversal: el objetivo debe quedar dentro de la carpeta base.
+        if os.path.commonpath([base, target]) != base or not os.path.isfile(target):
+            self._json_response(404, {"error": "Archivo no encontrado"})
+            return
+
+        try:
+            with open(target, "rb") as fh:
+                data = fh.read()
+        except OSError as e:
+            self._json_response(500, {"error": f"No se pudo leer: {e}"})
+            return
+
+        self.send_response(200)
+        self._cors_headers()
+        self.send_header("Content-Type", "text/csv; charset=utf-8")
+        self.send_header(
+            "Content-Disposition", f'attachment; filename="{safe_name}"'
+        )
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     def _handle_awscode(self):
         """Genera el código PySpark AUTOCONTENIDO (datos sintéticos embebidos)
