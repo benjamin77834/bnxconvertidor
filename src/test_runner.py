@@ -211,6 +211,44 @@ def build_test_script(pyspark_code, inputs, required_cols=None):
 
     body = "\n".join(out)
 
+    # Corregir lineas withColumn(...) rotas por un comentario "# TODO: ..." que
+    # contiene parentesis sin balancear (viene de un cast/expr Ab Initio no
+    # traducido por versiones previas del generador). Ejemplo real:
+    #   .withColumn("MIS_DATE", lit(None)  # TODO: (date('YYYY-MM-DD'))(MISDATE))
+    # El parentesis final del withColumn queda "dentro" del comentario -> SyntaxError.
+    # Si el TODO contiene un cast de fecha Ab Initio lo traducimos a to_date;
+    # si no, dejamos lit(None) y quitamos el comentario roto para balancear.
+    _todo_date_re = re.compile(
+        r'''\(?\s*date\(\s*['"]([^'"]+)['"]\s*\)'''
+        r'''(?:\s*\(\s*['"][^'"]*['"]\s*\))?'''
+        r'''\s*\)?\s*'''
+        r'''\(?\s*(?:in\d*\.)?([\w'".\-:/]+?)\s*\)?\s*$'''
+    )
+
+    def _fix_broken_todo(mo):
+        prefix = mo.group(1)   # "  VAR_df = VAR_df" o "  ...df"
+        col = mo.group(2)
+        todo = mo.group(3).strip()
+        dm = _todo_date_re.search(todo)
+        if dm:
+            fmt = dm.group(1).replace("YYYY", "yyyy").replace("DD", "dd")
+            valor = dm.group(2).strip()
+            if (valor.startswith("'") and valor.endswith("'")) or (valor.startswith('"') and valor.endswith('"')):
+                inner = f'''to_date(lit("{valor.strip(chr(39)+chr(34))}"), "{fmt}")'''
+            else:
+                inner = f'''to_date(col("{valor}"), "{fmt}")'''
+            return f'{prefix}.withColumn("{col}", {inner})  # BNX-TEST: cast fecha Ab Initio traducido'
+        return f'{prefix}.withColumn("{col}", lit(None))  # BNX-TEST: TODO Ab Initio no traducible, columna NULL'
+
+    # Captura la forma completa: "<algo>.withColumn("COL", lit(None)  # TODO: <expr>)"
+    # tanto si va sola en la linea como si es "VAR = VAR.withColumn(...)".
+    body = re.sub(
+        r'^(.*?)\.withColumn\(\s*"([^"]+)"\s*,\s*lit\(None\)\s*#\s*TODO:\s*(.*?)\)\s*$',
+        _fix_broken_todo,
+        body,
+        flags=re.M,
+    )
+
     # Reescribir joins con clave para que toleren claves ausentes en datos sinteticos:
     #   A.join(B, on="k", how="left")       → _bnx_join(A, B, "k", "left")
     #   A.join(B, on=["k1","k2"], how="left")→ _bnx_join(A, B, ["k1","k2"], "left")
@@ -979,6 +1017,37 @@ def build_aws_selfcontained_code(pyspark_code, datasets, keep_writes=True,
         out.append(ln)
 
     body = "\n".join(out)
+
+    # Corregir withColumn(...) roto por comentario "# TODO:" con parentesis sin
+    # balancear (mismo fix que el runner local). Ver detalle alla.
+    _aws_todo_date_re = re.compile(
+        r'''\(?\s*date\(\s*['"]([^'"]+)['"]\s*\)'''
+        r'''(?:\s*\(\s*['"][^'"]*['"]\s*\))?'''
+        r'''\s*\)?\s*'''
+        r'''\(?\s*(?:in\d*\.)?([\w'".\-:/]+?)\s*\)?\s*$'''
+    )
+
+    def _aws_fix_broken_todo(mo):
+        prefix = mo.group(1)
+        col = mo.group(2)
+        todo = mo.group(3).strip()
+        dm = _aws_todo_date_re.search(todo)
+        if dm:
+            fmt = dm.group(1).replace("YYYY", "yyyy").replace("DD", "dd")
+            valor = dm.group(2).strip()
+            if (valor.startswith("'") and valor.endswith("'")) or (valor.startswith('"') and valor.endswith('"')):
+                inner = f'''to_date(lit("{valor.strip(chr(39)+chr(34))}"), "{fmt}")'''
+            else:
+                inner = f'''to_date(col("{valor}"), "{fmt}")'''
+            return f'{prefix}.withColumn("{col}", {inner})  # AWS: cast fecha Ab Initio traducido'
+        return f'{prefix}.withColumn("{col}", lit(None))  # AWS: TODO Ab Initio no traducible, columna NULL'
+
+    body = re.sub(
+        r'^(.*?)\.withColumn\(\s*"([^"]+)"\s*,\s*lit\(None\)\s*#\s*TODO:\s*(.*?)\)\s*$',
+        _aws_fix_broken_todo,
+        body,
+        flags=re.M,
+    )
 
     # Reescrituras de robustez (igual que el runner local)
     body = re.sub(
