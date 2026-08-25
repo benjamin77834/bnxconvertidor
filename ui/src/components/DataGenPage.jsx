@@ -58,6 +58,7 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
   const [runResult, setRunResult] = useState(null) // {ok, summary, reads, writes}
   const [consoleLines, setConsoleLines] = useState([]) // lineas en vivo
   const [localDownloads, setLocalDownloads] = useState([]) // [{name, path}] CSV de resultado local
+  const [runReport, setRunReport] = useState(null) // {totals, inputs, outputs, flow, flow_counts}
 
   // --- Enviar a AWS ---
   const [awsSending, setAwsSending] = useState(false)
@@ -183,6 +184,7 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
     setRunning(true)
     setRunResult(null)
     setLocalDownloads([])
+    setRunReport(null)
     setConsoleLines([{ text: '[*] Iniciando ejecución de prueba...', kind: 'info' }])
     try {
       const inputs = (result?.datasets || []).filter(d => d.io === 'input')
@@ -190,7 +192,7 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
       const res = await fetch(RUNTEST_STREAM_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: compiledCode, datasets, timeout: 180 }),
+        body: JSON.stringify({ code: compiledCode, datasets, timeout: 180, job_name: awsJobName }),
       })
       if (!res.ok || !res.body) {
         let msg = `HTTP ${res.status}`
@@ -222,6 +224,7 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
           } else if (evt.type === 'done') {
             setRunResult({ ok: evt.ok, summary: evt.summary, reads: evt.reads, writes: evt.writes })
             if (Array.isArray(evt.downloads)) setLocalDownloads(evt.downloads)
+            if (evt.report) setRunReport(evt.report)
             finished = true
           }
         }
@@ -663,6 +666,93 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
           {/* Consola en vivo */}
           {(running || consoleLines.length > 0) && (
             <LiveConsole lines={consoleLines} running={running} theme={t} />
+          )}
+
+          {/* Reporte: estadisticas entrada vs salida + flujo de transformacion */}
+          {runReport && (
+            <div style={{
+              display: 'flex', flexDirection: 'column', gap: 12,
+              background: '#0a0e17', border: `1px solid ${t.border || '#334155'}`,
+              borderRadius: 8, padding: 14,
+            }}>
+              <span style={label}>📊 Reporte del grafo</span>
+
+              {/* Comparacion entrada vs salida */}
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                {[
+                  { lbl: 'Filas entrada', val: runReport.totals?.input_rows ?? 0, col: '#38bdf8' },
+                  { lbl: 'Filas salida', val: runReport.totals?.output_rows ?? 0, col: '#22c55e' },
+                  {
+                    lbl: 'Diferencia',
+                    val: `${(runReport.totals?.delta_rows ?? 0) >= 0 ? '+' : ''}${runReport.totals?.delta_rows ?? 0}`,
+                    col: (runReport.totals?.delta_rows ?? 0) === 0 ? '#94a3b8' : ((runReport.totals?.delta_rows ?? 0) > 0 ? '#22c55e' : '#f59e0b'),
+                  },
+                ].map((c, i) => (
+                  <div key={i} style={{
+                    flex: '1 1 120px', minWidth: 110, borderRadius: 8, padding: '10px 12px',
+                    background: `${c.col}12`, border: `1px solid ${c.col}30`,
+                  }}>
+                    <div style={{ fontSize: 10, color: t.dim, textTransform: 'uppercase', letterSpacing: 0.5 }}>{c.lbl}</div>
+                    <div style={{ fontSize: 22, fontWeight: 800, color: c.col }}>{c.val}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Detalle por fuente / tabla */}
+              <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                <div style={{ flex: '1 1 240px' }}>
+                  <div style={{ fontSize: 11, color: t.dim, marginBottom: 4 }}>Entradas</div>
+                  {(runReport.inputs || []).length === 0 && (
+                    <div style={{ fontSize: 12, color: t.muted }}>(ninguna)</div>
+                  )}
+                  {(runReport.inputs || []).map((r, i) => (
+                    <div key={i} style={{ fontSize: 12, color: t.muted, fontFamily: 'monospace' }}>
+                      {r.node || r.var}: <strong style={{ color: '#38bdf8' }}>{r.rows}</strong> filas
+                    </div>
+                  ))}
+                </div>
+                <div style={{ flex: '1 1 240px' }}>
+                  <div style={{ fontSize: 11, color: t.dim, marginBottom: 4 }}>Salidas (tablas)</div>
+                  {(runReport.outputs || []).length === 0 && (
+                    <div style={{ fontSize: 12, color: t.muted }}>(ninguna)</div>
+                  )}
+                  {(runReport.outputs || []).map((o, i) => (
+                    <div key={i} style={{ fontSize: 12, color: t.muted, fontFamily: 'monospace' }}>
+                      {o.table}: <strong style={{ color: '#22c55e' }}>{o.rows}</strong> filas
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Flujo de transformacion */}
+              {(runReport.flow || []).length > 0 && (
+                <div>
+                  <div style={{ fontSize: 11, color: t.dim, marginBottom: 6 }}>Flujo de transformación</div>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                    {runReport.flow.map((s, i) => {
+                      const colByType = {
+                        SOURCE: '#38bdf8', SINK: '#22c55e', JOIN: '#a855f7',
+                        TRANSFORM: '#f59e0b', FILTER: '#ef4444', DEDUP: '#ef4444',
+                        LOOKUP: '#06b6d4', NORMALIZE: '#eab308',
+                      }
+                      const col = colByType[s.type] || '#94a3b8'
+                      return (
+                        <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                          <span style={{
+                            padding: '4px 8px', borderRadius: 6, fontSize: 11, fontWeight: 700,
+                            background: `${col}18`, border: `1px solid ${col}40`, color: col,
+                            fontFamily: 'monospace',
+                          }} title={s.type}>{s.name}</span>
+                          {i < runReport.flow.length - 1 && (
+                            <span style={{ color: t.dim, fontSize: 12 }}>→</span>
+                          )}
+                        </span>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
           )}
 
           {/* Descargas del resultado de la prueba LOCAL (CSV en disco) */}
