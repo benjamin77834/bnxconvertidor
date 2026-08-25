@@ -170,6 +170,22 @@ def build_test_script(pyspark_code, inputs, required_cols=None):
     write_re = re.compile(r'^(\s*)(\w+)\.write\b.*$')
     # 3. Nodos sin fuente:  X_df = None  → placeholder vacío para no romper hijos
     none_re = re.compile(r'^(\s*)(\w+_df)\s*=\s*None\b.*$')
+    # 4. DML crudo Ab Initio que quedo sin traducir y NO es Python valido
+    #    (p.ej. "out.* :: in1.*;", "out.CAMPO :: expr;", "begin", "end;").
+    #    Se comenta para que el script sea ejecutable; semanticamente el nodo
+    #    ya arrastra el DataFrame del padre, asi que el passthrough no se pierde.
+    dml_raw_re = re.compile(
+        r'^\s*('
+        r'out\s*::\s*\w+\s*\('
+        r'|out\.\*\s*::'
+        r'|out\.\w+\s*::'
+        r'|begin\s*$'
+        r'|end\s*;'
+        r'|end\s*$'
+        r'|let\s+\w+'
+        r'|include\s+["\']'
+        r')'
+    )
 
     for ln in lines:
         m_read = read_re.match(ln)
@@ -186,6 +202,10 @@ def build_test_script(pyspark_code, inputs, required_cols=None):
         if m_none:
             indent, var = m_none.group(1), m_none.group(2)
             out.append(f'{indent}{var} = _bnx_empty("{var}")  # BNX-TEST: era None')
+            continue
+        if dml_raw_re.match(ln) and not ln.lstrip().startswith('#'):
+            indent = ln[:len(ln) - len(ln.lstrip())]
+            out.append(f'{indent}# BNX-TEST: DML crudo sin traducir (passthrough/omitido): {ln.strip()}')
             continue
         out.append(ln)
 
