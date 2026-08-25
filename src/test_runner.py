@@ -1122,6 +1122,99 @@ def _data_fidelity(datasets, pyspark_code, reads, writes, ok, timed_out):
     return {"score": round(total, 1), "factors": factors}
 
 
+def _describe_graph(steps, reads, writes, job_name=None):
+    """Genera una descripcion en lenguaje natural (espanol) del grafo.
+
+    Determinística: la arma a partir del flujo (steps) y las estadisticas de
+    entrada/salida. No depende de IA externa. Devuelve un parrafo (string).
+    """
+    def _names(tipo):
+        return [s["name"] for s in steps if s.get("type") == tipo]
+
+    sources = _names("SOURCE")
+    sinks = _names("SINK")
+    joins = _names("JOIN")
+    filters = _names("FILTER") + _names("DEDUP")
+    transforms = _names("TRANSFORM")
+    lookups = _names("LOOKUP")
+    normalizes = _names("NORMALIZE")
+
+    total_in = sum(r.get("rows", 0) for r in (reads or []))
+    total_out = sum(w.get("rows", 0) for w in (writes or []))
+
+    def _lista(items):
+        items = [str(i) for i in items if i]
+        if not items:
+            return ""
+        if len(items) == 1:
+            return items[0]
+        if len(items) == 2:
+            return f"{items[0]} y {items[1]}"
+        return ", ".join(items[:-1]) + f" y {items[-1]}"
+
+    frases = []
+
+    # 1. Fuentes de entrada
+    if sources:
+        n = len(sources)
+        frases.append(
+            f"El grafo «{job_name or 'sin nombre'}» lee datos de "
+            f"{n} fuente{'s' if n != 1 else ''} ({_lista(sources)})"
+            + (f", con {total_in} fila(s) de entrada en total" if reads else "")
+            + "."
+        )
+    else:
+        frases.append(f"El grafo «{job_name or 'sin nombre'}» no declara fuentes de entrada explícitas.")
+
+    # 2. Transformaciones / joins / filtros / lookups / normalize
+    pasos = []
+    if joins:
+        pasos.append(f"combina flujos mediante {len(joins)} join ({_lista(joins)})")
+    if lookups:
+        pasos.append(f"enriquece con {len(lookups)} búsqueda(s)/lookup ({_lista(lookups)})")
+    if transforms:
+        pasos.append(f"aplica {len(transforms)} transformación(es) ({_lista(transforms)})")
+    if filters:
+        pasos.append(f"filtra/deduplica registros en {len(filters)} paso(s) ({_lista(filters)})")
+    if normalizes:
+        pasos.append(f"normaliza estructuras en {len(normalizes)} paso(s) ({_lista(normalizes)})")
+    if pasos:
+        frases.append("Durante el procesamiento, " + _lista(pasos) + ".")
+    else:
+        frases.append("No se detectaron pasos intermedios de transformación (flujo directo).")
+
+    # 3. Salidas
+    if sinks:
+        n = len(sinks)
+        tablas = [w.get("var") for w in (writes or [])]
+        frases.append(
+            f"Finalmente escribe el resultado en {n} salida{'s' if n != 1 else ''} "
+            f"({_lista(sinks)})"
+            + (f", generando {total_out} fila(s) en total" if writes else "")
+            + "."
+        )
+    else:
+        frases.append("El grafo no produce salidas persistidas.")
+
+    # 4. Balance entrada/salida
+    if reads and writes:
+        diff = total_out - total_in
+        if diff == 0:
+            frases.append("El número de filas se conserva entre entrada y salida.")
+        elif diff < 0:
+            frases.append(
+                f"Se reducen {abs(diff)} fila(s) del total, típico de filtros, "
+                f"deduplicación o agregaciones."
+            )
+        else:
+            frases.append(
+                f"Se incrementan {diff} fila(s), típico de joins que expanden o "
+                f"normalización que desagrega registros."
+            )
+
+    return " ".join(frases)
+
+
 def _build_run_report(reads, writes, downloads, steps, ok, timed_out,
                       exit_code, job_name=None, fidelity=None):
     """Arma el reporte estructurado de una corrida (para la UI y para descargar).
@@ -1137,8 +1230,10 @@ def _build_run_report(reads, writes, downloads, steps, ok, timed_out,
     counts_by_type = {}
     for s in steps:
         counts_by_type[s["type"]] = counts_by_type.get(s["type"], 0) + 1
+    description = _describe_graph(steps, reads, writes, job_name=job_name)
     return {
         "job_name": job_name or "grafo",
+        "description": description,
         "ok": ok,
         "timed_out": timed_out,
         "exit_code": exit_code,
@@ -1178,6 +1273,16 @@ def _render_report_text(report):
     if fid:
         L.append(f"Fidelidad:    {fid.get('score', 0)}%")
     L.append("")
+    desc = report.get("description")
+    if desc:
+        L.append("-" * 60)
+        L.append("DESCRIPCION DEL GRAFO")
+        L.append("-" * 60)
+        # Envolver el parrafo a ~72 columnas para legibilidad
+        import textwrap as _tw
+        for linea in _tw.wrap(desc, width=72):
+            L.append(linea)
+        L.append("")
     if fid.get("factors"):
         L.append("-" * 60)
         L.append("FIDELIDAD DE LOS DATOS (desglose)")

@@ -530,7 +530,8 @@ export default function App() {
           }} />
         ) : page === 'datagen' ? (
           <DataGenPage theme={t} graphMp={editorMp} graphXfr={editorXfr}
-            compiledCode={result?.code || ''} compiledTarget={target} />
+            compiledCode={result?.code || ''} compiledTarget={target}
+            graphName={result?.graph_name || ''} graphDescription={result?.description || ''} />
         ) : page === 'designer' ? (
           <DesignerPage theme={t} />
         ) : page === 'ocr' ? (
@@ -1011,6 +1012,7 @@ export default function App() {
               LOOKUP: '#ec4899', SINK: '#ef4444',
             }
             return (
+              <>
               <div style={{
                 display: 'flex', gap: 12, padding: '10px 20px', flexWrap: 'wrap',
                 background: t.sidebar, borderBottom: `1px solid ${t.border}`,
@@ -1081,6 +1083,18 @@ export default function App() {
                   }}>🌀 Airflow</button>
                 )}
               </div>
+              {/* Descripcion en lenguaje natural del grafo */}
+              {result.description && (
+                <div style={{
+                  padding: '8px 20px', background: t.sidebar,
+                  borderBottom: `1px solid ${t.border}`,
+                  fontSize: 13, color: t.muted, lineHeight: 1.5,
+                }}>
+                  <span style={{ color: t.accent || '#818cf8', fontWeight: 600 }}>📝 Descripción: </span>
+                  {result.description}
+                </div>
+              )}
+              </>
             )
           })()}
           <div ref={dagRef} style={{ flex: 1, position: 'relative', minHeight: 0 }}>
