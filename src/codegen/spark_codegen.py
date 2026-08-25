@@ -782,12 +782,17 @@ def _build_transform(var_id, src_df, rule):
                 if re.match(r'^in\d*\.' + field_name + r'$', expr_clean):
                     continue
                 mapped = _translate_dml_expr(expr_clean)
+                # Expresion vacia o no traducible a algo util (p.ej. "..." de un
+                # raw reformat): comentar en vez de emitir expr("...") invalido.
+                if not mapped or mapped.strip() in ("", "...", "."):
+                    lines.append(f'# {field_name}: expresion vacia/no traducible — omitida')
+                    continue
                 mapped_escaped = mapped.replace('"', '\\"')
                 if len(mapped_escaped) < 200:
                     lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", expr("{mapped_escaped}"))')
                 else:
                     lines.append(f'# TODO: Complex expression for {field_name}')
-                    lines.append(f'# {expr_clean[:100]}...')
+                    lines.append(f'# {expr_clean[:100]} (truncado)')
         
         if len(lines) == 1:
             lines.append(f'# Raw DML transform — review for manual translation:')
