@@ -1297,6 +1297,7 @@ def _sanitize_generated_file(output_path):
         r'^\s*('
         r'//'                           # comentario de Ab Initio (// ...)
         r'|out\s*::\s*\w+\s*\('         # out::reformat(in)= , out :: rollup(in)=
+        r'|out\.\*\s*::'                # out.* :: in.* (passthrough de todas las columnas)
         r'|out\.\w+\s*::'               # out.CAMPO :: expr
         r'|begin\s*$'                   # begin
         r'|end\s*;'                     # end;
