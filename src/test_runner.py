@@ -895,12 +895,13 @@ spark = _bnx_session
     return harness + body
 
 
-def run_pyspark_test(pyspark_code, datasets, timeout=120):
+def run_pyspark_test(pyspark_code, datasets, timeout=120, job_name=None):
     """Ejecuta el código PySpark con datos sintéticos y devuelve el resultado.
 
     Devuelve dict:
       {"ok": bool, "exit_code": int, "stdout": str, "stderr": str,
-       "timed_out": bool, "writes": [...], "reads": [...], "summary": str}
+       "timed_out": bool, "writes": [...], "reads": [...], "summary": str,
+       "report": {...}, "report_download": {name,path}}
     """
     inputs = _normalize_inputs(datasets)
     required_cols = extract_referenced_columns(pyspark_code)
@@ -958,15 +959,27 @@ def run_pyspark_test(pyspark_code, datasets, timeout=120):
     else:
         summary = "Falló la ejecución — revisa el error abajo"
 
+    reads_l = [{"var": r[0], "node": r[1], "rows": int(r[2])} for r in reads]
+    writes_l = [{"var": w[0], "rows": int(w[1])} for w in writes]
+    steps = _parse_flow_steps(stdout)
+    report = _build_run_report(reads_l, writes_l, downloads, steps, ok,
+                               timed_out, exit_code, job_name=job_name)
+    report_dl = _write_report_file(report, job_name=job_name)
+    if report_dl:
+        # El reporte tambien es descargable como un "archivo de salida" mas.
+        downloads = downloads + [report_dl]
+
     return {
         "ok": ok,
         "exit_code": exit_code,
         "timed_out": timed_out,
         "stdout": _tail(stdout, 20000),
         "stderr": _tail(stderr, 20000),
-        "reads": [{"var": r[0], "node": r[1], "rows": int(r[2])} for r in reads],
-        "writes": [{"var": w[0], "rows": int(w[1])} for w in writes],
+        "reads": reads_l,
+        "writes": writes_l,
         "downloads": downloads,
+        "report": report,
+        "report_download": report_dl,
         "summary": summary,
     }
 
@@ -982,6 +995,142 @@ def _reset_local_output_dir():
         pass
 
 
+def _parse_flow_steps(stdout):
+    """Extrae el flujo de transformacion desde el stdout del job.
+
+    El codigo generado imprime una linea por nodo ejecutado, con la forma
+    "[simbolo] TIPO: nombre" (p.ej. "[>] SOURCE: clientes", "[~] JOIN: j1").
+    Devuelve una lista ordenada de {"type","name"} en orden de ejecucion.
+    """
+    steps = []
+    for m in re.finditer(
+        r"^\[[^\]]\]\s+([A-Z][A-Z_]*): (.+)$", stdout, flags=re.M
+    ):
+        tipo = m.group(1).strip()
+        name = m.group(2).strip()
+        # Ignorar la cabecera generica del job si apareciera
+        if tipo in ("BNX", "TEST"):
+            continue
+        steps.append({"type": tipo, "name": name})
+    return steps
+
+
+def _build_run_report(reads, writes, downloads, steps, ok, timed_out,
+                      exit_code, job_name=None):
+    """Arma el reporte estructurado de una corrida (para la UI y para descargar).
+
+    reads/writes: listas de dicts {"var","node","rows"} / {"var","rows"}.
+    downloads:    lista de {"name","path"} de los CSV de salida.
+    steps:        flujo de transformacion (lista de {"type","name"}).
+    Devuelve dict con estadisticas de entrada/salida, flujo y metadatos.
+    """
+    total_in = sum(r.get("rows", 0) for r in reads)
+    total_out = sum(w.get("rows", 0) for w in writes)
+    delta = total_out - total_in
+    counts_by_type = {}
+    for s in steps:
+        counts_by_type[s["type"]] = counts_by_type.get(s["type"], 0) + 1
+    return {
+        "job_name": job_name or "grafo",
+        "ok": ok,
+        "timed_out": timed_out,
+        "exit_code": exit_code,
+        "inputs": reads,
+        "outputs": [
+            {
+                "table": (downloads[i]["name"] if i < len(downloads) else w.get("var")),
+                "var": w.get("var"),
+                "rows": w.get("rows", 0),
+            }
+            for i, w in enumerate(writes)
+        ],
+        "totals": {
+            "input_rows": total_in,
+            "output_rows": total_out,
+            "delta_rows": delta,
+        },
+        "flow": steps,
+        "flow_counts": counts_by_type,
+        "downloads": downloads,
+    }
+
+
+def _render_report_text(report):
+    """Formatea el reporte como texto plano descargable (.txt)."""
+    import datetime as _dt
+    L = []
+    L.append("=" * 60)
+    L.append("BNX — REPORTE DE PRUEBA (Data Redactada)")
+    L.append("=" * 60)
+    L.append(f"Grafo:        {report.get('job_name', 'grafo')}")
+    L.append(f"Fecha:        {_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    estado = "OK" if report.get("ok") else ("TIMEOUT" if report.get("timed_out") else "FALLO")
+    L.append(f"Estado:       {estado} (exit={report.get('exit_code')})")
+    L.append("")
+    t = report.get("totals", {})
+    L.append("-" * 60)
+    L.append("COMPARACION ENTRADA vs SALIDA")
+    L.append("-" * 60)
+    L.append(f"Filas de entrada (total): {t.get('input_rows', 0)}")
+    L.append(f"Filas de salida  (total): {t.get('output_rows', 0)}")
+    L.append(f"Diferencia:               {t.get('delta_rows', 0):+d}")
+    L.append("")
+    L.append("Entradas por fuente:")
+    if report.get("inputs"):
+        for r in report["inputs"]:
+            L.append(f"  - {r.get('node', r.get('var'))}: {r.get('rows', 0)} filas")
+    else:
+        L.append("  (ninguna)")
+    L.append("")
+    L.append("Salidas por tabla:")
+    if report.get("outputs"):
+        for o in report["outputs"]:
+            L.append(f"  - {o.get('table')}: {o.get('rows', 0)} filas")
+    else:
+        L.append("  (ninguna)")
+    L.append("")
+    L.append("-" * 60)
+    L.append("FLUJO DE TRANSFORMACION")
+    L.append("-" * 60)
+    if report.get("flow"):
+        for i, s in enumerate(report["flow"], 1):
+            L.append(f"  {i:>2}. [{s['type']}] {s['name']}")
+    else:
+        L.append("  (sin pasos registrados)")
+    L.append("")
+    if report.get("flow_counts"):
+        resumen = ", ".join(f"{k}: {v}" for k, v in sorted(report["flow_counts"].items()))
+        L.append(f"Resumen de nodos: {resumen}")
+    L.append("")
+    L.append("-" * 60)
+    L.append("ARCHIVOS DE SALIDA DESCARGABLES")
+    L.append("-" * 60)
+    if report.get("downloads"):
+        for d in report["downloads"]:
+            L.append(f"  - {d.get('name')}")
+    else:
+        L.append("  (ninguno)")
+    L.append("")
+    return "\n".join(L)
+
+
+def _write_report_file(report, job_name=None):
+    """Escribe el reporte .txt en la carpeta de salidas y devuelve {name,path}.
+
+    Devuelve None si no se pudo escribir.
+    """
+    try:
+        os.makedirs(BNX_LOCAL_OUTPUT_DIR, exist_ok=True)
+        safe = re.sub(r'[^A-Za-z0-9_.-]', '_', str(job_name or "grafo"))
+        fname = f"reporte_{safe}.txt"
+        dest = os.path.join(BNX_LOCAL_OUTPUT_DIR, fname)
+        with open(dest, "w", encoding="utf-8") as fh:
+            fh.write(_render_report_text(report))
+        return {"name": fname, "path": dest}
+    except OSError:
+        return None
+
+
 def _tail(text, max_chars):
     """Recorta texto largo dejando el final (donde suelen estar los errores)."""
     if not text:
@@ -991,12 +1140,13 @@ def _tail(text, max_chars):
     return "...[truncado]...\n" + text[-max_chars:]
 
 
-def stream_pyspark_test(pyspark_code, datasets, timeout=180):
+def stream_pyspark_test(pyspark_code, datasets, timeout=180, job_name=None):
     """Ejecuta el PySpark de prueba y hace *yield* de cada linea de salida en vivo.
 
     Cada yield es un dict:
       {"type": "line", "text": "..."}     — una linea de stdout/stderr
-      {"type": "done", "ok": bool, "summary": str, "reads": [...], "writes": [...]}
+      {"type": "done", "ok": bool, "summary": str, "reads": [...], "writes": [...],
+       "report": {...}, "report_download": {name,path}}
 
     Permite que la UI muestre una consola en tiempo real mientras el job corre.
     """
@@ -1023,6 +1173,7 @@ def stream_pyspark_test(pyspark_code, datasets, timeout=180):
     reads_all = []
     writes_all = []
     downloads_all = []
+    steps_all = []
 
     proc = subprocess.Popen(
         [sys.executable, "-u", tmp.name],
@@ -1062,6 +1213,10 @@ def stream_pyspark_test(pyspark_code, datasets, timeout=180):
                 downloads_all.append({"name": md.group(1), "path": md.group(2)})
                 # No mostramos esta linea cruda en la consola (la GUI la usa aparte).
                 continue
+            # Capturar pasos del flujo de transformacion: "[simbolo] TIPO: nombre"
+            ms = re.match(r"^\[[^\]]\]\s+([A-Z][A-Z_]*): (.+)$", line)
+            if ms and ms.group(1) not in ("BNX", "TEST"):
+                steps_all.append({"type": ms.group(1), "name": ms.group(2).strip()})
             yield {"type": "line", "text": line}
     finally:
         proc.stdout.close()
@@ -1083,6 +1238,13 @@ def stream_pyspark_test(pyspark_code, datasets, timeout=180):
     else:
         summary = "Falló la ejecución — revisa el error arriba"
 
+    report = _build_run_report(reads_all, writes_all, downloads_all, steps_all,
+                               ok, timed_out, exit_code, job_name=job_name)
+    report_dl = _write_report_file(report, job_name=job_name)
+    downloads_out = list(downloads_all)
+    if report_dl:
+        downloads_out.append(report_dl)
+
     yield {
         "type": "done",
         "ok": ok,
@@ -1091,7 +1253,9 @@ def stream_pyspark_test(pyspark_code, datasets, timeout=180):
         "summary": summary,
         "reads": reads_all,
         "writes": writes_all,
-        "downloads": downloads_all,
+        "downloads": downloads_out,
+        "report": report,
+        "report_download": report_dl,
     }
 
 

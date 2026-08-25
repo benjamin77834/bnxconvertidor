@@ -397,8 +397,9 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             datasets = data.get("datasets", []) or []
             timeout = int(data.get("timeout", 120))
             timeout = max(10, min(timeout, 600))
+            job_name = data.get("job_name") or data.get("graph_name")
 
-            result = run_pyspark_test(code, datasets, timeout=timeout)
+            result = run_pyspark_test(code, datasets, timeout=timeout, job_name=job_name)
             self._json_response(200, result)
         except Exception as e:
             import traceback
@@ -434,6 +435,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         datasets = data.get("datasets", []) or []
         timeout = int(data.get("timeout", 180))
         timeout = max(10, min(timeout, 600))
+        job_name = data.get("job_name") or data.get("graph_name")
 
         # Cabeceras SSE
         self.send_response(200)
@@ -450,7 +452,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.flush()
 
         try:
-            for event in stream_pyspark_test(code, datasets, timeout=timeout):
+            for event in stream_pyspark_test(code, datasets, timeout=timeout, job_name=job_name):
                 _send(event)
         except BrokenPipeError:
             # El cliente cerró la conexión
