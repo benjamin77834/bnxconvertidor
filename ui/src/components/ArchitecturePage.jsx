@@ -147,6 +147,16 @@ const GLOSSARY = {
       { term: 'Type Mapping', def: 'Mapea tipos COBOL PIC a Spark: PIC 9 → IntegerType, PIC X → StringType, PIC S9V9 → DecimalType, COMP-3 → DecimalType.' },
     ]
   },
+  TEST_RUNNER: {
+    concepts: [
+      { term: 'Insumos (qué necesita)', def: 'Código PySpark generado por el Compiler + datos sintéticos redactados (auto desde el grafo o manuales). Opcional: nombre del grafo para el reporte. Entorno: Python 3 con PySpark y Java. No requiere credenciales AWS ni internet.' },
+      { term: 'Aislamiento', def: 'Corre en un subproceso Spark local[1] con timeout. Reemplaza lecturas S3 por DataFrames en memoria y neutraliza escrituras a S3 y comandos shell para que nada salga a la red.' },
+      { term: 'Tolerancia', def: 'Nodos sin datos → placeholder vacío; join keys ausentes → se agregan como null; lookups no traducidos → filtro neutro. No oculta errores reales del código traducido.' },
+      { term: 'Salvaguardas de traducción', def: 'Corrige en caliente patrones Ab Initio problemáticos (casts de fecha, operadores lógicos, passthrough out.*::in.*, MISDATE vs MIS_DATE, TODO con paréntesis sin cerrar).' },
+      { term: 'Salidas', def: 'Consola en vivo (SSE), estadísticas entrada vs salida, % de fidelidad de datos, descripción del grafo en lenguaje natural, reporte .txt descargable y un CSV por cada tabla de salida.' },
+      { term: 'Local vs AWS', def: 'Local valida el código con datos sintéticos sin permisos AWS. AWS embebe los datos y corre en Glue real (requiere permisos S3/Glue; si una SCP los deniega, la prueba local es la alternativa).' },
+    ]
+  },
 }
 
 // Mecanismos del convertidor — sección de glosario general
@@ -285,6 +295,23 @@ const MECHANISMS = [
       { name: 'Comunicación', desc: 'Frontend → POST multipart/form-data → Backend. Endpoints: /compile, /cobol, /plan, /refactor, /ocr, /download.' },
       { name: 'Sin frontend', desc: 'Usa ./bnx.sh o python3 main.py directamente. Todo funciona por CLI sin browser.' },
       { name: 'Sin backend local', desc: 'El frontend apunta a la Lambda URL en producción. No necesitas correr Python localmente.' },
+    ]
+  },
+  {
+    category: '🖥️ Prueba Local — Características e Insumos',
+    items: [
+      { name: 'Qué es', desc: 'Ejecuta el PySpark generado en tu propia máquina con datos sintéticos redactados, sin subir nada a AWS. Sirve para validar que el código traducido corre y produce resultados antes de despachar a Glue. Es independiente de permisos de S3/IAM/SCP de la cuenta AWS.' },
+      { name: 'Insumo 1 — Código PySpark', desc: 'El código generado por el Compiler (target Spark). Se carga automáticamente al entrar a Data Redactada si ya compilaste un grafo. Es lo único imprescindible para correr la prueba.' },
+      { name: 'Insumo 2 — Datos sintéticos', desc: 'Datasets de entrada generados desde el esquema del grafo (o definidos a mano en modo Manual). Con PII enmascarada y tipos respetados. Reemplazan las lecturas S3 reales por DataFrames en memoria.' },
+      { name: 'Insumo 3 — Nombre del grafo (opcional)', desc: 'Se toma del grafo compilado (AI_JOBNAME/PLAN_NAME) para nombrar el reporte. Si no hay, cae al Job Name configurado.' },
+      { name: 'Requisito de entorno', desc: 'Python 3 con PySpark instalado en la máquina que corre el backend (pip install pyspark) y Java para Spark. No requiere credenciales AWS, ni pandas, ni conexión a internet.' },
+      { name: 'Característica — Aislamiento', desc: 'Cada prueba corre en un subproceso Spark local[1] con timeout. Reemplaza lecturas S3 por datos en memoria y neutraliza escrituras a S3 y comandos shell (Run_Program) para que nada salga a la red.' },
+      { name: 'Característica — Tolerancia', desc: 'Tolera limitaciones estructurales (nodos sin datos → placeholder, join keys ausentes → se agregan como null, lookups no traducidos → filtro neutro) pero NO oculta errores reales de traducción del código.' },
+      { name: 'Característica — Salvaguardas de traducción', desc: 'En caliente corrige patrones Ab Initio que versiones viejas del codegen dejaban rotos: casts de fecha, operadores lógicos, passthrough out.*::in.*, columnas MISDATE vs MIS_DATE, TODO con paréntesis sin cerrar, etc.' },
+      { name: 'Salida 1 — Consola en vivo', desc: 'Transmite la ejecución línea por línea (SSE) con colores por tipo de nodo y estado final ✅/❌.' },
+      { name: 'Salida 2 — Estadísticas y reporte', desc: 'Comparación de filas entrada vs salida, flujo de transformación, porcentaje de fidelidad de datos y descripción del grafo en lenguaje natural. Descargable como reporte .txt.' },
+      { name: 'Salida 3 — CSV descargables', desc: 'Cada tabla de salida (SINK) se vuelca a un CSV con el nombre de la tabla destino, descargable desde la GUI (carpeta output/local_test, se sobrescribe en cada corrida).' },
+      { name: 'Diferencia con AWS', desc: 'Local = datos sintéticos en memoria, sin permisos AWS, para validar el código. AWS = mismo código con datos embebidos, se sube a S3 y corre en Glue real (requiere permisos S3/Glue; si la SCP los deniega, la prueba local es la alternativa).' },
     ]
   },
   {
@@ -690,7 +717,7 @@ const COMPONENTS = [
 
   // Ciclo de prueba: Data Redactada → Prueba local → AWS
   { id: 'DATAGEN', label: '🧪 Data Redactada\n(datagen.py)', x: 660, y: 560, group: 'datagen', desc: 'Infiere el esquema real del grafo (record format del .mp + propagación de columnas por edges) y genera datos sintéticos con PII enmascarada. Separa entrada (in.) y salida (out.). Valores de join compartidos para que los joins emparejen.' },
-  { id: 'TEST_RUNNER', label: '▶️ Test Runner\n(test_runner.py)', x: 900, y: 500, group: 'datagen', desc: 'Ejecuta el PySpark generado localmente con los datos sintéticos: reemplaza lecturas S3 por DataFrames en memoria, neutraliza escrituras/shell, tolera nodos None y joins con clave ausente. Streaming de la salida en vivo (consola SSE).' },
+  { id: 'TEST_RUNNER', label: '▶️ Test Runner (LOCAL)\n(test_runner.py)', x: 900, y: 500, group: 'datagen', desc: 'PRUEBA LOCAL. Insumos: código PySpark del Compiler + datos sintéticos (+ nombre del grafo opcional). Requiere Python3 con PySpark y Java; NO requiere credenciales AWS. Corre en subproceso Spark local[1] con timeout, reemplaza lecturas S3 por DataFrames en memoria, neutraliza escrituras/shell, tolera nodos None y joins con clave ausente. Salidas: consola en vivo (SSE), estadísticas entrada/salida, fidelidad de datos, descripción del grafo, reporte .txt y un CSV por tabla de salida.' },
   { id: 'DATAGEN_UI', label: '🧪 Data Redactada UI\n(DataGenPage.jsx)', x: 900, y: 580, group: 'datagen', desc: 'Pestaña que carga el grafo del Compiler, genera datos (auto o manual), corre la prueba local con consola en vivo, y despacha a AWS.' },
   { id: 'AWS_SELFCONTAINED', label: '☁️ Código Autocontenido\n(build_aws_selfcontained_code)', x: 900, y: 660, group: 'datagen', desc: 'Empaqueta el PySpark con los datos sintéticos embebidos: lecturas S3 → DataFrames inline, escrituras S3 reales. Autocontenido para correr en AWS Glue sin dependencias de datos externos.' },
   { id: 'AWS_PIPELINE', label: '🚀 Pipeline AWS Glue\n(/pipeline Lambda)', x: 1120, y: 620, group: 'datagen', desc: 'Sube el código autocontenido a S3, crea/actualiza el Glue job, lo ejecuta y hace polling del estado. El resultado se escribe a S3. Reusa el pipeline existente sin credenciales locales.' },
