@@ -252,12 +252,31 @@ def build_test_script(pyspark_code, inputs, required_cols=None):
     # El contenido de expr(...) tiene las comillas dobles escapadas (\\"), asi que
     # trabajamos sobre la cadena escapada y re-escapamos el resultado.
     try:
-        from codegen.spark_codegen import translate_abinitio_casts
+        from codegen.spark_codegen import translate_abinitio_casts, _translate_if_else
     except Exception:
         try:
-            from src.codegen.spark_codegen import translate_abinitio_casts
+            from src.codegen.spark_codegen import translate_abinitio_casts, _translate_if_else
         except Exception:
             translate_abinitio_casts = None
+            _translate_if_else = None
+
+    # Corregir 'if (...) ... else ...' Ab Initio crudo dentro de expr("...") que
+    # quedo sin traducir (codigo compilado antes del fix). Lo pasamos por
+    # _translate_if_else para convertirlo a CASE WHEN ... END.
+    if _translate_if_else is not None:
+        def _fix_expr_ifs(m):
+            inner = m.group(1)
+            if not re.search(r'\bif\s*\(', inner, re.IGNORECASE):
+                return m.group(0)
+            unescaped = inner.replace('\\"', '"')
+            fixed = _translate_if_else(unescaped)
+            return 'expr("' + fixed.replace('"', '\\"') + '")'
+
+        body = re.sub(
+            r'expr\("((?:[^"\\]|\\.)*)"\)',
+            _fix_expr_ifs,
+            body,
+        )
 
     if translate_abinitio_casts is not None:
         _ab_cast_re = re.compile(r'\((?:string|decimal|integer|int|long|double|real)\(\s*[\d,.\s]+\)\)')

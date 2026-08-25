@@ -338,8 +338,14 @@ def translate_abinitio_casts(expr):
 
 def _split_else(s):
     """Divide 'val1 else val2' respetando parentesis/comillas y anidamiento de if.
-    Devuelve (then_part, else_part) o (s, None) si no hay else de nivel superior."""
-    depth = 0
+    Devuelve (then_part, else_part) o (s, None) si no hay else de nivel superior.
+
+    Tambien respeta bloques CASE ... END ya construidos: un 'END' de nivel superior
+    que cierra un CASE externo (no abierto dentro de 's') detiene la busqueda, para
+    no 'consumir de mas' el else que pertenece al CASE externo, no al if actual.
+    """
+    depth = 0        # parentesis
+    case_depth = 0   # niveles CASE...END abiertos DENTRO de s
     quote = None
     i = 0
     while i < len(s):
@@ -354,69 +360,151 @@ def _split_else(s):
         elif ch == ')':
             depth -= 1
         elif depth == 0:
-            # Buscar 'else' como palabra completa en nivel superior
-            m = re.match(r'\belse\b', s[i:], re.IGNORECASE)
-            if m:
-                return s[:i].strip(), s[i + m.end():].strip()
+            # Contar CASE ... END como palabras completas para no cruzarlos
+            mc = re.match(r'\bCASE\b', s[i:], re.IGNORECASE)
+            if mc:
+                case_depth += 1
+                i += mc.end()
+                continue
+            me = re.match(r'\bEND\b', s[i:], re.IGNORECASE)
+            if me:
+                if case_depth == 0:
+                    # END de un CASE externo: aqui termina el alcance del if actual
+                    return s[:i].strip(), None
+                case_depth -= 1
+                i += me.end()
+                continue
+            if case_depth == 0:
+                # Buscar 'else' como palabra completa en nivel superior
+                m = re.match(r'\belse\b', s[i:], re.IGNORECASE)
+                if m:
+                    return s[:i].strip(), s[i + m.end():].strip()
         i += 1
     return s.strip(), None
 
 
-def _translate_if_else(expr):
-    """Convierte if(cond) then_val else else_val (posiblemente anidado) a CASE WHEN,
-    respetando parentesis balanceados. Soporta:
-      - cadenas if...else if...else (anidado en el ELSE)
-      - THEN que a su vez es un if(...) (anidado en el THEN)
+def _read_value(s, i):
+    """Lee un 'valor' de expresion a partir de s[i] (nivel superior), deteniendose
+    ante 'else' / 'END' de nivel superior o fin de string. Devuelve (valor, fin).
+    Respeta parentesis, comillas y bloques CASE...END anidados."""
+    n = len(s)
+    # saltar espacios iniciales
+    while i < n and s[i].isspace():
+        i += 1
+    start = i
+    depth = 0
+    case_depth = 0
+    quote = None
+    while i < n:
+        ch = s[i]
+        if quote:
+            if ch == quote and s[i - 1] != '\\':
+                quote = None
+            i += 1
+            continue
+        if ch in ('"', "'"):
+            quote = ch
+            i += 1
+            continue
+        if ch == '(':
+            depth += 1
+            i += 1
+            continue
+        if ch == ')':
+            if depth == 0:
+                break  # ')' de un nivel externo
+            depth -= 1
+            i += 1
+            continue
+        if depth == 0:
+            mc = re.match(r'\bCASE\b', s[i:], re.IGNORECASE)
+            if mc:
+                case_depth += 1
+                i += mc.end()
+                continue
+            me = re.match(r'\bEND\b', s[i:], re.IGNORECASE)
+            if me:
+                if case_depth == 0:
+                    break
+                case_depth -= 1
+                i += me.end()
+                continue
+            if case_depth == 0:
+                # 'if' anidado como valor: leerlo completo via _if_span
+                mi = re.match(r'\bif\s*\(', s[i:], re.IGNORECASE)
+                if mi:
+                    _, endpos = _if_span(s, i)
+                    i = endpos
+                    continue
+                mel = re.match(r'\belse\b', s[i:], re.IGNORECASE)
+                if mel:
+                    break
+        i += 1
+    return s[start:i].strip(), i
 
-    Ab Initio: if(c1) if(c2) a else b else c
-      -> el THEN del if externo es 'if(c2) a else b' (consume su propio else),
-         y el ELSE del if externo es 'c'. _split_else NO distingue esto por si
-         solo, por eso primero detectamos si el THEN arranca con un if anidado y
-         consumimos su else correspondiente antes de buscar el else externo.
-    """
-    e = expr.strip()
-    m = re.match(r'^if\s*\(', e, re.IGNORECASE)
+
+def _if_span(s, start):
+    """Dado s y la posicion 'start' de un 'if', traduce ese if completo a CASE WHEN
+    y devuelve (case_sql, end_index) donde end_index es la posicion tras el if.
+    Maneja if anidados en THEN y en ELSE. Devuelve (None, start) si no es un if."""
+    m = re.match(r'if\s*\(', s[start:], re.IGNORECASE)
     if not m:
-        return expr
-
-    open_idx = e.index('(', m.start())
-    close_idx = _match_paren(e, open_idx)
+        return None, start
+    open_idx = start + s[start:].index('(')
+    close_idx = _match_paren(s, open_idx)
     if close_idx == -1:
-        return expr  # parentesis desbalanceado, no tocar
+        return None, start
+    cond = s[open_idx + 1:close_idx].strip()
 
-    cond = e[open_idx + 1:close_idx].strip()
-    rest = e[close_idx + 1:].strip()
-
-    # Si el THEN arranca con un if anidado, el primer 'else' de nivel superior
-    # pertenece a ESE if interno. Consumimos then_interno + else_interno como el
-    # THEN completo del if externo, y luego buscamos el else externo.
-    if re.match(r'^if\s*\(', rest, re.IGNORECASE):
-        inner_then, inner_after = _split_else(rest)
-        if inner_after is not None:
-            # inner_after = else_interno [else externo ...]
-            inner_else, outer_else = _split_else(inner_after)
-            then_part = f'{inner_then} else {inner_else}'
-            else_part = outer_else
-        else:
-            then_part, else_part = rest, None
+    # THEN: puede ser un if anidado o un valor simple
+    i = close_idx + 1
+    while i < len(s) and s[i].isspace():
+        i += 1
+    if re.match(r'\bif\s*\(', s[i:], re.IGNORECASE):
+        then_sql, i = _if_span(s, i)
     else:
-        then_part, else_part = _split_else(rest)
+        then_sql, i = _read_value(s, i)
 
-    # Traducir recursivamente el THEN si es un if anidado
-    then_out = then_part
-    if re.match(r'^if\s*\(', then_part.strip(), re.IGNORECASE):
-        then_out = _translate_if_else(then_part.strip())
+    # buscar 'else'
+    while i < len(s) and s[i].isspace():
+        i += 1
+    mel = re.match(r'\belse\b', s[i:], re.IGNORECASE)
+    if not mel:
+        return f'CASE WHEN {cond} THEN {then_sql} END', i
+    i += mel.end()
+    while i < len(s) and s[i].isspace():
+        i += 1
+    if re.match(r'\bif\s*\(', s[i:], re.IGNORECASE):
+        else_sql, i = _if_span(s, i)
+    else:
+        else_sql, i = _read_value(s, i)
+    return f'CASE WHEN {cond} THEN {then_sql} ELSE {else_sql} END', i
 
-    if else_part is None:
-        # if sin else → CASE WHEN cond THEN then END
-        return f'CASE WHEN {cond} THEN {then_out} END'
 
-    # else if... encadenado → traducir recursivamente el else
-    if re.match(r'^if\s*\(', else_part.strip(), re.IGNORECASE):
-        inner = _translate_if_else(else_part.strip())
-        return f'CASE WHEN {cond} THEN {then_out} ELSE {inner} END'
+def _translate_if_else(expr):
+    """Convierte if(cond) then else else_val (posiblemente anidado, y aun cuando
+    venga EMBEBIDO dentro de un CASE ya construido) a CASE WHEN ... END.
 
-    return f'CASE WHEN {cond} THEN {then_out} ELSE {else_part} END'
+    Recorre el string, localiza cada 'if (' de nivel superior y lo reemplaza por
+    su CASE calculando su alcance exacto con _if_span (que respeta parentesis,
+    comillas, if anidados en THEN/ELSE y bloques CASE...END externos). Asi no se
+    'consume de mas' el else/END que pertenece a un CASE externo.
+    """
+    if not expr:
+        return expr
+    result = expr
+    guard = 0
+    while guard < 100:
+        guard += 1
+        im = re.search(r'\bif\s*\(', result, re.IGNORECASE)
+        if not im:
+            break
+        start = im.start()
+        case_sql, end = _if_span(result, start)
+        if case_sql is None or end <= start:
+            break  # evitar bucle infinito
+        result = result[:start] + case_sql + result[end:]
+    return result
 
 
 def _translate_dml_expr(expr_clean):
