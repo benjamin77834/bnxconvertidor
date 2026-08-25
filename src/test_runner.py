@@ -226,6 +226,102 @@ def build_test_script(pyspark_code, inputs, required_cols=None):
         body,
     )
 
+    # Corregir casts Ab Initio remanentes dentro de expr("..."): (tipo(N[,M]))x
+    # que Spark no entiende (p.ej. substring((decimal(17,2))campo, 0, 17)).
+    # Los convertimos a CAST(x AS TIPO) reutilizando la logica del codegen.
+    # El contenido de expr(...) tiene las comillas dobles escapadas (\\"), asi que
+    # trabajamos sobre la cadena escapada y re-escapamos el resultado.
+    try:
+        from codegen.spark_codegen import translate_abinitio_casts
+    except Exception:
+        try:
+            from src.codegen.spark_codegen import translate_abinitio_casts
+        except Exception:
+            translate_abinitio_casts = None
+
+    if translate_abinitio_casts is not None:
+        _ab_cast_re = re.compile(r'\((?:string|decimal|integer|int|long|double|real)\(\s*[\d,.\s]+\)\)')
+
+        def _fix_expr_casts(m):
+            inner = m.group(1)
+            if not _ab_cast_re.search(inner):
+                return m.group(0)
+            # inner viene con comillas escapadas (\") — desescapar, traducir, re-escapar
+            unescaped = inner.replace('\\"', '"')
+            fixed = translate_abinitio_casts(unescaped)
+            return 'expr("' + fixed.replace('"', '\\"') + '")'
+
+        body = re.sub(
+            r'expr\("((?:[^"\\]|\\.)*)"\)',
+            _fix_expr_casts,
+            body,
+        )
+
+    # Corregir size(...) residual sobre escalares dentro de expr("..."):
+    # length_of() de Ab Initio pudo haberse traducido a size() (solo ARRAY/MAP),
+    # rompiendo con DATATYPE_MISMATCH cuando el argumento es STRING/DECIMAL.
+    # Lo reescribimos a length(cast(<arg> as string)). Balanceamos parentesis para
+    # capturar el argumento completo. Solo aplica cuando el argumento NO es un
+    # array literal (no empieza con 'array(' ni con '[').
+    def _find_matching_paren(s, open_idx):
+        depth = 0
+        i = open_idx
+        while i < len(s):
+            c = s[i]
+            if c == '(':
+                depth += 1
+            elif c == ')':
+                depth -= 1
+                if depth == 0:
+                    return i
+            i += 1
+        return -1
+
+    def _fix_size_scalar(text):
+        out = text
+        guard = 0
+        search_from = 0
+        while guard < 200:
+            guard += 1
+            idx = out.find('size(', search_from)
+            if idx == -1:
+                break
+            open_paren = idx + len('size') 
+            close = _find_matching_paren(out, open_paren)
+            if close == -1:
+                break
+            arg = out[open_paren + 1:close]
+            arg_stripped = arg.strip()
+            # No tocar arrays reales
+            if arg_stripped.startswith('array(') or arg_stripped.startswith('['):
+                search_from = close + 1
+                continue
+            replacement = 'length(cast(' + arg + ' as string))'
+            out = out[:idx] + replacement + out[close + 1:]
+            search_from = idx + len(replacement)
+        return out
+
+    body = _fix_size_scalar(body)
+
+    # Corregir operadores logicos Ab Initio (&& , ||) dentro de where/filter/expr.
+    # Spark SQL no acepta && ni || -> AND / OR. Solo tocamos el contenido de las
+    # cadenas de estos metodos para no alterar codigo Python (que no usa && ni ||).
+    def _fix_logical_ops(m):
+        prefix = m.group(1)   # .where("  |  .filter("  |  expr("
+        inner = m.group(2)    # contenido de la cadena
+        suffix = m.group(3)   # ")
+        if '&&' not in inner and '||' not in inner:
+            return m.group(0)
+        inner = inner.replace('&&', ' AND ').replace('||', ' OR ')
+        inner = re.sub(r'\s{2,}', ' ', inner)
+        return prefix + inner + suffix
+
+    body = re.sub(
+        r'(\.where\("|\.filter\("|expr\(")((?:[^"\\]|\\.)*)("\))',
+        _fix_logical_ops,
+        body,
+    )
+
     # Sanear expresiones Ab Initio no traducidas que romperian el analisis Spark.
     # .where("...lookup(...)...") → .where("1=1") (lookup no ejecutable local sin la tabla)
     # Nota: la cadena puede tener comillas escapadas (\\"), por eso el patron es tolerante.

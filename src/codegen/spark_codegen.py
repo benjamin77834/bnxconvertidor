@@ -130,8 +130,12 @@ def _map_string_functions(expr):
         return expr
     # first_defined(a, b) → coalesce(a, b)
     expr = re.sub(r'first_defined\(', 'coalesce(', expr)
-    # length_of(x) → size(x) for arrays, length(x) for strings
-    expr = re.sub(r'length_of\(', 'size(', expr)
+    # length_of(x): en Ab Initio es polimorfica (vectores -> nro elementos,
+    # strings/escalares -> longitud). En estos grafos se usa para validar la
+    # longitud de campos escalares (num_cuenta, etc.), por eso length(x) que
+    # opera sobre STRING. size() SOLO acepta ARRAY/MAP y rompe con DATATYPE_MISMATCH.
+    # Ademas envolvemos en cast(... as string) para tolerar argumentos numericos/decimal.
+    expr = _replace_balanced_call(expr, "length_of", lambda inner: f"length(cast({inner} as string))")
     # decimal_strip(x) → trim(cast(x as string))  
     expr = re.sub(r'decimal_strip\(([^)]+)\)', r'cast(trim(cast(\1 as string)) as decimal(18,2))', expr)
     # is_null(x) → x IS NULL
@@ -215,6 +219,14 @@ def _map_string_functions(expr):
     expr = re.sub(r'\(decimal\("[^"]*"\)\)\s*', 'cast(', expr)
     # member [vector ...] → IN (...)
     expr = re.sub(r'\s+member\s+\[vector\s+([^\]]+)\]', r' IN (\1)', expr)
+    # Operadores logicos Ab Initio → Spark SQL: && → AND, || → OR.
+    # Spark SQL no acepta && ni ||. == y != si son validos en Spark, se dejan.
+    expr = expr.replace('&&', ' AND ').replace('||', ' OR ')
+    # Negacion unaria !expr → NOT (expr). Solo cuando ! NO forma parte de != .
+    # (?<!...) evita tocar '!=' ; el ! debe ir seguido de un identificador/parentesis.
+    expr = re.sub(r'!(?!=)\s*', ' NOT ', expr)
+    # Limpiar espacios multiples que pudieron generarse
+    expr = re.sub(r'\s{2,}', ' ', expr)
     # Strip "in." and "in0." prefix from field references (Ab Initio uses in.field)
     expr = re.sub(r'\bin\d*\.(\w+)', r'\1', expr)
     # Strip "out." prefix
@@ -264,6 +276,64 @@ def _match_paren(s, open_idx):
                 return i
         i += 1
     return -1
+
+
+def _abinitio_cast_to_spark(tipo, args, target):
+    """Construye CAST(target AS TIPO) desde un cast Ab Initio (tipo(args))target."""
+    if tipo == "decimal":
+        # (decimal(18,2)) o (decimal(18.2)) → DECIMAL(18,2); (decimal(18)) → DECIMAL(18,0)
+        parts = [p.strip() for p in re.split(r'[,.]', args) if p.strip()]
+        if len(parts) == 2:
+            spark_type = f"DECIMAL({parts[0]},{parts[1]})"
+        elif len(parts) == 1:
+            spark_type = f"DECIMAL({parts[0]},0)"
+        else:
+            spark_type = "DECIMAL(38,10)"
+    else:
+        spark_type = {
+            "string": "STRING", "integer": "INT",
+            "int": "INT", "long": "BIGINT", "double": "DOUBLE", "real": "DOUBLE",
+        }.get(tipo, "STRING")
+    return f'CAST({target} AS {spark_type})'
+
+
+def translate_abinitio_casts(expr):
+    """Traduce casts Ab Initio con longitud numerica remanentes: (tipo(N[,M]))x → CAST(x AS TIPO).
+
+    Reutilizable como salvaguarda: aplica la misma logica que _translate_dml_expr
+    sobre expresiones que pudieron haber quedado con el cast crudo Ab Initio
+    (p.ej. substring((decimal(17,2))campo, 0, 17)). Balancea parentesis para
+    soportar targets que son llamadas a funcion anidadas.
+    """
+    if not expr or '(' not in expr:
+        return expr
+    _cast_prefix_re = re.compile(
+        r'\((string|decimal|integer|int|long|double|real)\(\s*([\d,.\s]+)\)\)\s*'
+    )
+    guard = 0
+    while guard < 50:
+        guard += 1
+        m = _cast_prefix_re.search(expr)
+        if not m:
+            break
+        tipo = m.group(1)
+        args = m.group(2).strip()
+        rest = expr[m.end():]
+        tm = re.match(r'[A-Za-z_][\w.]*', rest)
+        if not tm:
+            # Sin target claro: eliminar el prefijo de cast y continuar
+            expr = expr[:m.start()] + rest
+            continue
+        target = tm.group(0)
+        after = rest[tm.end():]
+        if after.startswith('('):
+            close = _match_paren(after, 0)
+            if close != -1:
+                target = target + after[:close + 1]
+                after = after[close + 1:]
+        cast_sql = _abinitio_cast_to_spark(tipo, args, target)
+        expr = expr[:m.start()] + cast_sql + after
+    return expr
 
 
 def _split_else(s):
@@ -461,6 +531,9 @@ def _translate_dml_expr(expr_clean):
         r'\1(nullif(trim(\2), ""),',
         mapped,
     )
+    # Salvaguarda final: si quedo algun cast Ab Initio crudo (tipo(N))x sin resolver
+    # (p.ej. anidado en argumentos de substring/lpad), traducirlo a CAST(...).
+    mapped = translate_abinitio_casts(mapped)
     return mapped
 
 
@@ -471,6 +544,25 @@ def _build_transform(var_id, src_df, rule):
         sort_cols = ", ".join(f'"{c}"' for c in sort_by)
         return f'{var_id}_df = {src_df}.orderBy({sort_cols})'
     
+    # --- DML FIELDS (parsed from external .xfr with Ab Initio DML) ---
+    # Sin esta rama, un rule con dml_fields caia en selectExpr("*") y se perdian
+    # los campos derivados. Emitimos un withColumn por campo, saneando casts Ab Initio.
+    dml_fields = rule.get("dml_fields")
+    if dml_fields:
+        lines = [f'{var_id}_df = {src_df}']
+        for fld in dml_fields:
+            fname = fld["field"]
+            expr_val = translate_abinitio_casts(fld["expr"])
+            lines.append(f'{var_id}_df = {var_id}_df.withColumn("{fname}", {expr_val})')
+        where = rule.get("where")
+        if where:
+            where = _map_date_functions(where)
+            where = _map_string_functions(where)
+            where = translate_abinitio_casts(where)
+            where_escaped = where.replace('"', '\\"')
+            lines.append(f'{var_id}_df = {var_id}_df.where("{where_escaped}")')
+        return "\n".join(lines)
+
     # --- RAW DML TRANSFORM (complex reformat with Ab Initio DML) ---
     raw_transform = rule.get("raw_transform")
     if raw_transform and not rule.get("transform") == "lookup_join":

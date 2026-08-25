@@ -8,13 +8,42 @@ import re
 from datetime import datetime
 
 
+def _map_string_functions_sql(expr):
+    """Map Ab Initio string functions to Flink SQL equivalents."""
+    if not expr:
+        return expr
+    expr = re.sub(r'string_upcase\(', 'UPPER(', expr)
+    expr = re.sub(r'string_downcase\(', 'LOWER(', expr)
+    expr = re.sub(r'string_lrtrim\(', 'TRIM(', expr)
+    expr = re.sub(r'string_ltrim\(', 'LTRIM(', expr)
+    expr = re.sub(r'string_rtrim\(', 'RTRIM(', expr)
+    expr = re.sub(r'string_length\(', 'CHAR_LENGTH(', expr)
+    expr = re.sub(r'string_substring\(', 'SUBSTRING(', expr)
+    expr = re.sub(r'string_replace\(', 'REPLACE(', expr)
+    expr = re.sub(r'string_concat\(', 'CONCAT(', expr)
+    expr = re.sub(r'string_lpad\(', 'LPAD(', expr)
+    expr = re.sub(r'string_rpad\(', 'RPAD(', expr)
+    expr = re.sub(r'string_index\(', 'POSITION(', expr)
+    expr = re.sub(r'string_reverse\(', 'REVERSE(', expr)
+    # Strip "in." prefix from field references
+    expr = re.sub(r'\bin\.(\w+)', r'`\1`', expr)
+    return expr
+
+
 def _build_transform_sql(var_id, src_table, rule, is_streaming=False):
     """Generate Flink SQL for a TRANSFORM node."""
     select = rule.get("select", "*")
     where = rule.get("where")
     group_by = rule.get("group_by")
 
+    # Map Ab Initio string functions
+    select = _map_string_functions_sql(select)
+    if where:
+        where = _map_string_functions_sql(where)
+
     if group_by:
+        # Deduplicate keys preserving order
+        group_by = list(dict.fromkeys(group_by))
         keys = ", ".join(group_by)
         # Parse aggregation expressions: SUM(amount) as total ? SUM(amount) AS total
         agg_parts = []
@@ -333,18 +362,30 @@ def generate_flink(dag, output_path, xfr_rules=None):
 
             # ?? FILTER ??
             elif ntype == "FILTER":
-                f.write(f'# ? FILTER: {log_name}\n')
+                f.write(f'# [-] FILTER: {log_name}\n')
                 if parents:
                     src_table = parents[0]
                     where = rule.get("where") if rule else None
                     if where:
-                        f.write(f't_env.execute_sql("""CREATE TEMPORARY VIEW `{var_id}` AS SELECT * FROM `{src_table}` WHERE {where}""")\n')
-                        f.write(f't_env.execute_sql("""CREATE TEMPORARY VIEW `{var_id}_reject` AS SELECT * FROM `{src_table}` WHERE NOT ({where})""")\n')
+                        # Translate Ab Initio functions to Flink SQL equivalents
+                        if "next_in_sequence()" in where:
+                            # next_in_sequence() > 1 skips header rows in raw files.
+                            # No-op for structured formats.
+                            f.write(f'# next_in_sequence() filter: no-op for structured formats\n')
+                            f.write(f't_env.execute_sql("""CREATE TEMPORARY VIEW `{var_id}` AS SELECT * FROM `{src_table}`""")\n')
+                        elif re.search(r'\b(is_blank|is_defined)\b', where):
+                            mapped = re.sub(r'is_blank\((\w+)\)', r'(\1 IS NULL OR \1 = \'\')', where)
+                            mapped = re.sub(r'is_defined\((\w+)\)', r'\1 IS NOT NULL', mapped)
+                            f.write(f't_env.execute_sql("""CREATE TEMPORARY VIEW `{var_id}` AS SELECT * FROM `{src_table}` WHERE {mapped}""")\n')
+                            f.write(f't_env.execute_sql("""CREATE TEMPORARY VIEW `{var_id}_reject` AS SELECT * FROM `{src_table}` WHERE NOT ({mapped})""")\n')
+                        else:
+                            f.write(f't_env.execute_sql("""CREATE TEMPORARY VIEW `{var_id}` AS SELECT * FROM `{src_table}` WHERE {where}""")\n')
+                            f.write(f't_env.execute_sql("""CREATE TEMPORARY VIEW `{var_id}_reject` AS SELECT * FROM `{src_table}` WHERE NOT ({where})""")\n')
                     else:
                         f.write(f't_env.execute_sql("""CREATE TEMPORARY VIEW `{var_id}` AS SELECT * FROM `{src_table}`""")\n')
                 else:
                     f.write(f'{var_id} = None  # no parent\n')
-                f.write(f'print("? FILTER: {log_name}")\n\n')
+                f.write(f'print("[-] FILTER: {log_name}")\n\n')
 
             # ?? SINK ??
             elif ntype == "SINK":
