@@ -229,15 +229,25 @@ def build_test_script(pyspark_code, inputs, required_cols=None):
         prefix = mo.group(1)   # "  VAR_df = VAR_df" o "  ...df"
         col = mo.group(2)
         todo = mo.group(3).strip()
+        # Intentar obtener el DataFrame destino desde el prefijo "VAR = VAR2"
+        _dfm = re.search(r'=\s*([A-Za-z_]\w*)\s*$', prefix)
+        target_df = _dfm.group(1) if _dfm else None
         dm = _todo_date_re.search(todo)
         if dm:
             fmt = dm.group(1).replace("YYYY", "yyyy").replace("DD", "dd")
             valor = dm.group(2).strip()
             if (valor.startswith("'") and valor.endswith("'")) or (valor.startswith('"') and valor.endswith('"')):
-                inner = f'''to_date(lit("{valor.strip(chr(39)+chr(34))}"), "{fmt}")'''
+                lit_val = valor.strip(chr(39) + chr(34))
+                inner = f'''to_date(lit("{lit_val}"), "{fmt}")'''
+                return f'{prefix}.withColumn("{col}", {inner})  # BNX-TEST: cast fecha Ab Initio traducido'
+            # Valor = campo. Puede que el nombre no exista tal cual (p.ej. MISDATE
+            # vs MIS_DATE). Usamos helper tolerante que resuelve con/sin guiones
+            # bajos y case-insensitive; si no existe, devuelve NULL.
+            if target_df:
+                inner = f'_bnx_todate({target_df}, "{valor}", "{fmt}")'
             else:
-                inner = f'''to_date(col("{valor}"), "{fmt}")'''
-            return f'{prefix}.withColumn("{col}", {inner})  # BNX-TEST: cast fecha Ab Initio traducido'
+                inner = f'to_date(col("{valor}"), "{fmt}")'
+            return f'{prefix}.withColumn("{col}", {inner})  # BNX-TEST: cast fecha Ab Initio traducido (col tolerante)'
         return f'{prefix}.withColumn("{col}", lit(None))  # BNX-TEST: TODO Ab Initio no traducible, columna NULL'
 
     # Captura la forma completa: "<algo>.withColumn("COL", lit(None)  # TODO: <expr>)"
@@ -245,6 +255,30 @@ def build_test_script(pyspark_code, inputs, required_cols=None):
     body = re.sub(
         r'^(.*?)\.withColumn\(\s*"([^"]+)"\s*,\s*lit\(None\)\s*#\s*TODO:\s*(.*?)\)\s*$',
         _fix_broken_todo,
+        body,
+        flags=re.M,
+    )
+
+    # Hacer tolerante el cast de fecha ya traducido de forma rigida por versiones
+    # anteriores o por el parser: "VAR = VAR.withColumn("C", to_date(col("X"), "fmt"))".
+    # Si 'X' no existe con ese nombre exacto (p.ej. Ab Initio MISDATE vs col MIS_DATE)
+    # Spark lanza UNRESOLVED_COLUMN. Reescribimos a _bnx_todate(df, "X", "fmt") que
+    # resuelve el nombre ignorando guion bajo/mayusculas o devuelve NULL.
+    def _tolerant_todate(mo):
+        prefix = mo.group(1)
+        col = mo.group(2)
+        field = mo.group(3)
+        fmt = mo.group(4)
+        _dfm = re.search(r'=\s*([A-Za-z_]\w*)\s*$', prefix)
+        target_df = _dfm.group(1) if _dfm else None
+        if not target_df:
+            return mo.group(0)
+        return (f'{prefix}.withColumn("{col}", _bnx_todate({target_df}, "{field}", "{fmt}"))'
+                f'  # BNX-TEST: to_date col tolerante')
+
+    body = re.sub(
+        r'^(.*?)\.withColumn\(\s*"([^"]+)"\s*,\s*to_date\(\s*col\(\s*"([^"]+)"\s*\)\s*,\s*"([^"]+)"\s*\)\s*\)\s*(?:#.*)?$',
+        _tolerant_todate,
         body,
         flags=re.M,
     )
@@ -521,6 +555,26 @@ def _bnx_ensure_cols(df):
     if "_bnx_placeholder" in df.columns and len(df.columns) > 1:
         df = df.drop("_bnx_placeholder")
     return df
+
+def _bnx_todate(df, colname, fmt):
+    # to_date tolerante: resuelve el nombre de columna ignorando mayus/minus y
+    # diferencias de guion bajo (p.ej. Ab Initio 'MISDATE' vs columna 'MIS_DATE').
+    # Si no existe ninguna variante, devuelve NULL en vez de romper el analisis.
+    from pyspark.sql.functions import to_date as _td, col as _col, lit as _lit
+    target = None
+    if df is not None:
+        want = colname.lower().replace("_", "")
+        for c in df.columns:
+            if c.lower().replace("_", "") == want:
+                target = c
+                break
+    if target is None:
+        return _to_date_null(fmt)
+    return _td(_col(target), fmt)
+
+def _to_date_null(fmt):
+    from pyspark.sql.functions import to_date as _td, lit as _lit
+    return _td(_lit(None).cast("string"), fmt)
 
 def _bnx_spark():
     # ANSI off: casts invalidos (p.ej. string no-numerico a bigint) devuelven NULL
@@ -1031,20 +1085,45 @@ def build_aws_selfcontained_code(pyspark_code, datasets, keep_writes=True,
         prefix = mo.group(1)
         col = mo.group(2)
         todo = mo.group(3).strip()
+        _dfm = re.search(r'=\s*([A-Za-z_]\w*)\s*$', prefix)
+        target_df = _dfm.group(1) if _dfm else None
         dm = _aws_todo_date_re.search(todo)
         if dm:
             fmt = dm.group(1).replace("YYYY", "yyyy").replace("DD", "dd")
             valor = dm.group(2).strip()
             if (valor.startswith("'") and valor.endswith("'")) or (valor.startswith('"') and valor.endswith('"')):
-                inner = f'''to_date(lit("{valor.strip(chr(39)+chr(34))}"), "{fmt}")'''
+                lit_val = valor.strip(chr(39) + chr(34))
+                inner = f'''to_date(lit("{lit_val}"), "{fmt}")'''
+                return f'{prefix}.withColumn("{col}", {inner})  # AWS: cast fecha Ab Initio traducido'
+            if target_df:
+                inner = f'_bnx_todate({target_df}, "{valor}", "{fmt}")'
             else:
-                inner = f'''to_date(col("{valor}"), "{fmt}")'''
-            return f'{prefix}.withColumn("{col}", {inner})  # AWS: cast fecha Ab Initio traducido'
+                inner = f'to_date(col("{valor}"), "{fmt}")'
+            return f'{prefix}.withColumn("{col}", {inner})  # AWS: cast fecha Ab Initio traducido (col tolerante)'
         return f'{prefix}.withColumn("{col}", lit(None))  # AWS: TODO Ab Initio no traducible, columna NULL'
 
     body = re.sub(
         r'^(.*?)\.withColumn\(\s*"([^"]+)"\s*,\s*lit\(None\)\s*#\s*TODO:\s*(.*?)\)\s*$',
         _aws_fix_broken_todo,
+        body,
+        flags=re.M,
+    )
+
+    def _aws_tolerant_todate(mo):
+        prefix = mo.group(1)
+        col = mo.group(2)
+        field = mo.group(3)
+        fmt = mo.group(4)
+        _dfm = re.search(r'=\s*([A-Za-z_]\w*)\s*$', prefix)
+        target_df = _dfm.group(1) if _dfm else None
+        if not target_df:
+            return mo.group(0)
+        return (f'{prefix}.withColumn("{col}", _bnx_todate({target_df}, "{field}", "{fmt}"))'
+                f'  # AWS: to_date col tolerante')
+
+    body = re.sub(
+        r'^(.*?)\.withColumn\(\s*"([^"]+)"\s*,\s*to_date\(\s*col\(\s*"([^"]+)"\s*\)\s*,\s*"([^"]+)"\s*\)\s*\)\s*(?:#.*)?$',
+        _aws_tolerant_todate,
         body,
         flags=re.M,
     )
@@ -1110,6 +1189,25 @@ def _bnx_ensure_cols(df):
     if "_bnx_placeholder" in df.columns and len(df.columns) > 1:
         df = df.drop("_bnx_placeholder")
     return df
+
+def _to_date_null(fmt):
+    from pyspark.sql.functions import to_date as _td, lit as _lit
+    return _td(_lit(None).cast("string"), fmt)
+
+def _bnx_todate(df, colname, fmt):
+    # to_date tolerante: resuelve el nombre de columna ignorando mayus/minus y
+    # diferencias de guion bajo (MISDATE vs MIS_DATE); si no existe -> NULL.
+    from pyspark.sql.functions import to_date as _td, col as _col
+    target = None
+    if df is not None:
+        want = colname.lower().replace("_", "")
+        for c in df.columns:
+            if c.lower().replace("_", "") == want:
+                target = c
+                break
+    if target is None:
+        return _to_date_null(fmt)
+    return _td(_col(target), fmt)
 
 def _bnx_make_df(records):
     from pyspark.sql.types import StructType as _ST, StructField as _SF, StringType as _StrT
