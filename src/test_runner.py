@@ -260,6 +260,13 @@ def build_test_script(pyspark_code, inputs, required_cols=None, output_dir=None)
             indent = ln[:len(ln) - len(ln.lstrip())]
             out.append(f'{indent}# BNX-TEST: DML crudo sin traducir (passthrough/omitido): {ln.strip()}')
             continue
+        # Linea huerfana con solo "..." (Ellipsis) que quedo de un raw reformat
+        # del DML de Ab Initio. El error real es "unexpected indent": es una linea
+        # suelta con indentacion inesperada (no es cuerpo de un bloque). La
+        # comentamos por completo (sin indentacion) para eliminarla como sentencia.
+        if ln.strip() == "...":
+            out.append(f'# BNX-TEST: Ellipsis huerfano de DML crudo neutralizado')
+            continue
         out.append(ln)
 
     body = "\n".join(out)
