@@ -118,6 +118,28 @@ def _parse_dml_fields(dml_content, constants=None):
                 fields.append({"field": field_name, "expr": spark_expr, "type": "coalesce"})
                 continue
         
+        # Cast de fecha Ab Initio: (date('FMT'))VALOR  o  (date('FMT'))(VALOR)
+        # o con delimitador intermedio (date('FMT')("\x01"))(VALOR). El VALOR puede
+        # ser un campo (con o sin prefijo in.), un literal entre comillas, o una
+        # variable ya resuelta. Producimos to_date(...) con el formato traducido.
+        date_cast = re.search(
+            r'''\(?\s*date\(\s*['"]([^'"]+)['"]\s*\)'''      # (date('FMT')
+            r'''(?:\s*\(\s*['"][^'"]*['"]\s*\))?'''          # opcional delimitador ("\x01")
+            r'''\s*\)?\s*'''                                  # cierre del cast
+            r'''\(?\s*(?:in\d*\.)?([\w'".\-:/ ]+?)\s*\)?\s*$''',  # VALOR (campo o literal)
+            expr,
+        )
+        if date_cast:
+            ab_fmt = date_cast.group(1)
+            spark_fmt = ab_fmt.replace("YYYY", "yyyy").replace("DD", "dd")
+            valor = date_cast.group(2).strip()
+            if (valor.startswith("'") and valor.endswith("'")) or (valor.startswith('"') and valor.endswith('"')):
+                lit_val = valor.strip("'\"")
+                fields.append({"field": field_name, "expr": f'''to_date(lit("{lit_val}"), "{spark_fmt}")''', "type": "date_cast"})
+            else:
+                fields.append({"field": field_name, "expr": f'''to_date(col("{valor}"), "{spark_fmt}")''', "type": "date_cast"})
+            continue
+
         # Generic: just store the raw expression as comment
         src_match = re.search(r'in\.(\w+)', expr)
         if src_match:
