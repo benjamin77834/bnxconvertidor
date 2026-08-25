@@ -342,6 +342,16 @@ def build_test_script(pyspark_code, inputs, required_cols=None):
         body,
     )
 
+    # Corregir "NOT x IS [NOT] NULL" (sin parentesis) -> "NOT (x IS [NOT] NULL)".
+    # Spark no acepta la forma sin parentesis. Aplica a todo el body (solo afecta
+    # cadenas SQL dentro de where/filter/expr; el token no aparece en Python).
+    body = re.sub(
+        r'\bNOT\s+([A-Za-z_][\w.]*)\s+IS\s+(NOT\s+)?NULL',
+        lambda m: f'NOT ({m.group(1)} IS {m.group(2) or ""}NULL)',
+        body,
+        flags=re.IGNORECASE,
+    )
+
     # Sanear expresiones Ab Initio no traducidas que romperian el analisis Spark.
     # .where("...lookup(...)...") → .where("1=1") (lookup no ejecutable local sin la tabla)
     # Nota: la cadena puede tener comillas escapadas (\\"), por eso el patron es tolerante.
