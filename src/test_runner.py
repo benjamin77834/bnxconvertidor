@@ -962,8 +962,10 @@ def run_pyspark_test(pyspark_code, datasets, timeout=120, job_name=None):
     reads_l = [{"var": r[0], "node": r[1], "rows": int(r[2])} for r in reads]
     writes_l = [{"var": w[0], "rows": int(w[1])} for w in writes]
     steps = _parse_flow_steps(stdout)
+    fidelity = _data_fidelity(datasets, pyspark_code, reads_l, writes_l, ok, timed_out)
     report = _build_run_report(reads_l, writes_l, downloads, steps, ok,
-                               timed_out, exit_code, job_name=job_name)
+                               timed_out, exit_code, job_name=job_name,
+                               fidelity=fidelity)
     report_dl = _write_report_file(report, job_name=job_name)
     if report_dl:
         # El reporte tambien es descargable como un "archivo de salida" mas.
@@ -1015,8 +1017,113 @@ def _parse_flow_steps(stdout):
     return steps
 
 
+def _value_matches_type(value, ctype):
+    """True si 'value' es consistente con el tipo declarado 'ctype'.
+
+    Se usa para medir la fidelidad de los datos redactados vs su esquema.
+    Valores None/'' se consideran neutrales (no penalizan ni suman).
+    """
+    if value is None:
+        return None
+    s = str(value).strip()
+    if s == "":
+        return None
+    ctype = (ctype or "string").lower()
+    try:
+        if ctype in ("integer", "int", "long", "bigint"):
+            int(s)
+            return True
+        if ctype in ("decimal", "double", "float"):
+            float(s)
+            return True
+        if ctype in ("date", "datetime", "timestamp"):
+            # Acepta patrones tipo YYYY-MM-DD o YYYY-MM-DD HH:MM:SS, o fechas redactadas YYYY-**-**
+            return bool(re.match(r'^\d{4}[-/]?(\d{2}|\*\*)[-/]?(\d{2}|\*\*)', s))
+        if ctype in ("boolean", "bool"):
+            return s.lower() in ("true", "false", "0", "1", "t", "f")
+        # string: cualquier cosa no vacia es valida
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
+def _data_fidelity(datasets, pyspark_code, reads, writes, ok, timed_out):
+    """Calcula la fidelidad de los datos de la prueba (0-100) con desglose.
+
+    Combina:
+      - Ejecucion (C): el job termino OK.
+      - Salidas con datos (C): % de tablas de salida con filas > 0.
+      - Traduccion sin huecos (C): % de columnas NO neutralizadas a NULL por
+        salvaguardas (en el codigo generado: TODO / lit(None) / columna NULL).
+      - Esquema de datos redactados (B): % de valores de entrada que respetan el
+        tipo declarado de su columna.
+    Devuelve dict con score total y cada factor (con su peso y detalle).
+    """
+    code = pyspark_code or ""
+    # --- Factor B: fidelidad de esquema de los datos redactados de entrada ---
+    total_vals = 0
+    ok_vals = 0
+    any_input = any(d.get("io") == "input" for d in (datasets or []))
+    for d in (datasets or []):
+        if any_input and d.get("io") != "input":
+            continue
+        cols = d.get("columns") or []
+        rows = d.get("rows") or []
+        if not cols or not rows:
+            continue
+        type_by_name = {c.get("name"): c.get("type", "string") for c in cols}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            for name, val in row.items():
+                ctype = type_by_name.get(name)
+                if ctype is None:
+                    continue
+                res = _value_matches_type(val, ctype)
+                if res is None:
+                    continue
+                total_vals += 1
+                if res:
+                    ok_vals += 1
+    schema_score = (ok_vals / total_vals * 100) if total_vals else 100.0
+
+    # --- Factor C1: ejecucion ---
+    exec_score = 100.0 if ok else 0.0
+
+    # --- Factor C2: salidas con datos ---
+    if writes:
+        with_rows = sum(1 for w in writes if w.get("rows", 0) > 0)
+        outputs_score = with_rows / len(writes) * 100
+    else:
+        outputs_score = 0.0 if reads else 100.0
+
+    # --- Factor C3: traduccion sin huecos (columnas neutralizadas a NULL) ---
+    # Contamos columnas de salida creadas vs las neutralizadas por salvaguardas
+    # en el CODIGO GENERADO (no en el stdout del job).
+    total_cols_created = len(re.findall(r'\.withColumn\(', code)) or 0
+    null_cols = len(re.findall(
+        r'lit\(None\)\s*#\s*TODO|# TODO Ab Initio no traducible|columna NULL',
+        code,
+    ))
+    if total_cols_created > 0:
+        translation_score = max(0.0, (total_cols_created - null_cols) / total_cols_created * 100)
+    else:
+        translation_score = 100.0
+
+    factors = [
+        {"key": "ejecucion", "label": "Ejecución completa", "score": round(exec_score, 1), "weight": 0.35},
+        {"key": "esquema", "label": "Fidelidad de esquema (datos redactados)", "score": round(schema_score, 1), "weight": 0.25,
+         "detail": f"{ok_vals}/{total_vals} valores respetan su tipo" if total_vals else "sin columnas tipadas"},
+        {"key": "salidas", "label": "Salidas con datos", "score": round(outputs_score, 1), "weight": 0.20},
+        {"key": "traduccion", "label": "Traducción sin columnas NULL", "score": round(translation_score, 1), "weight": 0.20,
+         "detail": f"{null_cols} columna(s) neutralizada(s) de {total_cols_created}" if total_cols_created else "sin columnas generadas"},
+    ]
+    total = sum(f["score"] * f["weight"] for f in factors)
+    return {"score": round(total, 1), "factors": factors}
+
+
 def _build_run_report(reads, writes, downloads, steps, ok, timed_out,
-                      exit_code, job_name=None):
+                      exit_code, job_name=None, fidelity=None):
     """Arma el reporte estructurado de una corrida (para la UI y para descargar).
 
     reads/writes: listas de dicts {"var","node","rows"} / {"var","rows"}.
@@ -1049,6 +1156,7 @@ def _build_run_report(reads, writes, downloads, steps, ok, timed_out,
             "output_rows": total_out,
             "delta_rows": delta,
         },
+        "fidelity": fidelity or {},
         "flow": steps,
         "flow_counts": counts_by_type,
         "downloads": downloads,
@@ -1066,7 +1174,22 @@ def _render_report_text(report):
     L.append(f"Fecha:        {_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     estado = "OK" if report.get("ok") else ("TIMEOUT" if report.get("timed_out") else "FALLO")
     L.append(f"Estado:       {estado} (exit={report.get('exit_code')})")
+    fid = report.get("fidelity") or {}
+    if fid:
+        L.append(f"Fidelidad:    {fid.get('score', 0)}%")
     L.append("")
+    if fid.get("factors"):
+        L.append("-" * 60)
+        L.append("FIDELIDAD DE LOS DATOS (desglose)")
+        L.append("-" * 60)
+        L.append(f"Puntaje total: {fid.get('score', 0)}%")
+        for f in fid["factors"]:
+            peso = int(round(f.get("weight", 0) * 100))
+            linea = f"  - {f['label']}: {f['score']}% (peso {peso}%)"
+            if f.get("detail"):
+                linea += f" — {f['detail']}"
+            L.append(linea)
+        L.append("")
     t = report.get("totals", {})
     L.append("-" * 60)
     L.append("COMPARACION ENTRADA vs SALIDA")
@@ -1238,8 +1361,10 @@ def stream_pyspark_test(pyspark_code, datasets, timeout=180, job_name=None):
     else:
         summary = "Falló la ejecución — revisa el error arriba"
 
+    fidelity = _data_fidelity(datasets, pyspark_code, reads_all, writes_all, ok, timed_out)
     report = _build_run_report(reads_all, writes_all, downloads_all, steps_all,
-                               ok, timed_out, exit_code, job_name=job_name)
+                               ok, timed_out, exit_code, job_name=job_name,
+                               fidelity=fidelity)
     report_dl = _write_report_file(report, job_name=job_name)
     downloads_out = list(downloads_all)
     if report_dl:

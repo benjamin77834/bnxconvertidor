@@ -677,6 +677,41 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
             }}>
               <span style={label}>📊 Reporte del grafo</span>
 
+              {/* Fidelidad de los datos */}
+              {runReport.fidelity && typeof runReport.fidelity.score === 'number' && (() => {
+                const sc = runReport.fidelity.score
+                const col = sc >= 90 ? '#22c55e' : sc >= 70 ? '#f59e0b' : '#ef4444'
+                return (
+                  <div style={{
+                    display: 'flex', flexDirection: 'column', gap: 8,
+                    background: `${col}10`, border: `1px solid ${col}35`, borderRadius: 8, padding: 12,
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+                      <span style={{ fontSize: 12, color: t.dim, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                        Fidelidad de los datos
+                      </span>
+                      <span style={{ fontSize: 26, fontWeight: 800, color: col }}>{sc}%</span>
+                    </div>
+                    {/* Barra */}
+                    <div style={{ height: 8, borderRadius: 4, background: '#1e293b', overflow: 'hidden' }}>
+                      <div style={{ width: `${Math.max(0, Math.min(100, sc))}%`, height: '100%', background: col }} />
+                    </div>
+                    {/* Desglose de factores */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: 2 }}>
+                      {(runReport.fidelity.factors || []).map((f, i) => (
+                        <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 11, color: t.muted }}>
+                          <span>
+                            {f.label} <span style={{ color: t.dim }}>(peso {Math.round((f.weight || 0) * 100)}%)</span>
+                            {f.detail ? <span style={{ color: t.dim }}> — {f.detail}</span> : null}
+                          </span>
+                          <strong style={{ color: f.score >= 90 ? '#22c55e' : f.score >= 70 ? '#f59e0b' : '#ef4444' }}>{f.score}%</strong>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })()}
+
               {/* Comparacion entrada vs salida */}
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                 {[
