@@ -30,6 +30,9 @@ ui/coverage/
 # Temp
 *.tmp
 
+# Resultados de la prueba local (CSV descargables desde la GUI)
+output/
+
 terraform/.terraform/
 terraform/tfplan
 terraform/*.tfstate*
