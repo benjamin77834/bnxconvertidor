@@ -18,7 +18,7 @@ const IO_META = {
 }
 const ioMeta = (io) => IO_META[io] || IO_META.output
 
-export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compiledCode = '', compiledTarget = '' }) {
+export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compiledCode = '', compiledTarget = '', graphName = '', graphDescription = '' }) {
   const t = theme || {}
   const [mode, setMode] = useState('graph') // 'graph' | 'manual'
 
@@ -192,7 +192,7 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
       const res = await fetch(RUNTEST_STREAM_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: compiledCode, datasets, timeout: 180, job_name: awsJobName }),
+        body: JSON.stringify({ code: compiledCode, datasets, timeout: 180, job_name: (graphName || awsJobName) }),
       })
       if (!res.ok || !res.body) {
         let msg = `HTTP ${res.status}`
@@ -676,6 +676,18 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
               borderRadius: 8, padding: 14,
             }}>
               <span style={label}>📊 Reporte del grafo</span>
+
+              {/* Descripcion en lenguaje natural del grafo */}
+              {(runReport.description || graphDescription) && (
+                <div style={{
+                  fontSize: 13, color: t.muted, lineHeight: 1.5,
+                  background: '#11162080', border: `1px solid ${t.border || '#334155'}`,
+                  borderRadius: 8, padding: 10,
+                }}>
+                  <span style={{ color: t.accent || '#818cf8', fontWeight: 600 }}>📝 </span>
+                  {runReport.description || graphDescription}
+                </div>
+              )}
 
               {/* Fidelidad de los datos */}
               {runReport.fidelity && typeof runReport.fidelity.score === 'number' && (() => {

@@ -101,6 +101,7 @@ from src.test_runner import (
     stream_pyspark_test,
     build_aws_selfcontained_code,
     BNX_LOCAL_OUTPUT_DIR,
+    _describe_graph,
 )
 
 PORT = 8080
@@ -990,6 +991,12 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             graph_params = ast.get("abinitio_params", {})
             graph_name = graph_params.get("AI_JOBNAME", "") or graph_params.get("PLAN_NAME", "") or ""
 
+            # Descripcion en lenguaje natural del grafo (determinística) a partir
+            # del orden de ejecucion del DAG. reads/writes van vacios porque en el
+            # Compiler aun no se ejecuto con datos (solo describimos la estructura).
+            desc_steps = [{"type": n.type.upper(), "name": n.name} for n in dag.execution_order]
+            graph_description = _describe_graph(desc_steps, [], [], job_name=(graph_name or "grafo"))
+
             self._json_response(200, {
                 "nodes": nodes,
                 "edges": edges,
@@ -1001,6 +1008,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 "db_sources_count": len(db_nodes),
                 "accuracy": acc,
                 "graph_name": graph_name,
+                "description": graph_description,
                 "params": {k: v for k, v in list(ast.get("abinitio_params", {}).items())[:20]},
             })
 
