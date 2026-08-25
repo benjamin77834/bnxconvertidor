@@ -504,6 +504,16 @@ def _translate_if_else(expr):
         if case_sql is None or end <= start:
             break  # evitar bucle infinito
         result = result[:start] + case_sql + result[end:]
+
+    # Normalizacion de residuos de sintaxis Ab Initio que quedan cuando el if venia
+    # embebido en un CASE mal formado por una traduccion previa:
+    #   "END else <val> END"  ->  "END ELSE <val> END"  (else Ab Initio crudo tras un END)
+    #   "ENDelse"              ->  "END ELSE"            (pegado sin espacio)
+    # El 'else' crudo que queda tras un 'END' es realmente el ELSE del CASE externo.
+    result = re.sub(r'\bEND\s*else\b', 'END ELSE', result, flags=re.IGNORECASE)
+    # Colapsar un ELSE duplicado accidental: "ELSE <v1> END ELSE <v2> END" al final
+    # de un CASE externo cuando el THEN ya cerro su propio CASE. Se deja el ELSE
+    # externo (el ultimo antes del END final) y se envuelve el THEN interno.
     return result
 
 
