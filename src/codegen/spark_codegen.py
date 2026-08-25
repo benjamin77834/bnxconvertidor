@@ -538,6 +538,33 @@ def _translate_dml_expr(expr_clean):
     # Pattern: (string("|"))field → cast(field as string)
     # Strategy: remove ALL type cast prefixes, then wrap result appropriately
     
+    # Forma anidada Ab Initio rara que puede llegar cuando el valor ya viene
+    # resuelto (p.ej. $V_MISDATE -> '2024-12-12') con un delimitador \x01 de por
+    # medio: "(date('YYYY-MM-DD')(\"\\x01\"))('2024-12-12')" o variantes.
+    # La normalizamos: extraemos el formato date(...) y el ULTIMO literal entre
+    # comillas (el valor) y producimos to_date(valor, fmt). Cubre el caso donde
+    # la sintaxis no encaja en el patron estandar (date("FMT"))campo.
+    _weird_date = re.search(
+        r'''\(?\s*date\(\s*['"]([^'"]+)['"]\s*\)'''      # date('FMT')
+        r'''(?:\s*\(\s*"[^"]*"\s*\))?'''                  # opcional (\"\x01\")
+        r'''\s*\)?\s*'''
+        r'''\(\s*(['"])([^'"]*)\2\s*\)''',                # (VALOR)
+        mapped,
+    )
+    if _weird_date:
+        fmt = _weird_date.group(1).replace("YYYY", "yyyy").replace("DD", "dd")
+        valor = _weird_date.group(3)
+        replacement = f'''to_date('{valor}', "{fmt}")'''
+        mapped = mapped[:_weird_date.start()] + replacement + mapped[_weird_date.end():]
+        # limpiar parentesis externos sobrantes que envolvian toda la expresion
+        mapped = mapped.strip()
+        while mapped.startswith('(') and mapped.endswith(')') and mapped.count('(') > mapped.count('to_date('):
+            inner = mapped[1:-1].strip()
+            if inner.count('(') == inner.count(')'):
+                mapped = inner
+            else:
+                break
+
     # Detect if this is a date cast expression (comillas dobles O simples).
     # Puede haber varios casts de fecha encadenados; tomamos el ULTIMO formato,
     # que es el que aplica al campo (p.ej. (date('YYYY-MM-DD'))(date('YYYYMMDD'))campo).

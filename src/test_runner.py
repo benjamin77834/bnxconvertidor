@@ -371,6 +371,43 @@ def build_test_script(pyspark_code, inputs, required_cols=None):
         flags=re.IGNORECASE,
     )
 
+    # Corregir cast de fecha Ab Initio anidado raro que quedo crudo dentro de
+    # expr("..."): (date('FMT')(\"\\x01\"))('VALOR')  ->  to_date('VALOR', "fmt").
+    # El contenido de expr tiene comillas escapadas (\\"), trabajamos sobre la
+    # cadena escapada. Ejemplo real: ((date('YYYY-MM-DD')(\"\\x01\"))('2024-12-12')).
+    _weird_date_re = re.compile(
+        r'''\(?\s*date\(\s*'([^']+)'\s*\)'''
+        r'''(?:\s*\(\s*\\?"[^"]*\\?"\s*\))?'''
+        r'''\s*\)?\s*'''
+        r'''\(\s*'([^']*)'\s*\)'''
+    )
+
+    def _fix_weird_date(mo):
+        inner = mo.group(1)
+        if 'date(' not in inner:
+            return mo.group(0)
+        unescaped = inner.replace('\\"', '"')
+        def _repl(d):
+            fmt = d.group(1).replace("YYYY", "yyyy").replace("DD", "dd")
+            valor = d.group(2)
+            return f'''to_date('{valor}', "{fmt}")'''
+        fixed = _weird_date_re.sub(_repl, unescaped)
+        # colapsar parentesis externos redundantes
+        fixed = fixed.strip()
+        while fixed.startswith('(') and fixed.endswith(')') and fixed.count('(') > fixed.count('to_date('):
+            core = fixed[1:-1].strip()
+            if core.count('(') == core.count(')'):
+                fixed = core
+            else:
+                break
+        return 'expr("' + fixed.replace('"', '\\"') + '")'
+
+    body = re.sub(
+        r'expr\("((?:[^"\\]|\\.)*)"\)',
+        _fix_weird_date,
+        body,
+    )
+
     # Sanear expresiones Ab Initio no traducidas que romperian el analisis Spark.
     # .where("...lookup(...)...") → .where("1=1") (lookup no ejecutable local sin la tabla)
     # Nota: la cadena puede tener comillas escapadas (\\"), por eso el patron es tolerante.
