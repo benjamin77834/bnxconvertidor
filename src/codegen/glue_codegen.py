@@ -928,15 +928,16 @@ def generate_glue(dag, output_path, xfr_rules=None, pset_params=None):
                     src = f'{parents[0]}_df'
                     sink_type = rule.get("sink_type", "s3") if rule else "s3"
                     path = rule.get("path") if rule else None
-                    if path:  # quitar backslashes de escape Ab Initio
-                        path = path.replace("\\{", "{").replace("\\}", "}").replace("\\$", "$")
-                if path:  # quitar backslashes de escape Ab Initio ($\{VAR\} -> ${VAR})
-                    path = path.replace("\\{", "{").replace("\\}", "}").replace("\\$", "$")
                     fmt = rule.get("format", "parquet") if rule else "parquet"
                     topic = rule.get("topic") if rule else None
                     table = rule.get("table") if rule else None
                     conn = rule.get("connection") if rule else None
                     mode = rule.get("mode", "overwrite") if rule else "overwrite"
+                    path_resolved = rule.get("path_resolved") if rule else False
+
+                    # quitar backslashes de escape Ab Initio ($\{VAR\} -> ${VAR})
+                    if path:
+                        path = path.replace("\\{", "{").replace("\\}", "}").replace("\\$", "$")
 
                     if sink_type == "kafka" and topic:
                         f.write(f'{src}.selectExpr("to_json(struct(*)) AS value")')
@@ -948,16 +949,12 @@ def generate_glue(dag, output_path, xfr_rules=None, pset_params=None):
                         f.write(f'.option("url", "{conn or "jdbc:mysql://localhost:3306/db"}")')
                         f.write(f'.option("dbtable", "{table or var_id.lower()}").save()\n')
                     else:
-                        path_resolved = rule.get("path_resolved") if rule else False
                         # Clean Ab Initio path expressions
                         if path:
                             path = re.sub(r'\$\[\(date\("YYYYMMDD"\)\)now\(\)\]', '{date_str}', path)
                             path = re.sub(r'\$FILE_DATE', '{date_str}', path)
                             path = re.sub(r'\$\{?(\w+)\}?', r'{PARAMS.\1}', path)
-                        if path and path_resolved:
-                            f.write(f'_date_str = spark.sql("SELECT date_format(current_date(), \'yyyyMMdd\')").collect()[0][0]\n')
-                            f.write(f'{src}.write.mode("{mode}").parquet(f"{{PARAMS.BASE_PATH}}/output/{path}")\n')
-                        elif path:
+                        if path:
                             f.write(f'_date_str = spark.sql("SELECT date_format(current_date(), \'yyyyMMdd\')").collect()[0][0]\n')
                             f.write(f'{src}.write.mode("{mode}").parquet(f"{{PARAMS.BASE_PATH}}/output/{path}")\n')
                         else:
