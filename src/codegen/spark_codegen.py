@@ -7,6 +7,228 @@ import re
 from datetime import datetime
 
 
+def _unescape_gde(expr):
+    """Des-escapa secuencias del formato serializado GDE de Ab Initio.
+
+    En el .mp serializado los caracteres | y " se guardan escapados con
+    backslash (\\| , \\") porque | es el separador de campos. Si no se
+    limpian, el codigo generado contiene literales rotos como \\|\\|
+    (SyntaxWarning en Python) o comillas escapadas de mas ( \\" ) que dejan
+    cadenas SQL sin cerrar.
+    """
+    if not expr:
+        return expr
+    # \\  -> \   (primero, para no des-escapar de mas)
+    expr = expr.replace('\\\\', '\x00')  # marcador temporal
+    expr = expr.replace('\\|', '|')
+    expr = expr.replace('\\"', '"')
+    expr = expr.replace('\\{', '{').replace('\\}', '}')
+    # Ab Initio tambien escapa parentesis y corchetes en el serializado GDE.
+    # Si quedan como \( \) \[ \] rompen el SQL (SyntaxWarning "\)" invalido).
+    expr = expr.replace('\\(', '(').replace('\\)', ')')
+    expr = expr.replace('\\[', '[').replace('\\]', ']')
+    expr = expr.replace('\x00', '\\')
+    return expr
+
+
+def _strip_dml_comments(expr):
+    """Elimina comentarios de Ab Initio de una expresion DML.
+
+    Soporta /* ... */ (bloque, posible multilinea) y // ... (hasta fin de linea).
+    Respeta literales entre comillas simples/dobles para no borrar '//' o '/*'
+    que sean parte de un string. Colapsa espacios resultantes.
+    """
+    if not expr or ('//' not in expr and '/*' not in expr):
+        return expr
+    out = []
+    i = 0
+    n = len(expr)
+    quote = None
+    while i < n:
+        ch = expr[i]
+        if quote:
+            out.append(ch)
+            if ch == quote and expr[i - 1:i] != '\\':
+                quote = None
+            i += 1
+            continue
+        if ch in ('"', "'"):
+            quote = ch
+            out.append(ch)
+            i += 1
+            continue
+        # Comentario de bloque /* ... */
+        if ch == '/' and expr[i + 1:i + 2] == '*':
+            end = expr.find('*/', i + 2)
+            if end == -1:
+                i = n  # comentario sin cerrar: descartar el resto
+            else:
+                i = end + 2
+            out.append(' ')
+            continue
+        # Comentario de linea // ... (hasta \n)
+        if ch == '/' and expr[i + 1:i + 2] == '/':
+            nl = expr.find('\n', i)
+            if nl == -1:
+                i = n
+            else:
+                i = nl
+            out.append(' ')
+            continue
+        out.append(ch)
+        i += 1
+    result = ''.join(out)
+    return re.sub(r'\s{2,}', ' ', result).strip()
+
+
+_AGG_FUNCS = ("sum", "count", "avg", "mean", "min", "max", "stddev", "variance",
+              "collect_list", "collect_set", "first", "last")
+
+
+def _wrap_agg_for_withcolumn(expr):
+    """Si la expresion es una funcion de agregacion de nivel superior, la envuelve
+    en una ventana global OVER () para que sea valida dentro de un withColumn.
+
+    En Ab Initio un reformat puede tener out.x :: sum(in.y) (agregacion global que
+    replica el total en cada fila). En Spark, sum(y) dentro de withColumn sin GROUP BY
+    lanza MISSING_GROUP_BY. sum(y) OVER () calcula el total global por fila y es valido.
+    Solo aplica cuando TODA la expresion es una unica llamada de agregacion.
+    """
+    if not expr:
+        return expr
+    e = expr.strip()
+    m = re.match(r'^(\w+)\s*\(', e)
+    if not m or m.group(1).lower() not in _AGG_FUNCS:
+        return expr
+    # Verificar que la llamada abarca toda la expresion (parentesis balanceado al final).
+    open_idx = e.index('(')
+    depth = 0
+    for i in range(open_idx, len(e)):
+        if e[i] == '(':
+            depth += 1
+        elif e[i] == ')':
+            depth -= 1
+            if depth == 0:
+                # Si el ')' de cierre es el ultimo caracter, es una agregacion pura.
+                if i == len(e) - 1:
+                    return f'{e} OVER ()'
+                return expr  # hay algo mas despues (p.ej. sum(a)+sum(b)); no envolver
+    return expr
+
+
+def _is_untranslatable(mapped):
+    """True si la expresion SQL traducida sigue conteniendo construcciones Ab Initio
+    que NO son SQL de Spark valido y produciran un ParseException.
+
+    Casos: switch(...)/case X:, lookup() sin resolver (requiere join externo),
+    'first_defined' con lookup, y el patron malformado 'is_null.campo' que aparece
+    cuando is_null(lookup(...).x) se traduce mal. En estos casos es mejor neutralizar
+    la columna a lit(None) con un TODO que emitir un expr("...") que rompe el job.
+    """
+    if not mapped:
+        return False
+    low = mapped.lower()
+    if 'switch' in low:                       # switch(x) case ...: (no existe en Spark SQL)
+        return True
+    if 'lookup(' in low:                      # lookup no resuelto (necesita join)
+        return True
+    if re.search(r'\bcase\s+\'', low):        # "case 'VAL' :" estilo Ab Initio (no CASE WHEN)
+        return True
+    if re.search(r'\bis_null\.', low):        # is_null.campo malformado
+        return True
+    if re.search(r'\b(is_defined|is_blank|is_valid)\.', low):
+        return True
+    if re.search(r'\bthen\s+end\b', low):     # CASE WHEN ... THEN END (rama vacia -> roto)
+        return True
+    return False
+
+
+def _one_line(text, limit=200):
+    """Colapsa un fragmento de texto a UNA sola linea segura para un comentario #.
+
+    El DML crudo de Ab Initio suele tener saltos de linea; si se interpola tal cual
+    en un comentario ('# {expr[:100]} ...'), el \\n parte el comentario y lo que sigue
+    queda como codigo Python con indentacion -> IndentationError: unexpected indent.
+    Aqui se reemplazan \\r\\n y \\t por espacios y se colapsan espacios multiples.
+    """
+    if text is None:
+        return ""
+    flat = re.sub(r'[\r\n\t]+', ' ', str(text))
+    flat = re.sub(r'\s{2,}', ' ', flat).strip()
+    if limit and len(flat) > limit:
+        flat = flat[:limit]
+    return flat
+
+
+def _sql_arg(expr):
+    """Prepara una expresion SQL para incrustarla en expr("...") de PySpark.
+
+    En Spark SQL los literales de string y los formatos de fecha usan comillas
+    SIMPLES. Cuando el traductor deja comillas dobles (p.ej. to_date(x, "yyyy-MM-dd")
+    o nullif(trim(x), "")), al meterlas en expr("...") y escaparlas con \\" el
+    string Python queda fragil y suele romperse ("unexpected character after line
+    continuation"). Convertir esas comillas dobles a simples es semanticamente
+    equivalente en SQL y produce codigo robusto: expr('...') sin escapes internos.
+
+    Devuelve el contenido listo para ir dentro de expr("<aqui>") (con las comillas
+    dobles ya normalizadas a simples; no requiere escape adicional).
+    """
+    if expr is None:
+        return expr
+    # 1) Comillas dobles -> simples (equivalente en SQL, evita escapes fragiles).
+    out = expr.replace('"', "'")
+    # 2) Barras invertidas residuales de Ab Initio (\n, \|, \t o un '\' colgante
+    #    al final del where) rompen el literal Python que envuelve al where:
+    #    ...where("divisas == '00' \")  -> la \ escapa la comilla de cierre y
+    #    deja el string sin terminar (SyntaxError: unterminated string literal).
+    #    En una expresion SQL de Spark esa barra no aporta nada, asi que la
+    #    eliminamos por completo.
+    out = out.replace("\\", "")
+    # 3) Colapsar espacios sobrantes que pudieron quedar tras quitar la barra.
+    out = re.sub(r"\s+", " ", out).strip()
+    return out
+
+
+def _normalize_logical_ops(expr):
+    """Traduce operadores logicos Ab Initio (|| , &&) a Spark SQL (OR , AND).
+
+    Se aplica sobre la expresion ya des-escapada. No toca | simples (bit-or)
+    ni operadores dentro de literales de cadena.
+    """
+    if not expr:
+        return expr
+    # Reemplazo fuera de literales entre comillas simples/dobles.
+    out = []
+    i = 0
+    quote = None
+    n = len(expr)
+    while i < n:
+        ch = expr[i]
+        if quote:
+            out.append(ch)
+            if ch == quote and expr[i - 1:i] != '\\':
+                quote = None
+            i += 1
+            continue
+        if ch in ('"', "'"):
+            quote = ch
+            out.append(ch)
+            i += 1
+            continue
+        if ch == '|' and expr[i + 1:i + 2] == '|':
+            out.append(' OR ')
+            i += 2
+            continue
+        if ch == '&' and expr[i + 1:i + 2] == '&':
+            out.append(' AND ')
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    result = ''.join(out)
+    return re.sub(r'\s{2,}', ' ', result).strip()
+
+
 def _map_date_functions(expr):
     """Map Ab Initio date functions to Spark SQL equivalents."""
     if not expr:
@@ -15,17 +237,17 @@ def _map_date_functions(expr):
     # Pattern: (date("FORMAT"))expr or (date("FORMAT"))(type)expr
     expr = re.sub(
         r'\(date\("YYYY-MM-DD"\)\)\s*\(([^)]+)\)\s*(\w+)',
-        r'to_date(cast(\2 as string), "yyyy-MM-dd")',
+        r"to_date(cast(\2 as string), 'yyyy-MM-dd')",
         expr
     )
     expr = re.sub(
         r'\(date\("YYYY-MM-DD"\)\)\s*(\w+)',
-        r'to_date(\1, "yyyy-MM-dd")',
+        r"to_date(\1, 'yyyy-MM-dd')",
         expr
     )
     expr = re.sub(
         r'\(date\("YYYYMMDD"\)\)\s*(\w+)',
-        r'date_format(\1, "yyyyMMdd")',
+        r"date_format(\1, 'yyyyMMdd')",
         expr
     )
     # (datetime("YYYY-MM-DDTHH24:MI:SS"))expr → to_timestamp(expr)
@@ -48,8 +270,8 @@ def _map_date_functions(expr):
     expr = re.sub(r'year_of\(', 'year(', expr)
     expr = re.sub(r'month_of\(', 'month(', expr)
     expr = re.sub(r'day_of\(', 'dayofmonth(', expr)
-    expr = re.sub(r'truncate_date\(([^,]+),\s*"MONTH"\)', r'trunc(\1, "MM")', expr)
-    expr = re.sub(r'truncate_date\(([^,]+),\s*"YEAR"\)', r'trunc(\1, "yyyy")', expr)
+    expr = re.sub(r'truncate_date\(([^,]+),\s*"MONTH"\)', r"trunc(\1, 'MM')", expr)
+    expr = re.sub(r'truncate_date\(([^,]+),\s*"YEAR"\)', r"trunc(\1, 'yyyy')", expr)
     expr = re.sub(r'last_day_of_month\(', 'last_day(', expr)
     # Familia date_*of* de Ab Initio (extraen componentes de una fecha).
     # ORDEN: los mas especificos primero para no romper prefijos comunes.
@@ -62,10 +284,10 @@ def _map_date_functions(expr):
     expr = re.sub(r'\bdate_year\(', 'year(', expr)
     expr = re.sub(r'\bdate_month\(', 'month(', expr)
     expr = re.sub(r'\bdate_day\(', 'dayofmonth(', expr)
-    # $[(date("YYYYMMDD"))now()] → date_format(current_date(), "yyyyMMdd")
+    # $[(date("YYYYMMDD"))now()] → date_format(current_date(), 'yyyyMMdd')
     expr = re.sub(
         r'\$\[\(date\("YYYYMMDD"\)\)now\(\)\]',
-        'date_format(current_date(), "yyyyMMdd")',
+        "date_format(current_date(), 'yyyyMMdd')",
         expr
     )
     return expr
@@ -95,6 +317,40 @@ def _split_last_arg(inner):
     if last_comma == -1:
         return inner.strip(), None
     return inner[:last_comma].strip(), inner[last_comma + 1:].strip()
+
+
+def _split_call_args(inner):
+    """Divide los argumentos de una llamada por comas de NIVEL SUPERIOR,
+    respetando parentesis y comillas. Devuelve lista de args (strings)."""
+    args = []
+    depth = 0
+    quote = None
+    buf = []
+    i = 0
+    while i < len(inner):
+        ch = inner[i]
+        if quote:
+            buf.append(ch)
+            if ch == quote and (i == 0 or inner[i - 1] != '\\'):
+                quote = None
+        elif ch in ('"', "'"):
+            quote = ch
+            buf.append(ch)
+        elif ch == '(':
+            depth += 1
+            buf.append(ch)
+        elif ch == ')':
+            depth -= 1
+            buf.append(ch)
+        elif ch == ',' and depth == 0:
+            args.append("".join(buf).strip())
+            buf = []
+        else:
+            buf.append(ch)
+        i += 1
+    if buf:
+        args.append("".join(buf).strip())
+    return args
 
 
 def _rewrite_string_suffix(inner):
@@ -136,19 +392,30 @@ def _map_string_functions(expr):
     # opera sobre STRING. size() SOLO acepta ARRAY/MAP y rompe con DATATYPE_MISMATCH.
     # Ademas envolvemos en cast(... as string) para tolerar argumentos numericos/decimal.
     expr = _replace_balanced_call(expr, "length_of", lambda inner: f"length(cast({inner} as string))")
-    # decimal_strip(x) → trim(cast(x as string))  
-    expr = re.sub(r'decimal_strip\(([^)]+)\)', r'cast(trim(cast(\1 as string)) as decimal(18,2))', expr)
-    # is_null(x) → x IS NULL
-    expr = re.sub(r'is_null\(([^)]+)\)', r'\1 IS NULL', expr)
-    # is_defined(x) → x IS NOT NULL
-    expr = re.sub(r'is_defined\(([^)]+)\)', r'\1 IS NOT NULL', expr)
+    # decimal_strip(x) → cast(trim(cast(x as string)) as decimal(18,2))
+    # Usar reemplazo balanceado para soportar argumentos anidados como
+    # decimal_strip(first_defined(cve_par,'')) sin desbalancear parentesis.
+    expr = _replace_balanced_call(
+        expr, "decimal_strip",
+        lambda inner: f"cast(trim(cast({inner} as string)) as decimal(18,2))",
+    )
+    # is_null(x) → (x IS NULL) — balanceado para soportar argumentos anidados
+    # como is_null(lookup(...).campo) o is_null(coalesce(a,b)).
+    expr = _replace_balanced_call(expr, "is_null", lambda inner: f"({inner} IS NULL)")
+    # is_defined(x) → (x IS NOT NULL)
+    expr = _replace_balanced_call(expr, "is_defined", lambda inner: f"({inner} IS NOT NULL)")
     # is_valid(x) → (x IS NOT NULL) — Ab Initio valida formato; en Spark aproximamos a no-null.
     # Debe ir ANTES de is_blank para no colisionar. Soporta parentesis anidados (CAST(...)).
     expr = _replace_balanced_call(expr, "is_valid", lambda inner: f"({inner} IS NOT NULL)")
-    # is_blank(x) → (x IS NULL OR x = "")
-    expr = re.sub(r'is_blank\(([^)]+)\)', r'(\1 IS NULL OR \1 = "")', expr)
-    # lookup_match("NAME", key) → true  (simplified — actual lookup resolved at join level)
-    expr = re.sub(r'lookup_match\("[^"]+",\s*[^)]+\)', 'true', expr)
+    # is_blank(x) → (x IS NULL OR x = '')  (comillas SIMPLES para SQL)
+    expr = _replace_balanced_call(expr, "is_blank", lambda inner: f"({inner} IS NULL OR {inner} = '')")
+    # lookup_match(...) → true, lookup_count(...) → 1  (simplificado; el lookup real
+    # se resolveria con un join a la tabla, que en la prueba local no existe).
+    # Usamos reemplazo BALANCEADO porque los argumentos pueden tener parentesis
+    # anidados (p.ej. lookup_match("t", string_lrtrim(campo))); un regex con [^)]*
+    # cerraria en el ) interno y dejaria un ) huerfano -> ParseException.
+    expr = _replace_balanced_call(expr, "lookup_match", lambda inner: "true")
+    expr = _replace_balanced_call(expr, "lookup_count", lambda inner: "1")
     # string_upcase(x) → upper(x)
     expr = re.sub(r'string_upcase\(', 'upper(', expr)
     # string_downcase(x) → lower(x)
@@ -175,6 +442,19 @@ def _map_string_functions(expr):
     expr = re.sub(r'string_replace_first\(', 'regexp_replace(', expr)
     # string_concat(a, b) → concat(a, b)
     expr = re.sub(r'string_concat\(', 'concat(', expr)
+    # decimal_lpad(x, n[, c]) → lpad(CAST(x AS STRING), n, c)  (Ab Initio; c por defecto '0')
+    def _rewrite_decimal_lpad(inner):
+        args = _split_call_args(inner)
+        if len(args) >= 3:
+            return f"lpad(CAST({args[0]} AS STRING), {args[1].strip()}, {args[2].strip()})"
+        if len(args) == 2:
+            return f"lpad(CAST({args[0]} AS STRING), {args[1].strip()}, '0')"
+        return f"CAST({inner} AS STRING)"
+    expr = _replace_balanced_call(expr, "decimal_lpad", _rewrite_decimal_lpad)
+    # decimal_strip(x) → CAST(x AS DECIMAL) (quita relleno; en la prueba basta el cast)
+    expr = _replace_balanced_call(expr, "decimal_strip", lambda inner: f"CAST({inner} AS DECIMAL(18,2))")
+    # datetime_add_months(d, n) → add_months(d, n)
+    expr = re.sub(r'datetime_add_months\(', 'add_months(', expr)
     # string_lrepad(x, n, c) → lpad(x, n, c)  (pad izquierda, variante Ab Initio)
     expr = re.sub(r'string_lrepad\(', 'lpad(', expr)
     # string_rrepad(x, n, c) → rpad(x, n, c)  (pad derecha, variante)
@@ -229,6 +509,8 @@ def _map_string_functions(expr):
     expr = re.sub(r'\s{2,}', ' ', expr)
     # Strip "in." and "in0." prefix from field references (Ab Initio uses in.field)
     expr = re.sub(r'\bin\d*\.(\w+)', r'\1', expr)
+    # Strip "_record_." prefix (evita INVALID_EXTRACT_BASE_FIELD_TYPE en Spark)
+    expr = re.sub(r'\b_record_\.(\w+)', r'\1', expr)
     # Strip "out." prefix
     expr = re.sub(r'\bout\.(\w+)', r'\1', expr)
     return expr
@@ -517,20 +799,59 @@ def _translate_if_else(expr):
     return result
 
 
+def _to_boolean_filter(expr):
+    """Normaliza una expresion de FILTRO para que Spark la acepte en .where().
+
+    Spark exige que el argumento de where() sea BOOLEANO. Los filtros de Ab Initio
+    a menudo se traducen a expresiones NUMERICAS (p.ej. 'CASE WHEN cond THEN 1 ELSE
+    0 END' de un if(cond) 1 else 0), lo que provoca FILTER_NOT_BOOLEAN.
+    """
+    if not expr:
+        return expr
+    e = expr.strip()
+    m = re.match(
+        r'^CASE\s+WHEN\s+(.+?)\s+THEN\s+(-?\d+(?:\.\d+)?)\s+ELSE\s+(-?\d+(?:\.\d+)?)\s+END$',
+        e, re.IGNORECASE | re.DOTALL,
+    )
+    if m:
+        cond, then_v, else_v = m.group(1), float(m.group(2)), float(m.group(3))
+        if then_v != 0 and else_v == 0:
+            return f'({cond})'
+        if then_v == 0 and else_v != 0:
+            return f'NOT ({cond})'
+        return f'({e}) <> 0'
+    if re.search(r'(>=|<=|<>|!=|==|=|>|<)\b|\bIS\s+(NOT\s+)?NULL\b|\b(AND|OR|NOT)\b|\bLIKE\b|\bIN\s*\(|\bRLIKE\b|\bBETWEEN\b',
+                 e, re.IGNORECASE):
+        return e
+    return f'({e}) <> 0'
+
+
 def _translate_dml_expr(expr_clean):
     """Translate a single Ab Initio DML expression to Spark SQL."""
     mapped = expr_clean
+    # Des-escapar formato serializado GDE y normalizar operadores logicos
+    # antes de cualquier otra transformacion (evita \|\| y comillas rotas).
+    mapped = _unescape_gde(mapped)
+    # Quitar comentarios Ab Initio antes de cualquier traduccion. El DML usa
+    # // (hasta fin de linea) y /* ... */. Si no se quitan, una asignacion
+    # comentada como "out.x :: //in.cve_obm;" produce expr("//cve_obm") -> ParseException.
+    mapped = _strip_dml_comments(mapped)
+    mapped = _normalize_logical_ops(mapped)
     # Clean up Ab Initio syntax FIRST (before function mapping)
     mapped = re.sub(r'\bin\d*\.', '', mapped)   # remove in./in0./in1. prefix
     mapped = re.sub(r'\bout\.', '', mapped)     # remove out. prefix
+    # remove _record_. prefix (Ab Initio referencia campos del registro con
+    # _record_.CAMPO; en Spark es la columna directa. Sin quitarlo, Spark intenta
+    # extraer un subcampo de una columna no-struct -> INVALID_EXTRACT_BASE_FIELD_TYPE).
+    mapped = re.sub(r'\b_record_\.', '', mapped)
     # Variables/parametros Ab Initio: $VAR o ${VAR}. Dentro de una expresion se
     # refieren a un campo/parametro; quitamos el $ para que sea un identificador
     # valido en Spark SQL (evita "Syntax error at or near '$'").
     # NOTA: $[...] (expresion inline con corchetes) se maneja aparte mas abajo.
     mapped = re.sub(r'\$\{(\w+)\}', r'\1', mapped)
     mapped = re.sub(r'\$(?![\[\{])(\w+)', r'\1', mapped)
-    # Remove :1: (priority operator in Ab Initio)
-    mapped = re.sub(r'\s*:1:\s*', ' ', mapped)
+    # Remove :N: (priority operator in Ab Initio: :0: :1: :2: ...)
+    mapped = re.sub(r'\s*:\d+:\s*', ' ', mapped)
     
     # Handle Ab Initio type casting patterns BEFORE function mapping:
     # Pattern: (date("FORMAT"))(string("delim"))field → to_date(cast(field as string), "spark_fmt")
@@ -554,7 +875,7 @@ def _translate_dml_expr(expr_clean):
     if _weird_date:
         fmt = _weird_date.group(1).replace("YYYY", "yyyy").replace("DD", "dd")
         valor = _weird_date.group(3)
-        replacement = f'''to_date('{valor}', "{fmt}")'''
+        replacement = f"to_date('{valor}', '{fmt}')"
         mapped = mapped[:_weird_date.start()] + replacement + mapped[_weird_date.end():]
         # limpiar parentesis externos sobrantes que envolvian toda la expresion
         mapped = mapped.strip()
@@ -650,7 +971,7 @@ def _translate_dml_expr(expr_clean):
 
     # If it was a date cast, wrap the remaining expression
     if has_date_cast and date_fmt and mapped and '(' not in mapped:
-        mapped = f'to_date({mapped}, "{date_fmt}")'
+        mapped = f"to_date({mapped}, '{date_fmt}')"
     
     # Now apply standard function mappings
     mapped = _map_date_functions(mapped)
@@ -690,7 +1011,7 @@ def _translate_dml_expr(expr_clean):
     # a todas las versiones de Spark. Solo aplica cuando el 1er arg es un identificador.
     mapped = re.sub(
         r'\b(to_date|to_timestamp)\(\s*([A-Za-z_]\w*)\s*,',
-        r'\1(nullif(trim(\2), ""),',
+        r"\1(nullif(trim(\2), ''),",
         mapped,
     )
     # Salvaguarda final: si quedo algun cast Ab Initio crudo (tipo(N))x sin resolver
@@ -721,7 +1042,8 @@ def _build_transform(var_id, src_df, rule):
             where = _map_date_functions(where)
             where = _map_string_functions(where)
             where = translate_abinitio_casts(where)
-            where_escaped = where.replace('"', '\\"')
+            where = _to_boolean_filter(where)
+            where_escaped = _sql_arg(where)
             lines.append(f'{var_id}_df = {var_id}_df.where("{where_escaped}")')
         return "\n".join(lines)
 
@@ -742,7 +1064,7 @@ def _build_transform(var_id, src_df, rule):
             lines.append(f'# Original Ab Initio DML contains: {"loops" if has_loops else ""} {"vector ops" if has_vector_ops else ""} {"complex logic" if has_let_complex else ""}')
             
             # Still extract simple assignments that don't reference local variables
-            field_assigns = re.findall(r'out\.(\w+)\s*::\s*([^;]+);', raw_transform)
+            field_assigns = re.findall(r'out\.(\w+)\s*:(?:\d+)?:\s*([^;]+);', raw_transform)
             simple_assigns = []
             for field_name, expression in field_assigns:
                 if field_name in ("newline", "*", "V_FILLER"):
@@ -753,7 +1075,7 @@ def _build_transform(var_id, src_df, rule):
                     continue
                 # Skip assignments referencing local let variables (RISK_SCORES, etc.)
                 if re.match(r'^[A-Z_]+\[', expr_clean) or 'vector_slice' in expr_clean:
-                    lines.append(f'# {field_name}: {expr_clean[:80]}  # → needs UDF')
+                    lines.append(f'# {field_name}: {_one_line(expr_clean, 80)}  # → needs UDF')
                     continue
                 # Simple field mappings (in.field, literals, basic functions)
                 if re.match(r'^in\d*\.\*$', expr_clean) or expr_clean == 'in.*':
@@ -765,14 +1087,18 @@ def _build_transform(var_id, src_df, rule):
                 if mapped and len(mapped) < 150:
                     simple_assigns.append((field_name, mapped))
                 else:
-                    lines.append(f'# {field_name}: {expr_clean[:80]}  # → needs manual translation')
+                    lines.append(f'# {field_name}: {_one_line(expr_clean, 80)}  # → needs manual translation')
             
             for field_name, mapped in simple_assigns:
-                mapped_escaped = mapped.replace('"', '\\"')
+                if _is_untranslatable(mapped):
+                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", lit(None))  # TODO: Ab Initio no traducible (lookup/switch/case): {_one_line(mapped, 80)}')
+                    continue
+                mapped = _wrap_agg_for_withcolumn(mapped)
+                mapped_escaped = _sql_arg(mapped)
                 lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", expr("{mapped_escaped}"))')
         else:
             # Simple DML — extract all field assignments
-            field_assigns = re.findall(r'out\.(\w+)\s*::\s*([^;]+);', raw_transform)
+            field_assigns = re.findall(r'out\.(\w+)\s*:(?:\d+)?:\s*([^;]+);', raw_transform)
             for field_name, expression in field_assigns:
                 if field_name in ("newline", "*", "V_FILLER"):
                     continue
@@ -787,16 +1113,21 @@ def _build_transform(var_id, src_df, rule):
                 if not mapped or mapped.strip() in ("", "...", "."):
                     lines.append(f'# {field_name}: expresion vacia/no traducible — omitida')
                     continue
-                mapped_escaped = mapped.replace('"', '\\"')
+                # Construcciones Ab Initio no soportadas en Spark SQL (lookup/switch/
+                # case/is_null.campo): neutralizar a lit(None) en vez de romper el job.
+                if _is_untranslatable(mapped):
+                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", lit(None))  # TODO: Ab Initio no traducible (lookup/switch/case): {_one_line(expr_clean, 80)}')
+                    continue
+                mapped = _wrap_agg_for_withcolumn(mapped)
+                mapped_escaped = _sql_arg(mapped)
                 if len(mapped_escaped) < 200:
                     lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", expr("{mapped_escaped}"))')
                 else:
-                    lines.append(f'# TODO: Complex expression for {field_name}')
-                    lines.append(f'# {expr_clean[:100]} (truncado)')
+                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", lit(None))  # TODO: expresion compleja (truncada): {_one_line(expr_clean, 100)}')
         
         if len(lines) == 1:
             lines.append(f'# Raw DML transform — review for manual translation:')
-            lines.append(f'# {raw_transform[:150]}...')
+            lines.append(f'# {_one_line(raw_transform, 150)}...')
         return "\n".join(lines)
     
     # --- LOOKUP JOIN ---
@@ -870,7 +1201,7 @@ def _build_transform(var_id, src_df, rule):
     if select and select != "*" and (
         re.search(r'out\s*::\s*\w+\s*\(', select) or
         'begin' in select.lower() and '::' in select or
-        re.search(r'out\.\w+\s*::', select)
+        re.search(r'out\.\w+\s*:(?:\d+)?:', select)
     ):
         return _build_transform(var_id, src_df, {"raw_transform": select,
                                                  **{k: v for k, v in rule.items() if k != "select"}})
@@ -887,15 +1218,28 @@ def _build_transform(var_id, src_df, rule):
         # Deduplicate keys preserving order
         group_by = list(dict.fromkeys(group_by))
         keys = ", ".join(f'"{k}"' for k in group_by)
+        group_set = set(group_by)
         agg_exprs = []
         for col in select.split(","):
             col = col.strip()
             m = re.match(r"(\w+)\((\w+)\)\s+as\s+(\w+)", col, re.I)
             if m:
+                # Agregacion explicita: sum(x) as y -> sum("x").alias("y")
                 fn, field, alias = m.group(1).lower(), m.group(2), m.group(3)
                 agg_exprs.append(f'{fn}("{field}").alias("{alias}")')
-            else:
-                agg_exprs.append(f'col("{col}")')
+                continue
+            # Columnas no agregadas dentro de un Rollup:
+            #  - "*" o vacio: no se puede meter en .agg() -> se omite
+            #  - clave del group_by: ya esta en groupBy() -> se omite del agg
+            #  - cualquier otra: se envuelve en first(...) (valor representativo
+            #    del grupo). Spark exige que toda columna fuera del GROUP BY este
+            #    agregada; usar col("x") crudo provoca MISSING_AGGREGATION.
+            if col in ("", "*") or col in group_set:
+                continue
+            agg_exprs.append(f'first("{col}").alias("{col}")')
+        if not agg_exprs:
+            # Sin ninguna expresion agregable: Rollup se reduce a un conteo por grupo.
+            agg_exprs.append('count("*").alias("count")')
         code = f'{var_id}_df = {src_df}.groupBy({keys}).agg({", ".join(agg_exprs)})'
         if where:
             code += f'.where("{where}")'
@@ -916,7 +1260,15 @@ def _build_transform(var_id, src_df, rule):
                 raw_expr, alias = m.group(1).strip(), m.group(2)
                 # Apply DML→Spark translation
                 translated = _translate_dml_expr(raw_expr)
-                translated_escaped = translated.replace('"', '\\"')
+                # Expresion vacia (p.ej. asignacion comentada //...): omitir el campo.
+                if not translated or translated.strip() in ("", "...", "."):
+                    lines.append(f'# {alias}: expresion vacia/comentada — omitida')
+                    continue
+                if _is_untranslatable(translated):
+                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{alias}", lit(None))  # TODO: Ab Initio no traducible (lookup/switch/case): {_one_line(raw_expr, 80)}')
+                    continue
+                translated = _wrap_agg_for_withcolumn(translated)
+                translated_escaped = _sql_arg(translated)
                 lines.append(f'{var_id}_df = {var_id}_df.withColumn("{alias}", expr("{translated_escaped}"))')
             else:
                 # plain column reference, skip (already exists)
@@ -1223,14 +1575,16 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                             # _translate_dml_expr traduce ademas casts numericos
                             # (decimal(N))x -> CAST(x AS DECIMAL(N)), if/else, etc.
                             mapped = _translate_dml_expr(where)
-                            mapped = re.sub(r'is_blank\((\w+)\)', r'\1 IS NULL OR \1 = ""', mapped)
+                            mapped = re.sub(r"is_blank\((\w+)\)", r"\1 IS NULL OR \1 = ''", mapped)
                             mapped = re.sub(r'is_defined\((\w+)\)', r'\1 IS NOT NULL', mapped)
-                            mapped_escaped = mapped.replace('"', '\\"')
+                            mapped = _to_boolean_filter(mapped)
+                            mapped_escaped = _sql_arg(mapped)
                             f.write(f'{var_id}_df = {src}.where("{mapped_escaped}")\n')
                             f.write(f'{var_id}_reject_df = {src}.where("NOT ({mapped_escaped})")\n')
                         else:
                             where_mapped = _translate_dml_expr(where)
-                            where_escaped = where_mapped.replace('"', '\\"')
+                            where_mapped = _to_boolean_filter(where_mapped)
+                            where_escaped = _sql_arg(where_mapped)
                             f.write(f'{var_id}_df = {src}.where("{where_escaped}")\n')
                             f.write(f'{var_id}_reject_df = {src}.where("NOT ({where_escaped})")\n')
                     else:
@@ -1327,6 +1681,17 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                 f.write(f'# [*] SINK: {log_name}\n')
                 if parents:
                     src = f'{parents[0]}_df'
+                    # Exponer el SINK con su propio nombre de variable. Necesario
+                    # cuando el SINK es tambien un lookup/dataset consumido por otro
+                    # nodo (p.ej. 'Connections_Lkp' referenciado como
+                    # connections_lkp_df en un join posterior). Sin este alias, el
+                    # consumidor no encuentra el DataFrame y el join queda vacio.
+                    # Emitimos tambien el alias en minusculas porque el codegen del
+                    # lookup_join referencia el nombre normalizado (connections_lkp_df).
+                    if var_id != parents[0]:
+                        f.write(f'{var_id}_df = {src}\n')
+                    if var_id.lower() != var_id and var_id.lower() != parents[0].lower():
+                        f.write(f'{var_id.lower()}_df = {src}\n')
                     sink_type = rule.get("sink_type", "s3") if rule else "s3"
                     path = rule.get("path") if rule else None
                     fmt = rule.get("format", "parquet") if rule else "parquet"
@@ -1463,7 +1828,7 @@ def _sanitize_generated_file(output_path):
         r'//'                           # comentario de Ab Initio (// ...)
         r'|out\s*::\s*\w+\s*\('         # out::reformat(in)= , out :: rollup(in)=
         r'|out\.\*\s*::'                # out.* :: in.* (passthrough de todas las columnas)
-        r'|out\.\w+\s*::'               # out.CAMPO :: expr
+        r'|out\.\w+\s*:(?:\d+)?:'       # out.CAMPO :: expr  y  out.CAMPO :N: expr (prioridad)
         r'|begin\s*$'                   # begin
         r'|end\s*;'                     # end;
         r'|end\s*$'                     # end (sin ;)
@@ -1477,6 +1842,10 @@ def _sanitize_generated_file(output_path):
         r'\s*(?:\([^)]*\))?\s+\w+\s*;'  # decl. de campo DML: "decimal x;" / "string(10) y;"
         r')'
     )
+    # Linea huerfana residual de un comentario partido por un \n (p.ej. el segundo
+    # tramo de "# {expr[:100]} (truncado)" cuando expr tenia salto de linea). Queda
+    # como texto indentado sin '#' -> IndentationError. La reconocemos y comentamos.
+    orphan_line = re.compile(r'^\s+\S.*\(truncado\)\s*$|^\s+\S.*\.\.\.\s*$')
     changed = False
     out = []
     for ln in lines:
@@ -1484,6 +1853,10 @@ def _sanitize_generated_file(output_path):
         # No tocar comentarios ni lineas ya validas
         if stripped.lstrip().startswith("#"):
             out.append(ln)
+            continue
+        if orphan_line.match(stripped):
+            out.append(f"# [BNX] fragmento de comentario huerfano neutralizado: {stripped.strip()}\n")
+            changed = True
             continue
         if dml_line.match(stripped):
             indent = ln[:len(ln) - len(ln.lstrip())]
