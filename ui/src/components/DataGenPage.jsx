@@ -5,6 +5,7 @@ import { COMPILE_URL, PIPELINE_URL, PIPELINE_STATUS_URL } from '../config'
 const DATAGEN_URL = COMPILE_URL.replace(/\/compile$/, '/datagen')
 const RUNTEST_URL = COMPILE_URL.replace(/\/compile$/, '/runtest')
 const RUNTEST_STREAM_URL = COMPILE_URL.replace(/\/compile$/, '/runtest/stream')
+const OPTIMIZE_COMPARE_URL = COMPILE_URL.replace(/\/compile$/, '/optimize/compare')
 const AWSCODE_URL = COMPILE_URL.replace(/\/compile$/, '/datagen/awscode')
 const DOWNLOAD_URL = COMPILE_URL.replace(/\/compile$/, '/download')
 
@@ -60,6 +61,10 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
   const [localDownloads, setLocalDownloads] = useState([]) // [{name, path}] CSV de resultado local
   const [runReport, setRunReport] = useState(null) // {totals, inputs, outputs, flow, flow_counts}
 
+  // --- Comparar performance (original vs optimizado) ---
+  const [comparing, setComparing] = useState(false)
+  const [compareResult, setCompareResult] = useState(null) // {original, optimized, speedup, faster_pct, equivalent, ...}
+
   // --- Enviar a AWS ---
   const [awsSending, setAwsSending] = useState(false)
   const [awsLogs, setAwsLogs] = useState([])
@@ -90,7 +95,9 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
       awsLog('Generando codigo autocontenido (datos sinteticos embebidos)...')
       const genRes = await fetch(AWSCODE_URL, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: compiledCode, datasets, keep_writes: true, bucket: awsBucket, job_name: awsJobName }),
+        // Enviamos el grafo (mp/xfr) para que el servidor REGENERE el PySpark
+        // fresco; asi el codigo que va a AWS nunca es una version vieja cacheada.
+        body: JSON.stringify({ code: compiledCode, mp: graphMp, xfr: graphXfr, datasets, keep_writes: true, bucket: awsBucket, job_name: awsJobName }),
       })
       const genData = await genRes.json()
       if (genData.error) { awsLog('ERROR: ' + genData.error); setAwsStatus('error'); setAwsSending(false); return }
@@ -192,7 +199,9 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
       const res = await fetch(RUNTEST_STREAM_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: compiledCode, datasets, timeout: 180, job_name: (graphName || awsJobName) }),
+        // Enviamos tambien el grafo (mp/xfr) para que el servidor REGENERE el
+        // PySpark fresco y la prueba nunca use codigo viejo cacheado en el navegador.
+        body: JSON.stringify({ code: compiledCode, mp: graphMp, xfr: graphXfr, datasets, timeout: 180, job_name: (graphName || awsJobName) }),
       })
       if (!res.ok || !res.body) {
         let msg = `HTTP ${res.status}`
@@ -234,6 +243,29 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
       setConsoleLines(prev => [...prev, { text: `Error: ${e.message}`, kind: 'error' }])
     } finally {
       setRunning(false)
+    }
+  }
+
+  // Corre el codigo ORIGINAL y el OPTIMIZADO con los mismos datos y compara
+  // tiempos + equivalencia de salidas. El backend regenera fresco desde el grafo.
+  const comparePerf = async () => {
+    setComparing(true)
+    setCompareResult(null)
+    try {
+      const inputs = (result?.datasets || []).filter(d => d.io === 'input')
+      const datasets = inputs.length ? inputs : (result?.datasets || [])
+      const res = await fetch(OPTIMIZE_COMPARE_URL, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: compiledCode, mp: graphMp, xfr: graphXfr,
+          datasets, timeout: 300, job_name: (graphName || awsJobName) }),
+      })
+      const data = await res.json()
+      if (data.error) { setCompareResult({ error: data.error }); return }
+      setCompareResult(data)
+    } catch (e) {
+      setCompareResult({ error: e.message })
+    } finally {
+      setComparing(false)
     }
   }
 
@@ -616,18 +648,101 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
                 Corre el código del Compiler con estos datos de entrada y comprueba si funciona.
               </span>
             </div>
-            <button
-              onClick={runTest}
-              disabled={running || !hasCode || !isPySpark}
-              style={{
-                padding: '10px 20px', borderRadius: 8,
-                cursor: (running || !hasCode || !isPySpark) ? 'not-allowed' : 'pointer',
-                background: (!hasCode || !isPySpark) ? (t.border || '#334155') : '#6366f1',
-                color: '#fff', border: 'none', fontSize: 14, fontWeight: 700,
-                opacity: running ? 0.6 : 1,
-              }}
-            >{running ? '⏳ Ejecutando...' : '▶️ Ejecutar prueba'}</button>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                onClick={runTest}
+                disabled={running || comparing || !hasCode || !isPySpark}
+                style={{
+                  padding: '10px 20px', borderRadius: 8,
+                  cursor: (running || !hasCode || !isPySpark) ? 'not-allowed' : 'pointer',
+                  background: (!hasCode || !isPySpark) ? (t.border || '#334155') : '#6366f1',
+                  color: '#fff', border: 'none', fontSize: 14, fontWeight: 700,
+                  opacity: running ? 0.6 : 1,
+                }}
+              >{running ? '⏳ Ejecutando...' : '▶️ Ejecutar prueba'}</button>
+              <button
+                onClick={comparePerf}
+                disabled={running || comparing || !hasCode || !isPySpark}
+                title="Corre el original y el optimizado con estos datos y compara tiempos"
+                style={{
+                  padding: '10px 20px', borderRadius: 8,
+                  cursor: (comparing || !hasCode || !isPySpark) ? 'not-allowed' : 'pointer',
+                  background: (!hasCode || !isPySpark) ? (t.border || '#334155') : '#f59e0b',
+                  color: '#fff', border: 'none', fontSize: 14, fontWeight: 700,
+                  opacity: comparing ? 0.6 : 1,
+                }}
+              >{comparing ? '⏳ Comparando...' : '⚡ Comparar performance'}</button>
+            </div>
           </div>
+
+          {/* Resultado de la comparacion original vs optimizado */}
+          {compareResult && !compareResult.error && (
+            <div style={{
+              background: t.bg || '#0f1117', borderRadius: 10, padding: 14,
+              border: `1px solid #f59e0b40`, display: 'flex', flexDirection: 'column', gap: 12,
+            }}>
+              <span style={{ fontSize: 14, fontWeight: 700, color: '#f59e0b' }}>
+                ⚡ Comparación de performance ({compareResult.total_changes} optimizaciones aplicadas)
+              </span>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                <div style={{ flex: 1, minWidth: 160, background: t.card, borderRadius: 8, padding: 12,
+                  border: `1px solid ${t.border}` }}>
+                  <div style={{ fontSize: 11, color: t.dim, textTransform: 'uppercase' }}>Original</div>
+                  <div style={{ fontSize: 26, fontWeight: 800, color: t.text }}>
+                    {compareResult.original?.seconds}s
+                  </div>
+                  <div style={{ fontSize: 11, color: compareResult.original?.ok ? '#22c55e' : '#ef4444' }}>
+                    {compareResult.original?.ok ? '✅ corrió' : '❌ falló'}
+                  </div>
+                </div>
+                <div style={{ flex: 1, minWidth: 160, background: t.card, borderRadius: 8, padding: 12,
+                  border: `1px solid #f59e0b` }}>
+                  <div style={{ fontSize: 11, color: t.dim, textTransform: 'uppercase' }}>Optimizado</div>
+                  <div style={{ fontSize: 26, fontWeight: 800, color: '#f59e0b' }}>
+                    {compareResult.optimized?.seconds}s
+                  </div>
+                  <div style={{ fontSize: 11, color: compareResult.optimized?.ok ? '#22c55e' : '#ef4444' }}>
+                    {compareResult.optimized?.ok ? '✅ corrió' : '❌ falló'}
+                  </div>
+                </div>
+                <div style={{ flex: 1, minWidth: 160, background: t.card, borderRadius: 8, padding: 12,
+                  border: `1px solid #22c55e` }}>
+                  <div style={{ fontSize: 11, color: t.dim, textTransform: 'uppercase' }}>Mejora</div>
+                  <div style={{ fontSize: 26, fontWeight: 800,
+                    color: (compareResult.faster_pct >= 0) ? '#22c55e' : '#ef4444' }}>
+                    {compareResult.faster_pct >= 0 ? '−' : '+'}{Math.abs(compareResult.faster_pct ?? 0)}%
+                  </div>
+                  <div style={{ fontSize: 11, color: t.dim }}>
+                    {compareResult.speedup ? `${compareResult.speedup}× ` : ''}
+                    {compareResult.faster_pct >= 0 ? 'más rápido' : 'más lento'}
+                  </div>
+                </div>
+              </div>
+              <div style={{ fontSize: 12,
+                color: compareResult.equivalent ? '#22c55e' : '#f59e0b' }}>
+                {compareResult.equivalent
+                  ? '✅ Mismas salidas (entradas y salidas idénticas): la optimización no cambió la lógica.'
+                  : '⚠️ Las salidas difieren entre original y optimizado — revisar (no debería pasar con reglas seguras).'}
+              </div>
+              <div style={{ fontSize: 14, color: t.text || '#e2e8f0', display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                <span>🧠 cache: <strong>{compareResult.summary?.cache_reused || 0}</strong></span>
+                <span>📡 broadcast: <strong>{compareResult.summary?.broadcast_join || 0}</strong></span>
+                <span>🗜️ coalesce: <strong>{compareResult.summary?.coalesce_write || 0}</strong></span>
+              </div>
+              {(compareResult.changes || []).slice(0, 8).map((c, i) => (
+                <div key={i} style={{ fontSize: 14, color: '#f59e0b', lineHeight: 1.5 }}>• {c.detail}</div>
+              ))}
+              {(!compareResult.original?.ok || !compareResult.optimized?.ok) && (
+                <div style={{ fontSize: 11, color: '#ef4444', fontFamily: 'monospace',
+                  whiteSpace: 'pre-wrap', maxHeight: 160, overflow: 'auto' }}>
+                  {compareResult.original?.stderr_tail || compareResult.optimized?.stderr_tail}
+                </div>
+              )}
+            </div>
+          )}
+          {compareResult?.error && (
+            <div style={{ fontSize: 12, color: '#ef4444' }}>❌ {compareResult.error}</div>
+          )}
 
           {/* Avisos de precondición */}
           {!hasCode && (
@@ -680,11 +795,11 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
               {/* Descripcion en lenguaje natural del grafo */}
               {(runReport.description || graphDescription) && (
                 <div style={{
-                  fontSize: 13, color: t.muted, lineHeight: 1.5,
+                  fontSize: 16, color: t.text || '#e2e8f0', lineHeight: 1.6,
                   background: '#11162080', border: `1px solid ${t.border || '#334155'}`,
-                  borderRadius: 8, padding: 10,
+                  borderRadius: 8, padding: 14,
                 }}>
-                  <span style={{ color: t.accent || '#818cf8', fontWeight: 600 }}>📝 </span>
+                  <span style={{ color: t.accent || '#818cf8', fontWeight: 600, fontSize: 18 }}>📝 </span>
                   {runReport.description || graphDescription}
                 </div>
               )}

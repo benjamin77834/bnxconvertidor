@@ -1,7 +1,7 @@
 # src/codegen/glue_codegen.py
 import re
 from datetime import datetime
-from src.codegen.spark_codegen import _translate_dml_expr, _map_date_functions, _map_string_functions, _sanitize_generated_file, _emit_pset_params
+from src.codegen.spark_codegen import _translate_dml_expr, _map_date_functions, _map_string_functions, _sanitize_generated_file, _emit_pset_params, _unescape_gde, _normalize_logical_ops, _sql_arg, _is_untranslatable, _one_line, _strip_dml_comments
 
 
 # Local functions removed — using improved versions from spark_codegen
@@ -17,6 +17,18 @@ def _translate_abinitio_expr(raw_expr):
         return raw_expr
     
     expr = raw_expr.strip()
+    
+    # Des-escapar secuencias del formato serializado GDE (Ab Initio guarda
+    # los operadores/comillas escapados con backslash: \| \" \\ ).
+    # Si no se limpian, el codigo generado contiene \|\| (SyntaxWarning) y
+    # comillas escapadas residuales que rompen la cadena SQL.
+    expr = _unescape_gde(expr)
+    
+    # Quitar comentarios Ab Initio (// ... y /* ... */) para no emitir expr("//...").
+    expr = _strip_dml_comments(expr)
+    
+    # Operadores logicos Ab Initio -> Spark SQL (|| -> OR, && -> AND)
+    expr = _normalize_logical_ops(expr)
     
     # Delegate to _translate_dml_expr for expressions that start with type-cast patterns
     # e.g. (date("YYYY-MM-DD")) (string("|")) field_name
@@ -58,9 +70,10 @@ def _translate_abinitio_expr(raw_expr):
     # For function calls after cast: (string(10))some_func(...) → CAST(some_func(...) AS STRING)
     expr = re.sub(r'\(string\(\d+\)\)([\w]+\([^)]*\))', r'CAST(\1 AS STRING)', expr)
     expr = re.sub(r'\(decimal\((\d+)\)\)([\w]+\([^)]*\))', r'CAST(\2 AS DECIMAL(\1))', expr)
-    # Date casts with format → to_date/to_timestamp
-    expr = re.sub(r'\(date\("([^"]+)"\)\)(\w[\w.]*)', r'to_date(\2, "\1")', expr)
-    expr = re.sub(r'\(datetime\("([^"]+)"\)\)(\w[\w.]*)', r'to_timestamp(\2, "\1")', expr)
+    # Date casts with format → to_date/to_timestamp (formato con comillas SIMPLES
+    # para no romper al incrustar en expr("..."))
+    expr = re.sub(r'\(date\("([^"]+)"\)\)(\w[\w.]*)', r"to_date(\2, '\1')", expr)
+    expr = re.sub(r'\(datetime\("([^"]+)"\)\)(\w[\w.]*)', r"to_timestamp(\2, '\1')", expr)
     # Fallback: just remove unmatched cast wrappers
     expr = re.sub(r'\(date\("[^"]*"\)\)', '', expr)
     expr = re.sub(r'\(datetime\("[^"]*"\)\)', '', expr)
@@ -104,6 +117,12 @@ def _translate_abinitio_expr(raw_expr):
             r'NULL /* TODO: lookup \1.\2 */',
             expr
         )
+    # lookup_match(...) → true, lookup_count(...) → 1 (sin la tabla real en la
+    # prueba local). Toleramos UN nivel de parentesis anidados en los argumentos
+    # (p.ej. string_lrtrim(campo)) para no dejar un ) huerfano -> ParseException.
+    _arg = r"(?:[^()]|\([^()]*\))*"
+    expr = re.sub(r"lookup_match\(" + _arg + r"\)", 'true', expr)
+    expr = re.sub(r"lookup_count\(" + _arg + r"\)", '1', expr)
     
     # Clean up double spaces
     expr = re.sub(r'\s+', ' ', expr).strip()
@@ -112,6 +131,46 @@ def _translate_abinitio_expr(raw_expr):
     expr = expr.rstrip(';').strip()
     
     return expr
+
+
+def _to_boolean_filter(expr):
+    """Normaliza una expresion de FILTRO para que Spark la acepte en .where().
+
+    Spark exige que el argumento de where() sea BOOLEANO. Los filtros de Ab Initio
+    a menudo se traducen a expresiones NUMERICAS (p.ej. 'CASE WHEN cond THEN 1 ELSE
+    0 END' proveniente de if(cond) 1 else 0), lo que provoca FILTER_NOT_BOOLEAN.
+
+    Reglas:
+      - 'CASE WHEN <cond> THEN 1 ELSE 0 END'  ->  '(<cond>)'   (booleano directo)
+      - cualquier otra expr que no parezca booleana  ->  '(expr) <> 0'
+      - expr que ya es booleana (tiene comparadores/IS NULL/AND/OR)  ->  sin cambios
+    """
+    if not expr:
+        return expr
+    e = expr.strip()
+
+    # Caso 1: CASE WHEN <cond> THEN <num> ELSE <num> END  ->  (<cond>)
+    m = re.match(
+        r'^CASE\s+WHEN\s+(.+?)\s+THEN\s+(-?\d+(?:\.\d+)?)\s+ELSE\s+(-?\d+(?:\.\d+)?)\s+END$',
+        e, re.IGNORECASE | re.DOTALL,
+    )
+    if m:
+        cond, then_v, else_v = m.group(1), float(m.group(2)), float(m.group(3))
+        # THEN != 0 y ELSE == 0 -> la condicion ES el filtro. Caso inverso -> negado.
+        if then_v != 0 and else_v == 0:
+            return f'({cond})'
+        if then_v == 0 and else_v != 0:
+            return f'NOT ({cond})'
+        # Ambos !=0 (siempre pasa) o ambos 0 (nunca pasa): comparar el CASE con 0.
+        return f'({e}) <> 0'
+
+    # Caso 2: ya parece booleana (comparadores, IS NULL, AND/OR, NOT) -> dejar igual.
+    if re.search(r'(>=|<=|<>|!=|==|=|>|<)\b|\bIS\s+(NOT\s+)?NULL\b|\b(AND|OR|NOT)\b|\bLIKE\b|\bIN\s*\(|\bRLIKE\b|\bBETWEEN\b',
+                 e, re.IGNORECASE):
+        return e
+
+    # Caso 3: expresion numerica/columna suelta -> convencion Ab Initio: !=0 pasa.
+    return f'({e}) <> 0'
 
 
 def _translate_if_else_to_case(expr):
@@ -266,12 +325,13 @@ def _build_transform(var_id, src_df, rule):
     raw_transform = rule.get("raw_transform")
     if raw_transform and not rule.get("select") and not rule.get("dml_fields"):
         # Parse field assignments from raw DML: out.field :: expression;
-        field_matches = re.findall(r'out\.(\w+)\s*::\s*(.+?);', raw_transform)
+        # Soporta el operador de prioridad Ab Initio out.field :N: expr;
+        field_matches = re.findall(r'out\.(\w+)\s*:(?:\d+)?:\s*(.+?);', raw_transform)
         if field_matches:
             lines = [f'{var_id}_df = {src_df}']
             where = rule.get("where")
             if where:
-                where = _translate_abinitio_expr(where)
+                where = _to_boolean_filter(_translate_abinitio_expr(where))
                 lines.append(f'{var_id}_reject_df = {var_id}_df.where("NOT ({where})")')
                 lines.append(f'{var_id}_df = {var_id}_df.where("{where}")')
             else:
@@ -286,6 +346,10 @@ def _build_transform(var_id, src_df, rule):
                     continue
                 
                 spark_expr = _translate_abinitio_expr(raw_expr)
+                # Expresion vacia (asignacion comentada //...): omitir el campo.
+                if not spark_expr or spark_expr.strip() in ("", "...", "."):
+                    lines.append(f'# {field_name}: expresion vacia/comentada — omitida')
+                    continue
                 
                 # Generate PySpark-native API when possible instead of expr()
                 # Pattern: CAST(field AS TYPE) → col("field").cast("type")
@@ -328,9 +392,12 @@ def _build_transform(var_id, src_df, rule):
                     n = lpad_substr_match.group(4)
                     c = lpad_substr_match.group(5)
                     lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", F.lpad(F.substring(F.col("{src_col}"), {s}, {l}), {n}, "{c}"))')
+                elif _is_untranslatable(spark_expr):
+                    # lookup/switch/case/is_null.campo: no traducible a Spark SQL.
+                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", lit(None))  # TODO: Ab Initio no traducible (lookup/switch/case): {_one_line(raw_expr, 80)}')
                 else:
                     # General case: use expr() — but wrap with F. functions where possible
-                    spark_expr_escaped = spark_expr.replace('"', '\\"')
+                    spark_expr_escaped = _sql_arg(spark_expr)
                     lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", expr("{spark_expr_escaped}"))')
             
             return "\n".join(lines)
@@ -352,14 +419,20 @@ def _build_transform(var_id, src_df, rule):
         lines = [f'{var_id}_df = {src_df}']
         where = rule.get("where")
         if where:
-            where = _translate_abinitio_expr(where)
+            where = _to_boolean_filter(_translate_abinitio_expr(where))
             lines.append(f'{var_id}_df = {var_id}_df.where("{where}")')
         if transform_exprs:
             for expr_str in transform_exprs:
                 if " as " in expr_str.lower():
                     parts = expr_str.rsplit(" as ", 1)
                     spark_expr = _translate_abinitio_expr(parts[0].strip())
-                    spark_expr_escaped = spark_expr.replace('"', '\\"')
+                    if not spark_expr or spark_expr.strip() in ("", "...", "."):
+                        lines.append(f'# {parts[1].strip()}: expresion vacia/comentada — omitida')
+                        continue
+                    if _is_untranslatable(spark_expr):
+                        lines.append(f'{var_id}_df = {var_id}_df.withColumn("{parts[1].strip()}", lit(None))  # TODO: Ab Initio no traducible (lookup/switch/case): {_one_line(parts[0].strip(), 80)}')
+                        continue
+                    spark_expr_escaped = _sql_arg(spark_expr)
                     lines.append(f'{var_id}_df = {var_id}_df.withColumn("{parts[1].strip()}", expr("{spark_expr_escaped}"))')
         if literals:
             for lit_field in literals:
@@ -380,7 +453,7 @@ def _build_transform(var_id, src_df, rule):
     if select and select != "*" and (
         re.search(r'out\s*::\s*\w+\s*\(', select) or
         ('begin' in select.lower() and '::' in select) or
-        re.search(r'out\.\w+\s*::', select)
+        re.search(r'out\.\w+\s*:(?:\d+)?:', select)
     ):
         return _build_transform(var_id, src_df, {
             "raw_transform": select,
@@ -391,22 +464,35 @@ def _build_transform(var_id, src_df, rule):
     # comma-separated expressions that must be translated individually after splitting.
     # Only translate for group_by aggregation (which expects already-split parts).
     if where:
-        where = _translate_abinitio_expr(where)
+        where = _to_boolean_filter(_translate_abinitio_expr(where))
 
     if group_by:
         # Deduplicate keys preserving order
         group_by = list(dict.fromkeys(group_by))
         keys = ", ".join(f'"{k}"' for k in group_by)
         # Parse "SUM(amount) as total_spent" → sum("amount").alias("total_spent")
+        group_set = set(group_by)
         agg_exprs = []
         for col_expr in select.split(","):
             col_expr = col_expr.strip()
             m = re.match(r"(\w+)\((\w+)\)\s+as\s+(\w+)", col_expr, re.I)
             if m:
+                # Agregacion explicita: sum(x) as y -> sum("x").alias("y")
                 fn, field, alias = m.group(1).lower(), m.group(2), m.group(3)
                 agg_exprs.append(f'{fn}("{field}").alias("{alias}")')
-            else:
-                agg_exprs.append(f'col("{col_expr}")')
+                continue
+            # Columnas no agregadas dentro de un Rollup:
+            #  - "*" o vacio: no se puede meter en .agg() -> se omite
+            #  - clave del group_by: ya esta en groupBy() -> se omite del agg
+            #  - cualquier otra: se envuelve en first(...) (valor representativo del
+            #    grupo). Spark exige que toda columna fuera del GROUP BY este
+            #    agregada; usar col("x") crudo provoca MISSING_AGGREGATION.
+            if col_expr in ("", "*") or col_expr in group_set:
+                continue
+            agg_exprs.append(f'first("{col_expr}").alias("{col_expr}")')
+        if not agg_exprs:
+            # Sin ninguna expresion agregable: Rollup se reduce a un conteo por grupo.
+            agg_exprs.append('count("*").alias("count")')
         agg_str = ", ".join(agg_exprs)
         code = f'{var_id}_df = {src_df}.groupBy({keys}).agg({agg_str})'
         if where:
@@ -428,7 +514,13 @@ def _build_transform(var_id, src_df, rule):
                 alias = m.group(2)
                 # Apply DML→Spark translation
                 translated = _translate_dml_expr(raw_expr)
-                translated_escaped = translated.replace('"', '\\"')
+                if not translated or translated.strip() in ("", "...", "."):
+                    lines.append(f'# {alias}: expresion vacia/comentada — omitida')
+                    continue
+                if _is_untranslatable(translated):
+                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{alias}", lit(None))  # TODO: Ab Initio no traducible (lookup/switch/case): {_one_line(raw_expr, 80)}')
+                    continue
+                translated_escaped = _sql_arg(translated)
                 lines.append(f'{var_id}_df = {var_id}_df.withColumn("{alias}", expr("{translated_escaped}"))')
             else:
                 pass
@@ -911,7 +1003,10 @@ def generate_glue(dag, output_path, xfr_rules=None, pset_params=None):
                             f.write(f'{var_id}_reject_df = spark.createDataFrame([], {src}.schema)\n')
                         else:
                             spark_where = _translate_abinitio_expr(where)
-                            spark_where_escaped = spark_where.replace('"', '\\"')
+                            # Asegurar que el filtro sea BOOLEANO (Spark rechaza
+                            # where() con expresiones numericas: FILTER_NOT_BOOLEAN).
+                            spark_where = _to_boolean_filter(spark_where)
+                            spark_where_escaped = _sql_arg(spark_where)
                             f.write(f'{var_id}_df = {src}.where("{spark_where_escaped}")\n')
                             f.write(f'{var_id}_reject_df = {src}.where("NOT ({spark_where_escaped})")\n')
                     else:
@@ -926,6 +1021,15 @@ def generate_glue(dag, output_path, xfr_rules=None, pset_params=None):
                 f.write(f'# [*] SINK: {log_name}\n')
                 if parents:
                     src = f'{parents[0]}_df'
+                    # Exponer el SINK con su propio nombre de variable. Necesario
+                    # cuando el SINK es tambien un lookup/dataset consumido por otro
+                    # nodo (p.ej. 'Connections_Lkp' referenciado como
+                    # connections_lkp_df en un join posterior). Sin este alias el
+                    # consumidor no encuentra el DataFrame y el join queda vacio.
+                    if var_id != parents[0]:
+                        f.write(f'{var_id}_df = {src}\n')
+                    if var_id.lower() != var_id and var_id.lower() != parents[0].lower():
+                        f.write(f'{var_id.lower()}_df = {src}\n')
                     sink_type = rule.get("sink_type", "s3") if rule else "s3"
                     path = rule.get("path") if rule else None
                     fmt = rule.get("format", "parquet") if rule else "parquet"

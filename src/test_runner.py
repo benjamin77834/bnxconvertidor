@@ -218,7 +218,10 @@ def build_test_script(pyspark_code, inputs, required_cols=None, output_dir=None)
     # El "<destino>" es el nombre de la tabla/ruta de salida (ultimo segmento del
     # path o el dbtable). Se usa para nombrar el CSV descargable, asi cada SINK
     # produce un archivo distinto con nombre significativo (no el nombre del df).
-    write_re = re.compile(r'^(\s*)(\w+)\.write\b.*$')
+    # Tolera .coalesce(N)/.repartition(N) intermedios (introducidos por el
+    # optimizador de performance) antes del .write, para seguir neutralizando la
+    # escritura a S3 en la prueba local.
+    write_re = re.compile(r'^(\s*)(\w+)(?:\.(?:coalesce|repartition)\([^)]*\))*\.write\b.*$')
     # 3. Nodos sin fuente:  X_df = None  → placeholder vacío para no romper hijos
     none_re = re.compile(r'^(\s*)(\w+_df)\s*=\s*None\b.*$')
     # 4. DML crudo Ab Initio que quedo sin traducir y NO es Python valido
@@ -229,7 +232,7 @@ def build_test_script(pyspark_code, inputs, required_cols=None, output_dir=None)
         r'^\s*('
         r'out\s*::\s*\w+\s*\('
         r'|out\.\*\s*::'
-        r'|out\.\w+\s*::'
+        r'|out\.\w+\s*:(?:\d+)?:'      # out.CAMPO :: expr  y  out.CAMPO :N: expr (prioridad Ab Initio)
         r'|begin\s*$'
         r'|end\s*;'
         r'|end\s*$'
@@ -266,6 +269,12 @@ def build_test_script(pyspark_code, inputs, required_cols=None, output_dir=None)
         # comentamos por completo (sin indentacion) para eliminarla como sentencia.
         if ln.strip() == "...":
             out.append(f'# BNX-TEST: Ellipsis huerfano de DML crudo neutralizado')
+            continue
+        # Fragmento huerfano de un comentario partido por un \n del DML crudo:
+        # linea INDENTADA que termina en "(truncado)" o "..." y no es codigo valido.
+        # Provoca "IndentationError: unexpected indent". La comentamos por completo.
+        if (ln[:1] in (' ', '\t')) and re.search(r'(\(truncado\)|\.\.\.)\s*$', ln):
+            out.append(f'# BNX-TEST: fragmento de comentario huerfano neutralizado: {ln.strip()}')
             continue
         out.append(ln)
 
@@ -378,6 +387,16 @@ def build_test_script(pyspark_code, inputs, required_cols=None, output_dir=None)
         body,
     )
 
+    # Reescribir groupBy("a","b") para ignorar claves de agrupacion AUSENTES en los
+    # datos sinteticos (que provocan UNRESOLVED_COLUMN). _bnx_groupby devuelve un
+    # GroupedData usando solo las claves existentes; el .agg(...) encadenado sigue
+    # funcionando igual.
+    body = re.sub(
+        r'(\w+)\.groupBy\(([^)]*)\)',
+        r'_bnx_groupby(\1, \2)',
+        body,
+    )
+
     # Corregir casts Ab Initio remanentes dentro de expr("..."): (tipo(N[,M]))x
     # que Spark no entiende (p.ej. substring((decimal(17,2))campo, 0, 17)).
     # Los convertimos a CAST(x AS TIPO) reutilizando la logica del codegen.
@@ -481,11 +500,99 @@ def build_test_script(pyspark_code, inputs, required_cols=None, output_dir=None)
         prefix = m.group(1)   # .where("  |  .filter("  |  expr("
         inner = m.group(2)    # contenido de la cadena
         suffix = m.group(3)   # ")
-        if '&&' not in inner and '||' not in inner:
-            return m.group(0)
+        original = m.group(0)
+        # Des-escapar operadores | del formato serializado GDE (\| -> |) para que
+        # \|\| se reconozca como || y se traduzca a OR. El \| ademas provoca
+        # SyntaxWarning ("invalid escape sequence") en Python.
+        if '\\|' in inner:
+            inner = inner.replace('\\|', '|')
+        # Des-escapar parentesis/corchetes del serializado GDE (\( \) \[ \]) que
+        # generan SyntaxWarning ("\)" invalido) y no aportan nada en SQL.
+        for _esc, _plain in (('\\(', '('), ('\\)', ')'), ('\\[', '['), ('\\]', ']')):
+            if _esc in inner:
+                inner = inner.replace(_esc, _plain)
+        # Quitar SOLO comillas escapadas residuales impares (\") del serializado GDE
+        # que dejarian la cadena SQL sin cerrar. Si el numero de \" es par se asume
+        # que son literales balanceados legitimos y no se tocan.
+        if inner.count('\\"') % 2 == 1:
+            inner = inner.replace('\\"', '')
+        if inner == m.group(2):  # sin cambios de des-escape...
+            if '&&' not in inner and '||' not in inner:
+                return original
         inner = inner.replace('&&', ' AND ').replace('||', ' OR ')
-        inner = re.sub(r'\s{2,}', ' ', inner)
+        inner = re.sub(r'\s{2,}', ' ', inner).strip()
         return prefix + inner + suffix
+
+    # Pre-saneo: comilla escapada residual (\") pegada al cierre de where/filter/expr,
+    # que deja la cadena sin cerrar: .where("... \")  ->  .where("...")
+    # Se corre ANTES de _fix_logical_ops porque ese \" rompe el emparejamiento del
+    # regex de cadenas escapadas.
+    body = re.sub(r'(\.where\("|\.filter\("|expr\(")((?:[^"\\]|\\.)*?)\s*\\"(\))', r'\1\2"\3', body)
+
+    # Neutralizar withColumn("col", expr("<comentario Ab Initio o vacio>")) que
+    # provienen de asignaciones DML comentadas (out.x :: //in.y;). El expr("//...")
+    # o expr("") rompe con ParseException. Se reemplaza por lit(None). Esta red de
+    # seguridad cubre codigo ya generado por versiones previas (sin regenerar).
+    def _neutralize_comment_expr(m):
+        pre = m.group(1)      # '<df>.withColumn("col", '
+        inner = m.group(2)    # contenido dentro de expr("...")
+        stripped = inner.strip()
+        if stripped == "" or stripped.startswith("//") or stripped.startswith("/*"):
+            return f'{pre}lit(None))  # BNX-TEST: expr vacia/comentada neutralizada'
+        return m.group(0)
+    body = re.sub(
+        r'(\.withColumn\(\s*"[^"]+"\s*,\s*)expr\("((?:[^"\\]|\\.)*)"\)\)',
+        _neutralize_comment_expr,
+        body,
+    )
+    # withColumn("col", expr("sum(x)")) con una funcion de agregacion pura rompe con
+    # MISSING_GROUP_BY (no hay GROUP BY). En un reformat Ab Initio equivale a una
+    # agregacion global: la envolvemos en OVER () para que Spark la acepte.
+    _agg_names = ("sum", "count", "avg", "mean", "min", "max", "stddev", "variance",
+                  "collect_list", "collect_set", "first", "last")
+    def _wrap_agg_expr(m):
+        pre = m.group(1)       # '<df>.withColumn("col", expr("'
+        inner = m.group(2)     # contenido del expr(...)
+        suffix = m.group(3)    # '"))'
+        s = inner.strip()
+        mm = re.match(r'(\w+)\s*\(', s)
+        if not mm or mm.group(1).lower() not in _agg_names:
+            return m.group(0)
+        # ya tiene OVER? no tocar
+        if re.search(r'\bover\s*\(', s, re.IGNORECASE):
+            return m.group(0)
+        # verificar que la llamada abarca toda la expresion (agregacion pura)
+        depth = 0
+        oi = s.index('(')
+        for i in range(oi, len(s)):
+            if s[i] == '(':
+                depth += 1
+            elif s[i] == ')':
+                depth -= 1
+                if depth == 0:
+                    if i == len(s) - 1:
+                        return f'{pre}{s} OVER (){suffix}'
+                    return m.group(0)
+        return m.group(0)
+    body = re.sub(
+        r'(\.withColumn\(\s*"[^"]+"\s*,\s*expr\(")((?:[^"\\]|\\.)*)("\)\))',
+        _wrap_agg_expr,
+        body,
+    )
+
+    # Idem para .where("//...") / .filter("//...") vacios o solo-comentario.
+    def _neutralize_comment_where(m):
+        method = m.group(1)   # '.where("' | '.filter("'
+        inner = m.group(2)
+        stripped = inner.strip()
+        if stripped == "" or stripped.startswith("//") or stripped.startswith("/*"):
+            return f'{method}1=1")  # BNX-TEST: filtro vacio/comentado neutralizado'
+        return m.group(0)
+    body = re.sub(
+        r'(\.where\("|\.filter\(")((?:[^"\\]|\\.)*)"\)',
+        _neutralize_comment_where,
+        body,
+    )
 
     body = re.sub(
         r'(\.where\("|\.filter\("|expr\(")((?:[^"\\]|\\.)*)("\))',
@@ -563,6 +670,32 @@ def build_test_script(pyspark_code, inputs, required_cols=None, output_dir=None)
     body = re.sub(
         r'\.withColumn\(\s*"([^"]+)"\s*,\s*expr\("(?:[^"\\]|\\.)*(?:lookup\(|/\*)(?:[^"\\]|\\.)*"\)\s*\)',
         _neutralize_lookup_expr,
+        body,
+    )
+
+    # --- Relajar comparaciones ENTRE COLUMNAS en filtros (opcion A) ---
+    # Patron: .where(col("A") OP col("B"))  con OP relacional (>= <= > < = ==).
+    # Estas comparaciones suelen venir de un lookup_count de Ab Initio (if(in.A >=
+    # rec.B)). En la prueba local, B viene del lookup y tras el LEFT join sin match
+    # queda NULL, con lo que "A OP NULL" es NULL (falso) y se descartan TODAS las
+    # filas -> salida vacia. Como los datos sinteticos redactados no pueden cumplir
+    # una relacion entre dos columnas de texto, relajamos el filtro: la fila pasa si
+    # cumple la comparacion O si el lado derecho es NULL (sin dato de lookup).
+    # Solo afecta a la PRUEBA LOCAL; el codigo que va a AWS no se toca.
+    def _relax_col_cmp(m):
+        a, op, b = m.group(1), m.group(2), m.group(3)
+        # Normalizar '==' de Ab Initio a '=' de SQL.
+        sql_op = "=" if op == "==" else op
+        return (f'.where("(`{a}` {sql_op} `{b}`) OR `{b}` IS NULL OR `{a}` IS NULL")'
+                f'  # BNX-TEST: comparacion entre columnas relajada (lookup sin datos sinteticos)')
+    body = re.sub(
+        r'\.where\(\s*col\("([^"]+)"\)\s*(>=|<=|==|=|>|<)\s*col\("([^"]+)"\)\s*\)',
+        _relax_col_cmp,
+        body,
+    )
+    body = re.sub(
+        r'\.filter\(\s*col\("([^"]+)"\)\s*(>=|<=|==|=|>|<)\s*col\("([^"]+)"\)\s*\)',
+        _relax_col_cmp,
         body,
     )
 
@@ -758,8 +891,34 @@ def _bnx_join(left, right, on=None, how="inner"):
                 new_name = f"{{c}}_r{{n}}"
                 n += 1
             right = right.withColumnRenamed(c, new_name)
+    # Romper el LINAJE COMPARTIDO: cuando left y right derivan de un ancestro comun
+    # (p.ej. un lookup que es el mismo Reformat que alimenta otra rama), Spark
+    # resuelve las columnas 'on' de forma ambigua y el join puede devolver 0 filas
+    # aunque sea un LEFT. Recreamos el lado derecho desde sus filas para que sea un
+    # DataFrame independiente sin ese ancestro. Es barato en la prueba (datos chicos).
+    def _detach(df):
+        try:
+            return df.sql_ctx.sparkSession.createDataFrame(df.collect(), df.schema)
+        except Exception:
+            try:
+                return _bnx_session.createDataFrame(df.collect(), df.schema)
+            except Exception:
+                return df
+    right = _detach(right)
+    how_l = (how or "inner").lower()
+    preserves_left = how_l in ("left", "leftouter", "left_outer", "outer", "full", "fullouter", "full_outer")
     try:
-        return left.join(right, on=on, how=how)
+        left_n = left.count() if preserves_left else None
+        joined = left.join(right, on=on, how=how)
+        # Red de seguridad: un join que PRESERVA el izquierdo nunca deberia dar
+        # menos filas que el izquierdo. Si pasa (bug de lineage), rehacemos el join
+        # tras materializar tambien el izquierdo.
+        if preserves_left and left_n is not None and joined.count() < left_n:
+            print(f"[BNX-TEST] JOIN: resultado ({{joined.count()}}) < izquierdo ({{left_n}}) en '{{how}}', "
+                  f"rehaciendo con lineage independiente")
+            left2 = _detach(left)
+            joined = left2.join(right, on=on, how=how)
+        return joined
     except Exception as _e:
         print(f"[BNX-TEST] JOIN fallo ({{_e}}), uso cross-join limitado")
         return left.crossJoin(right.limit(1))
@@ -813,6 +972,35 @@ def _bnx_dropdup(df, cols):
         print("[BNX-TEST] DEDUP: ninguna columna valida, dropDuplicates global")
         return df.dropDuplicates()
     return df.dropDuplicates(existing)
+
+def _bnx_groupby(df, *cols):
+    # groupBy tolerante: agrupa solo por las claves que EXISTEN en el DataFrame.
+    # Las claves ausentes (datos sinteticos sin esa columna) provocarian
+    # UNRESOLVED_COLUMN; las ignoramos. Si no queda ninguna clave valida, se agrega
+    # una columna constante para agrupar todo en un solo grupo (agregacion global).
+    from pyspark.sql.functions import lit as _lit
+    real = list(df.columns)
+    lower = {{c.lower(): c for c in real}}
+    keys = []
+    for c in cols:
+        if not isinstance(c, str):
+            # Column expr: intentamos extraer el nombre; si no, la usamos tal cual.
+            name = _bnx_colname(c)
+            c = name or c
+        if isinstance(c, str):
+            if c in real:
+                keys.append(c)
+            elif c.lower() in lower:
+                keys.append(lower[c.lower()])
+            else:
+                print(f"[BNX-TEST] GROUPBY: clave '{{c}}' ausente, se ignora")
+        else:
+            keys.append(c)
+    if not keys:
+        print("[BNX-TEST] GROUPBY: ninguna clave valida, agrupacion global")
+        df = df.withColumn("_bnx_grp_all", _lit(1))
+        return df.groupBy("_bnx_grp_all")
+    return df.groupBy(*keys)
 
 def _bnx_shell(cmd):
     # Run_Program: NO ejecutamos comandos shell en la prueba local, solo registramos.
@@ -1553,7 +1741,8 @@ def build_aws_selfcontained_code(pyspark_code, datasets, keep_writes=True,
     out = []
 
     read_re = re.compile(r'^(\s*)(\w+)\s*=\s*spark\.read\.[\w.]+\(.*\)\s*$')
-    write_re = re.compile(r'^(\s*)(\w+)\.write\b.*$')
+    # Tolera .coalesce(N)/.repartition(N) (del optimizador) antes de .write.
+    write_re = re.compile(r'^(\s*)(\w+)(?:\.(?:coalesce|repartition)\([^)]*\))*\.write\b.*$')
     none_re = re.compile(r'^(\s*)(\w+_df)\s*=\s*None\b.*$')
 
     for ln in lines:

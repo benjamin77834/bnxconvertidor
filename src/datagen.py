@@ -108,6 +108,98 @@ _GENERIC_COLUMNS = [
 ]
 
 
+# Operadores de comparacion que, junto a un literal numerico, revelan que una
+# columna es numerica y sugieren un valor que satisface el filtro (para que la
+# prueba con datos sinteticos no quede en 0 filas por un filtro que nada cumple).
+_CMP_RE = re.compile(
+    r'(?:CAST\(\s*|coalesce\(\s*)?'                      # opcional CAST( o coalesce(
+    r'(?:in\d*\.)?([A-Za-z_]\w*)'                        # columna
+    r'(?:\s*,\s*[^)]*\))?'                               # opcional resto de coalesce(col, 0)
+    r'(?:\s+AS\s+[A-Za-z]+\s*(?:\([^)]*\))?\s*\))?'      # opcional AS DECIMAL(10,0))
+    r'\s*(>=|<=|!=|<>|==|=|>|<)\s*'                      # operador (incluye != y <>)
+    r'(-?\d+(?:\.\d+)?)',                                # literal numerico
+    re.IGNORECASE,
+)
+
+# Igualdad contra un literal STRING: col == 'Y'  /  col = "ABC"  (y != para exclusion).
+_STR_EQ_RE = re.compile(
+    r"(?:string_lrtrim\(\s*|trim\(\s*|CAST\(\s*)?"       # opcional trim/cast alrededor
+    r"(?:in\d*\.)?([A-Za-z_]\w*)"                        # columna
+    r"(?:\s*\)|\s+AS\s+[A-Za-z]+\s*)?"                   # cierre opcional del trim/cast
+    r"\s*(==|=|!=|<>)\s*"                                # operador de igualdad
+    r"'([^']*)'",                                        # literal string entre comillas simples
+    re.IGNORECASE,
+)
+
+
+def _extract_numeric_constraints(xfr_rules):
+    """Escanea las condiciones (where/filter) de las reglas del grafo y detecta
+    columnas comparadas contra literales numericos. Devuelve:
+        {col_lower: {"type": "integer"|"decimal", "satisfy": <valor>}}
+    'satisfy' es un valor que hace VERDADERA la comparacion, para que los datos
+    sinteticos pasen el filtro y las salidas no queden vacias.
+    """
+    constraints = {}
+    if not isinstance(xfr_rules, dict):
+        return constraints
+    for rule in xfr_rules.values():
+        if not isinstance(rule, dict):
+            continue
+        conds = []
+        for k in ("where", "filter", "selection", "condition"):
+            v = rule.get(k)
+            if isinstance(v, str) and v.strip():
+                conds.append(v)
+        for cond in conds:
+            for m in _CMP_RE.finditer(cond):
+                col, op, lit = m.group(1), m.group(2), m.group(3)
+                cl = col.lower()
+                if cl in _SQL_KEYWORDS:
+                    continue
+                is_dec = "." in lit
+                num = float(lit) if is_dec else int(lit)
+                not_equal = False
+                exact = False
+                # Valor que satisface el operador.
+                if op in ("=", "=="):
+                    satisfy = num
+                    exact = True  # debe ser EXACTAMENTE num
+                elif op in (">=", "<="):
+                    satisfy = num
+                elif op == ">":
+                    satisfy = num + (0.01 if is_dec else 1)
+                elif op == "<":
+                    satisfy = num - (0.01 if is_dec else 1)
+                elif op in ("!=", "<>"):
+                    # Cualquier valor distinto cumple; el generador usara base+delta.
+                    satisfy = num
+                    not_equal = True
+                else:
+                    satisfy = num
+                # Si la columna aparece en varios filtros, el ultimo constraint gana
+                # (suficiente para los casos tipicos de un solo filtro por columna).
+                constraints[cl] = {
+                    "type": "decimal" if is_dec else "integer",
+                    "satisfy": satisfy,
+                    "not_equal": not_equal,
+                    "exact": exact,
+                }
+            # Igualdad contra literal STRING: generamos ese valor (o uno distinto
+            # para !=) para que el filtro pase. No pisamos un constraint numerico
+            # ya detectado para la misma columna.
+            for m in _STR_EQ_RE.finditer(cond):
+                col, op, val = m.group(1), m.group(2), m.group(3)
+                cl = col.lower()
+                if cl in _SQL_KEYWORDS or cl in constraints:
+                    continue
+                constraints[cl] = {
+                    "type": "string",
+                    "str_value": val,
+                    "str_not_equal": op in ("!=", "<>"),
+                }
+    return constraints
+
+
 def infer_schema_from_graph(ast, xfr_rules, dml_schema=None):
     """Extrae el esquema de ENTRADA y SALIDA por nodo a partir del grafo.
 
@@ -126,6 +218,11 @@ def infer_schema_from_graph(ast, xfr_rules, dml_schema=None):
     dml_schema = dml_schema or {}
     nodes = ast.get("nodes", []) if isinstance(ast, dict) else []
     edges = ast.get("edges", []) if isinstance(ast, dict) else []
+
+    # Constraints numericos de los filtros del grafo: columnas comparadas contra
+    # numeros. Se usan para (a) tipar esas columnas como numericas y (b) generar
+    # valores que satisfagan el filtro, evitando salidas en 0 filas.
+    num_constraints = _extract_numeric_constraints(xfr_rules)
 
     # Info por nodo: cols input/output (dict nombre_lower -> {name,type,pii})
     node_info = {}       # nname -> {"type", "in": {}, "out": {}}
@@ -202,6 +299,17 @@ def infer_schema_from_graph(ast, xfr_rules, dml_schema=None):
             for src in re.findall(r"in\d*\.(\w+)", raw):
                 add_in(src, "string")
 
+        # 4b. Columnas referenciadas en el WHERE/filtro del nodo: deben existir en
+        # los datos para que el filtro pueda evaluarse (si no, la columna es NULL y
+        # el filtro descarta todo). Las agregamos como entrada del nodo.
+        for wkey in ("where", "filter", "selection", "condition"):
+            wexpr = rule.get(wkey)
+            if isinstance(wexpr, str) and wexpr.strip():
+                for src in re.findall(r'(?:in\d*\.)?([A-Za-z_]\w*)', wexpr):
+                    sl = src.lower()
+                    if sl not in _SQL_KEYWORDS and not src.isdigit() and len(src) > 1:
+                        add_in(src, "string")
+
         # 5. keys (join/sort/dedup/group)
         for key in ("group_by", "dedup_keys", "join_key", "sort_by"):
             val = rule.get(key)
@@ -276,6 +384,28 @@ def infer_schema_from_graph(ast, xfr_rules, dml_schema=None):
         for col in in_cols + out_cols:
             if col["name"].lower() in join_key_names:
                 col["join_key"] = True
+            # Columnas comparadas numericamente en un filtro: tiparlas como numericas
+            # y adjuntar el valor que satisface el filtro para no quedar en 0 filas.
+            cons = num_constraints.get(col["name"].lower())
+            if cons:
+                col["type"] = cons["type"]
+                if cons.get("type") == "string":
+                    # Igualdad contra literal string: generamos ese valor exacto,
+                    # pero SOLO si esta columna es de un SOURCE (el valor de entrada
+                    # sí controla el filtro). En nodos intermedios el filtro evalua
+                    # el valor producido por un reformat, no el de origen.
+                    col["str_value"] = cons.get("str_value")
+                    if cons.get("str_not_equal"):
+                        col["str_not_equal"] = True
+                    if ntype == "SOURCE":
+                        col["str_value_src"] = True
+                        col["pii"] = None  # el filtro manda sobre el PII enmascarado
+                else:
+                    col["num_satisfy"] = cons["satisfy"]
+                    if cons.get("not_equal"):
+                        col["num_not_equal"] = True
+                    if cons.get("exact"):
+                        col["num_exact"] = True
 
         if ntype == "SOURCE":
             cols = out_cols or in_cols
@@ -376,6 +506,43 @@ def _join_key_pool(col_name, size=8):
 
 def _gen_value(col, rng, row_idx):
     """Genera un valor sintético para una columna según tipo y PII."""
+    # Constraint de igualdad contra literal STRING (col == 'Y') SOLO para columnas
+    # de SOURCE (str_value_src). Para columnas calculadas en medio del pipeline no
+    # aplica, porque el filtro evalua el valor PRODUCIDO por un reformat, no el de
+    # entrada; forzar el dato de origen ahi no ayuda y puede romper otras ramas.
+    sv = col.get("str_value")
+    if sv is not None and col.get("str_value_src"):
+        if col.get("str_not_equal"):
+            return (sv + "_X") if isinstance(sv, str) else sv
+        return sv
+
+    # PRIORIDAD MAXIMA: constraint numerico de un filtro. Si el filtro compara esta
+    # columna contra un numero, generamos valores que SATISFAGAN el filtro; de lo
+    # contrario la prueba queda en 0 filas (el filtro descarta todo). Esto manda
+    # incluso sobre join_key y PII: sin filas que pasen, no hay salida que revisar.
+    satisfy = col.get("num_satisfy")
+    if satisfy is not None:
+        is_dec = col.get("type") == "decimal" or isinstance(satisfy, float)
+        if col.get("num_not_equal"):
+            # Operador '!=': cualquier valor distinto del literal cumple.
+            base = int(satisfy) if not is_dec else satisfy
+            delta = rng.randint(1, 500)
+            return (base + delta) if not is_dec else round(base + delta, 2)
+        if col.get("num_exact"):
+            # Operador '=='/'=': debe ser EXACTAMENTE el valor (si no, el filtro
+            # descarta la fila). Generamos el valor objetivo en todas las filas.
+            return int(satisfy) if not is_dec else round(float(satisfy), 2)
+        base = satisfy
+        # Si tambien es clave de join, usamos un pool pequeno DETERMINISTICO (para
+        # que empareje entre fuentes) pero numerico y dentro del rango que cumple.
+        if col.get("join_key"):
+            pool_size = 8
+            idx = row_idx % pool_size
+            return int(base) + idx if not is_dec else round(base + idx, 2)
+        if is_dec:
+            return round(base + rng.uniform(0, 500), 2)
+        return int(base) + rng.randint(0, 500)
+
     # Clave de JOIN: valor de un pool compartido pequeño (para que empareje entre fuentes).
     # Tiene prioridad sobre PII para no romper el emparejamiento del join.
     if col.get("join_key"):
@@ -461,6 +628,20 @@ def build_synthetic_data(columns, n_rows=10, fmt="csv", seed=None, delimiter=","
         # Preservar la marca de clave de join (valores compartidos entre fuentes)
         if col.get("join_key"):
             norm_col["join_key"] = True
+        # Preservar constraints numericos de filtros (para generar valores que
+        # satisfagan el filtro y no dejar las salidas en 0 filas).
+        if col.get("num_satisfy") is not None:
+            norm_col["num_satisfy"] = col["num_satisfy"]
+        if col.get("num_not_equal"):
+            norm_col["num_not_equal"] = True
+        if col.get("num_exact"):
+            norm_col["num_exact"] = True
+        if col.get("str_value") is not None:
+            norm_col["str_value"] = col["str_value"]
+        if col.get("str_not_equal"):
+            norm_col["str_not_equal"] = True
+        if col.get("str_value_src"):
+            norm_col["str_value_src"] = True
         norm_columns.append(norm_col)
 
     rows = generate_rows(norm_columns, n_rows=n_rows, seed=seed)

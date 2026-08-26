@@ -90,6 +90,7 @@ from src.codegen.spark_codegen import generate_spark
 from src.codegen.flink_codegen import generate_flink
 from src.validator.semantic import validate
 from src.accuracy import compute_accuracy
+from src.perf_optimizer import optimize_pyspark
 from src.datagen import (
     infer_schema_from_graph,
     build_synthetic_data,
@@ -104,7 +105,7 @@ from src.test_runner import (
     _describe_graph,
 )
 
-PORT = 8080
+PORT = int(os.environ.get("BNX_PORT", 8081))
 UI_DIR = os.path.join(os.path.dirname(__file__), "ui", "dist")
 
 # Check if UI is built
@@ -140,10 +141,16 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_awscode()
         elif "/datagen" in path:
             self._handle_datagen()
+        elif "/runtest/graph" in path:
+            self._handle_runtest_graph()
         elif "/runtest/stream" in path:
             self._handle_runtest_stream()
         elif "/runtest" in path:
             self._handle_runtest()
+        elif "/optimize/compare" in path:
+            self._handle_optimize_compare()
+        elif "/optimize" in path:
+            self._handle_optimize()
         elif "/compile" in path or "/api" in path:
             self._handle_compile()
         else:
@@ -362,6 +369,89 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             traceback.print_exc()
             self._json_response(500, {"error": str(e)})
 
+    def _handle_runtest_graph(self):
+        """Regenera el PySpark DESDE el grafo y lo ejecuta con datos sinteticos.
+
+        A diferencia de /runtest (que ejecuta el 'code' que manda el cliente y puede
+        estar desactualizado), este endpoint recibe el grafo (.mp/.xfr/.dml/.pset) y
+        REGENERA el PySpark en el servidor con la version actual del generador, luego
+        lo prueba. Asi la prueba siempre usa codigo fresco.
+
+        Acepta multipart/form-data (campos mp/xfr/dml/pset) o JSON con esas claves.
+        Los datasets pueden venir en el campo 'datasets' (JSON string en multipart).
+        Respuesta: igual que /runtest, mas 'code' (el PySpark regenerado) y 'warnings'.
+        """
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        content_type = self.headers.get("Content-Type", "")
+        try:
+            # Extraer grafo + datasets segun el tipo de contenido.
+            datasets = []
+            timeout = 120
+            job_name = None
+            if "multipart/form-data" in content_type:
+                try:
+                    mp_content, xfr_content, dml_content, pset_content, _target = \
+                        self._parse_compile_request(body, content_type)
+                except ValueError as ve:
+                    self._json_response(400, {"error": str(ve)})
+                    return
+                fields, _fp = parse_multipart(body, content_type)
+                ds_raw = fields.get("datasets", "")
+                if ds_raw:
+                    try:
+                        datasets = json.loads(ds_raw)
+                    except (json.JSONDecodeError, TypeError):
+                        datasets = []
+                timeout = int(fields.get("timeout", 120) or 120)
+                job_name = fields.get("job_name") or fields.get("graph_name")
+            else:
+                try:
+                    data = json.loads(body.decode("utf-8"))
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    self._json_response(400, {"error": "Invalid JSON body"})
+                    return
+                mp_content = data.get("mp", "")
+                xfr_content = data.get("xfr", "")
+                dml_content = data.get("dml", "")
+                pset_content = data.get("pset", "")
+                datasets = data.get("datasets", []) or []
+                timeout = int(data.get("timeout", 120) or 120)
+                job_name = data.get("job_name") or data.get("graph_name")
+                if not mp_content:
+                    self._json_response(400, {"error": "mp file is required"})
+                    return
+
+            # Regenerar el PySpark (target 'spark' SIEMPRE para poder ejecutarlo local).
+            compiled = self._compile_graph(
+                mp_content, xfr_content, dml_content, pset_content, target="spark"
+            )
+            code = compiled.get("code", "")
+            if not (code or "").strip():
+                self._json_response(200, {
+                    "ok": False,
+                    "error": "No se pudo generar codigo PySpark del grafo (revisa errores).",
+                    "errors": compiled.get("errors", []),
+                    "warnings": compiled.get("warnings", []),
+                    "code": code,
+                })
+                return
+
+            timeout = max(10, min(timeout, 600))
+            if not job_name:
+                job_name = compiled.get("graph_name") or None
+
+            result = run_pyspark_test(code, datasets, timeout=timeout, job_name=job_name)
+            # Adjuntar el codigo regenerado y warnings para que la UI pueda mostrarlos.
+            result["code"] = code
+            result["warnings"] = compiled.get("warnings", [])
+            result["graph_name"] = compiled.get("graph_name", "")
+            self._json_response(200, result)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": str(e)})
+
     def _handle_runtest(self):
         """Ejecuta una prueba local del código PySpark con datos sintéticos.
 
@@ -423,8 +513,30 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         code = data.get("code", "")
+        # Si el cliente envia el grafo (.mp), REGENERAMOS el PySpark fresco en el
+        # servidor con la version actual del generador. Asi la prueba nunca usa
+        # codigo viejo cacheado en el navegador (que puede tener bugs ya corregidos).
+        mp_content = data.get("mp", "")
+        regen_warning = None
+        if mp_content.strip():
+            try:
+                compiled = self._compile_graph(
+                    mp_content,
+                    data.get("xfr", ""),
+                    data.get("dml", ""),
+                    data.get("pset", ""),
+                    target="spark",
+                )
+                fresh = compiled.get("code", "")
+                if fresh.strip():
+                    code = fresh
+                    if not (data.get("job_name") or data.get("graph_name")):
+                        data["job_name"] = compiled.get("graph_name") or None
+            except Exception as e:
+                regen_warning = f"No se pudo regenerar desde el grafo ({e}); se usa el codigo recibido."
+
         if not code.strip():
-            self._json_response(400, {"error": "Falta 'code' (PySpark)"})
+            self._json_response(400, {"error": "Falta 'code' (PySpark) o 'mp' (grafo)"})
             return
         if "awsglue" in code or "GlueContext" in code:
             self._json_response(400, {
@@ -453,6 +565,10 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.flush()
 
         try:
+            if mp_content.strip() and not regen_warning:
+                _send({"type": "line", "text": "[*] PySpark regenerado desde el grafo (codigo fresco)"})
+            if regen_warning:
+                _send({"type": "line", "text": f"[!] {regen_warning}"})
             for event in stream_pyspark_test(code, datasets, timeout=timeout, job_name=job_name):
                 _send(event)
         except BrokenPipeError:
@@ -523,8 +639,26 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         code = data.get("code", "")
+        # Si el cliente envia el grafo (.mp), REGENERAMOS el PySpark fresco para que
+        # el codigo enviado a AWS use siempre la version actual del generador (evita
+        # que el navegador mande codigo viejo con bugs ya corregidos).
+        mp_content = data.get("mp", "")
+        if mp_content.strip():
+            try:
+                compiled = self._compile_graph(
+                    mp_content, data.get("xfr", ""), data.get("dml", ""),
+                    data.get("pset", ""), target="spark",
+                )
+                fresh = compiled.get("code", "")
+                if fresh.strip():
+                    code = fresh
+                    if not data.get("job_name"):
+                        data["job_name"] = compiled.get("graph_name") or data.get("job_name")
+            except Exception as e:
+                print(f"  [awscode] no se pudo regenerar desde grafo: {e}")
+
         if not code.strip():
-            self._json_response(400, {"error": "Falta 'code' (PySpark)"})
+            self._json_response(400, {"error": "Falta 'code' (PySpark) o 'mp' (grafo)"})
             return
         if "awsglue" in code or "GlueContext" in code:
             self._json_response(400, {
@@ -734,54 +868,18 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
 
         return xfr_rules
 
-    def _handle_compile(self):
-        content_length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(content_length)
-        content_type = self.headers.get("Content-Type", "")
+    def _compile_graph(self, mp_content, xfr_content="", dml_content="",
+                       pset_content="", target="glue"):
+        """Genera el codigo (PySpark/Glue/Flink/Python) desde el grafo Ab Initio.
 
+        Reune todo el pipeline grafo->codigo (parseo .mp/.xfr/.dml/.pset, embedded
+        transforms, resolucion de paths, validacion y generacion). Devuelve un dict
+        con: code, nodes, edges, errors, warnings, accuracy, graph_name, description,
+        extractor_code, params. Reutilizable tanto por /compile como por /runtest/graph
+        (asi la prueba SIEMPRE usa codigo recien generado, no el que este en pantalla).
+        """
+        mp_path = xfr_path = dml_path = None
         try:
-            mp_content = ""
-            xfr_content = ""
-            dml_content = ""
-            pset_content = ""
-            target = "glue"
-
-            if "multipart/form-data" in content_type:
-                fields, file_parts = parse_multipart(body, content_type)
-                target = fields.get("target", "glue")
-                if "mp" in file_parts:
-                    mp_content = file_parts["mp"]  # keep as bytes for GDE
-                elif "mp" in fields:
-                    mp_content = fields["mp"]
-                if "xfr" in file_parts:
-                    xfr_content = file_parts["xfr"].decode("utf-8", errors="replace")
-                elif "xfr" in fields:
-                    xfr_content = fields["xfr"]
-                if "dml" in file_parts:
-                    dml_content = file_parts["dml"].decode("utf-8", errors="replace")
-                elif "dml" in fields:
-                    dml_content = fields["dml"]
-                if "pset" in file_parts:
-                    pset_content = file_parts["pset"].decode("utf-8", errors="replace")
-                elif "pset" in fields:
-                    pset_content = fields["pset"]
-            else:
-                # JSON body
-                try:
-                    data = json.loads(body.decode("utf-8"))
-                    mp_content = data.get("mp", "")
-                    xfr_content = data.get("xfr", "")
-                    dml_content = data.get("dml", "")
-                    pset_content = data.get("pset", "")
-                    target = data.get("target", "glue")
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    self._json_response(400, {"error": "Invalid request format"})
-                    return
-
-            if not mp_content:
-                self._json_response(400, {"error": "mp file is required"})
-                return
-
             # Save to temp files
             mp_path = self._save_temp(mp_content, ".mp")
             xfr_path = self._save_temp(xfr_content, ".xfr") if xfr_content else None
@@ -997,7 +1095,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             desc_steps = [{"type": n.type.upper(), "name": n.name} for n in dag.execution_order]
             graph_description = _describe_graph(desc_steps, [], [], job_name=(graph_name or "grafo"))
 
-            self._json_response(200, {
+            return {
                 "nodes": nodes,
                 "edges": edges,
                 "errors": errors,
@@ -1010,12 +1108,237 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 "graph_name": graph_name,
                 "description": graph_description,
                 "params": {k: v for k, v in list(ast.get("abinitio_params", {}).items())[:20]},
-            })
+            }
+        finally:
+            # Cleanup temp files
+            try:
+                os.unlink(mp_path)
+            except OSError:
+                pass
+            if xfr_path:
+                try:
+                    os.unlink(xfr_path)
+                except OSError:
+                    pass
+            if dml_path:
+                try:
+                    os.unlink(dml_path)
+                except OSError:
+                    pass
 
-            # Cleanup
-            os.unlink(mp_path)
-            if xfr_path: os.unlink(xfr_path)
-            if dml_path: os.unlink(dml_path)
+    def _parse_compile_request(self, body, content_type):
+        """Extrae mp/xfr/dml/pset/target de un request (multipart o JSON).
+
+        Devuelve (mp_content, xfr_content, dml_content, pset_content, target) o
+        lanza ValueError con un mensaje si el request es invalido / falta el .mp.
+        """
+        mp_content = ""
+        xfr_content = ""
+        dml_content = ""
+        pset_content = ""
+        target = "glue"
+
+        if "multipart/form-data" in content_type:
+            fields, file_parts = parse_multipart(body, content_type)
+            target = fields.get("target", "glue")
+            if "mp" in file_parts:
+                mp_content = file_parts["mp"]  # keep as bytes for GDE
+            elif "mp" in fields:
+                mp_content = fields["mp"]
+            if "xfr" in file_parts:
+                xfr_content = file_parts["xfr"].decode("utf-8", errors="replace")
+            elif "xfr" in fields:
+                xfr_content = fields["xfr"]
+            if "dml" in file_parts:
+                dml_content = file_parts["dml"].decode("utf-8", errors="replace")
+            elif "dml" in fields:
+                dml_content = fields["dml"]
+            if "pset" in file_parts:
+                pset_content = file_parts["pset"].decode("utf-8", errors="replace")
+            elif "pset" in fields:
+                pset_content = fields["pset"]
+        else:
+            try:
+                data = json.loads(body.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                raise ValueError("Invalid request format")
+            mp_content = data.get("mp", "")
+            xfr_content = data.get("xfr", "")
+            dml_content = data.get("dml", "")
+            pset_content = data.get("pset", "")
+            target = data.get("target", "glue")
+
+        if not mp_content:
+            raise ValueError("mp file is required")
+        return mp_content, xfr_content, dml_content, pset_content, target
+
+    def _handle_optimize(self):
+        """Optimiza el PySpark por REGLAS (sin IA) para mejorar performance.
+
+        Body JSON:
+          {"code": "<pyspark>"}                      # optimiza el codigo recibido
+          {"mp": "...", "xfr": "...", ...}           # regenera fresco y optimiza
+        Respuesta:
+          {"ok": true, "code": <optimizado>, "original_code": <base>,
+           "changes": [...], "total_changes": N, "summary": {...},
+           "original_lines": N, "optimized_lines": N}
+        """
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._json_response(400, {"error": "Invalid JSON body"})
+            return
+
+        code = data.get("code", "")
+        # Si viene el grafo, regeneramos PySpark fresco (target spark) antes de optimizar.
+        mp_content = data.get("mp", "")
+        if mp_content.strip():
+            try:
+                compiled = self._compile_graph(
+                    mp_content, data.get("xfr", ""), data.get("dml", ""),
+                    data.get("pset", ""), target="spark",
+                )
+                fresh = compiled.get("code", "")
+                if fresh.strip():
+                    code = fresh
+            except Exception as e:
+                print(f"  [optimize] no se pudo regenerar desde grafo: {e}")
+
+        if not code.strip():
+            self._json_response(400, {"error": "Falta 'code' (PySpark) o 'mp' (grafo)"})
+            return
+        if "awsglue" in code or "GlueContext" in code:
+            self._json_response(400, {
+                "error": "La optimizacion de performance aplica al target PySpark. "
+                         "Compila con target 'spark'."
+            })
+            return
+
+        try:
+            result = optimize_pyspark(code)
+            result["ok"] = True
+            result["original_code"] = code
+            self._json_response(200, result)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": str(e)})
+
+    def _handle_optimize_compare(self):
+        """Corre el PySpark ORIGINAL y el OPTIMIZADO con los MISMOS datos, mide
+        tiempos y compara salidas para demostrar la mejora de performance.
+
+        Body JSON:
+          {"mp": "...", "xfr": "...", "datasets": [...], "timeout": 180}
+          (o {"code": "<pyspark>"} si no se envia el grafo)
+        Respuesta:
+          {"ok": bool,
+           "original": {"seconds","ok","writes":[...]},
+           "optimized": {"seconds","ok","writes":[...]},
+           "speedup": float,          # original/optimizado (>1 = mas rapido)
+           "faster_pct": float,       # % de mejora
+           "equivalent": bool,        # mismas salidas (nodos+filas)
+           "changes": [...], "total_changes": N, "summary": {...}}
+        """
+        import time as _time
+
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._json_response(400, {"error": "Invalid JSON body"})
+            return
+
+        code = data.get("code", "")
+        mp_content = data.get("mp", "")
+        if mp_content.strip():
+            try:
+                compiled = self._compile_graph(
+                    mp_content, data.get("xfr", ""), data.get("dml", ""),
+                    data.get("pset", ""), target="spark",
+                )
+                fresh = compiled.get("code", "")
+                if fresh.strip():
+                    code = fresh
+            except Exception as e:
+                print(f"  [optimize/compare] no se pudo regenerar desde grafo: {e}")
+
+        if not code.strip():
+            self._json_response(400, {"error": "Falta 'code' (PySpark) o 'mp' (grafo)"})
+            return
+
+        datasets = data.get("datasets", []) or []
+        timeout = max(10, min(int(data.get("timeout", 180) or 180), 600))
+
+        # Optimizar
+        opt = optimize_pyspark(code)
+        opt_code = opt.get("code", code)
+
+        def _run_timed(src):
+            t0 = _time.perf_counter()
+            res = run_pyspark_test(src, datasets, timeout=timeout,
+                                   job_name=data.get("job_name") or "bnx-compare")
+            secs = _time.perf_counter() - t0
+            return {
+                "seconds": round(secs, 2),
+                "ok": res.get("ok", False),
+                "writes": res.get("writes", []),
+                "reads": res.get("reads", []),
+                "summary": res.get("summary", ""),
+                "stderr_tail": (res.get("stderr", "") or "")[-1200:] if not res.get("ok") else "",
+            }
+
+        try:
+            original = _run_timed(code)
+            optimized = _run_timed(opt_code)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": str(e)})
+            return
+
+        # Equivalencia de salidas: mismos nodos con mismas filas.
+        def _writes_map(w):
+            return {x.get("var"): x.get("rows") for x in (w or [])}
+        equivalent = _writes_map(original["writes"]) == _writes_map(optimized["writes"])
+
+        so, sp = original["seconds"], optimized["seconds"]
+        speedup = round(so / sp, 2) if sp > 0 else None
+        faster_pct = round((so - sp) / so * 100, 1) if so > 0 else None
+
+        self._json_response(200, {
+            "ok": original["ok"] and optimized["ok"],
+            "original": original,
+            "optimized": optimized,
+            "speedup": speedup,
+            "faster_pct": faster_pct,
+            "equivalent": equivalent,
+            "changes": opt.get("changes", []),
+            "total_changes": opt.get("total_changes", 0),
+            "summary": opt.get("summary", {}),
+            "optimized_code": opt_code,
+        })
+
+    def _handle_compile(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        content_type = self.headers.get("Content-Type", "")
+
+        try:
+            try:
+                mp_content, xfr_content, dml_content, pset_content, target = \
+                    self._parse_compile_request(body, content_type)
+            except ValueError as ve:
+                self._json_response(400, {"error": str(ve)})
+                return
+
+            result = self._compile_graph(
+                mp_content, xfr_content, dml_content, pset_content, target
+            )
+            self._json_response(200, result)
 
         except Exception as e:
             import traceback
@@ -1060,7 +1383,11 @@ if __name__ == "__main__":
     print(f"[*] Open: http://localhost:{PORT}")
     print()
 
-    with socketserver.TCPServer(("", PORT), BNXHandler) as httpd:
+    class _BNXServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+        allow_reuse_address = True  # evita "Address already in use" al reiniciar
+        daemon_threads = True
+
+    with _BNXServer(("", PORT), BNXHandler) as httpd:
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:

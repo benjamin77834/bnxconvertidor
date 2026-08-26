@@ -106,6 +106,9 @@ export default function App() {
   const mpFilesData             = useRef([])  // Persist mp files across re-renders
   const refactorRef             = useRef(null)
   const [refactorResult, setRefactorResult] = useState(null)
+  const [optimizeResult, setOptimizeResult] = useState(null)
+  const [optimizing, setOptimizing] = useState(false)
+  const [optimizeFullscreen, setOptimizeFullscreen] = useState(false)
   const [showEditor, setShowEditor] = useState(false)
   const [editorTab, setEditorTab] = useState('mp')
   // Los editores persisten en localStorage para que Data Redactada tenga el
@@ -285,6 +288,31 @@ export default function App() {
     } finally { setLoading(false) }
   }
 
+  // Optimiza el PySpark generado por REGLAS (sin IA): cache en DataFrames
+  // reusados, broadcast en joins con catalogos, coalesce antes de escrituras.
+  // Regenera fresco desde el grafo (editorMp) para no optimizar codigo viejo.
+  const optimizeCode = async () => {
+    if (!result?.code) return
+    setOptimizing(true)
+    setOptimizeResult(null)
+    try {
+      const res = await fetch(COMPILE_URL.replace('/compile', '/optimize'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: result.code, mp: editorMp, xfr: editorXfr }),
+      })
+      const data = await res.json()
+      if (data.error) { setOptimizeResult({ error: data.error }); return }
+      setOptimizeResult(data)
+      // Reemplaza el codigo mostrado por el optimizado (para verlo y descargarlo),
+      // conservando nodes/edges del grafo actual. Guardamos el original por si acaso.
+      setResult(prev => ({ ...prev, code: data.code, _original_code: data.original_code,
+        optimized: true, opt_summary: data.summary, opt_total: data.total_changes }))
+      setCodeOpen(true)
+    } catch (e) {
+      setOptimizeResult({ error: e.message })
+    } finally { setOptimizing(false) }
+  }
+
   const compilePlan = async (planFile, psetFile) => {
     setLoading(true)
     const startTime = Date.now()
@@ -342,6 +370,83 @@ export default function App() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: t.bg, color: t.text, transition: 'background .4s ease, color .4s ease' }}>
       <style>{`@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.4} }`}</style>
+
+      {/* Fullscreen Overlay: Optimizacion de performance */}
+      {optimizeFullscreen && optimizeResult && !optimizeResult.error && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 10000,
+          background: t.bg, display: 'flex', flexDirection: 'column',
+        }}>
+          {/* Header */}
+          <div style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            padding: '14px 24px', background: t.header, borderBottom: `1px solid ${t.border}`,
+          }}>
+            <span style={{ fontSize: 22, fontWeight: 800, color: '#f59e0b' }}>
+              ⚡ Optimización de performance — {optimizeResult.total_changes} cambios
+            </span>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button onClick={() => { if (optimizeResult.code) download(optimizeResult.code, 'pyspark_job_optimizado.py') }} style={{
+                padding: '8px 16px', borderRadius: 8, fontSize: 15, cursor: 'pointer', fontWeight: 600,
+                background: '#f59e0b20', border: '1px solid #f59e0b', color: '#f59e0b',
+              }}>📥 Descargar optimizado</button>
+              <button onClick={() => setOptimizeFullscreen(false)} style={{
+                padding: '8px 16px', borderRadius: 8, fontSize: 15, cursor: 'pointer', fontWeight: 600,
+                background: '#ef444420', border: '1px solid #ef4444', color: '#ef4444',
+              }}>✕ Cerrar</button>
+            </div>
+          </div>
+
+          {/* Resumen + reglas aplicadas (letra grande) */}
+          <div style={{ padding: '16px 24px', borderBottom: `1px solid ${t.border}` }}>
+            <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginBottom: 12 }}>
+              <span style={{ fontSize: 18, color: t.text }}>🧠 cache: <strong style={{ color: '#f59e0b' }}>{optimizeResult.summary?.cache_reused || 0}</strong></span>
+              <span style={{ fontSize: 18, color: t.text }}>📡 broadcast: <strong style={{ color: '#f59e0b' }}>{optimizeResult.summary?.broadcast_join || 0}</strong></span>
+              <span style={{ fontSize: 18, color: t.text }}>🗜️ coalesce: <strong style={{ color: '#f59e0b' }}>{optimizeResult.summary?.coalesce_write || 0}</strong></span>
+              <span style={{ fontSize: 18, color: t.muted }}>{optimizeResult.original_lines} → {optimizeResult.optimized_lines} líneas</span>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 160, overflowY: 'auto' }}>
+              {(optimizeResult.changes || []).map((c, i) => (
+                <div key={i} style={{ fontSize: 16, color: '#f59e0b', lineHeight: 1.5 }}>• {c.detail}</div>
+              ))}
+            </div>
+          </div>
+
+          {/* Comparacion de codigo: original vs optimizado lado a lado */}
+          <div style={{ flex: 1, overflow: 'hidden', display: 'flex', gap: 1, background: t.border }}>
+            {[
+              { title: 'Original', code: optimizeResult.original_code || '', highlight: false },
+              { title: 'Optimizado', code: optimizeResult.code || '', highlight: true },
+            ].map((pane, pi) => (
+              <div key={pi} style={{ flex: 1, display: 'flex', flexDirection: 'column', background: t.codeBg || '#081220', minWidth: 0 }}>
+                <div style={{
+                  padding: '8px 16px', fontSize: 15, fontWeight: 700,
+                  color: pane.highlight ? '#f59e0b' : t.muted,
+                  background: t.header, borderBottom: `1px solid ${t.border}`,
+                }}>{pane.title === 'Optimizado' ? '⚡ ' : '📄 '}{pane.title}</div>
+                <div style={{ flex: 1, overflow: 'auto', padding: '8px 0' }}>
+                  {pane.code.split('\n').map((ln, li) => {
+                    const isOpt = pane.highlight && /# BNX-PERF|\.cache\(\)|\.coalesce\(|broadcast\(/.test(ln)
+                    return (
+                      <div key={li} style={{
+                        display: 'flex', fontFamily: 'monospace', fontSize: 14, lineHeight: 1.55,
+                        background: isOpt ? '#f59e0b22' : 'transparent',
+                        borderLeft: isOpt ? '3px solid #f59e0b' : '3px solid transparent',
+                      }}>
+                        <span style={{ color: t.dim, minWidth: 46, textAlign: 'right', paddingRight: 12, userSelect: 'none', flexShrink: 0 }}>{li + 1}</span>
+                        <span style={{ color: isOpt ? '#fbbf24' : t.muted, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{ln || ' '}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div style={{ padding: '8px 24px', fontSize: 13, color: t.dim, background: t.header, borderTop: `1px solid ${t.border}` }}>
+            Las líneas resaltadas en ámbar son las optimizaciones aplicadas (cache, broadcast, coalesce). La lógica del job no cambia.
+          </div>
+        </div>
+      )}
 
       {/* Fullscreen Overlay */}
       {expandedPanel && (
@@ -804,6 +909,67 @@ export default function App() {
               <div style={{ fontSize: 11, color: '#ef4444', padding: 6 }}>❌ {refactorResult.error}</div>
             )}
           </div>
+
+          {/* Optimizar performance (solo target Spark, con codigo generado) */}
+          {result?.code && target === 'spark' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <span style={{ fontSize: 14, color: t.muted, textTransform: 'uppercase', letterSpacing: 1 }}>Performance</span>
+              <span style={{ fontSize: 12, color: t.dim }}>Optimiza el PySpark por reglas (cache, broadcast, coalesce). No cambia la lógica.</span>
+              <button
+                style={{
+                  padding: '8px 16px', borderRadius: 8, cursor: optimizing ? 'wait' : 'pointer',
+                  background: '#f59e0b15', border: `1px solid #f59e0b`,
+                  color: '#f59e0b', fontSize: 13, fontWeight: 600,
+                  opacity: optimizing ? 0.6 : 1,
+                }}
+                disabled={optimizing}
+                onClick={optimizeCode}
+              >{optimizing ? '⏳ Optimizando...' : '⚡ Optimizar performance'}</button>
+              {optimizeResult && !optimizeResult.error && (
+                <div style={{
+                  background: t.card, borderRadius: 8, padding: 12,
+                  border: `1px solid #f59e0b40`, display: 'flex', flexDirection: 'column', gap: 8,
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 16, fontWeight: 700, color: '#f59e0b' }}>
+                      ⚡ {optimizeResult.total_changes} optimizaciones
+                    </span>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button onClick={() => setOptimizeFullscreen(true)} style={{
+                        padding: '5px 10px', borderRadius: 6, fontSize: 13, cursor: 'pointer', fontWeight: 600,
+                        background: '#f59e0b20', border: '1px solid #f59e0b', color: '#f59e0b',
+                      }}>⛶ Pantalla completa</button>
+                      <button onClick={() => {
+                        if (optimizeResult.code) download(optimizeResult.code, 'pyspark_job_optimizado.py')
+                      }} style={{
+                        padding: '5px 10px', borderRadius: 6, fontSize: 13, cursor: 'pointer',
+                        background: '#f59e0b20', border: '1px solid #f59e0b40', color: '#f59e0b',
+                      }}>📥 Descargar</button>
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 14, color: t.text || '#e2e8f0', display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+                    <span>🧠 cache: <strong>{optimizeResult.summary?.cache_reused || 0}</strong></span>
+                    <span>📡 broadcast: <strong>{optimizeResult.summary?.broadcast_join || 0}</strong></span>
+                    <span>🗜️ coalesce: <strong>{optimizeResult.summary?.coalesce_write || 0}</strong></span>
+                  </div>
+                  <div style={{ fontSize: 13, color: t.muted }}>
+                    {optimizeResult.original_lines} → {optimizeResult.optimized_lines} líneas
+                  </div>
+                  {(optimizeResult.changes || []).slice(0, 8).map((c, i) => (
+                    <div key={i} style={{ fontSize: 14, color: '#f59e0b', lineHeight: 1.5 }}>
+                      • {c.detail}
+                    </div>
+                  ))}
+                  <div style={{ fontSize: 14, color: '#22c55e', marginTop: 4 }}>
+                    Ahora ve a 🧪 Data Redactada para comparar tiempos original vs optimizado.
+                  </div>
+                </div>
+              )}
+              {optimizeResult?.error && (
+                <div style={{ fontSize: 13, color: '#ef4444', padding: 6 }}>❌ {optimizeResult.error}</div>
+              )}
+            </div>
+          )}
 
           {/* Ab Initio PLAN/PSET upload */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
