@@ -706,15 +706,17 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
                   </div>
                 </div>
                 <div style={{ flex: 1, minWidth: 160, background: t.card, borderRadius: 8, padding: 12,
-                  border: `1px solid #22c55e` }}>
-                  <div style={{ fontSize: 11, color: t.dim, textTransform: 'uppercase' }}>Mejora</div>
+                  border: `1px solid ${(compareResult.faster_pct ?? 0) >= 0 ? '#22c55e' : '#ef4444'}` }}>
+                  <div style={{ fontSize: 11, color: t.dim, textTransform: 'uppercase' }}>
+                    {(compareResult.faster_pct ?? 0) >= 0 ? 'Mejora' : 'Resultado'}
+                  </div>
                   <div style={{ fontSize: 26, fontWeight: 800,
-                    color: (compareResult.faster_pct >= 0) ? '#22c55e' : '#ef4444' }}>
-                    {compareResult.faster_pct >= 0 ? '−' : '+'}{Math.abs(compareResult.faster_pct ?? 0)}%
+                    color: (compareResult.faster_pct ?? 0) >= 0 ? '#22c55e' : '#ef4444' }}>
+                    {Math.abs(compareResult.faster_pct ?? 0)}%
                   </div>
                   <div style={{ fontSize: 11, color: t.dim }}>
                     {compareResult.speedup ? `${compareResult.speedup}× ` : ''}
-                    {compareResult.faster_pct >= 0 ? 'más rápido' : 'más lento'}
+                    {(compareResult.faster_pct ?? 0) >= 0 ? 'más rápido' : 'más lento'}
                   </div>
                 </div>
               </div>
@@ -724,6 +726,13 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
                   ? '✅ Mismas salidas (entradas y salidas idénticas): la optimización no cambió la lógica.'
                   : '⚠️ Las salidas difieren entre original y optimizado — revisar (no debería pasar con reglas seguras).'}
               </div>
+              {(compareResult.faster_pct ?? 0) < 0 && (
+                <div style={{ fontSize: 12, color: '#94a3b8', fontStyle: 'italic', marginTop: 4 }}>
+                  Nota: con datos sintéticos pequeños (prueba local), el overhead de cache/coalesce puede superar el beneficio.
+                  En AWS con datos reales y múltiples ejecutores, estas optimizaciones (cache en ramas reusadas, broadcast en lookups)
+                  sí reducen el tiempo de ejecución.
+                </div>
+              )}
               <div style={{ fontSize: 14, color: t.text || '#e2e8f0', display: 'flex', gap: 16, flexWrap: 'wrap' }}>
                 <span>🧠 cache: <strong>{compareResult.summary?.cache_reused || 0}</strong></span>
                 <span>📡 broadcast: <strong>{compareResult.summary?.broadcast_join || 0}</strong></span>
