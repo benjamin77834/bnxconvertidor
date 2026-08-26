@@ -63,8 +63,14 @@ def _looks_small(df_name):
     return any(h in n for h in _SMALL_HINTS)
 
 
-def optimize_pyspark(code):
-    """Aplica las reglas de performance al codigo PySpark. Devuelve dict."""
+def optimize_pyspark(code, include_coalesce=True):
+    """Aplica las reglas de performance al codigo PySpark. Devuelve dict.
+
+    include_coalesce: si False, NO aplica la regla coalesce(1). El coalesce reduce
+    el numero de archivos de salida (bueno para organizacion), pero con VOLUMEN
+    alto fuerza una sola particion y RALENTIZA la escritura. Por eso el benchmark
+    de velocidad lo omite y mide solo cache/broadcast, que si escalan. El codigo
+    optimizado que se descarga / va a AWS si lo incluye."""
     if not code or not code.strip():
         return {"code": code or "", "changes": [], "total_changes": 0,
                 "original_lines": 0, "optimized_lines": 0,
@@ -122,12 +128,14 @@ def optimize_pyspark(code):
     lines = out
 
     # --- Regla 3: coalesce(1) antes de escrituras ---
+    # Se omite en el benchmark de velocidad (include_coalesce=False) porque con
+    # volumen alto una sola particion ralentiza la escritura. En el codigo real si.
     write_re = re.compile(r'^(\s*)([A-Za-z_]\w*_df)(\.write\b.*)$')
     out = []
     coalesce_count = 0
     for line in lines:
         m = write_re.match(line)
-        if m and '.coalesce(' not in line and '_bnx_save_output' not in line:
+        if include_coalesce and m and '.coalesce(' not in line and '_bnx_save_output' not in line:
             indent, df, rest = m.groups()
             out.append(f'{indent}{df}.coalesce(1){rest}')
             coalesce_count += 1

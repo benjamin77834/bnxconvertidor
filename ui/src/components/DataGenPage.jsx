@@ -713,22 +713,50 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
                 <div key={i} style={{ fontSize: 14, color: '#f59e0b', lineHeight: 1.5 }}>• {c.detail}</div>
               ))}
 
-              {/* Tiempos: informativo, no métrica principal */}
-              <div style={{
-                display: 'flex', gap: 12, flexWrap: 'wrap', padding: '10px 0',
-                borderTop: `1px solid ${t.border}`, marginTop: 4,
-              }}>
-                <div style={{ fontSize: 13, color: t.muted }}>
-                  ⏱️ Tiempo local (referencia, no refleja AWS): original <strong>{compareResult.original?.seconds}s</strong> · optimizado <strong>{compareResult.optimized?.seconds}s</strong>
-                  {compareResult.original?.ok && compareResult.optimized?.ok && (
-                    <span style={{ color: t.dim }}> · ambos corrieron OK</span>
+              {/* Benchmark simulando nube: 2 workers + datos amplificados */}
+              <div style={{ borderTop: `1px solid ${t.border}`, paddingTop: 12, marginTop: 4 }}>
+                <div style={{ fontSize: 13, color: t.muted, marginBottom: 8 }}>
+                  🖥️ Benchmark simulando nube: <strong style={{ color: t.text }}>{compareResult.sim_workers ?? 2} workers</strong>
+                  {typeof compareResult.sim_rows === 'number' && (
+                    <> · <strong style={{ color: t.text }}>{compareResult.sim_rows.toLocaleString()} filas</strong></>
                   )}
+                  {compareResult.sim_amplify > 1 && (
+                    <span style={{ color: t.dim }}> (datos amplificados ×{compareResult.sim_amplify})</span>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                  <div style={{ flex: 1, minWidth: 150, background: t.card, borderRadius: 8, padding: 12, border: `1px solid ${t.border}` }}>
+                    <div style={{ fontSize: 11, color: t.dim, textTransform: 'uppercase' }}>Original</div>
+                    <div style={{ fontSize: 26, fontWeight: 800, color: t.text }}>{compareResult.original?.seconds}s</div>
+                    <div style={{ fontSize: 11, color: compareResult.original?.ok ? '#22c55e' : '#ef4444' }}>
+                      {compareResult.original?.ok ? '✅ corrió' : '❌ falló'}
+                    </div>
+                  </div>
+                  <div style={{ flex: 1, minWidth: 150, background: t.card, borderRadius: 8, padding: 12, border: `1px solid #f59e0b` }}>
+                    <div style={{ fontSize: 11, color: t.dim, textTransform: 'uppercase' }}>Optimizado</div>
+                    <div style={{ fontSize: 26, fontWeight: 800, color: '#f59e0b' }}>{compareResult.optimized?.seconds}s</div>
+                    <div style={{ fontSize: 11, color: compareResult.optimized?.ok ? '#22c55e' : '#ef4444' }}>
+                      {compareResult.optimized?.ok ? '✅ corrió' : '❌ falló'}
+                    </div>
+                  </div>
+                  <div style={{ flex: 1, minWidth: 150, background: t.card, borderRadius: 8, padding: 12,
+                    border: `1px solid ${(compareResult.faster_pct ?? 0) >= 0 ? '#22c55e' : '#ef4444'}` }}>
+                    <div style={{ fontSize: 11, color: t.dim, textTransform: 'uppercase' }}>
+                      {(compareResult.faster_pct ?? 0) >= 0 ? 'Mejora' : 'Resultado'}
+                    </div>
+                    <div style={{ fontSize: 26, fontWeight: 800, color: (compareResult.faster_pct ?? 0) >= 0 ? '#22c55e' : '#ef4444' }}>
+                      {Math.abs(compareResult.faster_pct ?? 0)}%
+                    </div>
+                    <div style={{ fontSize: 11, color: t.dim }}>
+                      {compareResult.speedup ? `${compareResult.speedup}× ` : ''}
+                      {(compareResult.faster_pct ?? 0) >= 0 ? 'más rápido' : 'más lento'}
+                    </div>
+                  </div>
                 </div>
               </div>
               <div style={{ fontSize: 12, color: '#94a3b8', fontStyle: 'italic' }}>
-                La prueba local con pocos datos no mide el beneficio real de las optimizaciones.
-                En AWS con datos reales (millones de filas) y múltiples ejecutores, cache en ramas reusadas y broadcast en lookups
-                reducen significativamente el tiempo de ejecución.
+                El benchmark corre con 2 workers y datos amplificados para aproximar un entorno de nube.
+                En AWS con datos reales (millones de filas) y más ejecutores, la mejora es aún mayor.
               </div>
 
               {(!compareResult.original?.ok || !compareResult.optimized?.ok) && (
