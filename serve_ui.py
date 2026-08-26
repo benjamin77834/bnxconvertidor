@@ -240,7 +240,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                     fields[k] = v.decode("utf-8", errors="replace") if isinstance(v, bytes) else v
         else:
             try:
-                fields = json.loads(body.decode("utf-8")) if body else {}
+                fields = json.loads(body.decode("utf-8", errors="replace")) if body else {}
             except (json.JSONDecodeError, UnicodeDecodeError):
                 fields = {}
 
@@ -407,7 +407,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 job_name = fields.get("job_name") or fields.get("graph_name")
             else:
                 try:
-                    data = json.loads(body.decode("utf-8"))
+                    data = json.loads(body.decode("utf-8", errors="replace"))
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     self._json_response(400, {"error": "Invalid JSON body"})
                     return
@@ -467,7 +467,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         body = self.rfile.read(content_length)
         try:
             try:
-                data = json.loads(body.decode("utf-8"))
+                data = json.loads(body.decode("utf-8", errors="replace"))
             except (json.JSONDecodeError, UnicodeDecodeError):
                 self._json_response(400, {"error": "Invalid JSON body"})
                 return
@@ -507,7 +507,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length)
         try:
-            data = json.loads(body.decode("utf-8"))
+            data = json.loads(body.decode("utf-8", errors="replace"))
         except (json.JSONDecodeError, UnicodeDecodeError):
             self._json_response(400, {"error": "Invalid JSON body"})
             return
@@ -633,7 +633,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length)
         try:
-            data = json.loads(body.decode("utf-8"))
+            data = json.loads(body.decode("utf-8", errors="replace"))
         except (json.JSONDecodeError, UnicodeDecodeError):
             self._json_response(400, {"error": "Invalid JSON body"})
             return
@@ -707,7 +707,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
 
         try:
             try:
-                data = json.loads(body.decode("utf-8"))
+                data = json.loads(body.decode("utf-8", errors="replace"))
             except (json.JSONDecodeError, UnicodeDecodeError):
                 self._json_response(400, {"error": "Invalid JSON body"})
                 return
@@ -1159,7 +1159,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 pset_content = fields["pset"]
         else:
             try:
-                data = json.loads(body.decode("utf-8"))
+                data = json.loads(body.decode("utf-8", errors="replace"))
             except (json.JSONDecodeError, UnicodeDecodeError):
                 raise ValueError("Invalid request format")
             mp_content = data.get("mp", "")
@@ -1186,7 +1186,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length)
         try:
-            data = json.loads(body.decode("utf-8"))
+            data = json.loads(body.decode("utf-8", errors="replace"))
         except (json.JSONDecodeError, UnicodeDecodeError):
             self._json_response(400, {"error": "Invalid JSON body"})
             return
@@ -1247,7 +1247,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length)
         try:
-            data = json.loads(body.decode("utf-8"))
+            data = json.loads(body.decode("utf-8", errors="replace"))
         except (json.JSONDecodeError, UnicodeDecodeError):
             self._json_response(400, {"error": "Invalid JSON body"})
             return
