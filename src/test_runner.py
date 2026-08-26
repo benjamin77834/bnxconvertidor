@@ -193,7 +193,8 @@ def _basename_token(path_str):
     return seg or None
 
 
-def build_test_script(pyspark_code, inputs, required_cols=None, output_dir=None):
+def build_test_script(pyspark_code, inputs, required_cols=None, output_dir=None,
+                      master="local[1]", amplify=1):
     """Construye un script PySpark ejecutable localmente.
 
     - Inyecta BNX_INPUTS (dict nodo→registros) al inicio.
@@ -203,6 +204,12 @@ def build_test_script(pyspark_code, inputs, required_cols=None, output_dir=None)
       poder descargarlos desde la GUI).
     - Reemplaza lecturas spark.read.<fmt>(...) por _bnx_read("<var>").
     - Reemplaza escrituras X.write... por _bnx_write(X, "<var>").
+
+    master:  master de Spark (p.ej. 'local[1]' normal, 'local[2]' para simular
+             2 workers en el benchmark de optimizacion).
+    amplify: factor de replicacion de los datos de entrada. >1 infla el volumen
+             (repite cada registro N veces) para que las optimizaciones (cache,
+             broadcast, coalesce) muestren su efecto en el benchmark.
     """
     required_cols = sorted(required_cols or [])
     output_dir = output_dir or BNX_LOCAL_OUTPUT_DIR
@@ -724,6 +731,8 @@ _BNX_INPUTS = _json.loads({json.dumps(json.dumps(inputs))})
 _BNX_REQUIRED_COLS = _json.loads({json.dumps(json.dumps(required_cols))})
 _BNX_WRITES = []
 _BNX_OUTPUT_DIR = _json.loads({json.dumps(json.dumps(output_dir))})
+_BNX_MASTER = {json.dumps(master)}
+_BNX_AMPLIFY = {int(amplify)}
 
 class _BnxParamsMeta(type):
     # Metaclase tolerante para PARAMS: atributos no definidos → placeholder.
@@ -774,7 +783,7 @@ def _bnx_spark():
     # ANSI off: casts invalidos (p.ej. string no-numerico a bigint) devuelven NULL
     # en vez de explotar, igual que Ab Initio y que AWS Glue 3.3 (ANSI off por
     # defecto). Alinea el comportamiento local con el del target.
-    return (_SS.builder.master("local[1]").appName("BNX_Test")
+    return (_SS.builder.master(_BNX_MASTER).appName("BNX_Test")
             .config("spark.sql.ansi.enabled", "false")
             .config("spark.sql.storeAssignmentPolicy", "LEGACY")
             .getOrCreate())
@@ -837,6 +846,10 @@ def _bnx_read(var):
         # DataFrame vacío con una columna dummy + columnas requeridas
         print(f"[BNX-TEST] WARN: sin datos de entrada para {{var}} (nodo '{{key}}'), uso vacío")
         return _bnx_ensure_cols(_bnx_make_df([{{"_bnx_placeholder": ""}}]))
+    # Amplificacion para el benchmark de optimizacion: repetir los registros N
+    # veces infla el volumen y hace visible el efecto de cache/broadcast/coalesce.
+    if _BNX_AMPLIFY > 1:
+        records = records * _BNX_AMPLIFY
     df = _bnx_ensure_cols(_bnx_make_df(records))
     print(f"[BNX-TEST] READ {{var}} (nodo '{{key}}'): {{df.count()}} filas, cols={{df.columns}}")
     return df
@@ -1090,8 +1103,12 @@ spark = _bnx_session
     return harness + body
 
 
-def run_pyspark_test(pyspark_code, datasets, timeout=120, job_name=None):
+def run_pyspark_test(pyspark_code, datasets, timeout=120, job_name=None,
+                     master="local[1]", amplify=1):
     """Ejecuta el código PySpark con datos sintéticos y devuelve el resultado.
+
+    master/amplify: para el benchmark de optimizacion (simular 2 workers y volumen
+    alto). Por defecto local[1] sin amplificar (prueba normal).
 
     Devuelve dict:
       {"ok": bool, "exit_code": int, "stdout": str, "stderr": str,
@@ -1103,7 +1120,8 @@ def run_pyspark_test(pyspark_code, datasets, timeout=120, job_name=None):
     # Limpiar salidas previas para no mezclar resultados de corridas anteriores.
     _reset_local_output_dir()
     script = build_test_script(pyspark_code, inputs, required_cols=required_cols,
-                               output_dir=BNX_LOCAL_OUTPUT_DIR)
+                               output_dir=BNX_LOCAL_OUTPUT_DIR,
+                               master=master, amplify=amplify)
 
     tmp = tempfile.NamedTemporaryFile(
         delete=False, suffix="_bnx_test.py", mode="w", encoding="utf-8"

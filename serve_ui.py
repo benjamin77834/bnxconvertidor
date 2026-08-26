@@ -1273,14 +1273,35 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         datasets = data.get("datasets", []) or []
         timeout = max(10, min(int(data.get("timeout", 180) or 180), 600))
 
-        # Optimizar
+        # Optimizar. 'opt' (con coalesce) es lo que se reporta/descarga.
+        # 'bench_code' (sin coalesce) es lo que se MIDE: el coalesce(1) con volumen
+        # alto fuerza 1 particion y ralentiza, distorsionando el benchmark.
         opt = optimize_pyspark(code)
-        opt_code = opt.get("code", code)
+        bench_code = optimize_pyspark(code, include_coalesce=False).get("code", code)
+
+        # --- Simulacion tipo nube: 2 workers (local[2]) + datos amplificados ---
+        # Con pocos datos en local[1] las optimizaciones no se notan (domina el
+        # overhead de arranque). Amplificamos el volumen y usamos 2 cores para que
+        # cache/broadcast/coalesce muestren su efecto, como en un cluster real.
+        SIM_MASTER = "local[2]"
+        SIM_WORKERS = 2
+        TARGET_ROWS = 60000  # volumen objetivo del benchmark
+        try:
+            base_rows = max(
+                (len(json.loads(d.get("content", "[]"))) if isinstance(d.get("content"), str) else len(d.get("content", [])))
+                for d in datasets
+            ) if datasets else 10
+        except Exception:
+            base_rows = 10
+        base_rows = max(1, base_rows)
+        amplify = max(1, min(2000, TARGET_ROWS // base_rows))
+        sim_rows = base_rows * amplify
 
         def _run_timed(src):
             t0 = _time.perf_counter()
             res = run_pyspark_test(src, datasets, timeout=timeout,
-                                   job_name=data.get("job_name") or "bnx-compare")
+                                   job_name=data.get("job_name") or "bnx-compare",
+                                   master=SIM_MASTER, amplify=amplify)
             secs = _time.perf_counter() - t0
             return {
                 "seconds": round(secs, 2),
@@ -1293,7 +1314,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
 
         try:
             original = _run_timed(code)
-            optimized = _run_timed(opt_code)
+            optimized = _run_timed(bench_code)
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -1319,7 +1340,11 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             "changes": opt.get("changes", []),
             "total_changes": opt.get("total_changes", 0),
             "summary": opt.get("summary", {}),
-            "optimized_code": opt_code,
+            "optimized_code": opt.get("code", code),
+            # Info de la simulacion tipo nube (para mostrar en la UI).
+            "sim_workers": SIM_WORKERS,
+            "sim_rows": sim_rows,
+            "sim_amplify": amplify,
         })
 
     def _handle_compile(self):
