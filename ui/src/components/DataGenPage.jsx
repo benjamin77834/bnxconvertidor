@@ -681,66 +681,56 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
               background: t.bg || '#0f1117', borderRadius: 10, padding: 14,
               border: `1px solid #f59e0b40`, display: 'flex', flexDirection: 'column', gap: 12,
             }}>
-              <span style={{ fontSize: 14, fontWeight: 700, color: '#f59e0b' }}>
-                ⚡ Comparación de performance ({compareResult.total_changes} optimizaciones aplicadas)
+              <span style={{ fontSize: 16, fontWeight: 700, color: '#f59e0b' }}>
+                ⚡ Validación de optimización ({compareResult.total_changes} reglas aplicadas)
               </span>
-              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-                <div style={{ flex: 1, minWidth: 160, background: t.card, borderRadius: 8, padding: 12,
-                  border: `1px solid ${t.border}` }}>
-                  <div style={{ fontSize: 11, color: t.dim, textTransform: 'uppercase' }}>Original</div>
-                  <div style={{ fontSize: 26, fontWeight: 800, color: t.text }}>
-                    {compareResult.original?.seconds}s
-                  </div>
-                  <div style={{ fontSize: 11, color: compareResult.original?.ok ? '#22c55e' : '#ef4444' }}>
-                    {compareResult.original?.ok ? '✅ corrió' : '❌ falló'}
-                  </div>
+
+              {/* Lo principal: equivalencia de salidas */}
+              <div style={{
+                padding: 12, borderRadius: 8,
+                background: compareResult.equivalent ? '#22c55e15' : '#f59e0b15',
+                border: `1px solid ${compareResult.equivalent ? '#22c55e' : '#f59e0b'}`,
+              }}>
+                <div style={{ fontSize: 18, fontWeight: 700, color: compareResult.equivalent ? '#22c55e' : '#f59e0b' }}>
+                  {compareResult.equivalent
+                    ? '✅ Código optimizado produce las mismas salidas que el original'
+                    : '⚠️ Las salidas difieren — revisar'}
                 </div>
-                <div style={{ flex: 1, minWidth: 160, background: t.card, borderRadius: 8, padding: 12,
-                  border: `1px solid #f59e0b` }}>
-                  <div style={{ fontSize: 11, color: t.dim, textTransform: 'uppercase' }}>Optimizado</div>
-                  <div style={{ fontSize: 26, fontWeight: 800, color: '#f59e0b' }}>
-                    {compareResult.optimized?.seconds}s
-                  </div>
-                  <div style={{ fontSize: 11, color: compareResult.optimized?.ok ? '#22c55e' : '#ef4444' }}>
-                    {compareResult.optimized?.ok ? '✅ corrió' : '❌ falló'}
-                  </div>
-                </div>
-                <div style={{ flex: 1, minWidth: 160, background: t.card, borderRadius: 8, padding: 12,
-                  border: `1px solid ${(compareResult.faster_pct ?? 0) >= 0 ? '#22c55e' : '#ef4444'}` }}>
-                  <div style={{ fontSize: 11, color: t.dim, textTransform: 'uppercase' }}>
-                    {(compareResult.faster_pct ?? 0) >= 0 ? 'Mejora' : 'Resultado'}
-                  </div>
-                  <div style={{ fontSize: 26, fontWeight: 800,
-                    color: (compareResult.faster_pct ?? 0) >= 0 ? '#22c55e' : '#ef4444' }}>
-                    {Math.abs(compareResult.faster_pct ?? 0)}%
-                  </div>
-                  <div style={{ fontSize: 11, color: t.dim }}>
-                    {compareResult.speedup ? `${compareResult.speedup}× ` : ''}
-                    {(compareResult.faster_pct ?? 0) >= 0 ? 'más rápido' : 'más lento'}
-                  </div>
+                <div style={{ fontSize: 14, color: t.muted, marginTop: 4 }}>
+                  {compareResult.equivalent
+                    ? 'La optimización no cambió la lógica. Mismo número de filas en todas las tablas de salida.'
+                    : 'Algo cambió entre original y optimizado (no debería pasar con reglas seguras).'}
                 </div>
               </div>
-              <div style={{ fontSize: 12,
-                color: compareResult.equivalent ? '#22c55e' : '#f59e0b' }}>
-                {compareResult.equivalent
-                  ? '✅ Mismas salidas (entradas y salidas idénticas): la optimización no cambió la lógica.'
-                  : '⚠️ Las salidas difieren entre original y optimizado — revisar (no debería pasar con reglas seguras).'}
-              </div>
-              {(compareResult.faster_pct ?? 0) < 0 && (
-                <div style={{ fontSize: 12, color: '#94a3b8', fontStyle: 'italic', marginTop: 4 }}>
-                  Nota: con datos sintéticos pequeños (prueba local), el overhead de cache/coalesce puede superar el beneficio.
-                  En AWS con datos reales y múltiples ejecutores, estas optimizaciones (cache en ramas reusadas, broadcast en lookups)
-                  sí reducen el tiempo de ejecución.
-                </div>
-              )}
-              <div style={{ fontSize: 14, color: t.text || '#e2e8f0', display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-                <span>🧠 cache: <strong>{compareResult.summary?.cache_reused || 0}</strong></span>
-                <span>📡 broadcast: <strong>{compareResult.summary?.broadcast_join || 0}</strong></span>
-                <span>🗜️ coalesce: <strong>{compareResult.summary?.coalesce_write || 0}</strong></span>
+
+              {/* Optimizaciones aplicadas (lo que mejora en AWS) */}
+              <div style={{ fontSize: 15, color: t.text || '#e2e8f0', display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                <span>🧠 cache: <strong style={{ color: '#f59e0b' }}>{compareResult.summary?.cache_reused || 0}</strong></span>
+                <span>📡 broadcast: <strong style={{ color: '#f59e0b' }}>{compareResult.summary?.broadcast_join || 0}</strong></span>
+                <span>🗜️ coalesce: <strong style={{ color: '#f59e0b' }}>{compareResult.summary?.coalesce_write || 0}</strong></span>
               </div>
               {(compareResult.changes || []).slice(0, 8).map((c, i) => (
                 <div key={i} style={{ fontSize: 14, color: '#f59e0b', lineHeight: 1.5 }}>• {c.detail}</div>
               ))}
+
+              {/* Tiempos: informativo, no métrica principal */}
+              <div style={{
+                display: 'flex', gap: 12, flexWrap: 'wrap', padding: '10px 0',
+                borderTop: `1px solid ${t.border}`, marginTop: 4,
+              }}>
+                <div style={{ fontSize: 13, color: t.muted }}>
+                  ⏱️ Tiempo local (referencia, no refleja AWS): original <strong>{compareResult.original?.seconds}s</strong> · optimizado <strong>{compareResult.optimized?.seconds}s</strong>
+                  {compareResult.original?.ok && compareResult.optimized?.ok && (
+                    <span style={{ color: t.dim }}> · ambos corrieron OK</span>
+                  )}
+                </div>
+              </div>
+              <div style={{ fontSize: 12, color: '#94a3b8', fontStyle: 'italic' }}>
+                La prueba local con pocos datos no mide el beneficio real de las optimizaciones.
+                En AWS con datos reales (millones de filas) y múltiples ejecutores, cache en ramas reusadas y broadcast en lookups
+                reducen significativamente el tiempo de ejecución.
+              </div>
+
               {(!compareResult.original?.ok || !compareResult.optimized?.ok) && (
                 <div style={{ fontSize: 11, color: '#ef4444', fontFamily: 'monospace',
                   whiteSpace: 'pre-wrap', maxHeight: 160, overflow: 'auto' }}>
