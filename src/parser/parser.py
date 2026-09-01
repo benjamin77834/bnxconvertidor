@@ -2,7 +2,7 @@ def parse_mp_file(path):
 
     dag = {}
 
-    with open(path) as f:
+    with open(path, "r", errors="replace") as f:
         for line in f:
             if "->" not in line:
                 continue

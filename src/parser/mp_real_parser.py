@@ -5,7 +5,7 @@ class MPRealParser:
 
     def parse(self, filepath):
 
-        with open(filepath, "r") as f:
+        with open(filepath, "r", errors="replace") as f:
             content = f.read()
 
         components = []

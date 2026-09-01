@@ -5,7 +5,7 @@ def parse_mp_file(path):
     nodes = {}
     edges = []
 
-    with open(path, "r") as f:
+    with open(path, "r", errors="replace") as f:
         lines = [l.strip() for l in f.readlines() if l.strip()]
 
     print(f"? LINES: {len(lines)}")

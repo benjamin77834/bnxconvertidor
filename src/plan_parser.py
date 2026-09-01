@@ -17,7 +17,7 @@ def parse_plan(path):
     plan_name = ""
     current = None
 
-    with open(path, "r") as f:
+    with open(path, "r", errors="replace") as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#"):
@@ -96,7 +96,7 @@ def parse_pset(path):
     """
     params = {}
 
-    with open(path, "r") as f:
+    with open(path, "r", errors="replace") as f:
         content = f.read()
 
     # Auto-detect format
@@ -446,7 +446,7 @@ def resolve_graph_references(parsed_plan, mp_files=None, pset_params=None, base_
 
             if xfr_path and os.path.exists(xfr_path):
                 # Read, substitute PSET params, then parse
-                with open(xfr_path, "r") as f:
+                with open(xfr_path, "r", errors="replace") as f:
                     xfr_content = f.read()
                 xfr_content, pset_warns = substitute_pset_params(xfr_content, pset_params)
                 for w in pset_warns:
