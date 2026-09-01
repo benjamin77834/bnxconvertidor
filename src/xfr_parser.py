@@ -188,7 +188,7 @@ def parse_xfr(path):
     raw_dml_buffer = []
     in_raw_dml = False
 
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
         content = f.read()
     
     # Check if the file contains multiple concatenated .xfr files (from Grafos)

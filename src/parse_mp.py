@@ -5,7 +5,7 @@ def parse_mp(path):
 
     nodes = []
 
-    with open(path, "r") as f:
+    with open(path, "r", errors="replace") as f:
         lines = f.readlines()
 
     for line in lines:

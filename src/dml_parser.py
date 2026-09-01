@@ -25,7 +25,7 @@ def parse_dml(path):
     current_section = None   # "keys" | "schema"
     current_node = None
 
-    with open(path, "r") as f:
+    with open(path, "r", errors="replace") as f:
         for line in f:
             stripped = line.strip()
 

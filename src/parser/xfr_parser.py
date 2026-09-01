@@ -26,7 +26,7 @@ class XFRParser:
 
     def parse(self, file_path):
 
-        with open(file_path) as f:
+        with open(file_path, "r", errors="replace") as f:
             lines = f.readlines()
 
         expressions = []

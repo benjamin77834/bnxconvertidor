@@ -15,7 +15,7 @@ def parse_mp_ast(path):
 
     dag = defaultdict(list)
 
-    with open(path, "r") as f:
+    with open(path, "r", errors="replace") as f:
 
         for line in f:
 
