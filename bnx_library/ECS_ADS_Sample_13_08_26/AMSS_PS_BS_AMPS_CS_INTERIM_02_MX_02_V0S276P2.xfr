@@ -1,0 +1,25 @@
+include "~$AI_XFR/transform_function_library.xfr";
+// banamex/sr610891/111618/AMSS_PS_BS_AMPS_CS_INTERIM_02_MX_02_V0S276P2.xfr
+// XFR Generated: 2018-11-21 17:12:29 Version: 13227
+
+out::reformat(in)=
+begin
+  out.* :: in.*;
+  out.ACCT :: ((if (first_defined(is_defined((in.leftRec_ACCT)),0))
+ (in.leftRec_ACCT)
+else (in.rightRec_ACCT)));
+  out.CSH_INT_RTE :: in.CSH_INT_RATE;
+  out.EPP_ANR_EOM_LCY :: (if (ds_eq(((if (first_defined(is_defined((in.EPP_ANR_EOM_LCY_AGGR_DAYS)),0))
+ (in.EPP_ANR_EOM_LCY_AGGR_DAYS)
+else (decimal(""))(0))), 0))
+ 0
+else (((if (first_defined(is_defined((in.EPP_ANR_EOM_LCY_AGGR_BAL)),0))
+ (in.EPP_ANR_EOM_LCY_AGGR_BAL)
+else (decimal(""))(0))) / ((if (first_defined(is_defined((in.EPP_ANR_EOM_LCY_AGGR_DAYS)),0))
+ (in.EPP_ANR_EOM_LCY_AGGR_DAYS)
+else (decimal(""))(0)))));
+  out.ORG :: ((if (first_defined(is_defined((in.leftRec_ORG)),0))
+ (in.leftRec_ORG)
+else (in.rightRec_ORG)));
+end;
+

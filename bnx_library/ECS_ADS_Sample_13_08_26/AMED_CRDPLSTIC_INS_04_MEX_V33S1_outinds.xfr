@@ -1,0 +1,13 @@
+include "~$AI_XFR/transform_function_library.xfr";
+// banamex/sr610891/111618/AMED_CRDPLSTIC_INS_04_MEX_V33S1_outinds.xfr
+// Output-indexes XFR Generated: 2018-11-21 17:12:25 Version: 13227
+
+let int[int] outinds = [vector];
+
+out::output_indexes(in)=
+begin
+outinds = [vector];
+if ( ((ds_neq(in.ACCT_ORG_CDE, 'HDR') and ds_neq(in.ACCT_ORG_CDE, 'TRL') and ds_neq(string_substring(in.CRD_ACCT_NBR, 1, 4), 'AMED'))) ) outinds = vector_append(outinds, 0);
+  out :: outinds;
+end;
+

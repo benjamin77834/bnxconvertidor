@@ -1,0 +1,21 @@
+out :: reformat(in) =
+begin
+  let int i = 0;
+  let int count = lookup_count("Connections-Lkp",in.num_cliente, in.fec_transaccion);
+  
+  let record
+  datetime("hh24:mi:ss") hor_fintxn;
+  string("") cve_ip; end[] vec = [vector ];
+  
+  for (i, i<count)
+  begin
+  let rec = lookup_next("Connections-Lkp");
+  if(in.hor_solicitudtxn >= rec.hor_fintxn) vec = vector_append(vec,rec);
+  
+  end;
+  
+  out.*::in.*;
+  out.cve_ip :: first_without_error(vector_sort(vec, {hor_fintxn descending})[0].cve_ip,"");
+  out.newline :: in.newline;
+  
+end;

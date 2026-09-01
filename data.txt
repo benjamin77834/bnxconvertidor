@@ -1,0 +1,6 @@
+id,nombre,monto
+1,juan perez,150.50
+2,maria gomez,300.50
+3,carlos lopez,300.50
+4,juan perez,500.50
+

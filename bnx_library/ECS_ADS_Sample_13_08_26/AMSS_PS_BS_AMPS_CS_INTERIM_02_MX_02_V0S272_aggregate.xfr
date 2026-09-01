@@ -1,0 +1,46 @@
+include "~$AI_XFR/transform_function_library.xfr";
+// banamex/sr610891/111618/AMSS_PS_BS_AMPS_CS_INTERIM_02_MX_02_V0S272_aggregate.xfr
+// Rollup XFR Generated: 2018-11-21 17:08:53 Version: 13227
+out::rollup(in)=
+begin
+  out.* :: in.*;
+  out.MIS_DATE :: max(in.MIS_DATE);
+  out.RTL_INT_EOC_LCY :: sum(in.RTL_INT_EOC_LCY);
+  out.INT_BNP :: sum(in.INT_BNP);
+  out.MEMBER_BNP :: sum(in.MEMBER_BNP);
+  out.PS_CURR_BAL :: sum(in.PS_CURR_BAL);
+  out.SVC_BNP_PS :: sum(in.SVC_BNP_PS);
+  out.MEMBR_FEE_BNP_LCY :: sum(in.MEMBR_FEE_BNP_LCY);
+  out.CSH_INT_EOC_LCY :: sum(in.CSH_INT_EOC_LCY);
+  out.ANR_RTL_EOC_LCY :: sum(in.ANR_RTL_EOC_LCY);
+  out.CSH_ANR_EOC_LCY :: sum(in.CSH_ANR_EOC_LCY);
+  out.CRD_USAGE_FEE_LCY :: sum(in.CRD_USAGE_FEE_LCY);
+  out.INT_EOM_LCY :: sum(in.INT_EOM_LCY);
+  out.AGGR_DAYS :: sum(in.AGGR_DAYS);
+  out.INS_BNP_PS :: sum(in.INS_BNP_PS);
+  out.RECV_BNP_PS :: sum(in.RECV_BNP_PS);
+  out.OVLM_BNP_PS :: sum(in.OVLM_BNP_PS);
+  out.INT_BNP_PS :: sum(in.INT_BNP_PS);
+  out.STMT_ID_CODE :: max(in.STMT_ID_CODE);
+  out.ENR_RTL_EOC_LCY :: sum(in.ENR_RTL_EOC_LCY);
+  out.ANR_EOC_LCY :: max(in.ANR_EOC_LCY);
+  out.REVOL_EPP_ANR_LCY :: max(in.REVOL_EPP_ANR_LCY);
+  out.TOT_BAL_EOC_LCY :: max(in.TOT_BAL_EOC_LCY);
+  out.EPP_ANR_EOM_LCY_AGGR_BAL :: sum(in.EPP_ANR_EOM_LCY_AGGR_BAL);
+  out.EPP_ANR_EOM_LCY_AGGR_DAYS :: sum(in.EPP_ANR_EOM_LCY_AGGR_DAYS);
+  out.EPP_ANR_EOC_LCY :: sum(in.EPP_ANR_EOC_LCY);
+  out.REVOL_ANR_RTL_LCY :: sum(in.REVOL_ANR_RTL_LCY);
+  out.ENR_BALCON_EOC_LCY :: sum(in.ENR_BALCON_EOC_LCY);
+  out.ENR_EPP_EOC_LCY :: sum(in.ENR_EPP_EOC_LCY);
+  out.ENR_ALOP_EOC_LCY :: sum(in.ENR_ALOP_EOC_LCY);
+  out.CSH_BAL_EOC_LCY :: sum(in.CSH_BAL_EOC_LCY);
+  out.RTL_BAL_EOC_LCY :: sum(in.RTL_BAL_EOC_LCY);
+  out.ENR_EOC_LCY :: sum(in.ENR_EOC_LCY);
+  out.REVOL_ANR_CSH_LCY_AMSS_PS :: sum(in.REVOL_ANR_CSH_LCY_AMSS_PS);
+  out.CSH_INT_EOM_LCY_FEE :: sum(in.CSH_INT_EOM_LCY_FEE);
+  out.RTL_INT_EOM_LCY_FEE :: sum(in.RTL_INT_EOM_LCY_FEE);
+  out.TOT_INT_BILLD_EOM_LCY_FEE :: sum(in.TOT_INT_BILLD_EOM_LCY_FEE);
+  out.ENR_CSH_LCYAMT_C :: sum(in.ENR_CSH_LCYAMT_C);
+  out.ENR_RTL_LCYAMT_C :: sum(in.ENR_RTL_LCYAMT_C);
+end;
+

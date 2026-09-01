@@ -1,0 +1,18 @@
+include "~$AI_XFR/transform_function_library.xfr";
+// banamex/sr610891/111618/NON_ECS_ACCT_CUST_CYBERKRYPT_SHA_ENCRY_MX_V0S193P3.xfr
+// XFR Generated: 2018-11-21 17:12:29 Version: 13227
+
+out::reformat(in)=
+begin
+  out.* :: in.*;
+  out.ACCT_CUST_FLAG :: string_lrtrim( 'ACCT');
+  out.CYBERKRYPT_ENCRYPT_VAL_TXT :: (if (first_defined(is_null(in.CYBERKRYPT_NCRYPT_AL_TXT),0))
+ NULL
+else string_lrtrim1(in.CYBERKRYPT_NCRYPT_AL_TXT));
+  out.V_ACCT_CARD_CUST_NBR :: (if (first_defined(is_null(in.V_ACCT_CARD_CUST_NBR),0))
+ NULL
+else string_lrtrim1(in.V_ACCT_CARD_CUST_NBR));
+  out.V_NATURAL_KEY :: in.ORG_ACCT_NBR;
+  out.V_ORG :: string_pad( string_substring( in.V_ORG, 1, 3), 3);
+end;
+

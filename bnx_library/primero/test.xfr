@@ -1,0 +1,27 @@
+RawOrders:
+  source_type s3
+  path s3://bnx-e2e-test/raw/orders
+  format csv
+
+RawCustomers:
+  source_type s3
+  path s3://bnx-e2e-test/raw/customers
+  format csv
+
+CleanOrders:
+  select order_id, customer_id, amount, status, order_date
+  where status = 'completed'
+
+OrderJoin:
+  join_key customer_id
+  join_type inner
+
+TotalSpend:
+  group_by customer_id, name, region
+  select SUM(amount) as total_spent, COUNT(order_id) as order_count
+
+WriteReport:
+  sink_type s3
+  path s3://bnx-e2e-test/output/report
+  format parquet
+  mode overwrite

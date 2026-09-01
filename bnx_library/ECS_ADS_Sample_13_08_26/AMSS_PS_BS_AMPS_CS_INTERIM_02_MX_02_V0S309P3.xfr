@@ -1,0 +1,23 @@
+include "~$AI_XFR/transform_function_library.xfr";
+// banamex/sr610891/111618/AMSS_PS_BS_AMPS_CS_INTERIM_02_MX_02_V0S309P3.xfr
+// Lookup XFR Generated: 2018-11-21 17:10:43 Version: 13227
+out::reformat(in)=
+begin
+  let lnk_ref_lkp_p_plan_type_alop_in=lookup('Tfm P PLAN TYPE lkp2', in.PLAN_NBR, in.PLAN_TYPE, in.PLAN_DWH_DESC_ALOP);
+  let lnk_ref_lkp_p_plan_type_balcon_in=lookup('Tfm P PLAN TYPE lkp3', in.PLAN_NBR, in.PLAN_TYPE, in.PLAN_DWH_DESC_BALCON);
+  let lnk_ref_lkp_p_plan_type_cash_in=lookup('Tfm P PLAN TYPE lkp1', in.PLAN_NBR, in.PLAN_TYPE, in.PLAN_DWH_DESC_CASH);
+  let lnk_ref_lkp_p_plan_type_epp_in=lookup('Tfm P PLAN TYPE lkp4', in.PLAN_NBR, in.PLAN_TYPE, in.PLAN_DWH_DESC_EPP);
+  let lnk_ref_lkp_p_plan_type_retail_in=lookup('Tfm P PLAN TYPE lkp', in.PLAN_NBR, in.PLAN_TYPE, in.PLAN_DWH_DESC_RETAIL);
+  out.* :1: in.*;
+  out.* :7: lnk_ref_lkp_p_plan_type_retail_in.*;
+  out.* :8: lnk_ref_lkp_p_plan_type_cash_in.*;
+  out.* :9: lnk_ref_lkp_p_plan_type_alop_in.*;
+  out.* :10: lnk_ref_lkp_p_plan_type_balcon_in.*;
+  out.* :11: lnk_ref_lkp_p_plan_type_epp_in.*;
+  out.PLAN_TYP_RETAIL_FLG :: lnk_ref_lkp_p_plan_type_retail_in.PLAN_TYP_RETAIL_FLG;
+  out.PLAN_TYP_CASH_FLG :: lnk_ref_lkp_p_plan_type_cash_in.PLAN_TYP_CASH_FLG;
+  out.PLAN_TYP_ALOP_FLG :: lnk_ref_lkp_p_plan_type_alop_in.PLAN_TYP_ALOP_FLG;
+  out.PLAN_TYP_BALCON_FLG :: lnk_ref_lkp_p_plan_type_balcon_in.PLAN_TYP_BALCON_FLG;
+  out.PLAN_TYP_EPP_FLG :: lnk_ref_lkp_p_plan_type_epp_in.PLAN_TYP_EPP_FLG;
+end;
+

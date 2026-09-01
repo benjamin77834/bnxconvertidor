@@ -1,0 +1,12 @@
+include "~$AI_XFR/transform_function_library.xfr";
+// banamex/sr610891/111618/AMSS_PS_BS_AMPS_CS_INTERIM_02_MX_02_V0S277P2.xfr
+// Join Modify XFR Generated: 2018-11-21 17:08:56 Version: 13227
+out::join(in0, in1)=
+begin
+  out.* :1: in0.*;
+  out.* :2: in1.*;
+  out.leftRec_ORG :: in0.ORG;
+  out.leftRec_ACCT :: in0.ACCT;
+  out.STMT_ID_CODE :: in0.STMT_ID_CODE;
+end;
+

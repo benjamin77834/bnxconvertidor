@@ -1,0 +1,187 @@
+include "~$AI_XFR/transform_function_library.xfr";
+// banamex/sr610891/111618/AMSS_PS_BS_AMPS_CS_INTERIM_02_MX_02_V0S269P4.xfr
+// XFR Generated: 2018-11-21 17:12:29 Version: 13227
+
+ let record decimal(11, zerofill, sign_reserved) v = NULL; end vPlanNbrAmps = [record v 0];
+ let record decimal(11, zerofill, sign_reserved) v = NULL; end vPlanNbrPs = [record v 0];
+out::reformat(in)=
+begin
+vPlanNbrAmps.v = (if (first_defined(is_null(in.PLAN_NBR),0))
+ (decimal(""))(0)
+else in.PLAN_NBR);
+vPlanNbrPs.v = (if (first_defined(is_null(in.PLAN_NBR),0))
+ (decimal(""))(0)
+else in.PLAN_NBR);
+  out.* :: in.*;
+  out.ANR_EOC_LCY :: (if ((ds_eq(((if (first_defined(is_defined((in.AGGR_BAL)),0))
+ (in.AGGR_BAL)
+else (decimal(""))(0))), 0) or ds_eq(((if (first_defined(is_defined((in.AGGR_DAYS)),0))
+ (in.AGGR_DAYS)
+else (decimal(""))(0))), 0)))
+ 0
+else (in.AGGR_BAL / in.AGGR_DAYS));
+  out.ANR_RTL_EOC_LCY :: (if (ds_eq(((if (first_defined(is_defined((in.AGGR_DAYS)),0))
+ (in.AGGR_DAYS)
+else (decimal(""))(0))), 0))
+ 0
+else ((if (first_defined(is_defined(in.PLAN_TYP_RETAIL_FLG),0))
+ (in.AGGR_BAL / in.AGGR_DAYS)
+else 0)));
+  out.CRD_USAGE_FEE_LCY :: NULL;
+  out.CSH_ANR_EOC_LCY :: (if (ds_eq(((if (first_defined(is_defined((in.AGGR_DAYS)),0))
+ (in.AGGR_DAYS)
+else (decimal(""))(0))), 0))
+ 0
+else ((if (first_defined(is_defined(in.PLAN_TYP_CASH_FLG),0))
+ (in.AGGR_BAL / in.AGGR_DAYS)
+else 0)));
+  out.CSH_BAL_EOC_LCY :: (if (first_defined(is_defined(in.PLAN_TYP_CASH_FLG),0))
+ ((if (first_defined(is_defined((in.CURR_BAL)),0))
+ (in.CURR_BAL)
+else (decimal(""))(0)))
+else (decimal(""))(0));
+  out.CSH_INT_BNP_LCY :: ((if (first_defined(is_defined((in.INT_BNP)),0))
+ (in.INT_BNP)
+else (decimal(""))(0)));
+  out.CSH_INT_EOC_LCY :: (if (first_defined(is_defined(in.PLAN_TYP_CASH_FLG),0))
+ ((if (first_defined(is_defined((in.INT_THIS_STMT)),0))
+ (in.INT_THIS_STMT)
+else (decimal(""))(0)))
+else (decimal(""))(0));
+  out.CSH_INT_EOM_LCY_FEE :: (if ((is_defined(in.PLAN_TYP_CASH_FLG) or* is_defined(in.PLAN_TYP_BALCON_FLG)))
+ ((if (first_defined(is_defined((in.INT_THIS_STMT)),0))
+ (in.INT_THIS_STMT)
+else (decimal(""))(0)))
+else (decimal(""))(0));
+  out.CSH_SERV_FEE_BNP_LCY :: ((if (first_defined(is_defined((in.SVC_BNP)),0))
+ (in.SVC_BNP)
+else (decimal(""))(0)));
+  out.ENR_ALOP_EOC_LCY :: (if (first_defined(is_defined(in.PLAN_TYP_ALOP_FLG),0))
+ ((if (first_defined(is_defined((in.CURR_BAL)),0))
+ (in.CURR_BAL)
+else (decimal(""))(0)))
+else (decimal(""))(0));
+  out.ENR_BALCON_EOC_LCY :: (if (first_defined(is_defined(in.PLAN_TYP_BALCON_FLG),0))
+ ((if (first_defined(is_defined((in.CURR_BAL)),0))
+ (in.CURR_BAL)
+else (decimal(""))(0)))
+else (decimal(""))(0));
+  out.ENR_CSH_LCYAMT_C :: (if ((ds_eq(string_substring((decimal(''))(((if (first_defined(is_defined((in.PLAN_NBR)),0))
+ (in.PLAN_NBR)
+else (decimal(""))(0)))), 1, 1), '2') or ds_eq(string_substring((decimal(''))(((if (first_defined(is_defined((in.PLAN_NBR)),0))
+ (in.PLAN_NBR)
+else (decimal(""))(0)))), 1, 1), '4')))
+ ((if (first_defined(is_defined((in.CURR_BAL)),0))
+ (in.CURR_BAL)
+else (decimal(""))(0)))
+else (decimal(""))(0));
+  out.ENR_EOC_LCY :: ((if (first_defined(is_defined((in.CURR_BAL)),0))
+ (in.CURR_BAL)
+else (decimal(""))(0)));
+  out.ENR_EPP_EOC_LCY :: (if (first_defined(is_defined(in.PLAN_TYP_EPP_FLG),0))
+ ((if (first_defined(is_defined((in.CURR_BAL)),0))
+ (in.CURR_BAL)
+else (decimal(""))(0)))
+else (decimal(""))(0));
+  out.ENR_RTL_EOC_LCY :: (if (first_defined(is_defined(in.PLAN_TYP_RETAIL_FLG),0))
+ ((if (first_defined(is_defined((in.CURR_BAL)),0))
+ (in.CURR_BAL)
+else (decimal(""))(0)))
+else (decimal(""))(0));
+  out.ENR_RTL_LCYAMT_C :: (if (first_defined(is_defined(in.PLAN_TYP_RETAIL_FLG),0))
+ ((if (first_defined(is_defined((in.CURR_BAL)),0))
+ (in.CURR_BAL)
+else (decimal(""))(0)))
+else (decimal(""))(0));
+  out.EPP_ANR_EOC_LCY :: (if (ds_eq(((if (first_defined(is_defined((in.AGGR_DAYS)),0))
+ (in.AGGR_DAYS)
+else (decimal(""))(0))), 0))
+ 0
+else ((if (first_defined(is_defined(in.PLAN_TYP_EPP_FLG),0))
+ (((if (first_defined(is_defined((in.AGGR_BAL)),0))
+ (in.AGGR_BAL)
+else (decimal(""))(0))) / in.AGGR_DAYS)
+else 0)));
+  out.EPP_ANR_EOM_LCY_AGGR_BAL :: (if (first_defined(is_defined(in.PLAN_TYP_EPP_FLG),0))
+ ((if (first_defined(is_defined((in.AGGR_BAL)),0))
+ (in.AGGR_BAL)
+else (decimal(""))(0)))
+else (decimal(""))(0));
+  out.EPP_ANR_EOM_LCY_AGGR_DAYS :: (if (first_defined(is_defined(in.PLAN_TYP_EPP_FLG),0))
+ ((if (first_defined(is_defined((in.AGGR_DAYS)),0))
+ (in.AGGR_DAYS)
+else (decimal(""))(0)))
+else (decimal(""))(0));
+  out.INS_BNP_PS :: in.INS_BNP;
+  out.INT_BNP :: ((if (first_defined(is_defined((in.INT_BNP)),0))
+ (in.INT_BNP)
+else (decimal(""))(0)));
+  out.INT_BNP_PS :: in.INT_BNP;
+  out.INT_EOM_LCY :: in.INT_THIS_STMT;
+  out.MEMBER_BNP :: ((if (first_defined(is_defined((in.MEMBER_BNP)),0))
+ (in.MEMBER_BNP)
+else (decimal(""))(0)));
+  out.MEMBR_FEE_BNP_LCY :: ((if (first_defined(is_defined((in.MEMBER_BNP)),0))
+ (in.MEMBER_BNP)
+else (decimal(""))(0)));
+  out.OVLM_BNP_PS :: in.OVLM_BNP;
+  out.PLAN_NBR :: (decimal(''))(string_substring(vPlanNbrPs.v, 1, 2));
+  out.PS_CURR_BAL :: ((if (first_defined(is_defined((in.CURR_BAL)),0))
+ (in.CURR_BAL)
+else (decimal(""))(0)));
+  out.RECV_BNP_PS :: in.RECV_BNP;
+  out.REVOL_ANR_CSH_LCY_AMSS_PS :: (if ((is_defined(in.PLAN_TYP_CASH_FLG) and* ds_neq((((if (first_defined(is_defined((in.AGGR_DAYS)),0))
+ (in.AGGR_DAYS)
+else (decimal(""))(0)))), 0)))
+ ((((if (first_defined(is_defined((in.AGGR_BAL)),0))
+ (in.AGGR_BAL)
+else (decimal(""))(0))) / in.AGGR_DAYS))
+else 0);
+  out.REVOL_ANR_RTL_LCY :: (if ((is_defined(in.PLAN_TYP_RETAIL_FLG) and* ds_neq((((if (first_defined(is_defined((in.AGGR_DAYS)),0))
+ (in.AGGR_DAYS)
+else (decimal(""))(0)))), 0)))
+ ((((if (first_defined(is_defined((in.AGGR_BAL)),0))
+ (in.AGGR_BAL)
+else (decimal(""))(0))) / in.AGGR_DAYS))
+else 0);
+  out.REVOL_EPP_ANR_LCY :: (if (first_defined(is_defined(in.PLAN_TYP_EPP_FLG),0))
+ ((if (ds_eq(((if (first_defined(is_defined((in.AGGR_DAYS)),0))
+ (in.AGGR_DAYS)
+else (decimal(""))(0))), 0))
+ 0
+else (((if (first_defined(is_defined((in.AGGR_BAL)),0))
+ (in.AGGR_BAL)
+else (decimal(""))(0))) / in.AGGR_DAYS)))
+else 0);
+  out.RTL_BAL_EOC_LCY :: (if (first_defined(is_defined(in.PLAN_TYP_RETAIL_FLG),0))
+ ((if (first_defined(is_defined((in.CURR_BAL)),0))
+ (in.CURR_BAL)
+else (decimal(""))(0)))
+else (decimal(""))(0));
+  out.RTL_INS_BNP_LCY :: ((if (first_defined(is_defined((in.INS_BNP)),0))
+ (in.INS_BNP)
+else (decimal(""))(0)));
+  out.RTL_INT_EOC_LCY :: (if (first_defined(is_defined(in.PLAN_TYP_RETAIL_FLG),0))
+ ((if (first_defined(is_defined((in.INT_THIS_STMT)),0))
+ (in.INT_THIS_STMT)
+else (decimal(""))(0)))
+else (decimal(""))(0));
+  out.RTL_INT_EOM_LCY_FEE :: (if ((is_defined(in.PLAN_TYP_RETAIL_FLG) or* is_defined(in.PLAN_TYP_EPP_FLG)))
+ ((if (first_defined(is_defined((in.INT_THIS_STMT)),0))
+ (in.INT_THIS_STMT)
+else (decimal(""))(0)))
+else (decimal(""))(0));
+  out.STMT_ID_CODE :: math_abs(((if (first_defined(is_defined((in.STMT_ID_CODE)),0))
+ (in.STMT_ID_CODE)
+else (decimal(""))(0))));
+  out.SVC_BNP_PS :: ((if (first_defined(is_defined((in.SVC_BNP)),0))
+ (in.SVC_BNP)
+else (decimal(""))(0)));
+  out.TOT_BAL_EOC_LCY :: ((if (first_defined(is_defined((in.AGGR_BAL)),0))
+ (in.AGGR_BAL)
+else (decimal(""))(0)));
+  out.TOT_INT_BILLD_EOM_LCY_FEE :: ((if (first_defined(is_defined((in.INT_THIS_STMT)),0))
+ (in.INT_THIS_STMT)
+else (decimal(""))(0)));
+end;
+

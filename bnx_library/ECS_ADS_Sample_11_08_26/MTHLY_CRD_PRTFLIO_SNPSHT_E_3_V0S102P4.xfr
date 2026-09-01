@@ -1,0 +1,13 @@
+include "~$AI_XFR/transform_function_library.xfr";
+// banamex/sr610891/111618/MTHLY_CRD_PRTFLIO_SNPSHT_E_3_V0S102P4.xfr
+// Join Modify XFR Generated: 2018-11-21 17:09:11 Version: 13227
+out::join(in0, in1, in2)=
+begin
+  out.* :1: in0.*;
+  out.* :2: in1.*;
+  out.* :3: in2.*;
+  out.MIS_DATE :: in0.MIS_DATE;
+  out.V_ORG :: in0.V_ORG;
+  out.V_ACCT :: string_pad( string_substring( in0.V_ACCT, 1, 19), 19);
+end;
+

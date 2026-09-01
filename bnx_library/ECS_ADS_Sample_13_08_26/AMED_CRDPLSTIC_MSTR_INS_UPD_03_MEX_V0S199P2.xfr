@@ -1,0 +1,41 @@
+include "~$AI_XFR/transform_function_library.xfr";
+// banamex/sr610891/111618/AMED_CRDPLSTIC_MSTR_INS_UPD_03_MEX_V0S199P2.xfr
+// XFR Generated: 2018-11-21 17:12:29 Version: 13227
+
+out::reformat(in)=
+begin
+  out.* :: in.*;
+  out.AGNT_CDE :: in.AGENT_CODE;
+  
+  /*
+  out.CRD_FRST_TXN_DT :: (if (first_defined(is_null(in.CRD_FRST_TXN_DT_PREV),0))
+  in.CRD_FRST_TXN_DT
+  else in.CRD_FRST_TXN_DT_PREV);
+  
+  out.INVALID_RSN_CDE :: ((if (first_defined(is_defined((in.INVALID_REASON_CODE)),0))
+  (in.INVALID_REASON_CODE)
+  else ""));
+  */
+  
+  out.CRD_FRST_TXN_DT :: first_defined(in.CRD_FRST_TXN_DT_PREV,in.CRD_FRST_TXN_DT);
+  out.INVALID_RSN_CDE :: first_defined(in.INVALID_REASON_CODE,"");
+  out.LANG_CDE :: in.LANG_CODE;
+  
+  /*
+  out.LST_TXN_DT :: (if (first_defined(is_null(in.LST_TXN_DT),0))
+  in.LST_TXN_DT_PREV
+  else ((if (ds_gt(((if (first_defined(is_defined((in.LST_TXN_DT)),0))
+  (in.LST_TXN_DT)
+  else (date('YYYY-MM-DD'))(('1800-01-01')))), ((if (first_defined(is_defined((in.LST_TXN_DT_PREV)),0))
+  (in.LST_TXN_DT_PREV)
+  else (date('YYYY-MM-DD'))(('1800-01-01'))))))
+  in.LST_TXN_DT
+  else in.LST_TXN_DT_PREV)));
+  */
+  
+  out.LST_TXN_DT :: (is_null(in.LST_TXN_DT)) ? in.LST_TXN_DT_PREV : (ds_gt(first_defined(in.LST_TXN_DT,(date('YYYY-MM-DD'))('1800-01-01')),first_defined(in.LST_TXN_DT_PREV,(date('YYYY-MM-DD'))('1800-01-01')))) ? in.LST_TXN_DT : in.LST_TXN_DT_PREV;
+
+  out.PHOTO_IMAGE_ID_TXT :: in.IMAGE_ID;
+  out.PLSTIC_ID_CDE :: in.PLASTIC_ID;
+end;
+

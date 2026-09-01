@@ -1,0 +1,28 @@
+include "~$AI_XFR/transform_function_library.xfr";
+// banamex/sr610891/111618/table_adaptor.xfr
+out :: reformat(in) =
+begin
+  // trim_strings_if_not_blanks() is in transform_function_library.xfr.
+  //out.(*, form == 'string') :2: trim_strings_if_not_blanks(in.*); 
+  //out.(*, form != 'string') :1: in.*;
+  /*out.MIS_DATE :: in.mis_date;
+  out.V_NX_CCY_NUM :: in.V_NX_CCY_NUM;
+  out.N_NX_MID_RATE :: in.N_NX_MID_RATE;
+  out.N_NX_FACTOR :: in.N_NX_FACTOR;
+  out.N_NX_QUALIFIER :: in.N_NX_QUALIFIER;
+  out.D_NX_EFF_DATE :: in.D_NX_EFF_DATE;*/
+  out.* :: in.*;
+  
+  /*out.ACCT_NBR :: in.acct_nbr;
+  out.PRD_CDE :: in.prd_cde;
+  out.MIS_DT :: in.mis_dt;
+  out.CCY_CDE :: in.ccy_cde;
+  out.PRIN_PAID_OFF_THIS_MTH_ACYAMT :: in.prin_paid_off_this_mth_acyamt;
+  out.INT_PAID_OFF_THIS_MTH_ACYAMT :: in.int_paid_off_this_mth_acyamt;
+  out.FEE_PAID_OFF_THIS_MTH_ACYAMT :: in.fee_paid_off_this_mth_acyamt;
+  out.LOAN_LAST_BILL_TDUE_SDL_ACYAMT :: in.loan_last_bill_tdue_sdl_acyamt;
+  out.PRD_KEY :: in.prd_key;
+  out.SRC_SYS_ID :: in.src_sys_id;
+  out.CNTRY_CDE :: in.cntry_cde;
+  out.TOT_PYMTS_DUE_CNT :: in.tot_pymts_due_cnt;*/
+end;

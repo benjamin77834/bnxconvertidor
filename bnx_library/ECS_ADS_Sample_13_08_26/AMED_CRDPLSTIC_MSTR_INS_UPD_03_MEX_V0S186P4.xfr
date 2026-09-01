@@ -1,0 +1,14 @@
+include "~$AI_XFR/transform_function_library.xfr";
+// banamex/sr610891/111618/AMED_CRDPLSTIC_MSTR_INS_UPD_03_MEX_V0S186P4.xfr
+// Lookup XFR Generated: 2018-11-21 17:10:41 Version: 13227
+out::reformat(in)=
+begin
+  let lnk_prev_crd_plastic_master_ref=lookup('Lkp INT CRD PLASTIC MASTER Prev Ds lkp', in.CRD_NBR, in.CRD_ORG_CDE);
+  out.* :1: in.*;
+  out.* :3: lnk_prev_crd_plastic_master_ref.*;
+  out.LOAD_DT_TIME :2: (datetime('YYYY-MM-DD HH24:MI:SS.nnnnnn')) lnk_prev_crd_plastic_master_ref.LOAD_DT_TIME;
+  out.CRD_FRST_TXN_DT_PREV :: lnk_prev_crd_plastic_master_ref.CRD_FRST_TXN_DT_PREV;
+  out.LST_TXN_DT_PREV :: lnk_prev_crd_plastic_master_ref.LST_TXN_DT;
+  out.FRST_VERIF_DT :: in.FRST_VERIF_DT;
+end;
+

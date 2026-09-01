@@ -1,0 +1,11 @@
+include "~$AI_XFR/transform_function_library.xfr";
+// banamex/sr610891/111618/AMED_CRDPLSTIC_MSTR_INS_UPD_03_MEX_V0S202P3.xfr
+// Join Modify XFR Generated: 2018-11-21 17:08:55 Version: 13227
+out::join(in0, in1)=
+begin
+  out.* :1: in0.*;
+  out.* :2: in1.*;
+  out.CUST_ORG :: in0.CUST_ORG;
+  out.CUST_NMBR :: in0.CUST_NMBR;
+end;
+

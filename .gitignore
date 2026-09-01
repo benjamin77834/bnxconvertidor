@@ -3,7 +3,7 @@ node_modules/
 __pycache__/
 *.pyc
 .env
-
+*.mp
 # Build
 # dist/ — NO ignorar, incluimos ui/dist/ pre-compilado para correr sin npm
 build/
@@ -13,7 +13,7 @@ build/
 .vscode/
 .idea/
 *.swp
-
+*.zip
 # OS
 .DS_Store
 Thumbs.db
@@ -29,7 +29,7 @@ ui/coverage/
 
 # Temp
 *.tmp
-
+*.xfr
 # Resultados de la prueba local (CSV descargables desde la GUI)
 output/
 
@@ -38,3 +38,16 @@ terraform/tfplan
 terraform/*.tfstate*
 terraform/.build/
 .env.aws
+*.zip
+bnx_library/
+*.mp3
+*.mp4
+
+# Credenciales / secretos — NUNCA subir
+*accessKeys*.csv
+*accesskeys*.csv
+*credentials*.csv
+*.pem
+*_accessKeys.csv
+# Backups pesados del repo
+bnx_library/Repo_Git/

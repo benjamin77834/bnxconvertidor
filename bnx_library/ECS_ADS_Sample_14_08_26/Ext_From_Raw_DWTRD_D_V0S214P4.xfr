@@ -1,0 +1,12 @@
+include "~$AI_XFR/transform_function_library.xfr";
+// banamex/sr610891/111618/Ext_From_Raw_DWTRD_D_V0S214P4.xfr
+// XFR Generated: 2018-11-21 17:12:29 Version: 13227
+
+out::reformat(in)=
+begin
+  let datetime('YYYY-MM-DD HH24:MI:SS')MISDATE=in.MISDATE;
+  out.* :: in.*;
+  out.MIS_DATE :: (date('YYYY-MM-DD'))(MISDATE);
+  out._record_ :: string_concat(string_lrtrim( in.Record1), string_lrtrim( in.RecType), in.Record2);
+end;
+
