@@ -1,0 +1,21 @@
+include "~$AI_XFR/transform_function_library.xfr";
+// banamex/sr610891/111618/AMSS_PS_BS_AMPS_CS_INTERIM_02_MX_02_V44S1P5.xfr
+// XFR Generated: 2018-11-21 17:12:29 Version: 13227
+
+out::reformat(in)=
+begin
+  out.* :: in.*;
+  out.ORG_CODE :: re_replace(re_replace(((if (first_defined(is_defined((in.ORG_CODE)),0))
+ (in.ORG_CODE)
+else "")), "[ \t]+$", ""), "^[ \t]+", "");
+  out.PLAN_DWH_DESC :: string_upcase(re_replace(re_replace((decimal(''))(((if (first_defined(is_defined((in.PLAN_DWH_DESC)),0))
+ (decimal(''))((in.PLAN_DWH_DESC))
+else (decimal(""))((0))))), "[ \t]+$", ""), "^[ \t]+", ""));
+  out.PLAN_NBR :: (decimal(''))(re_replace(re_replace(((if (first_defined(is_defined((in.PLAN_NBR)),0))
+ (in.PLAN_NBR)
+else "")), "[ \t]+$", ""), "^[ \t]+", ""));
+  out.PLAN_TYP_BALCON_FLG :: re_replace(re_replace(((if (first_defined(is_defined((in.PLAN_TYP_DESC)),0))
+ (in.PLAN_TYP_DESC)
+else "")), "[ \t]+$", ""), "^[ \t]+", "");
+end;
+

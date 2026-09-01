@@ -1,0 +1,11 @@
+include "~$AI_XFR/transform_function_library.xfr";
+// banamex/sr610891/111618/EMPLOYMENT_ABS_SUPP_01_V9S2P3.xfr
+// XFR Generated: 2018-11-21 17:12:29 Version: 13227
+
+out::reformat(in)=
+begin
+  out.* :: in.*;
+  out.V_COMP_BUSS_AREA_CD :: string_pad( string_substring( in.V_COMP_BUSS_AREA_CD, 1, 12), 12);
+  out.V_MODIFIED_USR :0: string_substring(in.V_MODIFIED_USR, 1, 16);
+end;
+

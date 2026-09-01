@@ -1,0 +1,10 @@
+out :: reformat(in) =
+begin
+  out.V_NUM_REFADQUIRENTE :: 'ABC';
+  out.D_FECHA_COMPRA :: '0001-01-01';
+  out.N_IMP_TRNMONDESTINO :: 123;
+  out.V_TYPE_REFOUND :: 'ABC';
+  out.N_HIERARCHY :: 123;
+  out.* :: in.*;
+  out.MIS_DATE :: '2022-12-26';
+end;

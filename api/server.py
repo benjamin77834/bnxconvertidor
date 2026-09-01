@@ -150,6 +150,7 @@ async def compile_graph(
             "terraform": terraform_code,
             "airflow": airflow_code,
             "accuracy": acc,
+        }
 
     finally:
         for p in [mp_path, xfr_path, dml_path]:

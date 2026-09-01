@@ -1,0 +1,15 @@
+include "~$AI_XFR/transform_function_library.xfr";
+// banamex/sr610891/111618/NON_ECS_ACCT_CUST_CYBERKRYPT_SHA_ENCRY_MX_V43S5_outinds.xfr
+// Filter Output-indexes XFR Generated: 2018-11-21 17:08:41 Version: 13227
+out::output_indexes(in)=
+begin
+  let int[int]outinds=[vector];
+if ((is_null(in.OLD_FLAG) and* is_defined(in.V_ACCT_CARD_CUST_NBR)))
+    outinds = vector_append(outinds, 0);
+if (is_null(in.V_ACCT_CARD_CUST_NBR))
+    outinds = vector_append(outinds, 1);
+if ((is_null(in.OLD_FLAG) and* is_defined(in.V_ACCT_CARD_CUST_NBR)))
+    outinds = vector_append(outinds, 2);
+  out :: outinds;
+end;
+

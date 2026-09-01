@@ -1,0 +1,29 @@
+include "~$AI_XFR/transform_function_library.xfr";
+// banamex/sr610891/111618/AMSS_PS_BS_AMPS_CS_INTERIM_02_MX_02_V42S2P2.xfr
+// XFR Generated: 2018-11-21 17:12:29 Version: 13227
+
+out::reformat(in)=
+begin
+  out.* :: in.*;
+  out.ANR_EOC_LCY :: (if ((ds_eq(((if (first_defined(is_defined((in.BS_AGGR_BAL)),0))
+ (in.BS_AGGR_BAL)
+else (decimal(""))(0))), 0) or ds_eq(((if (first_defined(is_defined((in.BS_AGGR_DAYS)),0))
+ (in.BS_AGGR_DAYS)
+else (decimal(""))(0))), 0)))
+ 0
+else (in.BS_AGGR_BAL / in.BS_AGGR_DAYS));
+  out.CURR_CRLM_CYC_DT :: NULL;
+  out.STMT_BAL_CURR_LCYAMT :: ((if (first_defined(is_defined((in.BS_CURR_BAL)),0))
+ (in.BS_CURR_BAL)
+else (decimal(""))(0)));
+  out.STMT_BAL_PREV_LCYAMT :: ((if (first_defined(is_defined((in.BS_TOT_BEG_BAL)),0))
+ (in.BS_TOT_BEG_BAL)
+else (decimal(""))(0)));
+  out.STMT_ID_CODE :: (if (first_defined(is_null(in.STMT_ID_CODE),0))
+ NULL
+else math_abs(in.STMT_ID_CODE));
+  out.TOT_BAL_EOC_LCY :: ((if (first_defined(is_defined((in.BS_CURR_BAL)),0))
+ (in.BS_CURR_BAL)
+else (decimal(""))(0)));
+end;
+

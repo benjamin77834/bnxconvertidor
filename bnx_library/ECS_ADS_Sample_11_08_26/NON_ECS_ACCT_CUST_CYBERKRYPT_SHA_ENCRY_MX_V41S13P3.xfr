@@ -1,0 +1,13 @@
+include "~$AI_XFR/transform_function_library.xfr";
+// banamex/sr610891/111618/NON_ECS_ACCT_CUST_CYBERKRYPT_SHA_ENCRY_MX_V41S13P3.xfr
+// Join Modify XFR Generated: 2018-11-21 17:09:14 Version: 13227
+out::join(in0, in1)=
+begin
+  out.* :1: in0.*;
+  out.* :2: in1.*;
+  out.V_ACCT_CARD_CUST_NBR :: in0.V_ACCT_CARD_CUST_NBR;
+  out.ORG_CDE :: string_pad( string_substring( in0.V_ORG, 1, 3), 3);
+  out.ORG_ACCT_NBR :: in0.ORG_ACCT_NBR;
+  out.V_ORG :0: string_substring(in0.V_ORG, 1, 3);
+end;
+

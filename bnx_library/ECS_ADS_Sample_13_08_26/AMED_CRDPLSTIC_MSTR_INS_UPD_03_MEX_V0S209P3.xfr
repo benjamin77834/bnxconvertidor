@@ -1,0 +1,13 @@
+include "~$AI_XFR/transform_function_library.xfr";
+// banamex/sr610891/111618/AMED_CRDPLSTIC_MSTR_INS_UPD_03_MEX_V0S209P3.xfr
+// Join Modify XFR Generated: 2018-11-21 17:08:55 Version: 13227
+out::join(in0, in1)=
+begin
+  out.* :1: in0.*;
+  out.* :2: in1.*;
+  out.CRD_NBR :: in0.CRD_NBR;
+  out.CRD_ORG_CDE :: in0.CRD_ORG_CDE;
+  out.FPAN_REF_NBR :: in1.V_CARD_REF_ID;
+  out.WALLET_TXN_TOKEN_IND_CDE :: in1.V_TOKEN_PROD;
+end;
+

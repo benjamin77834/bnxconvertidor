@@ -1,0 +1,9 @@
+{
+  "id": "test_grafo_demo",
+  "name": "test_grafo_demo",
+  "mp": "NODE Read : SOURCE\nNODE Write : SINK\n\nRead -> Write",
+  "xfr": "",
+  "savedAt": "2026-08-04T12:33:22.110526",
+  "nodes": 2,
+  "source": "local"
+}

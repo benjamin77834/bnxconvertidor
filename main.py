@@ -1007,8 +1007,11 @@ def _extract_embedded_transforms(content):
         r'XXparameter\|transform\d*\|(.*?)(?:\|\d+\|\d+\|)',
         content, re.DOTALL
     )
-    # Filter: only keep transforms that have actual DML content (:: or begin/end)
-    transforms = [t.strip() for t in raw_transforms if '::' in t or 'begin' in t.lower()]
+    # Filter: only keep transforms that have actual DML content (::, :N: o begin/end)
+    transforms = [
+        t.strip() for t in raw_transforms
+        if '::' in t or 'begin' in t.lower() or re.search(r'out\.\w+\s*:\d+:', t)
+    ]
     
     # Extract keys (group by fields)
     # Key format: key|\{field1; field2\}| or key|\{\}| (empty = all fields)
@@ -1172,7 +1175,9 @@ def _extract_embedded_transforms(content):
             rules["type"] = "reformat"
         
         # Extract field assignments: out.field :: expression;
-        field_matches = re.findall(r'out\.(\w+)\s*::\s*(.+?);', transform)
+        # Soporta tambien el operador de prioridad Ab Initio out.field :N: expr;
+        # (p.ej. out.nom_cte :1: string_lrtrim(in.nom_cte);)
+        field_matches = re.findall(r'out\.(\w+)\s*:(?:\d+)?:\s*(.+?);', transform)
         for field_name, expression in field_matches:
             expr = expression.strip()
             # Skip newline/record terminator fields
@@ -1577,7 +1582,7 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
                         lkp_match = _re.search(r'lookup_count\("([^"]+)"', raw_body)
                         if lkp_match:
                             lookup_name = lkp_match.group(1).replace("-", "_").lower()
-                        out_fields = _re.findall(r'out\.(\w+)\s*::', raw_body)
+                        out_fields = _re.findall(r'out\.(\w+)\s*:(?:\d+)?:', raw_body)
                         xfr_rules[name_lower] = {
                             "transform": "lookup_join",
                             "lookup_name": lookup_name,

@@ -1,0 +1,143 @@
+include "~$AI_XFR/transform_function_library.xfr";
+// banamex/sr610891/111618/EMPLOYMENT_ABS_SUPP_01_V9S2P2.xfr
+// XFR Generated: 2018-11-21 17:12:29 Version: 13227
+
+
+constant string('') S_CNTRY_CDE parameter = '';
+
+out::reformat(in)=
+begin
+  out.* :: in.*;
+  out.ANNUAL_SALES_TURNOVER :: (if (is_blank(re_replace(re_replace(((if (first_defined(is_defined((in.V_ANNUAL_SALES_TURNOVER)),0))
+ (in.V_ANNUAL_SALES_TURNOVER)
+else "")), "[ \t]+$", ""), "^[ \t]+", "")))
+ NULL
+else re_replace(re_replace(in.V_ANNUAL_SALES_TURNOVER, "[ \t]+$", ""), "^[ \t]+", ""));
+  out.APPLICATION_ID :: (if (is_blank(re_replace(re_replace(((if (first_defined(is_defined((in.V_APPLICATION_ID)),0))
+ (in.V_APPLICATION_ID)
+else "")), "[ \t]+$", ""), "^[ \t]+", "")))
+ NULL
+else re_replace(re_replace(in.V_APPLICATION_ID, "[ \t]+$", ""), "^[ \t]+", ""));
+  out.BANK_AT_WORK_FLG :: (if (is_blank(re_replace(re_replace(((if (first_defined(is_defined((in.V_BANK_AT_WORK_FLG)),0))
+ (in.V_BANK_AT_WORK_FLG)
+else "")), "[ \t]+$", ""), "^[ \t]+", "")))
+ NULL
+else re_replace(re_replace(in.V_BANK_AT_WORK_FLG, "[ \t]+$", ""), "^[ \t]+", ""));
+  out.BIZ_ORG_CDE :: string_lrtrim( 'GCG');
+  out.CIN :: (if (is_blank(re_replace(re_replace(((if (first_defined(is_defined((in.V_CIN)),0))
+ (in.V_CIN)
+else "")), "[ \t]+$", ""), "^[ \t]+", "")))
+ NULL
+else re_replace(re_replace(in.V_CIN, "[ \t]+$", ""), "^[ \t]+", ""));
+  out.CNTRY_CDE :: S_CNTRY_CDE;
+  out.COMPANY_ID :: ((if (first_defined(is_defined((in.N_COMPANY_ID)),0))
+ (in.N_COMPANY_ID)
+else 0));
+  out.COMPANY_NM :: (if (is_blank(re_replace(re_replace(((if (first_defined(is_defined((in.V_COMPANY_NM)),0))
+ (in.V_COMPANY_NM)
+else "")), "[ \t]+$", ""), "^[ \t]+", "")))
+ NULL
+else re_replace(re_replace(in.V_COMPANY_NM, "[ \t]+$", ""), "^[ \t]+", ""));
+  out.COMP_CATEGORY :: (if (is_blank(re_replace(re_replace(((if (first_defined(is_defined((in.V_COMP_CATEGORY)),0))
+ (in.V_COMP_CATEGORY)
+else "")), "[ \t]+$", ""), "^[ \t]+", "")))
+ NULL
+else re_replace(re_replace(in.V_COMP_CATEGORY, "[ \t]+$", ""), "^[ \t]+", ""));
+  out.CTRL_1 :: (if (is_blank(re_replace(re_replace(((if (first_defined(is_defined((in.V_CTRL_1)),0))
+ (in.V_CTRL_1)
+else "")), "[ \t]+$", ""), "^[ \t]+", "")))
+ NULL
+else re_replace(re_replace(in.V_CTRL_1, "[ \t]+$", ""), "^[ \t]+", ""));
+  out.DEPARTMENT :: (if (is_blank(re_replace(re_replace(((if (first_defined(is_defined((in.V_DEPARTMENT)),0))
+ (in.V_DEPARTMENT)
+else "")), "[ \t]+$", ""), "^[ \t]+", "")))
+ NULL
+else re_replace(re_replace(in.V_DEPARTMENT, "[ \t]+$", ""), "^[ \t]+", ""));
+  out.EMPLOYER_IND :: (if (is_blank(re_replace(re_replace(((if (first_defined(is_defined((in.V_EMPLOYER_IND)),0))
+ (in.V_EMPLOYER_IND)
+else "")), "[ \t]+$", ""), "^[ \t]+", "")))
+ NULL
+else re_replace(re_replace(in.V_EMPLOYER_IND, "[ \t]+$", ""), "^[ \t]+", ""));
+  out.EMPLOYMENT_TYPE :: (if (is_blank(re_replace(re_replace(((if (first_defined(is_defined((in.V_EMPLOYMENT_TYPE)),0))
+ (in.V_EMPLOYMENT_TYPE)
+else "")), "[ \t]+$", ""), "^[ \t]+", "")))
+ NULL
+else re_replace(re_replace(in.V_EMPLOYMENT_TYPE, "[ \t]+$", ""), "^[ \t]+", ""));
+  out.HIRING_DT :: in.D_HIRING_DT;
+  out.INCEPTION_DT :: in.D_INCEPTION_DT;
+  out.JOB_TITLE :: (if (is_blank(re_replace(re_replace(((if (first_defined(is_defined((in.V_JOB_TITLE)),0))
+ (in.V_JOB_TITLE)
+else "")), "[ \t]+$", ""), "^[ \t]+", "")))
+ NULL
+else re_replace(re_replace(in.V_JOB_TITLE, "[ \t]+$", ""), "^[ \t]+", ""));
+  out.LOAD_DT_TIME :: (datetime('YYYY-MM-DD HH24:MI:SS.nnnnnn'))now1();
+  out.MONTHS_IN_EMPLOYMENT :: (if (is_blank(re_replace(re_replace(((if (first_defined(is_defined((in.V_MONTHS_IN_EMPLOYMENT)),0))
+ (in.V_MONTHS_IN_EMPLOYMENT)
+else "")), "[ \t]+$", ""), "^[ \t]+", "")))
+ NULL
+else re_replace(re_replace(in.V_MONTHS_IN_EMPLOYMENT, "[ \t]+$", ""), "^[ \t]+", ""));
+  out.MONTHS_IN_INDUSTRY :: ((if (first_defined(is_defined((in.N_MONTHS_IN_INDUSTRY)),0))
+ (in.N_MONTHS_IN_INDUSTRY)
+else 0));
+  out.NO_OF_EMPLOYEES :: (if (is_blank(re_replace(re_replace(((if (first_defined(is_defined((in.V_NO_OF_EMPLOYEES)),0))
+ (in.V_NO_OF_EMPLOYEES)
+else "")), "[ \t]+$", ""), "^[ \t]+", "")))
+ NULL
+else re_replace(re_replace(in.V_NO_OF_EMPLOYEES, "[ \t]+$", ""), "^[ \t]+", ""));
+  out.OCCUPATION_STATUS :: (if (is_blank(re_replace(re_replace(((if (first_defined(is_defined((in.V_OCCUPATION_STATUS)),0))
+ (in.V_OCCUPATION_STATUS)
+else "")), "[ \t]+$", ""), "^[ \t]+", "")))
+ NULL
+else re_replace(re_replace(in.V_OCCUPATION_STATUS, "[ \t]+$", ""), "^[ \t]+", ""));
+  out.OCCU_RISK_CATEGORY :: (if (is_blank(re_replace(re_replace(((if (first_defined(is_defined((in.V_OCCU_RISK_CATEGORY)),0))
+ (in.V_OCCU_RISK_CATEGORY)
+else "")), "[ \t]+$", ""), "^[ \t]+", "")))
+ NULL
+else re_replace(re_replace(in.V_OCCU_RISK_CATEGORY, "[ \t]+$", ""), "^[ \t]+", ""));
+  out.PROFESSION_CD :: (if (is_blank(re_replace(re_replace(((if (first_defined(is_defined((in.V_PROFESSION_CD)),0))
+ (in.V_PROFESSION_CD)
+else "")), "[ \t]+$", ""), "^[ \t]+", "")))
+ NULL
+else re_replace(re_replace(in.V_PROFESSION_CD, "[ \t]+$", ""), "^[ \t]+", ""));
+  out.PROF_SUB_OCCUPATION :: (if (is_blank(re_replace(re_replace(((if (first_defined(is_defined((in.V_PROF_SUB_OCCUPATION)),0))
+ (in.V_PROF_SUB_OCCUPATION)
+else "")), "[ \t]+$", ""), "^[ \t]+", "")))
+ NULL
+else re_replace(re_replace(in.V_PROF_SUB_OCCUPATION, "[ \t]+$", ""), "^[ \t]+", ""));
+  out.SECTOR_IND_CD :: (if (is_blank(re_replace(re_replace(((if (first_defined(is_defined((in.V_SECTOR_IND_CD)),0))
+ (in.V_SECTOR_IND_CD)
+else "")), "[ \t]+$", ""), "^[ \t]+", "")))
+ NULL
+else re_replace(re_replace(in.V_SECTOR_IND_CD, "[ \t]+$", ""), "^[ \t]+", ""));
+  out.SPECIAL_HANDLING :: (if (is_blank(re_replace(re_replace(((if (first_defined(is_defined((in.V_SPECIAL_HANDLING)),0))
+ (in.V_SPECIAL_HANDLING)
+else "")), "[ \t]+$", ""), "^[ \t]+", "")))
+ NULL
+else re_replace(re_replace(in.V_SPECIAL_HANDLING, "[ \t]+$", ""), "^[ \t]+", ""));
+  out.SRC_SYS_ID :: string_lrtrim( 'ECS');
+  out.STAFF_GRADE :: (if (is_blank(re_replace(re_replace(((if (first_defined(is_defined((in.V_STAFF_GRADE)),0))
+ (in.V_STAFF_GRADE)
+else "")), "[ \t]+$", ""), "^[ \t]+", "")))
+ NULL
+else re_replace(re_replace(in.V_STAFF_GRADE, "[ \t]+$", ""), "^[ \t]+", ""));
+  out.TOP_COMPANY_INDICATOR :: (if (is_blank(re_replace(re_replace(((if (first_defined(is_defined((in.V_TOP_COMPANY_INDICATOR)),0))
+ (in.V_TOP_COMPANY_INDICATOR)
+else "")), "[ \t]+$", ""), "^[ \t]+", "")))
+ NULL
+else re_replace(re_replace(in.V_TOP_COMPANY_INDICATOR, "[ \t]+$", ""), "^[ \t]+", ""));
+  out.TOT_WORK_YRS :: (if (is_blank(re_replace(re_replace(((if (first_defined(is_defined((in.V_TOT_WORK_YRS)),0))
+ (in.V_TOT_WORK_YRS)
+else "")), "[ \t]+$", ""), "^[ \t]+", "")))
+ NULL
+else re_replace(re_replace(in.V_TOT_WORK_YRS, "[ \t]+$", ""), "^[ \t]+", ""));
+  out.YEARS_IN_EMPLOYMENT :: (if (is_blank(re_replace(re_replace(((if (first_defined(is_defined((in.V_YEARS_IN_EMPLOYMENT)),0))
+ (in.V_YEARS_IN_EMPLOYMENT)
+else "")), "[ \t]+$", ""), "^[ \t]+", "")))
+ NULL
+else re_replace(re_replace(in.V_YEARS_IN_EMPLOYMENT, "[ \t]+$", ""), "^[ \t]+", ""));
+  out.YEARS_IN_INDUSTRY :: ((if (first_defined(is_defined((in.N_YEARS_IN_INDUSTRY)),0))
+ (in.N_YEARS_IN_INDUSTRY)
+else 0));
+  out._type_ :: NULL;
+end;
+

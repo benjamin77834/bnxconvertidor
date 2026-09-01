@@ -1,0 +1,9 @@
+include "~$AI_XFR/transform_function_library.xfr";
+// banamex/sr610891/111618/MTHLY_CRD_PRTFLIO_SNPSHT_E_3_MX_V0S101P1_uadaptor.xfr
+// Join Keys XFR Generated: 2018-11-21 17:10:29 Version: 13227
+out::reformat(in)=
+begin
+  out.* :: in.*;
+  out.V_ACCT :: (string(integer(4)))in.V_ACCT;
+end;
+

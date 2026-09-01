@@ -1,0 +1,16 @@
+CleanOrders:
+  select order_id, customer_id, amount, status, order_date
+  where amount > 0 AND status = 'completed'
+
+CleanCustomers:
+  select customer_id, name, email, region
+  where customer_id IS NOT NULL
+
+OrdersWithCustomer:
+  join_key customer_id
+  join_type inner
+
+TotalByCustomer:
+  group_by customer_id, name, region
+  select SUM(amount) as total_spent, COUNT(order_id) as order_count
+  where total_spent > 0

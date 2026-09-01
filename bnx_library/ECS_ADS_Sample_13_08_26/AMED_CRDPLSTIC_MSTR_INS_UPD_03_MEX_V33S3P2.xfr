@@ -1,0 +1,110 @@
+include "~$AI_XFR/transform_function_library.xfr";
+// banamex/sr610891/111618/AMED_CRDPLSTIC_MSTR_INS_UPD_03_MEX_V33S3P2.xfr
+// XFR Generated: 2018-11-21 17:12:29 Version: 13227
+
+out::reformat(in)=
+begin
+  out.* :: in.*;
+  /*out.ACCT_ORG_CDE :: re_replace(re_replace(in.ORG, "[ \t]+$", ""), "^[ \t]+", "");*/
+  out.ACCT_ORG_CDE :: string_lrtrim(in.ORG);
+  
+  out.APPL_NBR :: in.APPLICATION_ID;
+  out.ASSOC_CRD_NBR :: NULL;
+  out.CCL_IND :: in.CCL_FLAG;
+  out.CLNT_NBR :: in.GRB_NUMBER;
+  out.CRD_ACTN :: in.CARD_ACTION;
+  out.CRD_CNCLD_DT :: in.DATE_CANCEL;
+  out.CRD_CRLM_LCYAMT :: in.CRLIMIT;
+  out.CRD_CSH_LMT_LCYAMT :: in.CASH_LIMIT;
+  /*out.CRD_EFF_TRNSFR_DT :: (date('YYYY-MM-DD'))((string(''))(date("YYYYMMDD"))in.DATE_XFR_EFF);*/
+  out.CRD_EFF_TRNSFR_DT :: in.DATE_XFR_EFF;
+  out.CRD_EXPRY_DT :: in.DATE_EXPIRE;
+  out.CRD_FEE_DT :: NULL;
+  out.CRD_ISSUE_DT :: in.DATE_LST_PLASTIC_ISSUE;
+  out.CRD_OPEN_DT :: in.DATE_OPENED;
+  /*out.CRD_ORG_CDE :: re_replace(re_replace(in.ORG, "[ \t]+$", ""), "^[ \t]+", "");*/
+  out.CRD_ORG_CDE :: string_lrtrim(in.ORG);
+  out.CRD_STAT_DT :: in.DATE_STATUS;
+  
+  /*
+  out.CLNT_ORG :: ((if (first_defined(is_defined((in.CUST_ORG)),0))
+  (in.CUST_ORG)
+  else ""));
+  out.CRD_ACCT_NBR :: ((if (first_defined(is_defined((in.POST_TO_ACCT)),0))
+  (in.POST_TO_ACCT)
+  else ""));
+  out.CRD_ACTIVATED_STAT :: ((if (first_defined(is_defined((in.STATUS)),0))
+  (in.STATUS)
+  else ""));
+  out.CRD_ACTV_IND :: ((if (first_defined(is_defined((in.CURR_FIRST_USAGE_FLAG)),0))
+  (in.CURR_FIRST_USAGE_FLAG)
+  else ""));
+  out.CRD_FRST_USG_IND :: ((if (first_defined(is_defined((in.CURR_FIRST_USAGE_FLAG)),0))
+  (in.CURR_FIRST_USAGE_FLAG)
+  else ""));
+  out.CRD_HLDR_NM :: ((if (first_defined(is_defined((in.EMBR_NAME_1)),0))
+  (in.EMBR_NAME_1)
+  else ""));
+  out.CRD_NBR :: (if (first_defined(is_null(in.CARD_NBR),0))
+  NULL
+  else re_replace(re_replace(in.CARD_NBR, "[ \t]+$", ""), "^[ \t]+", ""));
+  out.CRD_TYP :: ((if (first_defined(is_defined((in.LOGO)),0))
+  (in.LOGO)
+  else ""));
+  out.CRLM_IND :: ((if (first_defined(is_defined((in.CRLIMIT_FLAG)),0))
+  (in.CRLIMIT_FLAG)
+  else ""));
+  out.INVALID_REASON_CODE :: ((if (first_defined(is_defined((in.INVALID_REASON_CODE)),0))
+  (in.INVALID_REASON_CODE)
+  else ""));
+  out.NAS_SRC_CDE :: ((if (first_defined(is_defined((in.NAS_SOURCE_CODE)),0))
+  (in.NAS_SOURCE_CODE)
+  else ""));
+  out.PHOTO_CRD_IND :: ((if (first_defined(is_defined((in.SI_IND)),0))
+  (in.SI_IND)
+  else ""));
+  out.PREV_CRD_TYP :: ((if (first_defined(is_defined((in.XFR_LOGO)),0))
+  (in.XFR_LOGO)
+  else ""));
+  out.PRIM_CRD_IND :: ((if (first_defined(is_defined((in.PRIMARY_CARD_IND)),0))
+  (in.PRIMARY_CARD_IND)
+  else ""));
+  out.REL_NM :: ((if (first_defined(is_defined((in.EMBR_NAME_2)),0))
+  (in.EMBR_NAME_2)
+  else ""));
+  out.TRNSFR_CRD_NBR :: (if (first_defined(is_null(in.XFR_CARD_NBR),0))
+  NULL
+  else re_replace(re_replace(in.XFR_CARD_NBR, "[ \t]+$", ""), "^[ \t]+", ""));
+  */
+  
+
+  out.CLNT_ORG :: first_defined(in.CUST_ORG,"");
+  out.CRD_ACCT_NBR :: first_defined(in.POST_TO_ACCT,"");
+  out.CRD_ACTIVATED_STAT :: first_defined(in.STATUS,"");
+  out.CRD_ACTV_IND :: first_defined(in.CURR_FIRST_USAGE_FLAG," ");  
+  out.CRD_FRST_USG_IND :: first_defined(in.CURR_FIRST_USAGE_FLAG," ");
+  out.CRD_HLDR_NM :: first_defined(in.EMBR_NAME_1,"");
+  out.CRD_NBR :: first_defined(in.CARD_NBR,"");
+  out.CRD_TYP :: first_defined(in.LOGO,"");
+  out.CRLM_IND :: first_defined(in.CRLIMIT_FLAG," ");
+  out.INVALID_REASON_CODE :: first_defined(in.INVALID_REASON_CODE,"");
+  out.NAS_SRC_CDE :: first_defined(in.NAS_SOURCE_CODE,"");
+  out.PHOTO_CRD_IND :: first_defined(in.SI_IND,"");  
+  out.PREV_CRD_TYP :: first_defined(in.XFR_LOGO,"");
+  out.PRIM_CRD_IND :: first_defined(in.PRIMARY_CARD_IND,"");
+  out.REL_NM :: first_defined(in.EMBR_NAME_2,"");
+  out.TRNSFR_CRD_NBR :: is_null(in.XFR_CARD_NBR) ? in.XFR_CARD_NBR : string_lrtrim(in.XFR_CARD_NBR);  
+  
+  out.CRD_TYP_CHG_DT :: in.DATE_XFR_EFF;
+  out.CRLM_CHG_DT :: NULL;
+  out.EMV_IND :: (decimal(''))(in.CARD_TECH);
+  out.FRST_VERIF_DT :: in.DATE_FIRST_CARD_VERIFY;
+  out.LOAD_DT_TIME :: in.LOAD_DT;
+  out.LST_TXN_DT :: in.LST_TXN_DATE;
+  out.NFC_IND :: NULL;
+  out.PREV_CRD_NBR :: in.XFR_CARD_NBR;
+  out.PRIM_CUST_NBR :: in.CUST_NMBR;
+  out.SUP_FEE_DT :: NULL;
+  out.BIZ_ORG_CDE :0: string_substring(in.BIZ_ORG_CDE, 1, 3);
+end;
+
