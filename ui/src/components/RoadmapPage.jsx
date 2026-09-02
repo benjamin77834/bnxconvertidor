@@ -8,11 +8,11 @@ const ROADMAP_DATA = {
       {
         label: 'Semana 1-2: Parser GDE Nativo',
         tasks: [
-          { task: 'Completar parser formato serializado Ab Initio (.mp nativo GDE)', status: 'in-progress' },
-          { task: 'Resolver mapeo de edges (ports -> flows -> vertices)', status: 'in-progress' },
-          { task: 'Validar con 3+ grafos reales del banco', status: 'pending' },
-          { task: 'Generar job.py con edges correctos y DAG completo', status: 'in-progress' },
-          { task: 'Documentar limitaciones del parser', status: 'pending' },
+          { task: 'Completar parser formato serializado Ab Initio (.mp nativo GDE)', status: 'done' },
+          { task: 'Resolver mapeo de edges (ports -> flows -> vertices)', status: 'done' },
+          { task: 'Validar con 3+ grafos reales del banco (barrido 36 grafos, 35/36 ok)', status: 'done' },
+          { task: 'Generar job.py con edges correctos y DAG completo', status: 'done' },
+          { task: 'Documentar limitaciones del parser (bajo-mediano ok, >100 nodos pendiente)', status: 'in-progress' },
         ],
       },
       {
@@ -31,9 +31,10 @@ const ROADMAP_DATA = {
         tasks: [
           { task: 'Unit tests para cada parser (mp, xfr, dml, pset, plan, cobol)', status: 'pending' },
           { task: 'Unit tests para cada codegen (glue, spark, flink, airflow)', status: 'pending' },
-          { task: 'Integration tests: .mp real -> job.py -> validacion', status: 'pending' },
+          { task: 'Integration tests: .mp real -> job.py -> ejecucion con datos sinteticos', status: 'done' },
+          { task: 'Test con grafos del banco (barrido 36 grafos, 35/36 ok)', status: 'done' },
           { task: 'Documentar casos de prueba en formato banco', status: 'pending' },
-          { task: 'Configurar pytest + coverage report', status: 'pending' },
+          { task: 'Configurar pytest + coverage report (formalizar el barrido)', status: 'in-progress' },
         ],
       },
     ],
@@ -126,12 +127,15 @@ const RISKS = [
 ]
 
 const CURRENT_EFFORTS = [
-  { task: 'Parser GDE nativo (formato serializado)', status: 'in-progress', impact: 'Critico - sin esto no parsea .mp reales' },
+  { task: 'Parser GDE nativo (formato serializado)', status: 'done', impact: 'Ya parsea .mp reales del banco' },
+  { task: 'Data Redactada (datos sinteticos + PII masking)', status: 'done', impact: 'Probar sin datos reales del banco' },
+  { task: 'Ejecutor de prueba PySpark local', status: 'done', impact: 'Valida el codigo ejecutandolo, no solo leyendolo' },
+  { task: 'Correccion masiva del generador (barrido 36 grafos)', status: 'done', impact: '35/36 grafos ejecutan y producen salidas' },
+  { task: 'Optimizador de performance (reglas, sin IA)', status: 'done', impact: 'cache/broadcast/coalesce + benchmark' },
+  { task: 'Fixes Windows (UnicodeDecodeError) + CORS', status: 'done', impact: 'Uso desde Windows y Amplify/Lambda sin errores' },
+  { task: 'Despliegue EC2 (Spark local) + CloudFront HTTPS', status: 'done', impact: 'Prueba PySpark en la nube igual que en local' },
   { task: 'Limpieza ASCII (emojis removidos)', status: 'done', impact: 'Servidores sin UTF-8' },
-  { task: 'CLI con --pset', status: 'done', impact: 'Ejecutar desde terminal banco' },
-  { task: 'Validacion non-blocking', status: 'done', impact: 'Genera codigo con warnings' },
   { task: 'Package 7z para transferencia', status: 'done', impact: 'Mover codigo a servidor seguro' },
-  { task: 'Metrics + Estimadores actualizados', status: 'done', impact: 'Soporte business case' },
 ]
 
 export default function RoadmapPage({ theme }) {

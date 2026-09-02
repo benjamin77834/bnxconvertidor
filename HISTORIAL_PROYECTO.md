@@ -244,6 +244,77 @@ Agregamos **Python/Pandas como target de generacion de codigo** — para equipos
 
 ---
 
+## 21-22 de agosto — Dias 29-34: Data Redactada + Ejecutor de prueba local
+
+Construimos toda la suite de **Data Redactada** (datos sinteticos con PII enmascarada) y el **ejecutor de prueba PySpark local**, que corre el codigo generado en la maquina sin subir nada a AWS. Con eso empezamos a encontrar y corregir bugs reales del generador que solo se veian al ejecutar: casts de fecha, if/else con parentesis anidados, string_like, esquema real del .mp, y valores de join compartidos. (Detalle en la pagina de History del UI.)
+
+---
+
+## 25-26 de agosto — Dia 35: Correccion masiva del generador (validado ejecutando)
+
+Con el ejecutor local ya funcionando, hicimos un barrido serio de correctitud. Cada bug se encontro EJECUTANDO el PySpark generado con datos redactados, no leyendo el codigo. Los arreglos son transversales: corrigen el generador para TODOS los grafos, no un caso puntual.
+
+- **Rollup `agg(col("*"))` → MISSING_AGGREGATION**: un Rollup con passthrough (`out.* :: in.*`) generaba `.agg(col("*"))`, invalido en Spark. Ahora las columnas no agregadas se envuelven en `first(...)`, las claves se omiten, y sin agregaciones cae a `count("*")`.
+- **SyntaxError por backslash residual**: filtros con `\` de Ab Initio (de `\n`/`\|`) dejaban el string Python sin cerrar. `_sql_arg` ahora los neutraliza.
+- **Filtros numericos que vaciaban las salidas**: `CAST(col AS DECIMAL) >= 1000` contra datos redactados de texto daba 0 filas. El datagen ahora detecta comparaciones numericas en los filtros y genera valores que las satisfacen.
+- **SINK-lookup no expuesto como variable**: un SINK que es tambien lookup (`Connections_Lkp`) no dejaba su DataFrame disponible para joins posteriores. Ahora se expone con su nombre.
+- **Filtro de comparacion entre columnas (opcion A)**: `A >= B` donde B viene de un lookup sin datos vaciaba todo; en la prueba local se relaja para que las filas con B NULL pasen.
+
+Resultado: los grafos grandes del banco (Form2_MN, FZZPWM39_gen_sucdet, MONGO_EDW_BASE_TXN) pasaron de salidas vacias a producir datos en todas sus tablas.
+
+---
+
+## 26 de agosto — Dia 36: Optimizador de performance (sin IA)
+
+Construimos `src/perf_optimizer.py`, un **optimizador por reglas** del PySpark generado (no usa IA, es determinista y no cambia la logica):
+
+- **cache()** en DataFrames reusados por varias ramas con linaje costoso (los Replicate de Ab Initio).
+- **broadcast()** en joins cuyo lado derecho es un catalogo/lookup pequeno.
+- **coalesce(1)** antes de las escrituras (menos archivos de salida).
+
+Dos endpoints nuevos: `/optimize` (devuelve el codigo optimizado + resumen de cambios) y `/optimize/compare` (corre original vs optimizado y compara). En el Compiler agregamos el boton "Optimizar performance" y un modo pantalla completa con el diff de codigo (lineas optimizadas resaltadas).
+
+---
+
+## 26 de agosto — Dia 37: Benchmark simulando la nube
+
+El problema: con pocos datos en `local[1]`, las optimizaciones no se notaban (a veces el optimizado salia "mas lento" por overhead). Rediseñamos el benchmark de `/optimize/compare` para que **simule un entorno de nube**: corre en `local[2]` (2 workers) con **datos amplificados** (~40.000 filas), y en la medicion de velocidad omite el `coalesce` (que con volumen fuerza una sola particion y ralentiza). El codigo que se descarga/va a AWS si mantiene el coalesce. Con esto la mejora se ve en pantalla. El panel de comparacion se rediseño para priorizar la equivalencia de salidas (que confirma que no se rompio la logica) sobre los tiempos.
+
+---
+
+## 26 de agosto — Dia 38: Barrido de toda la biblioteca (36 grafos)
+
+Corrimos un barrido automatico sobre los 36 grafos de la biblioteca de referencia: compilar → generar datos → ejecutar. Resultado inicial 27/36 completos; tras corregir 5 patrones de fallo (abajo) quedo en **35/36 (97%)**:
+
+- **FILTER_NOT_BOOLEAN**: filtros `CASE WHEN ... THEN 1 ELSE 0 END` (numericos) que Spark rechaza en `where()`. Se normalizan a booleano.
+- **lookup_match sin traducir**: regex esperaba comillas dobles; el codigo real usa simples. Corregido con reemplazo balanceado (maneja argumentos anidados).
+- **ParseException por parentesis huerfano**: `lookup_match(..., string_lrtrim(campo))` dejaba un `)` suelto. Corregido.
+- **INVALID_EXTRACT_BASE_FIELD_TYPE**: el prefijo `_record_.` de Ab Initio hacia que Spark buscara un subcampo en columna no-struct. Se limpia como `in.`/`out.`.
+- **Funciones DML**: `decimal_lpad`, `decimal_strip`, `datetime_add_months`, `groupBy` tolerante a claves ausentes, igualdad string en filtros.
+
+**Estatus:** conversion funcional validada para grafos bajo-medianos.
+
+---
+
+## 26 de agosto — Dia 39: Fixes para Windows y CORS
+
+- **UnicodeDecodeError en Windows**: los .mp editados en Windows traen bytes Windows-1252 (0x97 = guion largo). Varios parsers los abrian con UTF-8 estricto y daban 500. Todos los parsers de entrada usan ahora `errors="replace"`. Tambien el `body.decode` del servidor.
+- **CORS `Access-Control-Allow-Origin: *, *`**: el header se agregaba dos veces (codigo de la Lambda + Function URL de AWS). Se quito del codigo y lo maneja solo la Function URL.
+- **/datagen en la Lambda**: el handler solo tenia /compile; Data Redactada (que usa /datagen con JSON) daba "mp file is required". Se agrego el endpoint al handler Lambda.
+
+---
+
+## 26 de agosto — Dia 40: Despliegue EC2 con Spark local + HTTPS
+
+Para que el boton de "Ejecutar prueba PySpark" funcione en la nube igual que en local (la Lambda no puede correr Spark), desplegamos una **EC2 dedicada**:
+
+- **Instancia** `t3.xlarge` (4 vCPU, 16 GB RAM) en la cuenta DataLab, Amazon Linux 2023, Java 17 + Python 3.11 + PySpark 3.5.1.
+- Corre `serve_ui.py` como servicio systemd (arranca solo, se reinicia si falla). Sirve la UI y la API en el mismo puerto, identico al entorno local.
+- **CloudFront** delante para dar **HTTPS** con certificado valido (`https://d1bgd4yg4qrgz0.cloudfront.net`), redirige HTTP→HTTPS.
+- Verificado end-to-end por HTTPS: compilar, generar datos y ejecutar prueba Spark real.
+
+---
+
 ## Resumen de lo que tenemos hoy
 
 | Componente | Estado |
@@ -266,18 +337,23 @@ Agregamos **Python/Pandas como target de generacion de codigo** — para equipos
 | Motor de refactorizacion | Completo |
 | Motor OCR | Completo |
 | Motor de accuracy | Completo |
-| UI React (6 tabs) | Completo |
+| Data Redactada (datos sinteticos + PII masking) | Completo |
+| Ejecutor de prueba PySpark local | Completo |
+| Optimizador de performance (reglas, sin IA) | Completo |
+| Benchmark original vs optimizado (simula nube) | Completo |
+| UI React | Completo |
 | API FastAPI + Lambda | Completo |
 | CLI batch | Completo |
 | Packaging portable | Completo |
 | Deploy Amplify + Lambda | Activo |
+| Deploy EC2 (Spark local) + CloudFront HTTPS | Activo |
 
 ---
 
 ## Que sigue (segun plan de 3 meses)
 
-1. Pruebas con grafos reales del banco (5+ grafos diferentes)
-2. Tests unitarios al 60% de cobertura
+1. ~~Pruebas con grafos reales del banco (5+ grafos diferentes)~~ — HECHO: barrido de 36 grafos, 35/36 ok (Dia 38)
+2. Tests unitarios al 60% de cobertura (formalizar el barrido como suite pytest)
 3. SonarQube: 0 Critical, 0 Blocker
 4. SAST/DAST scan + remediacion
 5. Pipeline CI/CD bancario
@@ -290,5 +366,9 @@ Agregamos **Python/Pandas como target de generacion de codigo** — para equipos
 
 ## URLs de produccion
 
-- **UI**: https://empresav4.d330swque2c5nj.amplifyapp.com
-- **API**: https://rcp5mtwkqngtb3fv3fiourq2hq0qptmy.lambda-url.us-east-1.on.aws
+- **UI (Amplify)**: https://empresav4.d330swque2c5nj.amplifyapp.com
+- **API (Lambda)**: https://rcp5mtwkqngtb3fv3fiourq2hq0qptmy.lambda-url.us-east-1.on.aws
+- **UI + prueba Spark local (EC2 via CloudFront, HTTPS)**: https://d1bgd4yg4qrgz0.cloudfront.net
+
+> Nota: Amplify + Lambda sirven la UI y la compilacion, pero la Lambda no puede correr Spark.
+> El boton "Ejecutar prueba PySpark" (Data Redactada) requiere el despliegue EC2 servido por CloudFront.

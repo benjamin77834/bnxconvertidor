@@ -13,12 +13,12 @@ documentacion de arquitectura, y aprobaciones de cambio (CAB).
 
 ## MES 1 — Estabilizacion + Code Quality
 
-### Semana 1-2: Parser GDE Nativo (en curso)
-- [ ] Completar parser de formato serializado Ab Initio (.mp nativo GDE)
-- [ ] Resolver mapeo de edges (ports -> flows -> vertices)
-- [ ] Validar con 3+ grafos reales del banco (diferentes complejidades)
-- [ ] Generar job.py con edges correctos y DAG completo
-- [ ] Documentar limitaciones del parser (que formatos soporta vs no)
+### Semana 1-2: Parser GDE Nativo (COMPLETADO)
+- [x] Completar parser de formato serializado Ab Initio (.mp nativo GDE)
+- [x] Resolver mapeo de edges (ports -> flows -> vertices)
+- [x] Validar con 3+ grafos reales del banco (diferentes complejidades) — barrido de 36 grafos, 35/36 ok
+- [x] Generar job.py con edges correctos y DAG completo
+- [x] Documentar limitaciones del parser (que formatos soporta vs no) — validado bajo-mediano; grafos >100 nodos pendientes de stress
 
 ### Semana 2-3: SonarQube Compliance
 - [ ] Configurar SonarQube scanner en el proyecto
@@ -29,13 +29,13 @@ documentacion de arquitectura, y aprobaciones de cambio (CAB).
 - [ ] Configurar quality gates: 0 bugs, 0 vulnerabilities, <5% duplication
 - [ ] Integrar scan en pipeline CI/CD (pre-merge)
 
-### Semana 3-4: Testing Formal
+### Semana 3-4: Testing Formal (parcial)
 - [ ] Unit tests para cada parser (mp, xfr, dml, pset, plan, cobol)
 - [ ] Unit tests para cada codegen (glue, spark, flink, airflow, terraform)
-- [ ] Integration tests: .mp real -> job.py -> validacion de output
-- [ ] Test con grafos del banco (sanitizados)
+- [x] Integration tests: .mp real -> job.py -> validacion de output — via ejecutor PySpark local con datos sinteticos
+- [x] Test con grafos del banco (sanitizados) — barrido de 36 grafos ejecutados con Data Redactada (35/36 ok)
 - [ ] Documentar casos de prueba en formato banco (Test Plan)
-- [ ] Configurar pytest + coverage report
+- [ ] Configurar pytest + coverage report — pendiente: formalizar el barrido como suite pytest
 
 ---
 
@@ -102,24 +102,32 @@ documentacion de arquitectura, y aprobaciones de cambio (CAB).
 
 | Tarea | Estado | Impacto |
 |-------|--------|---------|
-| Parser GDE nativo (formato serializado) | En curso | Critico — sin esto no parsea .mp reales del banco |
+| Parser GDE nativo (formato serializado) | Completado | Critico — ya parsea .mp reales del banco |
 | Limpieza ASCII (emojis removidos) | Completado | Necesario para servidores sin UTF-8 |
 | CLI con --pset | Completado | Permite ejecutar desde terminal del banco |
 | Validacion non-blocking | Completado | Genera codigo aunque haya warnings |
 | Package 7z para transferencia | Completado | Permite mover codigo al servidor seguro |
 | Metrics + Estimadores actualizados | Completado | Soporte a business case |
+| Data Redactada (datos sinteticos + PII masking) | Completado | Permite probar sin datos reales del banco |
+| Ejecutor de prueba PySpark local | Completado | Valida el codigo generado ejecutandolo, no solo leyendolo |
+| Correccion masiva del generador (validada ejecutando) | Completado | 35/36 grafos ejecutan y producen salidas |
+| Optimizador de performance (reglas, sin IA) | Completado | cache/broadcast/coalesce + benchmark original vs optimizado |
+| Fixes Windows (UnicodeDecodeError) + CORS | Completado | Uso desde Windows y desde Amplify/Lambda sin errores |
+| Despliegue EC2 (Spark local) + CloudFront HTTPS | Completado | Prueba PySpark en la nube igual que en local, con HTTPS |
 
 ## Esfuerzos Futuros Identificados
 
 | Tarea | Prioridad | Estimacion |
 |-------|-----------|------------|
-| Resolver edges del parser GDE (port mapping) | P0 | 1-2 dias |
+| ~~Resolver edges del parser GDE (port mapping)~~ | HECHO | — |
+| ~~Pruebas con 5+ grafos reales~~ | HECHO | barrido de 36 grafos, 35/36 ok |
+| Formalizar barrido de grafos como suite pytest | P1 | 2-3 dias |
 | Tests unitarios (cobertura 60%+) | P1 | 1 semana |
 | SonarQube setup + remediacion | P1 | 1 semana |
 | Documentacion SAD/DDD formato banco | P2 | 3-5 dias |
 | Pipeline CI/CD bancario | P2 | 3-5 dias |
 | SAST scan + remediacion | P1 | 3-5 dias |
-| Pruebas con 5+ grafos reales | P0 | 1 semana |
+| Grafo restante del barrido (1/36) + stress >100 nodos | P1 | 2-3 dias |
 | UAT con equipo de datos | P1 | 1 semana |
 | RFC + CAB | P2 | 2-3 dias (mas espera) |
 | Deploy PROD + monitoreo | P2 | 2-3 dias |

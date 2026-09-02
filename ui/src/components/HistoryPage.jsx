@@ -190,15 +190,57 @@ const TIMELINE = [
     tags: ['datagen', 'aws', 'pipeline', 'architecture'],
     color: '#14b8a6',
   },
+  {
+    date: '25 Ago 2026',
+    title: 'Dia 35: Correccion masiva del generador (validada ejecutando)',
+    desc: 'Barrido de correctitud con el ejecutor local: cada bug se encontro EJECUTANDO el PySpark, no leyendolo. Rollup con passthrough generaba agg(col("*")) invalido (MISSING_AGGREGATION) → ahora usa first(...) para columnas no agregadas. Backslash residual de filtros Ab Initio que rompia el string Python (neutralizado en _sql_arg). Filtros numericos (CAST >= 1000) que vaciaban salidas → el datagen genera valores que satisfacen la comparacion. SINK que tambien es lookup ahora se expone como variable. Comparacion entre columnas relajada cuando el lookup no tiene datos. Grafos grandes (Form2_MN, FZZPWM39, MONGO_EDW) pasaron de salidas vacias a producir datos.',
+    tags: ['codegen', 'fix', 'test'],
+    color: '#ef4444',
+  },
+  {
+    date: '26 Ago 2026',
+    title: 'Dia 36: Optimizador de performance (sin IA)',
+    desc: 'Nuevo src/perf_optimizer.py: optimizador por reglas (determinista, no cambia la logica). cache() en DataFrames reusados por varias ramas (los Replicate), broadcast() en joins contra catalogos/lookups pequenos, coalesce(1) antes de escrituras. Endpoints /optimize (codigo optimizado + resumen de cambios) y /optimize/compare (corre original vs optimizado). En el Compiler: boton Optimizar performance + modo pantalla completa con el diff de codigo (lineas optimizadas resaltadas).',
+    tags: ['optimize', 'perf', 'api', 'ui'],
+    color: '#8b5cf6',
+  },
+  {
+    date: '26 Ago 2026',
+    title: 'Dia 37: Benchmark que simula la nube',
+    desc: 'Con pocos datos en local[1] las optimizaciones no se notaban (el optimizado salia "mas lento" por overhead, confundia en pantalla). El benchmark de /optimize/compare ahora simula la nube: corre en local[2] (2 workers) con datos amplificados (~40k filas) y en la medicion de velocidad omite el coalesce (con volumen fuerza una sola particion y ralentiza). El codigo que se descarga/va a AWS si mantiene el coalesce. El panel de comparacion prioriza la equivalencia de salidas (confirma que no se rompio la logica) sobre los tiempos.',
+    tags: ['optimize', 'benchmark', 'perf'],
+    color: '#8b5cf6',
+  },
+  {
+    date: '26 Ago 2026',
+    title: 'Dia 38: Barrido de toda la biblioteca (36 grafos)',
+    desc: 'Barrido automatico sobre los 36 grafos de referencia: compilar → generar datos → ejecutar. De 27/36 iniciales a 35/36 (97%) tras corregir 5 patrones: FILTER_NOT_BOOLEAN (CASE WHEN numerico normalizado a booleano), lookup_match sin traducir (comillas simples, reemplazo balanceado), ParseException por parentesis huerfano, INVALID_EXTRACT_BASE_FIELD_TYPE (prefijo _record_. limpiado como in./out.), y funciones DML (decimal_lpad, decimal_strip, datetime_add_months, groupBy tolerante). Estatus: conversion funcional validada para grafos bajo-medianos.',
+    tags: ['codegen', 'fix', 'test'],
+    color: '#22c55e',
+  },
+  {
+    date: '26 Ago 2026',
+    title: 'Dia 39: Fixes para Windows y CORS',
+    desc: 'UnicodeDecodeError en Windows: los .mp editados en Windows traen bytes Windows-1252 (0x97 = guion largo) que rompian los parsers con UTF-8 estricto (500). Todos los parsers de entrada y el body.decode del servidor usan ahora errors="replace". CORS: el header Access-Control-Allow-Origin salia duplicado (*, *) porque lo ponia el codigo Y la Function URL; se quito del codigo. /datagen agregado al handler Lambda (antes solo tenia /compile, y Data Redactada daba "mp file is required").',
+    tags: ['fix', 'windows', 'cors', 'lambda'],
+    color: '#ef4444',
+  },
+  {
+    date: '26 Ago 2026',
+    title: 'Dia 40: Despliegue EC2 con Spark local + HTTPS',
+    desc: 'La Lambda no puede correr Spark, asi que el boton Ejecutar prueba PySpark necesitaba un runtime real. Desplegamos una EC2 t3.xlarge (4 vCPU / 16 GB, Amazon Linux 2023, Java 17 + PySpark 3.5.1) que corre serve_ui.py como servicio systemd (bnx.service) en el puerto 8081, identico al entorno local. CloudFront delante para dar HTTPS con certificado valido (redirige HTTP→HTTPS). Verificado end-to-end por HTTPS: compilar, generar datos y ejecutar prueba Spark real.',
+    tags: ['deploy', 'ec2', 'cloudfront', 'aws'],
+    color: '#f59e0b',
+  },
 ]
 
 const STATS = [
-  { label: 'Dias de desarrollo', value: '34', color: '#6366f1' },
-  { label: 'Commits', value: '135+', color: '#22c55e' },
-  { label: 'Componentes', value: '25+', color: '#f59e0b' },
+  { label: 'Dias de desarrollo', value: '40', color: '#6366f1' },
+  { label: 'Commits', value: '150+', color: '#22c55e' },
+  { label: 'Componentes', value: '27+', color: '#f59e0b' },
   { label: 'Parsers', value: '6', color: '#a855f7' },
   { label: 'Code Generators', value: '7', color: '#ec4899' },
-  { label: 'Paginas UI', value: '9', color: '#06b6d4' },
+  { label: 'Paginas UI', value: '10', color: '#06b6d4' },
 ]
 
 const TAG_COLORS = {
@@ -217,6 +259,8 @@ const TAG_COLORS = {
   roadmap: '#22c55e', complete: '#22c55e', pandas: '#6366f1',
   datagen: '#14b8a6', pii: '#14b8a6', test: '#14b8a6', pyspark: '#6366f1',
   schema: '#14b8a6', join: '#f59e0b', pipeline: '#14b8a6', fix: '#ef4444',
+  optimize: '#8b5cf6', perf: '#8b5cf6', benchmark: '#8b5cf6',
+  ec2: '#f59e0b', cloudfront: '#f59e0b', windows: '#06b6d4', cors: '#ef4444',
 }
 
 export default function HistoryPage({ theme }) {

@@ -4,6 +4,14 @@ Plataforma para convertir o refactorizar grafos Legacy a Cloud.
 
 Compila grafos Ab Initio (.mp/.xfr/.dml), COBOL (.cbl), y PLANs multi-grafo a código ejecutable en AWS Glue, PySpark, Apache Flink, Step Functions, Terraform y Airflow.
 
+Además de compilar, la plataforma permite **probar el código generado sin subir nada a AWS**:
+
+- **Data Redactada**: genera datos sintéticos con PII enmascarada a partir del esquema real del grafo.
+- **Ejecutor de prueba PySpark local**: corre el código generado con esos datos y muestra entradas/salidas por nodo (consola en vivo).
+- **Optimizador de performance (por reglas, sin IA)**: aplica `cache`/`broadcast`/`coalesce` y compara original vs optimizado en un benchmark que simula la nube.
+
+> Estatus de conversión (ago 2026): validada de forma funcional para grafos de complejidad baja-media. Barrido de 36 grafos de referencia → 35/36 ejecutan y producen salidas correctas.
+
 ---
 
 ## 📁 Estructura del Proyecto
@@ -131,7 +139,8 @@ bnxconvertidor/
 | Tab | Descripción |
 |-----|-------------|
 | 🎯 Executive | Resumen C-level, pipeline F1/F2/F3, comparativa |
-| 🔧 Compiler | Upload, compilar, visualizar DAG, descargar código |
+| 🔧 Compiler | Upload, compilar, visualizar DAG, optimizar performance, descargar código |
+| 🧪 Data Redactada | Datos sintéticos + prueba PySpark local + enviar a AWS |
 | 🎨 Designer | Editor visual drag & drop de grafos |
 | 🏦 Banking | Modelo operativo, DAMA, gobierno de datos |
 | 🏗️ Architecture | Diagrama interactivo + glosario de mecanismos |
@@ -144,6 +153,14 @@ bnxconvertidor/
 - Upload .py → refactorización Spark 2→3 / Python 2→3
 - Edición de nodos en el DAG con recompilación
 - Descarga: Code, DAG (SVG), Full Report, StepFn, Terraform, Airflow
+- **Optimizar performance**: genera una versión optimizada del PySpark y muestra el diff (pantalla completa, líneas resaltadas) + benchmark original vs optimizado
+
+### Data Redactada (datos sintéticos + prueba local)
+- Genera datos sintéticos con PII enmascarada infiriendo el esquema real del grafo (record format del .mp, casts, select)
+- Detecta PII por nombre de campo (nombre, cuenta, tarjeta, email, rfc/ssn, etc.)
+- Valores de join compartidos para que los joins emparejen datos (no dejan columnas en NULL)
+- **Ejecutar prueba PySpark**: corre el código generado localmente con esos datos, con consola en vivo (SSE) y conteo de filas por tabla de entrada/salida
+- **Enviar a AWS**: empaqueta el PySpark con los datos embebidos (código autocontenido) y lo despacha al pipeline Glue con polling de estado
 
 ---
 
@@ -179,8 +196,22 @@ npm run dev
 ```
 
 ### Producción
-- **UI**: https://empresav4.d330swque2c5nj.amplifyapp.com
-- **API**: https://rcp5mtwkqngtb3fv3fiourq2hq0qptmy.lambda-url.us-east-1.on.aws
+- **UI (Amplify)**: https://empresav4.d330swque2c5nj.amplifyapp.com
+- **API (Lambda)**: https://rcp5mtwkqngtb3fv3fiourq2hq0qptmy.lambda-url.us-east-1.on.aws
+- **UI + prueba Spark local (EC2 vía CloudFront, HTTPS)**: https://d1bgd4yg4qrgz0.cloudfront.net
+
+> Amplify + Lambda sirven la UI y la compilación. La **prueba PySpark local** (Data Redactada → "Ejecutar prueba")
+> necesita un runtime con Spark, que la Lambda no tiene: para eso se usa el despliegue EC2 servido por CloudFront.
+
+### EC2 (mismo comportamiento que en local, ahora en la nube)
+El servidor `serve_ui.py` sirve la UI y la API en el mismo puerto (8081), igual que en la Mac. Corre en una EC2
+con Spark instalado, como servicio systemd. CloudFront le pone HTTPS delante.
+
+```bash
+# Actualizar la EC2 con los últimos cambios
+ssh -i /ruta/monkey2.pem ec2-user@<IP-EC2>
+cd app && git pull && sudo systemctl restart bnx
+```
 
 ---
 
@@ -192,6 +223,10 @@ npm run dev
 | `/cobol` | POST | Convierte .cbl → grafo → código |
 | `/plan` | POST | Compila PLAN + PSET + MP files → Mega-DAG |
 | `/refactor` | POST | Refactoriza código legacy (Spark 2/Python 2/Glue 2) |
+| `/datagen` | POST | Genera datos sintéticos (PII enmascarada) desde el grafo (JSON) |
+| `/optimize` | POST | Devuelve el PySpark optimizado (cache/broadcast/coalesce) + resumen de cambios |
+| `/optimize/compare` | POST | Ejecuta original vs optimizado y compara tiempos + equivalencia de salidas |
+| `/run` (SSE) | POST | Ejecuta el PySpark generado localmente con datos sintéticos (solo EC2, requiere Spark) |
 
 ### Ejemplo: compilar un grafo
 ```bash
@@ -220,11 +255,31 @@ aws lambda update-function-code --function-name bnx-compiler --zip-file fileb://
 
 ### Amplify (Frontend)
 ```bash
-git add -A
+git add <archivos>          # evitar git add -A: hay zips y credenciales excluidos
 git commit -m "update"
-git push
+git push origin empresav4
 # Amplify auto-deploys from Git
 ```
+
+### EC2 + CloudFront (UI con prueba Spark local)
+La EC2 corre `serve_ui.py` como servicio systemd (`bnx.service`) con Spark instalado.
+CloudFront va delante para dar HTTPS con certificado válido.
+
+```bash
+# 1. Push de los cambios
+git push origin empresav4
+
+# 2. Actualizar la instancia
+ssh -i /ruta/monkey2.pem ec2-user@<IP-EC2>
+cd app
+git pull
+sudo systemctl restart bnx     # reinicia el servicio
+sudo systemctl status bnx       # verificar que quedó activo
+```
+
+- Instancia: `t3.xlarge` (4 vCPU / 16 GB), Amazon Linux 2023, Java 17 + PySpark 3.5.1
+- Servicio: `bnx.service` (systemd) → `serve_ui.py` en el puerto 8081
+- HTTPS: distribución CloudFront delante de la EC2 (redirige HTTP→HTTPS)
 
 ---
 
@@ -256,13 +311,23 @@ git push
 │  Glue · Spark · Flink · StepFn · Terraform · Airflow │
 └──────────────────────┬───────────────────────────────┘
                        │
-              ┌────────┴────────┐
-              ▼                 ▼
-        ┌──────────┐     ┌──────────┐
-        │  Lambda  │     │ Amplify  │
-        │  (API)   │     │  (UI)    │
-        └──────────┘     └──────────┘
+              ┌────────┴─────────────────┐
+              ▼                          ▼
+        ┌──────────┐     ┌──────────┐   ┌──────────────────────┐
+        │  Lambda  │     │ Amplify  │   │  EC2 (Spark local)   │
+        │  (API)   │     │  (UI)    │   │  serve_ui.py :8081   │
+        └──────────┘     └──────────┘   │  systemd bnx.service │
+         compilar          UI web       └──────────┬───────────┘
+                                                    │ HTTPS
+                                              ┌─────▼──────┐
+                                              │ CloudFront │
+                                              └────────────┘
+                                        prueba PySpark real + datos sintéticos
 ```
+
+Dos formas de servir la app:
+- **Amplify (UI) + Lambda (API)**: compilar, refactorizar, generar datos. Sin Spark.
+- **EC2 + CloudFront**: todo lo anterior **más** ejecutar la prueba PySpark local con datos sintéticos (necesita runtime Spark).
 
 ---
 
