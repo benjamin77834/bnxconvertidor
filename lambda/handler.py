@@ -760,11 +760,12 @@ def handler(event, context):
 
 
 def _cors_headers():
+    # CORS lo maneja la configuracion de la Lambda Function URL de AWS.
+    # NO agregar Access-Control-* aqui: si el codigo Y la Function URL agregan
+    # Access-Control-Allow-Origin, el navegador recibe el valor duplicado '*, *'
+    # (invalido) y bloquea la peticion por CORS. Dejamos solo el Content-Type.
     return {
         "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Headers": "Content-Type",
-        "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
     }
 
 

@@ -6,7 +6,6 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 
@@ -30,12 +29,10 @@ from src.ocr_engine import extract_text_from_image, parse_extracted_text, text_t
 
 app = FastAPI(title="BNX Compiler API")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# NOTA CORS: el CORS lo maneja la configuracion de la Lambda Function URL de AWS.
+# NO agregar CORSMiddleware aqui: si ambos (Function URL + FastAPI) agregan el
+# header Access-Control-Allow-Origin, el navegador recibe 'Access-Control-Allow-
+# Origin: *, *' (valor duplicado invalido) y bloquea la peticion por CORS.
 
 
 def _save_upload(upload: UploadFile) -> str:
