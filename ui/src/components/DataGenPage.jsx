@@ -56,6 +56,7 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
 
   // --- Ejecutar prueba PySpark (consola en vivo) ---
   const [running, setRunning] = useState(false)
+  const [runTimeout, setRunTimeout] = useState(300) // limite de tiempo (s), configurable
   const [runResult, setRunResult] = useState(null) // {ok, summary, reads, writes}
   const [consoleLines, setConsoleLines] = useState([]) // lineas en vivo
   const [localDownloads, setLocalDownloads] = useState([]) // [{name, path}] CSV de resultado local
@@ -201,7 +202,7 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
         headers: { 'Content-Type': 'application/json' },
         // Enviamos tambien el grafo (mp/xfr) para que el servidor REGENERE el
         // PySpark fresco y la prueba nunca use codigo viejo cacheado en el navegador.
-        body: JSON.stringify({ code: compiledCode, mp: graphMp, xfr: graphXfr, datasets, timeout: 180, job_name: (graphName || awsJobName) }),
+        body: JSON.stringify({ code: compiledCode, mp: graphMp, xfr: graphXfr, datasets, timeout: runTimeout, job_name: (graphName || awsJobName) }),
       })
       if (!res.ok || !res.body) {
         let msg = `HTTP ${res.status}`
@@ -648,7 +649,26 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
                 Corre el código del Compiler con estos datos de entrada y comprueba si funciona.
               </span>
             </div>
-            <div style={{ display: 'flex', gap: 8 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: t.dim }}
+                title="Tiempo máximo antes de cortar el job. Súbelo para grafos grandes.">
+                ⏱️ Límite
+                <select
+                  value={runTimeout}
+                  onChange={e => setRunTimeout(Number(e.target.value))}
+                  disabled={running || comparing}
+                  style={{
+                    padding: '6px 8px', borderRadius: 6, fontSize: 12,
+                    background: t.card || '#1e2433', color: t.text || '#e2e8f0',
+                    border: `1px solid ${t.border || '#334155'}`, cursor: 'pointer',
+                  }}
+                >
+                  <option value={180}>3 min</option>
+                  <option value={300}>5 min</option>
+                  <option value={600}>10 min</option>
+                  <option value={900}>15 min</option>
+                </select>
+              </label>
               <button
                 onClick={runTest}
                 disabled={running || comparing || !hasCode || !isPySpark}

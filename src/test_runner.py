@@ -194,7 +194,7 @@ def _basename_token(path_str):
 
 
 def build_test_script(pyspark_code, inputs, required_cols=None, output_dir=None,
-                      master="local[1]", amplify=1):
+                      master="local[*]", amplify=1):
     """Construye un script PySpark ejecutable localmente.
 
     - Inyecta BNX_INPUTS (dict nodo→registros) al inicio.
@@ -786,6 +786,16 @@ def _bnx_spark():
     return (_SS.builder.master(_BNX_MASTER).appName("BNX_Test")
             .config("spark.sql.ansi.enabled", "false")
             .config("spark.sql.storeAssignmentPolicy", "LEGACY")
+            # Datos de prueba son pequenos: 200 particiones de shuffle (default) es
+            # absurdo y dispara el tiempo en grafos con muchos joins/gathers. Con 8
+            # el mismo job baja de minutos a segundos.
+            .config("spark.sql.shuffle.partitions", "8")
+            .config("spark.default.parallelism", "8")
+            # Broadcast agresivo de lookups pequenos (evita shuffles caros).
+            .config("spark.sql.adaptive.enabled", "true")
+            .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
+            # Menos ruido/overhead de UI de Spark en la prueba.
+            .config("spark.ui.enabled", "false")
             .getOrCreate())
 
 _bnx_session = _bnx_spark()
@@ -1581,7 +1591,7 @@ def _tail(text, max_chars):
     return "...[truncado]...\n" + text[-max_chars:]
 
 
-def stream_pyspark_test(pyspark_code, datasets, timeout=180, job_name=None):
+def stream_pyspark_test(pyspark_code, datasets, timeout=300, job_name=None):
     """Ejecuta el PySpark de prueba y hace *yield* de cada linea de salida en vivo.
 
     Cada yield es un dict:

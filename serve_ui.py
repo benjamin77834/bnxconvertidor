@@ -403,7 +403,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                         datasets = json.loads(ds_raw)
                     except (json.JSONDecodeError, TypeError):
                         datasets = []
-                timeout = int(fields.get("timeout", 120) or 120)
+                timeout = int(fields.get("timeout", 300) or 300)
                 job_name = fields.get("job_name") or fields.get("graph_name")
             else:
                 try:
@@ -416,7 +416,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 dml_content = data.get("dml", "")
                 pset_content = data.get("pset", "")
                 datasets = data.get("datasets", []) or []
-                timeout = int(data.get("timeout", 120) or 120)
+                timeout = int(data.get("timeout", 300) or 300)
                 job_name = data.get("job_name") or data.get("graph_name")
                 if not mp_content:
                     self._json_response(400, {"error": "mp file is required"})
@@ -437,7 +437,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 })
                 return
 
-            timeout = max(10, min(timeout, 600))
+            timeout = max(10, min(timeout, 900))
             if not job_name:
                 job_name = compiled.get("graph_name") or None
 
@@ -486,8 +486,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 return
 
             datasets = data.get("datasets", []) or []
-            timeout = int(data.get("timeout", 120))
-            timeout = max(10, min(timeout, 600))
+            timeout = int(data.get("timeout", 300))
+            timeout = max(10, min(timeout, 900))
             job_name = data.get("job_name") or data.get("graph_name")
 
             result = run_pyspark_test(code, datasets, timeout=timeout, job_name=job_name)
@@ -546,8 +546,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         datasets = data.get("datasets", []) or []
-        timeout = int(data.get("timeout", 180))
-        timeout = max(10, min(timeout, 600))
+        timeout = int(data.get("timeout", 300))
+        timeout = max(10, min(timeout, 900))
         job_name = data.get("job_name") or data.get("graph_name")
 
         # Cabeceras SSE
