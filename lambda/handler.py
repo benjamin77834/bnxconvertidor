@@ -29,6 +29,7 @@ from src.plan_parser import resolve_graph_references, merge_asts, detect_retroce
 from src.accuracy import compute_accuracy
 from src.refactor_engine import refactor_code
 from src.ocr_engine import extract_text_from_image, parse_extracted_text, text_to_mp
+from src.datagen import infer_schema_from_graph, build_synthetic_data
 from main import parse_project
 
 
@@ -733,6 +734,86 @@ def handler(event, context):
                     pass
 
             return _response(200, {"logs": all_logs})
+
+        # --- /datagen endpoint (Data Redactada: datos sinteticos) ---
+        if "/datagen" in path:
+            n_rows = int(fields.get("n_rows", 10) or 10)
+            n_rows = max(1, min(n_rows, 10000))
+            fmt = fields.get("format", "csv")
+            seed = fields.get("seed")
+            delimiter = fields.get("delimiter", ",")
+
+            # Modo manual: columnas provistas directamente
+            manual_columns = fields.get("columns")
+            if manual_columns:
+                gen = build_synthetic_data(manual_columns, n_rows=n_rows, fmt=fmt,
+                                           seed=seed, delimiter=delimiter)
+                io_val = fields.get("io", "output")
+                node_nm = fields.get("node_name", "manual")
+                return _response(200, {
+                    "mode": "manual",
+                    "schema": [{"node": node_nm, "node_type": "MANUAL", "io": io_val,
+                                "columns": gen["columns"]}],
+                    "datasets": [{"node": node_nm, "node_type": "MANUAL", "io": io_val,
+                                  "format": gen["format"], "content": gen["content"],
+                                  "columns": gen["columns"], "rows": gen["rows"]}],
+                })
+
+            # Modo grafo: mp viene como texto en el JSON (fields), o como archivo (files)
+            mp_content = fields.get("mp") or (files.get("mp") if "mp" in files else "")
+            if not mp_content:
+                return _response(400, {"error": "Provide either 'columns' (manual) or 'mp' (graph)"})
+            if isinstance(mp_content, bytes):
+                mp_content = mp_content.decode("utf-8", errors="replace")
+
+            mp_path = _save_bytes(mp_content.encode("utf-8"), ".mp")
+            xfr_content = fields.get("xfr") or ""
+            xfr_path = _save_bytes(xfr_content.encode("utf-8"), ".xfr") if xfr_content else None
+            dml_content = fields.get("dml") or ""
+            dml_path = _save_bytes(dml_content.encode("utf-8"), ".dml") if dml_content else None
+            try:
+                ast = parse_project(mp_path)
+                xfr_rules = parse_xfr(xfr_path) if xfr_path else {}
+                # Embedded transforms del .mp (GDE) para inferir schema como en local.
+                try:
+                    from main import _extract_embedded_transforms, _apply_embedded_transforms
+                    with open(mp_path, "r", errors="replace") as _f:
+                        _raw = _f.read().replace("\x00", "")
+                    _emb = _extract_embedded_transforms(_raw)
+                    if _emb.get("transforms") or _emb.get("keys") or _emb.get("keys_by_vertex") \
+                       or _emb.get("filters") or _emb.get("filters_by_vertex") or _emb.get("keeps"):
+                        _nm = {}
+                        for _nd in ast.get("nodes", []):
+                            _vid = _nd.get("vertex_id", _nd["id"])
+                            _nm[_vid] = {"name": _nd["id"], "comp_type": _nd.get("name", _nd["id"]),
+                                         "proto_type": _nd.get("type", "TRANSFORM"),
+                                         "is_sort": _nd.get("is_sort", False)}
+                        _apply_embedded_transforms(_nm, _emb, xfr_rules)
+                except Exception as _e:
+                    print(f"[datagen] embedded transforms skipped: {_e}")
+                dml_data = parse_dml(dml_path) if dml_path else {}
+                dml_schema = dml_data.get("schema", {})
+                schema = infer_schema_from_graph(ast, xfr_rules, dml_schema)
+                target_node = fields.get("target_node")
+                if target_node:
+                    schema = [s for s in schema if s["node"].lower() == target_node.lower()]
+                datasets = []
+                for ns in schema:
+                    gen = build_synthetic_data(ns["columns"], n_rows=n_rows, fmt=fmt,
+                                               seed=seed, delimiter=delimiter)
+                    datasets.append({"node": ns["node"], "node_type": ns.get("node_type"),
+                                     "io": ns.get("io", "output"), "format": gen["format"],
+                                     "content": gen["content"], "columns": gen["columns"],
+                                     "rows": gen["rows"]})
+                resp = {"mode": "graph", "schema": schema, "datasets": datasets}
+                if not datasets:
+                    resp["message"] = ("No se pudo inferir el esquema de ningun nodo. "
+                                       "Usa el modo Manual o adjunta un .dml/.xfr con los campos.")
+                return _response(200, resp)
+            finally:
+                for _p in [mp_path, xfr_path, dml_path]:
+                    if _p and os.path.exists(_p):
+                        os.unlink(_p)
 
         # --- /compile endpoint ---
         if "mp" not in files:
