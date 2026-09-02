@@ -12,7 +12,9 @@ echo "📦 Packaging Lambda..."
 rm -f $ZIP_FILE
 
 # Package source code
-zip -r $ZIP_FILE lambda/handler.py src/ -x "src/__pycache__/*" "src/**/__pycache__/*"
+# IMPORTANTE: incluir main.py — lambda/handler.py hace 'from main import parse_project'.
+# Sin main.py la Lambda da 502 (Runtime.ImportModuleError: No module named 'main').
+zip -r $ZIP_FILE lambda/handler.py main.py src/ -x "src/__pycache__/*" "src/**/__pycache__/*" "src/**/**/__pycache__/*"
 
 echo "🚀 Deploying to $FUNCTION_NAME in $REGION..."
 
