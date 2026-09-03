@@ -97,7 +97,7 @@ def generate_stepfunctions(dag, output_path, xfr_rules=None):
         "States": states,
     }
 
-    with open(output_path, "w") as f:
+    with open(output_path, "w", encoding="utf-8") as f:
         json.dump(workflow, f, indent=2)
 
     return workflow

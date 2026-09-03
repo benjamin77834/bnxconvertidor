@@ -846,7 +846,7 @@ def _generate_pandas(dag, output_path, xfr_rules=None):
     xfr_rules = xfr_rules or {}
     from datetime import datetime
     
-    with open(output_path, "w") as f:
+    with open(output_path, "w", encoding="utf-8") as f:
         f.write(f'"""\nBNX V54 - Python Puro (pandas)\nGenerated at: {datetime.now()}\nNo requiere Spark, Glue ni Flink. Solo: pip install pandas\n"""\n\n')
         f.write("import pandas as pd\nimport os\n\n")
         f.write('print("[*] BNX Python Job Started")\n\n')
@@ -1879,7 +1879,7 @@ def main(project_path, output_path, xfr_path=None, dml_path=None, pset_path=None
     all_params = {**abi_params, **pset_params}
     # Skip param injection if too many — add as comments only
     if all_params and len(all_params) <= 50:
-        with open(output_path, "r") as f:
+        with open(output_path, "r", encoding="utf-8", errors="replace") as f:
             generated_code = f.read()
         
         # Build config block
@@ -1927,7 +1927,7 @@ def main(project_path, output_path, xfr_path=None, dml_path=None, pset_path=None
         else:
             new_code = "\n".join(config_lines) + "\n" + generated_code
         
-        with open(output_path, "w") as f:
+        with open(output_path, "w", encoding="utf-8") as f:
             f.write(new_code)
         
         print(f"[i] Injected {len(all_params)} parameters into {output_path}")
@@ -1935,7 +1935,7 @@ def main(project_path, output_path, xfr_path=None, dml_path=None, pset_path=None
         print(f"\n[>] Target: AWS Glue")
     elif all_params and len(all_params) > 50:
         # Too many params — add as comments only (reference)
-        with open(output_path, "r") as f:
+        with open(output_path, "r", encoding="utf-8", errors="replace") as f:
             generated_code = f.read()
         
         comment_lines = []
@@ -1956,7 +1956,7 @@ def main(project_path, output_path, xfr_path=None, dml_path=None, pset_path=None
         else:
             new_code = "\n".join(comment_lines) + "\n" + generated_code
         
-        with open(output_path, "w") as f:
+        with open(output_path, "w", encoding="utf-8") as f:
             f.write(new_code)
         
         print(f"[i] Added {len(all_params)} parameters as comments in {output_path}")

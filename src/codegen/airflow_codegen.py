@@ -24,7 +24,7 @@ def generate_airflow(dag, output_path, xfr_rules=None):
         if d not in depth_map: depth_map[d] = []
         depth_map[d].append(node)
 
-    with open(output_path, "w") as f:
+    with open(output_path, "w", encoding="utf-8") as f:
         f.write(f'"""\n')
         f.write(f'[*] BNX Generated Airflow DAG\n')
         f.write(f'? Generated at: {datetime.now()}\n')
