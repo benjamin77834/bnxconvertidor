@@ -440,8 +440,38 @@ def _map_string_functions(expr):
     expr = re.sub(r'string_replace\(', 'replace(', expr)
     # string_replace_first(x, old, new) → regexp_replace(x, old, new)
     expr = re.sub(r'string_replace_first\(', 'regexp_replace(', expr)
+    # re_replace(str, pattern, replacement) → regexp_replace(str, pattern, replacement)
+    # re_replace_first(...) tambien mapea a regexp_replace (aproximacion suficiente
+    # para la prueba local). Ab Initio usa re_* para expresiones regulares.
+    expr = re.sub(r'\bre_replace_first\(', 'regexp_replace(', expr)
+    expr = re.sub(r'\bre_replace\(', 'regexp_replace(', expr)
+    # re_get_match(str, pattern) → regexp_extract(str, pattern, 0)
+    expr = re.sub(r'\bre_get_match\(\s*([^,]+?)\s*,\s*([^)]+?)\s*\)', r'regexp_extract(\1, \2, 0)', expr)
+    # Clases POSIX de caracteres que Java/Spark regex no entiende como [[:x:]]:
+    # traducir a las clases \p{...} equivalentes de Java.
+    _posix = {
+        "[[:cntrl:]]": r"\\p{Cntrl}", "[[:space:]]": r"\\s", "[[:digit:]]": r"\\d",
+        "[[:alpha:]]": r"\\p{Alpha}", "[[:alnum:]]": r"\\p{Alnum}",
+        "[[:upper:]]": r"\\p{Upper}", "[[:lower:]]": r"\\p{Lower}",
+        "[[:punct:]]": r"\\p{Punct}", "[[:blank:]]": r"\\p{Blank}",
+    }
+    for _p, _j in _posix.items():
+        expr = expr.replace(_p, _j)
     # string_concat(a, b) → concat(a, b)
     expr = re.sub(r'string_concat\(', 'concat(', expr)
+    # Funciones math_* de Ab Initio → equivalentes de Spark SQL.
+    expr = re.sub(r'\bmath_abs\(', 'abs(', expr)
+    expr = re.sub(r'\bmath_round\(', 'round(', expr)
+    expr = re.sub(r'\bmath_floor\(', 'floor(', expr)
+    expr = re.sub(r'\bmath_ceiling\(', 'ceil(', expr)
+    expr = re.sub(r'\bmath_ceil\(', 'ceil(', expr)
+    expr = re.sub(r'\bmath_sqrt\(', 'sqrt(', expr)
+    expr = re.sub(r'\bmath_pow\(', 'power(', expr)
+    expr = re.sub(r'\bmath_exp\(', 'exp(', expr)
+    expr = re.sub(r'\bmath_log\(', 'ln(', expr)
+    expr = re.sub(r'\bmath_trunc\(', 'floor(', expr)
+    expr = re.sub(r'\bmath_max\(', 'greatest(', expr)
+    expr = re.sub(r'\bmath_min\(', 'least(', expr)
     # decimal_lpad(x, n[, c]) → lpad(CAST(x AS STRING), n, c)  (Ab Initio; c por defecto '0')
     def _rewrite_decimal_lpad(inner):
         args = _split_call_args(inner)
@@ -489,8 +519,20 @@ def _map_string_functions(expr):
     expr = re.sub(r'string_reverse\(', 'reverse(', expr)
     # string_split(x, delim) → split(x, delim)
     expr = re.sub(r'string_split\(', 'split(', expr)
-    # string_filter_out(x, pattern) → regexp_replace(x, pattern, "")
-    expr = re.sub(r'string_filter_out\(([^,]+),\s*([^)]+)\)', r'regexp_replace(\1, \2, "")', expr)
+    # string_filter_out(x, chars) → regexp_replace(x, <chars>, "")  (quita esos chars)
+    # OJO: x puede contener llamadas anidadas con comas (p.ej. re_replace(a,b,c)),
+    # por eso se separan los argumentos de forma balanceada, no con regex greedy.
+    def _rewrite_string_filter_out(inner):
+        args = _split_call_args(inner)
+        if len(args) >= 2:
+            x = args[0].strip()
+            chars = args[1].strip()
+            # El 2do arg es el conjunto de caracteres a quitar (string literal).
+            # Como regex, los metacaracteres van escapados; para el caso comun de
+            # un solo caracter (p.ej. '\|') basta pasarlo como patron directo.
+            return f'regexp_replace({x}, {chars}, "")'
+        return args[0].strip() if args else inner
+    expr = _replace_balanced_call(expr, "string_filter_out", _rewrite_string_filter_out)
     # string_join(arr, sep) → array_join(arr, sep)
     expr = re.sub(r'string_join\(', 'array_join(', expr)
     # (string("|"))expr → cast(expr as string) (Ab Initio type casting)
