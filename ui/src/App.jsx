@@ -1251,14 +1251,17 @@ export default function App() {
               </div>
               {/* Descripcion en lenguaje natural del grafo */}
               {result.description && (
-                <div style={{
+                <details style={{
                   padding: '8px 20px', background: t.sidebar,
                   borderBottom: `1px solid ${t.border}`,
                   fontSize: 13, color: t.muted, lineHeight: 1.5,
                 }}>
-                  <span style={{ color: t.accent || '#818cf8', fontWeight: 600 }}>📝 Descripción: </span>
-                  {result.description}
-                </div>
+                  <summary style={{
+                    cursor: 'pointer', color: t.accent || '#818cf8', fontWeight: 600,
+                    userSelect: 'none', outline: 'none',
+                  }}>📝 Descripción</summary>
+                  <div style={{ marginTop: 8 }}>{result.description}</div>
+                </details>
               )}
               </>
             )
