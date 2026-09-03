@@ -249,9 +249,15 @@ curl -X POST https://API_URL/refactor \
 
 ### Lambda (Backend)
 ```bash
-# IMPORTANTE: incluir main.py — el handler importa `from main import parse_project`.
-# Sin main.py la Lambda arranca con Runtime.ImportModuleError: No module named 'main'.
+# IMPORTANTE:
+# - incluir main.py: el handler importa `from main import parse_project`.
+#   Sin main.py la Lambda arranca con Runtime.ImportModuleError: No module named 'main'.
+# - incluir bnx_library/ (sin Repo_Git): son los grafos que /library sirve como
+#   FALLBACK cuando el S3 de DataLab esta bloqueado cross-account. Sin ellos, la
+#   biblioteca en la nube (Amplify) sale vacia. bnx_library/ esta en .gitignore
+#   pero el zip se arma desde disco, asi que igual se incluye.
 zip -r lambda_package.zip lambda/handler.py main.py src/ -x "src/__pycache__/*" "src/**/__pycache__/*" "**/__pycache__/*"
+zip -r lambda_package.zip bnx_library/ -x "bnx_library/Repo_Git/*" "bnx_library/_flat/*" "**/.DS_Store"
 aws lambda update-function-code --function-name bnx-compiler --zip-file fileb://lambda_package.zip --region us-east-1 --profile default
 ```
 
