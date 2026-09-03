@@ -932,14 +932,14 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
 
               {/* Descripcion en lenguaje natural del grafo (colapsable) */}
               {(runReport.description || graphDescription) && (
-                <details style={{
+                <details open style={{
                   background: '#11162080', border: `1px solid ${t.border || '#334155'}`,
                   borderRadius: 8, padding: '10px 14px',
                 }}>
                   <summary style={{
                     cursor: 'pointer', fontSize: 14, fontWeight: 600,
                     color: t.accent || '#818cf8', userSelect: 'none', outline: 'none',
-                  }}>📝 Descripción del grafo</summary>
+                  }}>📝 Descripción del grafo (clic para ocultar)</summary>
                   <div style={{
                     fontSize: 16, color: t.text || '#e2e8f0', lineHeight: 1.6, marginTop: 10,
                   }}>
