@@ -308,10 +308,56 @@ Corrimos un barrido automatico sobre los 36 grafos de la biblioteca de referenci
 
 Para que el boton de "Ejecutar prueba PySpark" funcione en la nube igual que en local (la Lambda no puede correr Spark), desplegamos una **EC2 dedicada**:
 
-- **Instancia** `t3.xlarge` (4 vCPU, 16 GB RAM) en la cuenta DataLab, Amazon Linux 2023, Java 17 + Python 3.11 + PySpark 3.5.1.
+- **Instancia** `t3.xlarge` (4 vCPU, 16 GB RAM), Amazon Linux 2023, Java 17 + Python 3.11 + PySpark 3.5.1. (Se creo en la cuenta monkey; ver Dia 42 la correccion a DataLab.)
 - Corre `serve_ui.py` como servicio systemd (arranca solo, se reinicia si falla). Sirve la UI y la API en el mismo puerto, identico al entorno local.
 - **CloudFront** delante para dar **HTTPS** con certificado valido (`https://d1bgd4yg4qrgz0.cloudfront.net`), redirige HTTP→HTTPS.
 - Verificado end-to-end por HTTPS: compilar, generar datos y ejecutar prueba Spark real.
+
+---
+
+## 2 de septiembre — Dia 41: Prueba mas rapida + timeout configurable
+
+Los grafos grandes daban **Timeout tras 180s** en la prueba PySpark. Ajustamos el ejecutor local:
+
+- **`local[*]`** en vez de `local[1]`: usa todos los cores de la maquina.
+- **`spark.sql.shuffle.partitions=8`** (antes 200, el default de Spark, absurdo para datos de prueba chicos). Es el mayor acelerador en grafos con muchos joins/gathers.
+- **Adaptive Query Execution** activado y **UI de Spark apagada** para reducir overhead.
+- El **limite de tiempo es configurable desde la UI** (3/5/10/15 min), default 300s. El backend acepta hasta 900s.
+
+---
+
+## 2 de septiembre — Dia 42: Cuenta correcta (DataLab) + boton EC2 interno
+
+La EC2 del Dia 40 quedo en la cuenta **equivocada (monkey)**. La **apagamos (sin destruir)** y preparamos el camino a DataLab. Pero DataLab esta bajo **AWS Control Tower**: subredes privadas, sin Internet Gateway, sin NAT, sin endpoints SSM. Una EC2 alli es **interna** (solo alcanzable por VPN / red del banco), y crear el IAM role + el acceso requiere al equipo de DataLab (permisos que el usuario no tiene).
+
+- En **Data Redactada** dejamos dos botones: **Probar local** (maquina de la persona) y **Probar en EC2 (interno)** con URL configurable (se guarda en el navegador).
+- **`RUNBOOK_EC2_DATALAB.md`**: guia para levantar la instancia (`c5.4xlarge`, 16 vCPU / 32 GB, mas cores para Spark), instalar PySpark **via S3 sin internet** (DataLab tiene endpoint S3), y el servicio systemd.
+- Evaluamos y descartamos, por sobre-ingenieria o incompatibilidad con la red cerrada: **Lambda** (max 15 min, Spark no encaja), **Fargate/EKS** (pull de imagen sin NAT), **API Gateway + Lambda puente** (piezas de mas sin saltar el muro de red/permisos).
+
+---
+
+## 3 de septiembre — Dia 43: Fixes de Windows (UnicodeDecodeError 0x97)
+
+En **Windows** fallaban Data Redactada y el Compiler con `'utf-8' codec can't decode byte 0x97`; en Mac/Linux no. **Causa raiz:** `open()` sin `encoding` usa la codificacion local del SO (**cp1252 en Windows**, UTF-8 en Mac/Linux).
+
+- Se forzo **`encoding="utf-8"` explicito** en TODAS las lecturas de entrada (`.mp/.xfr/.dml/.pset` en `parse_project`, parsers de `src/`, `serve_ui.py`, handler Lambda).
+- Y en la **escritura/relectura del codigo generado** (los 6 codegen + `serve_ui` + `main`), porque el job generado trae caracteres (flechas, simbolos) fuera de cp1252 — esa era la causa del fallo del Compiler.
+- El handler Lambda ademas decodifica multipart con `errors="replace"`, y el comando de deploy de la Lambda ahora incluye `main.py`.
+- Verificado reproduciendo el caso real `EIRR_DDOLI010_TRSDOL_JOIN_TRSCTE.mp` + byte `0x97`: antes reventaba, ahora compila a Spark y Glue.
+
+---
+
+## Estatus del convertidor por complejidad de grafo
+
+Validado **ejecutando** el PySpark generado con datos redactados (barrido de 36 grafos: 35/36 ok).
+
+| Complejidad | Rango aprox. | Estatus |
+|-------------|--------------|---------|
+| **Baja** | hasta ~15 componentes / ~10 flujos | ✅ 100% — convierte y ejecuta de punta a punta |
+| **Media** | ~15-50 componentes / hasta ~46 flujos | ✅ ~95% — cubierto por el barrido, con degradaciones puntuales (alguna columna en NULL o TODO en DML complejo) |
+| **Alta** | 100+ componentes / 70+ flujos, DML con loops-vectores | ❌ pendiente — NO validado |
+
+**Para llegar a "altos" falta:** implementar Concatenate/Gather/Partition reales (hoy caen a passthrough), traducir DML con loops/vectores (hoy TODO/UDF manual), resolucion robusta de join keys en grafos densos, y meter como casos de prueba los 3 grafos mas grandes (hoy apartados en `bnx_library/ERROR/`).
 
 ---
 

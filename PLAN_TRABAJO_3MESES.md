@@ -11,6 +11,20 @@ documentacion de arquitectura, y aprobaciones de cambio (CAB).
 
 ---
 
+## Estatus del convertidor (donde estamos)
+
+Validado **ejecutando** el PySpark generado con datos redactados (barrido de 36 grafos: 35/36 ok).
+
+| Complejidad | Rango aprox. | Estatus |
+|-------------|--------------|---------|
+| **Baja** | hasta ~15 componentes / ~10 flujos | ✅ 100% — convierte y ejecuta de punta a punta |
+| **Media** | ~15-50 componentes / hasta ~46 flujos | ✅ ~95% — cubierto, con degradaciones puntuales (columna en NULL o TODO en DML complejo) |
+| **Alta** | 100+ componentes / 70+ flujos, DML con loops-vectores | ❌ pendiente — NO validado |
+
+**Para llegar a "altos" falta:** Concatenate/Gather/Partition reales (hoy passthrough), traducir DML con loops/vectores (hoy TODO/UDF), join keys robustas en grafos densos, y meter como casos de prueba los 3 grafos mas grandes (hoy en `bnx_library/ERROR/`).
+
+---
+
 ## MES 1 — Estabilizacion + Code Quality
 
 ### Semana 1-2: Parser GDE Nativo (COMPLETADO)
@@ -112,8 +126,10 @@ documentacion de arquitectura, y aprobaciones de cambio (CAB).
 | Ejecutor de prueba PySpark local | Completado | Valida el codigo generado ejecutandolo, no solo leyendolo |
 | Correccion masiva del generador (validada ejecutando) | Completado | 35/36 grafos ejecutan y producen salidas |
 | Optimizador de performance (reglas, sin IA) | Completado | cache/broadcast/coalesce + benchmark original vs optimizado |
-| Fixes Windows (UnicodeDecodeError) + CORS | Completado | Uso desde Windows y desde Amplify/Lambda sin errores |
+| Fix Windows: encoding utf-8 (UnicodeDecodeError 0x97 Compiler/Data Redactada) | Completado | Funciona igual en Windows que en Mac/Linux |
+| Prueba mas rapida (local[*], shuffle=8, AQE) + timeout configurable | Completado | Menos timeouts en grafos grandes |
 | Despliegue EC2 (Spark local) + CloudFront HTTPS | Completado | Prueba PySpark en la nube igual que en local, con HTTPS |
+| Boton EC2 interno (DataLab) + runbook, y Probar local | Completado | Preparado para la cuenta correcta; pendiente permisos DataLab |
 
 ## Esfuerzos Futuros Identificados
 

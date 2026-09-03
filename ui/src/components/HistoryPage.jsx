@@ -232,11 +232,32 @@ const TIMELINE = [
     tags: ['deploy', 'ec2', 'cloudfront', 'aws'],
     color: '#f59e0b',
   },
+  {
+    date: '2 Sep 2026',
+    title: 'Dia 41: Prueba mas rapida + timeout configurable',
+    desc: 'Grafos grandes daban Timeout tras 180s en la prueba PySpark. Ajustes en el ejecutor: local[*] (usa todos los cores de la maquina, antes local[1]) y spark.sql.shuffle.partitions=8 (antes 200, absurdo para datos de prueba), que es el mayor acelerador en grafos con muchos joins/gathers. Adaptive Query Execution activado y UI de Spark apagada para menos overhead. El limite de tiempo ahora es configurable desde la UI (3/5/10/15 min), default 300s; backend acepta hasta 900s.',
+    tags: ['perf', 'test', 'ui'],
+    color: '#8b5cf6',
+  },
+  {
+    date: '2 Sep 2026',
+    title: 'Dia 42: Cuenta correcta (DataLab) + boton EC2 interno',
+    desc: 'La EC2 de pruebas estaba en la cuenta equivocada (monkey). La apagamos (sin destruir) y preparamos el camino a DataLab. Pero DataLab esta bajo Control Tower: subredes privadas, sin internet, sin SSM, asi que una EC2 alli es interna (solo por VPN/red del banco). Dejamos en Data Redactada dos botones: Probar local (maquina de la persona) y Probar en EC2 interno con URL configurable (persistida), mas RUNBOOK_EC2_DATALAB.md con como levantar la instancia (c5.4xlarge, PySpark via S3 sin internet, systemd). Evaluadas y descartadas por sobre-ingenieria o incompatibilidad: Lambda (max 15 min, Spark no encaja), Fargate/EKS (pull de imagen sin NAT), API GW + Lambda puente.',
+    tags: ['deploy', 'ec2', 'datalab', 'ui'],
+    color: '#f59e0b',
+  },
+  {
+    date: '3 Sep 2026',
+    title: 'Dia 43: Fixes de Windows (UnicodeDecodeError 0x97)',
+    desc: 'En Windows fallaba Data Redactada y el Compiler con el error utf-8 codec cant decode byte 0x97; en Mac/Linux no. Causa raiz: open() sin encoding usa la codificacion local del SO (cp1252 en Windows, UTF-8 en Mac/Linux). Se forzo encoding utf-8 explicito en TODAS las lecturas de entrada (.mp/.xfr/.dml/.pset en parse_project, parsers de src/, serve_ui, handler Lambda) y en la escritura/relectura del codigo generado (los 6 codegen + serve_ui + main), porque el job generado trae caracteres (flechas, simbolos) fuera de cp1252. Tambien el handler Lambda decodifica multipart con errors replace. Verificado reproduciendo el caso EIRR_DDOLI010 + 0x97.',
+    tags: ['fix', 'windows', 'codegen'],
+    color: '#ef4444',
+  },
 ]
 
 const STATS = [
-  { label: 'Dias de desarrollo', value: '40', color: '#6366f1' },
-  { label: 'Commits', value: '150+', color: '#22c55e' },
+  { label: 'Dias de desarrollo', value: '43', color: '#6366f1' },
+  { label: 'Commits', value: '155+', color: '#22c55e' },
   { label: 'Componentes', value: '27+', color: '#f59e0b' },
   { label: 'Parsers', value: '6', color: '#a855f7' },
   { label: 'Code Generators', value: '7', color: '#ec4899' },
@@ -261,6 +282,7 @@ const TAG_COLORS = {
   schema: '#14b8a6', join: '#f59e0b', pipeline: '#14b8a6', fix: '#ef4444',
   optimize: '#8b5cf6', perf: '#8b5cf6', benchmark: '#8b5cf6',
   ec2: '#f59e0b', cloudfront: '#f59e0b', windows: '#06b6d4', cors: '#ef4444',
+  datalab: '#f59e0b',
 }
 
 export default function HistoryPage({ theme }) {
