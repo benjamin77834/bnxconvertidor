@@ -80,7 +80,7 @@ def _parse_multipart(event):
                     if key == "mp_files":
                         mp_file_keys.add(fkey)
                 elif hasattr(sub, 'value'):
-                    val = sub.value if isinstance(sub.value, str) else sub.value.decode()
+                    val = sub.value if isinstance(sub.value, str) else sub.value.decode("utf-8", errors="replace")
                     fields[f"{key}_{i}"] = val
         elif hasattr(item, 'filename') and item.filename:
             # Store with form field key (e.g., "plan", "pset", "xfr")
@@ -91,7 +91,7 @@ def _parse_multipart(event):
             if key == "mp_files":
                 mp_file_keys.add(item.filename)
         elif hasattr(item, 'value'):
-            fields[key] = item.value if isinstance(item.value, str) else item.value.decode()
+            fields[key] = item.value if isinstance(item.value, str) else item.value.decode("utf-8", errors="replace")
     return files, fields, mp_file_keys
 
 
@@ -572,7 +572,7 @@ def handler(event, context):
             action = fields.get("action", "run")
             code_content = fields.get("code", "")
             if "code" in files:
-                code_content = files["code"].decode() if isinstance(files["code"], bytes) else files["code"]
+                code_content = files["code"].decode("utf-8", errors="replace") if isinstance(files["code"], bytes) else files["code"]
 
             if not code_content:
                 return _response(400, {"error": "code is required (field or file)"})

@@ -249,8 +249,10 @@ curl -X POST https://API_URL/refactor \
 
 ### Lambda (Backend)
 ```bash
-zip -r lambda_package.zip lambda/handler.py src/ -x "src/__pycache__/*" "src/**/__pycache__/*"
-aws lambda update-function-code --function-name bnx-compiler --zip-file fileb://lambda_package.zip --region us-east-1
+# IMPORTANTE: incluir main.py — el handler importa `from main import parse_project`.
+# Sin main.py la Lambda arranca con Runtime.ImportModuleError: No module named 'main'.
+zip -r lambda_package.zip lambda/handler.py main.py src/ -x "src/__pycache__/*" "src/**/__pycache__/*" "**/__pycache__/*"
+aws lambda update-function-code --function-name bnx-compiler --zip-file fileb://lambda_package.zip --region us-east-1 --profile default
 ```
 
 ### Amplify (Frontend)
