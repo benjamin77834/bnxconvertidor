@@ -1399,6 +1399,49 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             print(f"  [{args[1]}] {args[0]}")
 
 
+def _sync_library_from_s3():
+    """Sincroniza la biblioteca de grafos desde S3 (DataLab) a ./bnx_library/.
+
+    Los grafos NO viajan por git (bnx_library/ esta en .gitignore); viven en
+    s3://datalake-bnx-scripts-dev/library/. Al arrancar, bajamos los nuevos/
+    actualizados para que la pestaña Grafos siempre este al dia, sin tener que
+    correr sync_library.sh a mano.
+
+    Es best-effort: si no hay AWS CLI o credenciales, se omite en silencio
+    (el server sigue funcionando con los grafos que ya haya en disco).
+    Se puede desactivar con BNX_SKIP_LIBRARY_SYNC=1.
+    """
+    if os.environ.get("BNX_SKIP_LIBRARY_SYNC") == "1":
+        return
+    import shutil, subprocess
+    if not shutil.which("aws"):
+        print("[i] Sync biblioteca omitido (AWS CLI no instalado).")
+        return
+    dest = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bnx_library")
+    os.makedirs(dest, exist_ok=True)
+    profile = os.environ.get("BNX_AWS_PROFILE", "datalab")
+    print(f"[*] Sincronizando biblioteca de grafos desde S3 (perfil {profile})...")
+    try:
+        proc = subprocess.run(
+            ["aws", "s3", "sync",
+             "s3://datalake-bnx-scripts-dev/library/", dest + os.sep,
+             "--profile", profile, "--only-show-errors",
+             "--exclude", "Repo_Git/*"],
+            capture_output=True, text=True, timeout=120,
+        )
+        if proc.returncode == 0:
+            print("[*] Biblioteca de grafos al dia.")
+        else:
+            # No romper el arranque: solo avisar (credenciales/permanentes/red).
+            msg = (proc.stderr or "").strip().splitlines()
+            tail = msg[-1] if msg else "error desconocido"
+            print(f"[i] Sync biblioteca omitido: {tail}")
+    except subprocess.TimeoutExpired:
+        print("[i] Sync biblioteca omitido (timeout).")
+    except Exception as e:
+        print(f"[i] Sync biblioteca omitido: {e}")
+
+
 if __name__ == "__main__":
     print(f"[*] BNX Convertidor - Local Server")
     print(f"[*] Port: {PORT}")
@@ -1407,6 +1450,10 @@ if __name__ == "__main__":
     print(f"[*] API: http://localhost:{PORT}/compile (POST)")
     print(f"[*] Open: http://localhost:{PORT}")
     print()
+
+    # Bajar grafos nuevos del S3 en un hilo aparte para no retrasar el arranque.
+    import threading as _threading
+    _threading.Thread(target=_sync_library_from_s3, daemon=True).start()
 
     class _BNXServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         allow_reuse_address = True  # evita "Address already in use" al reiniciar
