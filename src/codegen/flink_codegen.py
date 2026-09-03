@@ -107,7 +107,7 @@ def _is_streaming_upstream(node, dag, xfr_rules):
 def generate_flink(dag, output_path, xfr_rules=None):
     xfr_rules = xfr_rules or {}
 
-    with open(output_path, "w") as f:
+    with open(output_path, "w", encoding="utf-8") as f:
         # Header
         f.write(f'"""\n[>] BNX V54 GENERATED PYFLINK JOB\n')
         f.write(f'? Generated at: {datetime.now()}\n')

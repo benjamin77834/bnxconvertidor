@@ -169,7 +169,7 @@ def generate_terraform(dag, output_path, xfr_rules=None):
     lines.append('output "catalog_database" { value = aws_glue_catalog_database.main.name }')
     lines.append(f'output "total_glue_jobs" {{ value = {sum(1 for n in dag.execution_order if n.type.upper() not in ("SOURCE","SINK"))} }}')
 
-    with open(output_path, "w") as f:
+    with open(output_path, "w", encoding="utf-8") as f:
         f.write('\n'.join(lines))
 
     return '\n'.join(lines)

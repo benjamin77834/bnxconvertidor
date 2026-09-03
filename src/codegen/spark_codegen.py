@@ -1303,7 +1303,7 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
             and not rule and ("reformat" in node.name.lower() or "rfmt" in node.name.lower())):
             needs_output_split = True
 
-    with open(output_path, "w") as f:
+    with open(output_path, "w", encoding="utf-8") as f:
         f.write(f'"""\n[*] BNX V54 GENERATED PYSPARK JOB\n? Generated at: {datetime.now()}\n"""\n\n')
         f.write("import os\n")
         f.write("from pyspark.sql import SparkSession\n")

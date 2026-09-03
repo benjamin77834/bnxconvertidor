@@ -1020,7 +1020,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                     _generate_pandas(dag, out_path, xfr_rules)
                 else:
                     generate_glue(dag, out_path, xfr_rules, pset_params=all_params_for_codegen)
-                with open(out_path, "r") as f:
+                with open(out_path, "r", encoding="utf-8", errors="replace") as f:
                     code = f.read()
                 os.unlink(out_path)
 
