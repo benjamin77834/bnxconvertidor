@@ -444,6 +444,44 @@ def handler(event, context):
 
             s3 = boto3.client("s3", region_name=lib_region)
 
+            # --- Fallback local: grafos empaquetados en bnx_library/ dentro del zip
+            # de la Lambda. Se usa cuando S3 esta bloqueado (cross-account/SCP), asi
+            # la nube muestra los mismos grafos que el repo aunque no lea el bucket.
+            _LIB_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "bnx_library")
+
+            def _is_access_denied(err):
+                e = str(err)
+                return ("AccessDenied" in e or "not authorized" in e or "explicit deny" in e)
+
+            def _local_projects():
+                out = []
+                if not os.path.isdir(_LIB_DIR):
+                    return out
+                for d in sorted(os.listdir(_LIB_DIR)):
+                    dp = os.path.join(_LIB_DIR, d)
+                    if os.path.isdir(dp) and d not in ("_flat", "Repo_Git"):
+                        n = len([f for f in os.listdir(dp) if f.endswith(".mp")])
+                        out.append({"name": d, "graphs": n})
+                return out
+
+            def _local_files(project):
+                out = []
+                dp = os.path.join(_LIB_DIR, project)
+                if not os.path.isdir(dp):
+                    return out
+                for fn in sorted(os.listdir(dp)):
+                    fp = os.path.join(dp, fn)
+                    if os.path.isfile(fp):
+                        out.append({"name": fn, "size": os.path.getsize(fp), "lastModified": ""})
+                return out
+
+            def _local_download(project, file_name):
+                fp = os.path.join(_LIB_DIR, project, file_name)
+                if os.path.isfile(fp):
+                    with open(fp, "r", encoding="utf-8", errors="replace") as fh:
+                        return fh.read()
+                return None
+
             if action == "list_projects":
                 # Listar proyectos (carpetas de primer nivel en library/)
                 try:
@@ -458,18 +496,19 @@ def handler(event, context):
                             projects.append({"name": proj_name, "graphs": file_count})
                     return _response(200, {"projects": projects})
                 except Exception as e:
-                    err = str(e)
-                    # Distinguir un problema de permisos (SCP/IAM) de "no hay proyectos".
-                    if "AccessDenied" in err or "not authorized" in err or "explicit deny" in err:
+                    # S3 bloqueado (cross-account/SCP): servir los grafos empaquetados.
+                    if _is_access_denied(e):
+                        local = _local_projects()
+                        if local:
+                            return _response(200, {"projects": local, "source": "bundled"})
                         return _response(200, {
                             "projects": [],
-                            "error": err,
+                            "error": str(e),
                             "error_kind": "access_denied",
-                            "hint": ("La Lambda no tiene permiso para listar el bucket S3 "
-                                     "(posible explicit deny en una Service Control Policy). "
-                                     "Contacta al administrador de la organizacion AWS."),
+                            "hint": ("La Lambda no puede leer el bucket S3 (cross-account/SCP) "
+                                     "y no hay grafos empaquetados. Redespliega la Lambda con bnx_library/."),
                         })
-                    return _response(200, {"projects": [], "error": err})
+                    return _response(200, {"projects": _local_projects(), "error": str(e)})
 
             elif action == "create_project":
                 # Crear proyecto (carpeta en S3)
@@ -498,7 +537,10 @@ def handler(event, context):
                             })
                     return _response(200, {"project": project, "files": files_list})
                 except Exception as e:
-                    return _response(200, {"files": [], "error": str(e)})
+                    # Fallback a los archivos empaquetados.
+                    return _response(200, {"project": project, "files": _local_files(project),
+                                           "source": "bundled" if _is_access_denied(e) else "s3_error",
+                                           "error": str(e)})
 
             elif action == "upload":
                 # Subir archivo(s) a un proyecto
@@ -542,6 +584,11 @@ def handler(event, context):
                     content = obj["Body"].read().decode("utf-8", errors="replace")
                     return _response(200, {"file": file_name, "project": project, "content": content})
                 except Exception as e:
+                    # Fallback al archivo empaquetado.
+                    content = _local_download(project, file_name)
+                    if content is not None:
+                        return _response(200, {"file": file_name, "project": project,
+                                               "content": content, "source": "bundled"})
                     return _response(200, {"error": str(e)})
 
             elif action == "delete":
