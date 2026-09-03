@@ -255,12 +255,12 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 graphs = []
                 for mp_path in sorted(_glob.glob(os.path.join(flat_dir, "*.mp"))):
                     gid = os.path.splitext(os.path.basename(mp_path))[0]
-                    with open(mp_path, "r", errors="replace") as f:
+                    with open(mp_path, "r", encoding="utf-8", errors="replace") as f:
                         mp = f.read()
                     xfr_path = os.path.join(flat_dir, gid + ".xfr")
                     xfr = ""
                     if os.path.exists(xfr_path):
-                        with open(xfr_path, "r", errors="replace") as f:
+                        with open(xfr_path, "r", encoding="utf-8", errors="replace") as f:
                             xfr = f.read()
                     graphs.append({"id": gid, "name": gid, "mp": mp, "xfr": xfr})
                 self._json_response(200, {"graphs": graphs})
@@ -270,10 +270,10 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 name = _safe(fields.get("name", "grafo"))
                 mp = fields.get("mp", "") or ""
                 xfr = fields.get("xfr", "") or ""
-                with open(os.path.join(flat_dir, name + ".mp"), "w") as f:
+                with open(os.path.join(flat_dir, name + ".mp"), "w", encoding="utf-8") as f:
                     f.write(mp)
                 if xfr:
-                    with open(os.path.join(flat_dir, name + ".xfr"), "w") as f:
+                    with open(os.path.join(flat_dir, name + ".xfr"), "w", encoding="utf-8") as f:
                         f.write(xfr)
                 self._json_response(200, {"saved": {"id": name, "name": name, "mp": mp, "xfr": xfr}})
                 return
@@ -312,7 +312,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 fname = _safe(fields.get("file", ""))
                 fp = os.path.join(root, proj, fname)
                 if os.path.isfile(fp):
-                    with open(fp, "r", errors="replace") as f:
+                    with open(fp, "r", encoding="utf-8", errors="replace") as f:
                         content = f.read()
                     self._json_response(200, {"file": fname, "project": proj, "content": content})
                 else:
@@ -327,11 +327,11 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 mp = fields.get("mp", "") or ""
                 xfr = fields.get("xfr", "") or ""
                 if mp:
-                    with open(os.path.join(root, proj, name + ".mp"), "w") as f:
+                    with open(os.path.join(root, proj, name + ".mp"), "w", encoding="utf-8") as f:
                         f.write(mp)
                     uploaded.append(name + ".mp")
                 if xfr:
-                    with open(os.path.join(root, proj, name + ".xfr"), "w") as f:
+                    with open(os.path.join(root, proj, name + ".xfr"), "w", encoding="utf-8") as f:
                         f.write(xfr)
                     uploaded.append(name + ".xfr")
                 self._json_response(200, {"uploaded": uploaded, "project": proj})
@@ -846,7 +846,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         # Embedded transforms (GDE)
         try:
             from main import _extract_embedded_transforms, _apply_embedded_transforms
-            with open(mp_path, "r", errors="replace") as f:
+            with open(mp_path, "r", encoding="utf-8", errors="replace") as f:
                 raw = f.read().replace('\x00', '')
             embedded = _extract_embedded_transforms(raw)
             if (embedded.get("transforms") or embedded.get("keys")
@@ -934,7 +934,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
 
             # Extract embedded transforms from GDE format
             from main import _extract_embedded_transforms, _apply_embedded_transforms
-            with open(mp_path, "r", errors="replace") as f:
+            with open(mp_path, "r", encoding="utf-8", errors="replace") as f:
                 raw = f.read().replace('\x00', '')
             embedded = _extract_embedded_transforms(raw)
             if embedded["transforms"] or embedded["keys"] or embedded.get("keys_by_vertex") or embedded["filters"] or embedded.get("filters_by_vertex") or embedded.get("keeps"):
@@ -980,7 +980,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
 
             # Detect missing external .xfr references and add warnings
             missing_xfr = []
-            with open(mp_path, "r", errors="replace") as f_mp:
+            with open(mp_path, "r", encoding="utf-8", errors="replace") as f_mp:
                 mp_raw = f_mp.read().replace('\x00', '')
             for m in re.finditer(r'XXparameter\|transform\d*\|\$([^|]+\.xfr)\|', mp_raw):
                 xfr_ref = m.group(1)

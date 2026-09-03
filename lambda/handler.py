@@ -777,7 +777,7 @@ def handler(event, context):
                 # Embedded transforms del .mp (GDE) para inferir schema como en local.
                 try:
                     from main import _extract_embedded_transforms, _apply_embedded_transforms
-                    with open(mp_path, "r", errors="replace") as _f:
+                    with open(mp_path, "r", encoding="utf-8", errors="replace") as _f:
                         _raw = _f.read().replace("\x00", "")
                     _emb = _extract_embedded_transforms(_raw)
                     if _emb.get("transforms") or _emb.get("keys") or _emb.get("keys_by_vertex") \
