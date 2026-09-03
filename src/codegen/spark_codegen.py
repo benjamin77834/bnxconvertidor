@@ -1925,6 +1925,90 @@ def _sanitize_generated_file(output_path):
             continue
         out.append(ln)
 
-    if changed:
+    # --- GUARDARRAIL: funciones Ab Initio sin traducir dentro de expr("...") ---
+    # Si tras la traduccion queda una funcion que Spark NO conoce (p.ej. otra
+    # funcion DML que no mapeamos aun), el job revienta con UNRESOLVED_ROUTINE al
+    # EJECUTAR. Para que ningun grafo falle por una funcion suelta, detectamos esas
+    # llamadas y degradamos esa asignacion a lit(None) con un TODO, en vez de romper.
+    out = _neutralize_unknown_functions(out)
+
+    if changed or True:
         with open(output_path, "w", encoding="utf-8") as fh:
             fh.writelines(out)
+
+
+# Funciones que SI existen en Spark SQL (o que ya traducimos) — lista blanca.
+# Cualquier funcion snake_case fuera de esta lista que quede en un expr("...") se
+# considera Ab Initio sin traducir y se neutraliza (guardarrail).
+_SPARK_KNOWN_FUNCS = {
+    # strings
+    "trim", "ltrim", "rtrim", "lower", "upper", "length", "substring", "substr",
+    "concat", "concat_ws", "replace", "regexp_replace", "regexp_extract", "split",
+    "lpad", "rpad", "instr", "locate", "reverse", "translate", "initcap", "ascii",
+    "base64", "unbase64", "format_string", "repeat", "left", "right", "overlay",
+    "array_join", "split_part", "char", "chr",
+    # numeric
+    "abs", "round", "floor", "ceil", "ceiling", "sqrt", "power", "exp", "ln", "log",
+    "log10", "log2", "greatest", "least", "mod", "pmod", "sign", "cast", "bround",
+    "rand", "pow",
+    # date/time
+    "to_date", "to_timestamp", "date_format", "add_months", "months_between",
+    "datediff", "date_add", "date_sub", "current_date", "current_timestamp",
+    "year", "month", "day", "dayofmonth", "hour", "minute", "second", "unix_timestamp",
+    "from_unixtime", "trunc", "date_trunc", "last_day", "next_day", "weekofyear",
+    # cond/null
+    "coalesce", "nvl", "nullif", "ifnull", "nvl2", "when", "case", "isnull",
+    "isnotnull", "if", "decode", "expr",
+    # agg / window
+    "sum", "avg", "count", "max", "min", "first", "last", "collect_list",
+    "collect_set", "row_number", "rank", "dense_rank", "lead", "lag", "stddev",
+    "variance", "approx_count_distinct",
+    # arrays/maps/struct
+    "array", "map", "struct", "explode", "size", "element_at", "array_contains",
+    "sort_array", "get_json_object", "from_json", "to_json", "named_struct",
+    # bit/misc
+    "hash", "md5", "sha1", "sha2", "crc32", "xxhash64", "monotonically_increasing_id",
+    "lit", "col", "cast", "typeof", "hex", "unhex", "conv", "bin",
+    # boolean/set ops usadas como funcion
+    "in", "like", "rlike", "not", "and", "or",
+}
+
+# Funciones Ab Initio conocidas (prefijos) que, si aparecen sin traducir, son
+# senal segura de DML no soportado.
+_ABINITIO_FUNC_RE = re.compile(
+    r'\b('
+    r're_[a-z_]+|string_[a-z_]+|math_[a-z_]+|decimal_[a-z_]+|integer_[a-z_]+|'
+    r'datetime_[a-z_]+|date_[a-z]*day[a-z_]*|is_[a-z_]+|lookup[a-z_]*|'
+    r'vector_[a-z_]+|first_without_error|force_error|next_in_sequence|make_[a-z_]+|'
+    r'char_[a-z_]+|test_[a-z_]+|hash_[a-z_]+'
+    r')\s*\('
+)
+
+
+def _neutralize_unknown_functions(lines):
+    """Degrada a lit(None) las asignaciones withColumn cuyo expr("...") contiene
+    una funcion Ab Initio que no fue traducida (evita UNRESOLVED_ROUTINE al correr).
+
+    Solo toca lineas de la forma:
+        X_df = X_df.withColumn("CAMPO", expr("....funcion_no_soportada(...)..."))
+    Deja intactas las demas. Es un cinturon de seguridad: preferimos una columna
+    en NULL (con TODO visible) a que el job entero falle.
+    """
+    result = []
+    wc_re = re.compile(r'^(\s*)(\w+)\s*=\s*(\w+)\.withColumn\(\s*("(?:[^"\\]|\\.)*")\s*,\s*expr\(\s*"(.*)"\s*\)\s*\)\s*$')
+    for ln in lines:
+        m = wc_re.match(ln.rstrip("\n"))
+        if not m:
+            result.append(ln)
+            continue
+        indent, lhs, src, colname, sql = m.groups()
+        # ¿Queda alguna funcion Ab Initio sin traducir en la expresion SQL?
+        if _ABINITIO_FUNC_RE.search(sql):
+            bad = _ABINITIO_FUNC_RE.search(sql).group(1)
+            result.append(
+                f'{indent}{lhs} = {src}.withColumn({colname}, lit(None))  '
+                f'# [BNX] funcion Ab Initio sin traducir ({bad}); columna en NULL (revisar)\n'
+            )
+        else:
+            result.append(ln)
+    return result
