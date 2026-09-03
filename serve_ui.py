@@ -1413,33 +1413,68 @@ def _sync_library_from_s3():
     """
     if os.environ.get("BNX_SKIP_LIBRARY_SYNC") == "1":
         return
-    import shutil, subprocess
-    if not shutil.which("aws"):
-        print("[i] Sync biblioteca omitido (AWS CLI no instalado).")
-        return
     dest = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bnx_library")
     os.makedirs(dest, exist_ok=True)
     profile = os.environ.get("BNX_AWS_PROFILE", "datalab")
-    print(f"[*] Sincronizando biblioteca de grafos desde S3 (perfil {profile})...")
-    try:
-        proc = subprocess.run(
-            ["aws", "s3", "sync",
-             "s3://datalake-bnx-scripts-dev/library/", dest + os.sep,
-             "--profile", profile, "--only-show-errors",
-             "--exclude", "Repo_Git/*"],
-            capture_output=True, text=True, timeout=120,
-        )
-        if proc.returncode == 0:
-            print("[*] Biblioteca de grafos al dia.")
-        else:
-            # No romper el arranque: solo avisar (credenciales/permanentes/red).
+    bucket = "datalake-bnx-scripts-dev"
+    prefix = "library/"
+
+    # Metodo 1: AWS CLI si esta instalado (rapido, incremental).
+    import shutil, subprocess
+    if shutil.which("aws"):
+        print(f"[*] Sincronizando biblioteca de grafos desde S3 (aws cli, perfil {profile})...")
+        try:
+            proc = subprocess.run(
+                ["aws", "s3", "sync",
+                 f"s3://{bucket}/{prefix}", dest + os.sep,
+                 "--profile", profile, "--only-show-errors",
+                 "--exclude", "Repo_Git/*"],
+                capture_output=True, text=True, timeout=120,
+            )
+            if proc.returncode == 0:
+                print("[*] Biblioteca de grafos al dia.")
+                return
             msg = (proc.stderr or "").strip().splitlines()
-            tail = msg[-1] if msg else "error desconocido"
-            print(f"[i] Sync biblioteca omitido: {tail}")
-    except subprocess.TimeoutExpired:
-        print("[i] Sync biblioteca omitido (timeout).")
+            print(f"[i] aws cli fallo ({msg[-1] if msg else 'error'}), intento con boto3...")
+        except subprocess.TimeoutExpired:
+            print("[i] aws cli timeout, intento con boto3...")
+        except Exception as e:
+            print(f"[i] aws cli error ({e}), intento con boto3...")
+
+    # Metodo 2: boto3 (sin AWS CLI). Requiere el paquete boto3 y credenciales
+    # (perfil BNX_AWS_PROFILE en ~/.aws, o variables de entorno AWS_*).
+    try:
+        import boto3
+    except ImportError:
+        print("[i] Sync biblioteca omitido: sin AWS CLI ni boto3 (pip install boto3). "
+              "El server sigue con los grafos que ya haya en disco.")
+        return
+    try:
+        try:
+            session = boto3.Session(profile_name=profile)
+        except Exception:
+            session = boto3.Session()  # cae a credenciales por defecto / env vars
+        s3 = session.client("s3", region_name="us-east-1")
+        paginator = s3.get_paginator("list_objects_v2")
+        bajados = 0
+        print(f"[*] Sincronizando biblioteca de grafos desde S3 (boto3, perfil {profile})...")
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                key = obj["Key"]
+                rel = key[len(prefix):]
+                if not rel or rel.endswith("/") or rel.startswith("Repo_Git/"):
+                    continue
+                local_path = os.path.join(dest, *rel.split("/"))
+                # Descargar solo si falta o cambio de tamano (sync incremental simple).
+                if os.path.exists(local_path) and os.path.getsize(local_path) == obj.get("Size", -1):
+                    continue
+                os.makedirs(os.path.dirname(local_path), exist_ok=True)
+                s3.download_file(bucket, key, local_path)
+                bajados += 1
+        print(f"[*] Biblioteca de grafos al dia (boto3, {bajados} archivo(s) nuevos/actualizados).")
     except Exception as e:
-        print(f"[i] Sync biblioteca omitido: {e}")
+        print(f"[i] Sync biblioteca omitido (boto3): {e}. "
+              "El server sigue con los grafos que ya haya en disco.")
 
 
 if __name__ == "__main__":

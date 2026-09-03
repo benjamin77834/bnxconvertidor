@@ -6,6 +6,11 @@ fastapi==0.104.1
 uvicorn==0.24.0
 python-multipart==0.0.6
 
+# Sincronizacion de la biblioteca de grafos desde S3 SIN aws cli (opcional).
+# serve_ui.py usa aws cli si esta, y si no cae a boto3. Instalar solo si no hay
+# aws cli en la maquina y se quiere el auto-sync de grafos.
+boto3>=1.28
+
 # No other external dependencies required for core engine
 # All parsers, codegen, and validators use Python stdlib only:
 # - re (regex)
