@@ -928,16 +928,22 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
             }}>
               <span style={label}>📊 Reporte del grafo</span>
 
-              {/* Descripcion en lenguaje natural del grafo */}
+              {/* Descripcion en lenguaje natural del grafo (colapsable) */}
               {(runReport.description || graphDescription) && (
-                <div style={{
-                  fontSize: 16, color: t.text || '#e2e8f0', lineHeight: 1.6,
+                <details style={{
                   background: '#11162080', border: `1px solid ${t.border || '#334155'}`,
-                  borderRadius: 8, padding: 14,
+                  borderRadius: 8, padding: '10px 14px',
                 }}>
-                  <span style={{ color: t.accent || '#818cf8', fontWeight: 600, fontSize: 18 }}>📝 </span>
-                  {runReport.description || graphDescription}
-                </div>
+                  <summary style={{
+                    cursor: 'pointer', fontSize: 14, fontWeight: 600,
+                    color: t.accent || '#818cf8', userSelect: 'none', outline: 'none',
+                  }}>📝 Descripción del grafo</summary>
+                  <div style={{
+                    fontSize: 16, color: t.text || '#e2e8f0', lineHeight: 1.6, marginTop: 10,
+                  }}>
+                    {runReport.description || graphDescription}
+                  </div>
+                </details>
               )}
 
               {/* Fidelidad de los datos */}
