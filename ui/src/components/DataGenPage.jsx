@@ -57,6 +57,13 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
   // --- Ejecutar prueba PySpark (consola en vivo) ---
   const [running, setRunning] = useState(false)
   const [runTimeout, setRunTimeout] = useState(300) // limite de tiempo (s), configurable
+  // URL base de la EC2 interna de DataLab (subnet privada). Configurable y
+  // persistida: cada quien pega la IP privada de la instancia cuando exista
+  // (p.ej. http://10.0.1.23:8081). Vacio = solo esta disponible "Probar local".
+  const [ec2Url, setEc2Url] = useState(() => {
+    try { return localStorage.getItem('bnx_ec2_url') || '' } catch { return '' }
+  })
+  const [showEc2Config, setShowEc2Config] = useState(false)
   const [runResult, setRunResult] = useState(null) // {ok, summary, reads, writes}
   const [consoleLines, setConsoleLines] = useState([]) // lineas en vivo
   const [localDownloads, setLocalDownloads] = useState([]) // [{name, path}] CSV de resultado local
@@ -188,16 +195,33 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
     }, 15000)
   }
 
-  const runTest = async () => {
+  const runTest = async (target = 'local') => {
+    // target: 'local' = mismo origen (Mac de la persona / server local)
+    //         'ec2'   = EC2 interna de DataLab (URL configurable en ec2Url)
+    let streamUrl = RUNTEST_STREAM_URL
+    if (target === 'ec2') {
+      const base = (ec2Url || '').trim().replace(/\/+$/, '')
+      if (!base) {
+        setShowEc2Config(true)
+        setRunResult({ ok: false, summary: 'Configura primero la URL de la EC2 interna (⚙️).' })
+        return
+      }
+      streamUrl = `${base}/runtest/stream`
+    }
     setRunning(true)
     setRunResult(null)
     setLocalDownloads([])
     setRunReport(null)
-    setConsoleLines([{ text: '[*] Iniciando ejecución de prueba...', kind: 'info' }])
+    setConsoleLines([{
+      text: target === 'ec2'
+        ? `[*] Iniciando prueba en EC2 interna (${ec2Url})...`
+        : '[*] Iniciando ejecución de prueba local...',
+      kind: 'info',
+    }])
     try {
       const inputs = (result?.datasets || []).filter(d => d.io === 'input')
       const datasets = inputs.length ? inputs : (result?.datasets || [])
-      const res = await fetch(RUNTEST_STREAM_URL, {
+      const res = await fetch(streamUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         // Enviamos tambien el grafo (mp/xfr) para que el servidor REGENERE el
@@ -644,12 +668,13 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
         <div style={{ ...card, display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-              <span style={label}>▶️ Ejecutar prueba local (PySpark)</span>
+              <span style={label}>▶️ Ejecutar prueba (PySpark)</span>
               <span style={{ fontSize: 11, color: t.dim }}>
                 Corre el código del Compiler con estos datos de entrada y comprueba si funciona.
+                <b> Local</b> usa tu máquina; <b>EC2 interno</b> usa la instancia privada de DataLab.
               </span>
             </div>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: t.dim }}
                 title="Tiempo máximo antes de cortar el job. Súbelo para grafos grandes.">
                 ⏱️ Límite
@@ -670,22 +695,44 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
                 </select>
               </label>
               <button
-                onClick={runTest}
+                onClick={() => runTest('local')}
                 disabled={running || comparing || !hasCode || !isPySpark}
+                title="Corre en tu propia máquina (server local)"
                 style={{
-                  padding: '10px 20px', borderRadius: 8,
+                  padding: '10px 18px', borderRadius: 8,
                   cursor: (running || !hasCode || !isPySpark) ? 'not-allowed' : 'pointer',
                   background: (!hasCode || !isPySpark) ? (t.border || '#334155') : '#6366f1',
                   color: '#fff', border: 'none', fontSize: 14, fontWeight: 700,
                   opacity: running ? 0.6 : 1,
                 }}
-              >{running ? '⏳ Ejecutando...' : '▶️ Ejecutar prueba'}</button>
+              >{running ? '⏳ Ejecutando...' : '💻 Probar local'}</button>
+              <button
+                onClick={() => runTest('ec2')}
+                disabled={running || comparing || !hasCode || !isPySpark}
+                title={ec2Url ? `Corre en la EC2 interna: ${ec2Url}` : 'Configura la URL de la EC2 interna con el engranaje'}
+                style={{
+                  padding: '10px 18px', borderRadius: 8,
+                  cursor: (running || !hasCode || !isPySpark) ? 'not-allowed' : 'pointer',
+                  background: (!hasCode || !isPySpark) ? (t.border || '#334155') : (ec2Url ? '#0ea5e9' : (t.border || '#334155')),
+                  color: '#fff', border: 'none', fontSize: 14, fontWeight: 700,
+                  opacity: running ? 0.6 : 1,
+                }}
+              >{running ? '⏳ Ejecutando...' : '☁️ Probar en EC2 (interno)'}</button>
+              <button
+                onClick={() => setShowEc2Config(v => !v)}
+                title="Configurar URL de la EC2 interna de DataLab"
+                style={{
+                  padding: '10px 12px', borderRadius: 8, cursor: 'pointer',
+                  background: 'transparent', color: t.dim || '#64748b',
+                  border: `1px solid ${t.border || '#334155'}`, fontSize: 14,
+                }}
+              >⚙️</button>
               <button
                 onClick={comparePerf}
                 disabled={running || comparing || !hasCode || !isPySpark}
                 title="Corre el original y el optimizado con estos datos y compara tiempos"
                 style={{
-                  padding: '10px 20px', borderRadius: 8,
+                  padding: '10px 18px', borderRadius: 8,
                   cursor: (comparing || !hasCode || !isPySpark) ? 'not-allowed' : 'pointer',
                   background: (!hasCode || !isPySpark) ? (t.border || '#334155') : '#f59e0b',
                   color: '#fff', border: 'none', fontSize: 14, fontWeight: 700,
@@ -694,6 +741,48 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
               >{comparing ? '⏳ Comparando...' : '⚡ Comparar performance'}</button>
             </div>
           </div>
+
+          {/* Config de la EC2 interna (URL privada de DataLab) */}
+          {showEc2Config && (
+            <div style={{
+              background: t.bg || '#0f1117', borderRadius: 8, padding: 12,
+              border: `1px solid ${t.border || '#334155'}`, display: 'flex',
+              flexDirection: 'column', gap: 6,
+            }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: t.text || '#e2e8f0' }}>
+                ☁️ URL de la EC2 interna (DataLab)
+              </span>
+              <span style={{ fontSize: 11, color: t.dim }}>
+                Instancia privada en la VPC de DataLab. Solo accesible desde la red del banco / VPN.
+                Pega su IP privada con el puerto 8081, p.ej. <code>http://10.0.1.23:8081</code>. Se guarda en tu navegador.
+              </span>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input
+                  type="text"
+                  value={ec2Url}
+                  onChange={e => setEc2Url(e.target.value)}
+                  placeholder="http://10.x.x.x:8081"
+                  style={{
+                    flex: 1, padding: '8px 10px', borderRadius: 6, fontSize: 13,
+                    background: t.card || '#1e2433', color: t.text || '#e2e8f0',
+                    border: `1px solid ${t.border || '#334155'}`,
+                  }}
+                />
+                <button
+                  onClick={() => {
+                    const v = (ec2Url || '').trim()
+                    try { localStorage.setItem('bnx_ec2_url', v) } catch {}
+                    setEc2Url(v)
+                    setShowEc2Config(false)
+                  }}
+                  style={{
+                    padding: '8px 16px', borderRadius: 6, cursor: 'pointer',
+                    background: '#0ea5e9', color: '#fff', border: 'none', fontSize: 13, fontWeight: 700,
+                  }}
+                >Guardar</button>
+              </div>
+            </div>
+          )}
 
           {/* Resultado de la comparacion original vs optimizado */}
           {compareResult && !compareResult.error && (
