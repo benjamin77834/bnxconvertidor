@@ -178,12 +178,27 @@ def _sql_arg(expr):
     # 1) Comillas dobles -> simples (equivalente en SQL, evita escapes fragiles).
     out = expr.replace('"', "'")
     # 2) Barras invertidas residuales de Ab Initio (\n, \|, \t o un '\' colgante
-    #    al final del where) rompen el literal Python que envuelve al where:
-    #    ...where("divisas == '00' \")  -> la \ escapa la comilla de cierre y
-    #    deja el string sin terminar (SyntaxError: unterminated string literal).
-    #    En una expresion SQL de Spark esa barra no aporta nada, asi que la
-    #    eliminamos por completo.
+    #    al final del where) rompen el literal Python que envuelve al where.
+    #    PERO hay backslashes LEGITIMOS de regex que debemos conservar:
+    #    \p{...} (clases POSIX de Java), \d \s \w \b, etc. usados por
+    #    regexp_replace/regexp_extract. Si los borramos, el patron se corrompe
+    #    (p.ej. \p{Cntrl} -> p{Cntrl}, que Spark rechaza).
+    #    Estrategia: proteger esas secuencias, quitar el resto de backslashes,
+    #    y restaurar las secuencias protegidas.
+    _PROTECT = {}
+    def _stash(m):
+        tok = f"\x00R{len(_PROTECT)}\x00"
+        _PROTECT[tok] = m.group(0)
+        return tok
+    # \\p{Nombre}, \p{Nombre}, \P{...} (clases Unicode/POSIX) + escapes \\d \d etc.
+    # Se capturan 1 o 2 backslashes previos para preservarlos intactos.
+    out = re.sub(r"\\{1,2}[pP]\{[A-Za-z]+\}", _stash, out)
+    out = re.sub(r"\\{1,2}[dDsSwWbB]", _stash, out)
+    # Ahora si, quitar barras residuales (Ab Initio \|, \n colgante, etc.).
     out = out.replace("\\", "")
+    # Restaurar las secuencias de regex protegidas.
+    for tok, val in _PROTECT.items():
+        out = out.replace(tok, val)
     # 3) Colapsar espacios sobrantes que pudieron quedar tras quitar la barra.
     out = re.sub(r"\s+", " ", out).strip()
     return out
@@ -449,6 +464,9 @@ def _map_string_functions(expr):
     expr = re.sub(r'\bre_get_match\(\s*([^,]+?)\s*,\s*([^)]+?)\s*\)', r'regexp_extract(\1, \2, 0)', expr)
     # Clases POSIX de caracteres que Java/Spark regex no entiende como [[:x:]]:
     # traducir a las clases \p{...} equivalentes de Java.
+    # Doble backslash: dentro de un literal SQL de Spark ('...'), \p no es un
+    # escape valido y Spark se come la barra (deja 'p{Cntrl}'). Con \\p{Cntrl}
+    # el parser SQL entrega \p{Cntrl} al motor de regex, que es lo correcto.
     _posix = {
         "[[:cntrl:]]": r"\\p{Cntrl}", "[[:space:]]": r"\\s", "[[:digit:]]": r"\\d",
         "[[:alpha:]]": r"\\p{Alpha}", "[[:alnum:]]": r"\\p{Alnum}",
