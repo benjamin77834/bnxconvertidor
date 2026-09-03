@@ -795,7 +795,7 @@ def parse_ksh(ksh_path):
         "variables": {},
     }
     
-    with open(ksh_path, "r", errors="replace") as f:
+    with open(ksh_path, "r", encoding="utf-8", errors="replace") as f:
         content = f.read()
     
     # AB_GRAPH_NAME
@@ -1652,7 +1652,7 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
 
 def parse_project(file_path):
     """Smart parser: detects format and parses accordingly."""
-    with open(file_path, "r", errors="replace") as f:
+    with open(file_path, "r", encoding="utf-8", errors="replace") as f:
         content = f.read()
     
     # Clean null bytes and other binary artifacts
@@ -1781,7 +1781,7 @@ def main(project_path, output_path, xfr_path=None, dml_path=None, pset_path=None
 
     # Extract embedded transforms from GDE .mp (DML transforms, keys, filters)
     if ast.get("abinitio_params") is not None:  # Always extract for GDE format (even if no params)
-        with open(project_path, "r", errors="replace") as f:
+        with open(project_path, "r", encoding="utf-8", errors="replace") as f:
             raw_content = f.read().replace('\x00', '')
         embedded = _extract_embedded_transforms(raw_content)
         if embedded["transforms"] or embedded["keys"] or embedded["keys_by_vertex"] or embedded["filters"] or embedded["filters_by_vertex"] or embedded["keeps"]:

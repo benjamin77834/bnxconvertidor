@@ -106,7 +106,7 @@ def _parse_native_abinitio(content):
 
 
 def parse_mp_ast(file_path):
-    with open(file_path, "r", errors="replace") as f:
+    with open(file_path, "r", encoding="utf-8", errors="replace") as f:
         content = f.read()
 
     # Auto-detect native Ab Initio format
