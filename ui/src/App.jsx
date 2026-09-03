@@ -14,6 +14,8 @@ import PipelinePage from './components/PipelinePage'
 import GraphLibrary from './components/GraphLibrary'
 import GrafosPage from './components/GrafosPage'
 import DataGenPage from './components/DataGenPage'
+import CostEstimateCard from './components/CostEstimateCard'
+import { metricsFromResult } from './costEstimator'
 import { COMPILE_URL } from './config'
 
 // ── Themes ──────────────────────────────────────────────────
@@ -1262,6 +1264,15 @@ export default function App() {
                   }}>📝 Descripción</summary>
                   <div style={{ marginTop: 8 }}>{result.description}</div>
                 </details>
+              )}
+              {/* Costo estimado en AWS segun la complejidad del grafo */}
+              {result.nodes && (
+                <div style={{ padding: '8px 20px', borderBottom: `1px solid ${t.border}` }}>
+                  {(() => {
+                    const m = metricsFromResult(result)
+                    return <CostEstimateCard theme={t} nodes={m.nodes} joins={m.joins} edges={m.edges} />
+                  })()}
+                </div>
               )}
               </>
             )
