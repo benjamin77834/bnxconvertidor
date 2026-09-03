@@ -132,10 +132,34 @@ const CURRENT_EFFORTS = [
   { task: 'Ejecutor de prueba PySpark local', status: 'done', impact: 'Valida el codigo ejecutandolo, no solo leyendolo' },
   { task: 'Correccion masiva del generador (barrido 36 grafos)', status: 'done', impact: '35/36 grafos ejecutan y producen salidas' },
   { task: 'Optimizador de performance (reglas, sin IA)', status: 'done', impact: 'cache/broadcast/coalesce + benchmark' },
-  { task: 'Fixes Windows (UnicodeDecodeError) + CORS', status: 'done', impact: 'Uso desde Windows y Amplify/Lambda sin errores' },
+  { task: 'Fix Windows: encoding utf-8 (UnicodeDecodeError 0x97 en Compiler/Data Redactada)', status: 'done', impact: 'Funciona igual en Windows que en Mac/Linux' },
+  { task: 'Prueba mas rapida (local[*], shuffle=8) + timeout configurable', status: 'done', impact: 'Menos timeouts en grafos grandes' },
   { task: 'Despliegue EC2 (Spark local) + CloudFront HTTPS', status: 'done', impact: 'Prueba PySpark en la nube igual que en local' },
-  { task: 'Limpieza ASCII (emojis removidos)', status: 'done', impact: 'Servidores sin UTF-8' },
+  { task: 'Boton EC2 interno (DataLab) + runbook, y Probar local', status: 'done', impact: 'Preparado para la cuenta correcta; pendiente permisos DataLab' },
   { task: 'Package 7z para transferencia', status: 'done', impact: 'Mover codigo a servidor seguro' },
+]
+
+// Estatus de conversion por complejidad de grafo. Honesto: bajo/medio validado,
+// alto pendiente (los 3 grafos mas grandes estan en bnx_library/ERROR/).
+const COMPLEXITY_STATUS = [
+  {
+    level: 'Baja',
+    range: 'hasta ~15 componentes / ~10 flujos',
+    detail: 'Read/Reformat/Filter/Join/Rollup/Write estandar. Convierte y ejecuta de punta a punta.',
+    status: 'done', pct: '100%', color: '#22c55e',
+  },
+  {
+    level: 'Media',
+    range: '~15 a ~50 componentes / hasta ~46 flujos',
+    detail: 'Lookups, dedup, multi-join, XFR/DML moderado. Cubierto por el barrido (35/36), con degradaciones puntuales (alguna columna en NULL o TODO en DML complejo).',
+    status: 'done', pct: '~95%', color: '#22c55e',
+  },
+  {
+    level: 'Alta',
+    range: '100+ componentes / 70+ flujos, DML con loops-vectores',
+    detail: 'NO validado. Falta: Concatenate/Gather/Partition reales (hoy passthrough), DML con loops/vectores (hoy TODO/UDF manual), join keys en grafos densos. Los 3 grafos mas grandes estan apartados en bnx_library/ERROR/.',
+    status: 'pending', pct: 'pendiente', color: '#ef4444',
+  },
 ]
 
 export default function RoadmapPage({ theme }) {
@@ -160,6 +184,39 @@ export default function RoadmapPage({ theme }) {
         <p style={{ fontSize: 14, color: t.dim || '#64748b', marginTop: 4 }}>
           SDLC Bancario + SonarQube + Produccion
         </p>
+      </div>
+
+      {/* Estatus del convertidor por complejidad */}
+      <div style={card}>
+        <h3 style={{ fontSize: 16, fontWeight: 600, color: t.text || '#e2e8f0', marginBottom: 4 }}>
+          Estatus del convertidor por complejidad de grafo
+        </h3>
+        <p style={{ fontSize: 12, color: t.dim || '#64748b', marginBottom: 14 }}>
+          Validado ejecutando el PySpark con datos redactados (barrido de 36 grafos: 35/36 ok).
+        </p>
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+          {COMPLEXITY_STATUS.map((c, i) => (
+            <div key={i} style={{
+              flex: '1 1 240px', minWidth: 240,
+              background: t.bg || '#0f1117', borderRadius: 10, padding: 14,
+              border: `1px solid ${c.color}55`,
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                <span style={{ fontSize: 16, fontWeight: 700, color: c.color }}>{c.level}</span>
+                <span style={{
+                  fontSize: 12, fontWeight: 700, color: c.color,
+                  background: `${c.color}22`, borderRadius: 6, padding: '2px 8px',
+                }}>{c.pct}</span>
+              </div>
+              <div style={{ fontSize: 11, color: t.muted || '#94a3b8', fontStyle: 'italic', marginBottom: 6 }}>
+                {c.range}
+              </div>
+              <div style={{ fontSize: 12, color: t.text || '#e2e8f0', lineHeight: 1.5 }}>
+                {c.detail}
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
 
       {/* Current Efforts */}
