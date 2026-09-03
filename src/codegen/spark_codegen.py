@@ -190,10 +190,11 @@ def _sql_arg(expr):
         tok = f"\x00R{len(_PROTECT)}\x00"
         _PROTECT[tok] = m.group(0)
         return tok
-    # \\p{Nombre}, \p{Nombre}, \P{...} (clases Unicode/POSIX) + escapes \\d \d etc.
-    # Se capturan 1 o 2 backslashes previos para preservarlos intactos.
-    out = re.sub(r"\\{1,2}[pP]\{[A-Za-z]+\}", _stash, out)
-    out = re.sub(r"\\{1,2}[dDsSwWbB]", _stash, out)
+    # \p{Nombre}, \P{...} (clases Unicode/POSIX) + escapes \d \s etc.
+    # Se capturan hasta 4 backslashes previos (el doble-escape Python+SparkSQL)
+    # para preservarlos intactos y que _sql_arg no los borre.
+    out = re.sub(r"\\{1,4}[pP]\{[A-Za-z]+\}", _stash, out)
+    out = re.sub(r"\\{1,4}[dDsSwWbB]", _stash, out)
     # Ahora si, quitar barras residuales (Ab Initio \|, \n colgante, etc.).
     out = out.replace("\\", "")
     # Restaurar las secuencias de regex protegidas.
@@ -464,14 +465,17 @@ def _map_string_functions(expr):
     expr = re.sub(r'\bre_get_match\(\s*([^,]+?)\s*,\s*([^)]+?)\s*\)', r'regexp_extract(\1, \2, 0)', expr)
     # Clases POSIX de caracteres que Java/Spark regex no entiende como [[:x:]]:
     # traducir a las clases \p{...} equivalentes de Java.
-    # Doble backslash: dentro de un literal SQL de Spark ('...'), \p no es un
-    # escape valido y Spark se come la barra (deja 'p{Cntrl}'). Con \\p{Cntrl}
-    # el parser SQL entrega \p{Cntrl} al motor de regex, que es lo correcto.
+    # Clases POSIX -> equivalentes de Java. OJO con el DOBLE escape:
+    # el patron viaja por 2 parsers antes de llegar al motor de regex:
+    #   1) el string se escribe a un .py y Python lo re-lee  (colapsa \\ -> \)
+    #   2) Spark SQL parsea el literal '...'                 (colapsa \\ -> \)
+    # Para que el regex reciba \p{Cntrl} (1 backslash), el codigo fuente debe
+    # tener CUATRO backslashes. Por eso usamos r"\\\\p{Cntrl}".
     _posix = {
-        "[[:cntrl:]]": r"\\p{Cntrl}", "[[:space:]]": r"\\s", "[[:digit:]]": r"\\d",
-        "[[:alpha:]]": r"\\p{Alpha}", "[[:alnum:]]": r"\\p{Alnum}",
-        "[[:upper:]]": r"\\p{Upper}", "[[:lower:]]": r"\\p{Lower}",
-        "[[:punct:]]": r"\\p{Punct}", "[[:blank:]]": r"\\p{Blank}",
+        "[[:cntrl:]]": r"\\\\p{Cntrl}", "[[:space:]]": r"\\\\s", "[[:digit:]]": r"\\\\d",
+        "[[:alpha:]]": r"\\\\p{Alpha}", "[[:alnum:]]": r"\\\\p{Alnum}",
+        "[[:upper:]]": r"\\\\p{Upper}", "[[:lower:]]": r"\\\\p{Lower}",
+        "[[:punct:]]": r"\\\\p{Punct}", "[[:blank:]]": r"\\\\p{Blank}",
     }
     for _p, _j in _posix.items():
         expr = expr.replace(_p, _j)
