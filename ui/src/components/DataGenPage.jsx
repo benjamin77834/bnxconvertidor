@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { COMPILE_URL, PIPELINE_URL, PIPELINE_STATUS_URL } from '../config'
+import CostEstimateCard from './CostEstimateCard'
+import { metricsFromResult } from '../costEstimator'
 
 // El endpoint /datagen vive en el mismo origen que /compile
 const DATAGEN_URL = COMPILE_URL.replace(/\/compile$/, '/datagen')
@@ -945,6 +947,15 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
                   </div>
                 </details>
               )}
+
+              {/* Costo estimado en AWS segun la complejidad del grafo */}
+              {(() => {
+                const flow = runReport.flow || []
+                const nodes = flow.length
+                const joins = flow.filter(s => ['JOIN', 'LOOKUP'].includes(String(s.type || '').toUpperCase())).length
+                const edges = nodes > 0 ? nodes - 1 : 0
+                return <CostEstimateCard theme={t} nodes={nodes} joins={joins} edges={edges} />
+              })()}
 
               {/* Fidelidad de los datos */}
               {runReport.fidelity && typeof runReport.fidelity.score === 'number' && (() => {
