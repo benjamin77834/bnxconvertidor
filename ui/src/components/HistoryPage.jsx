@@ -253,11 +253,25 @@ const TIMELINE = [
     tags: ['fix', 'windows', 'codegen'],
     color: '#ef4444',
   },
+  {
+    date: '4 Sep 2026',
+    title: 'Dia 44: Correctitud del generador + accuracy honesto',
+    desc: 'Tres fixes del generador validados ejecutando: (1) el operador de prioridad :N: de Ab Initio destrozaba el literal de hora 00:00:01 (quedaba 00 01) — ahora se limpia solo FUERA de comillas. (2) Las variables locales del reformat (let v_emp_key = ...; v = ...;) generaban columnas fantasma en Spark — ahora se inlinean en las salidas out.*, y lookup(...).campo cae a NULL cuando la tabla no esta materializada (preservando el fallback else). (3) Create_Data (generador de cabecera/trailer sin entrada) ya no se marca como error has no parent node. Ademas se corrigio el calculo de accuracy: reconocia solo select/group_by y por eso subvaloraba los grafos GDE nativos (DML embebido). Ahora cuenta raw_transform/dml_fields/sort_by/filtros/generadores como logica real y excluye los passthrough (Redefine/Replicate/GZip/Copy/Gather) que por diseno no transforman. El grafo S655690 paso de 69.1% a 98.6%; barrido de regresion 96-100%.',
+    tags: ['fix', 'codegen', 'accuracy'],
+    color: '#22c55e',
+  },
+  {
+    date: '4 Sep 2026',
+    title: 'Dia 45: Validacion de equivalencia de datos',
+    desc: 'Nueva capacidad para probar correctitud SEMANTICA, no solo que el codigo compile: comparar la salida del PySpark generado contra una salida de REFERENCIA (la que produce Ab Initio). src/equivalence.py compara a tres niveles — esquema (mismas columnas), conteo (mismas filas) y contenido (multiset de filas, order-insensitive), normalizando ruido de formato (NULL==vacio, 1.0==1). El harness del ejecutor emite un checksum de contenido por SINK y run_pyspark_test lo propaga. Endpoint nuevo POST /validate: regenera el PySpark, lo corre con los datos de entrada, lee los CSV de salida y los compara contra la referencia (subida como reference o datasets io==expected). Verificado end-to-end: mismo-vs-mismo=100% equivalente; mismo-vs-alterado detecta la tabla y las filas que difieren. Cierra el hueco: antes el unico compare (optimize/compare) solo miraba conteos de filas.',
+    tags: ['equivalence', 'test', 'api', 'pyspark'],
+    color: '#14b8a6',
+  },
 ]
 
 const STATS = [
-  { label: 'Dias de desarrollo', value: '43', color: '#6366f1' },
-  { label: 'Commits', value: '155+', color: '#22c55e' },
+  { label: 'Dias de desarrollo', value: '45', color: '#6366f1' },
+  { label: 'Commits', value: '158+', color: '#22c55e' },
   { label: 'Componentes', value: '27+', color: '#f59e0b' },
   { label: 'Parsers', value: '6', color: '#a855f7' },
   { label: 'Code Generators', value: '7', color: '#ec4899' },
@@ -282,7 +296,7 @@ const TAG_COLORS = {
   schema: '#14b8a6', join: '#f59e0b', pipeline: '#14b8a6', fix: '#ef4444',
   optimize: '#8b5cf6', perf: '#8b5cf6', benchmark: '#8b5cf6',
   ec2: '#f59e0b', cloudfront: '#f59e0b', windows: '#06b6d4', cors: '#ef4444',
-  datalab: '#f59e0b',
+  datalab: '#f59e0b', accuracy: '#22c55e', equivalence: '#14b8a6',
 }
 
 export default function HistoryPage({ theme }) {
@@ -424,6 +438,7 @@ export default function HistoryPage({ theme }) {
             'Codegen Terraform', 'Codegen Airflow', 'Codegen Python/Pandas',
             'Motor de refactorizacion', 'Motor OCR', 'Motor de accuracy',
             'Data Redactada (datos sinteticos)', 'Ejecutor de prueba PySpark',
+            'Validacion de equivalencia de datos',
             'Consola en vivo (SSE)', 'Esquema real + join compartido', 'Enviar a AWS (pipeline)',
             'UI React (9 tabs)', 'API FastAPI + Lambda', 'CLI batch', 'Packaging portable',
           ].map(comp => (
