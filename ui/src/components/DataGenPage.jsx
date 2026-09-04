@@ -155,6 +155,139 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
     Object.values(LS).forEach(k => { try { localStorage.removeItem(k) } catch {} })
   }
 
+  // -------------------------------------------------------------------------
+  // Reporte PDF completo de la sesion de Data Redactada (documento real, texto
+  // seleccionable — no screenshot). Consolida: grafo/datos generados, resultado
+  // de la prueba, estadisticas entrada/salida, fidelidad, flujo, comparacion de
+  // performance y la consola. Se abre en ventana e imprime a PDF.
+  // -------------------------------------------------------------------------
+  const buildReportHTML = () => {
+    const esc = (s) => String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    const now = new Date().toLocaleString()
+    const datasets = result?.datasets || []
+    const inputs = datasets.filter(d => d.io === 'input')
+    const outputs = datasets.filter(d => d.io !== 'input')
+    let h = ''
+    h += `<h1>BNX — Reporte de Data Redactada</h1>`
+    h += `<p class="sub">Grafo: ${esc(graphName || nodeName || 'sin nombre')} · Generado: ${esc(now)}</p>`
+
+    // Descripcion del grafo
+    const desc = runReport?.description || graphDescription
+    if (desc) {
+      h += `<h2>Descripcion del grafo</h2><p>${esc(desc)}</p>`
+    }
+
+    // Configuracion de generacion
+    h += `<h2>Datos sinteticos generados</h2>`
+    h += `<p>Modo: <b>${esc(mode)}</b> · Filas por dataset: <b>${esc(nRows)}</b> · Formato: <b>${esc(format)}</b> · Datasets: <b>${datasets.length}</b> (${inputs.length} entrada / ${outputs.length} salida)</p>`
+    if (datasets.length) {
+      h += `<table><thead><tr><th>Nodo</th><th>I/O</th><th>Filas</th><th>Columnas (tipo · PII)</th></tr></thead><tbody>`
+      for (const d of datasets) {
+        const cols = (d.columns || []).map(c => `${esc(c.name)}:${esc(c.type)}${c.pii ? ' · PII=' + esc(c.pii) : ''}`).join(', ')
+        h += `<tr><td>${esc(d.node)}</td><td>${esc(d.io || 'output')}</td><td>${esc(d.rows ?? (d.content ? '' : 0))}</td><td>${cols}</td></tr>`
+      }
+      h += `</tbody></table>`
+    } else {
+      h += `<p class="muted">(No se generaron datos en esta sesion.)</p>`
+    }
+
+    // Resultado de la prueba
+    h += `<h2>Prueba PySpark local</h2>`
+    if (runResult) {
+      const estado = runResult.ok ? 'OK' : 'FALLO'
+      h += `<p>Estado: <b class="${runResult.ok ? 'ok' : 'bad'}">${estado}</b> — ${esc(runResult.summary || '')}</p>`
+    } else {
+      h += `<p class="muted">(No se ejecuto ninguna prueba en esta sesion.)</p>`
+    }
+
+    // Estadisticas entrada/salida + fidelidad + flujo
+    if (runReport) {
+      const tot = runReport.totals || {}
+      h += `<h3>Entrada vs salida</h3>`
+      h += `<p>Filas de entrada: <b>${esc(tot.input_rows ?? 0)}</b> · Filas de salida: <b>${esc(tot.output_rows ?? 0)}</b> · Diferencia: <b>${(tot.delta_rows ?? 0) >= 0 ? '+' : ''}${esc(tot.delta_rows ?? 0)}</b></p>`
+
+      const fid = runReport.fidelity
+      if (fid && typeof fid.score === 'number') {
+        h += `<h3>Fidelidad de los datos: ${esc(fid.score)}%</h3>`
+        if ((fid.factors || []).length) {
+          h += `<ul>`
+          for (const f of fid.factors) {
+            h += `<li>${esc(f.label)}: ${esc(f.score)}% (peso ${Math.round((f.weight || 0) * 100)}%)${f.detail ? ' — ' + esc(f.detail) : ''}</li>`
+          }
+          h += `</ul>`
+        }
+      }
+
+      if ((runReport.inputs || []).length) {
+        h += `<h3>Entradas por fuente</h3><ul>`
+        for (const r of runReport.inputs) h += `<li>${esc(r.node || r.var)}: ${esc(r.rows)} filas</li>`
+        h += `</ul>`
+      }
+      if ((runReport.outputs || []).length) {
+        h += `<h3>Salidas (tablas)</h3><ul>`
+        for (const o of runReport.outputs) h += `<li>${esc(o.table)}: ${esc(o.rows)} filas</li>`
+        h += `</ul>`
+      }
+      if ((runReport.flow || []).length) {
+        h += `<h3>Flujo de transformacion</h3><p class="flow">${runReport.flow.map(s => esc(s.name) + ` <span class="ty">(${esc(s.type)})</span>`).join(' → ')}</p>`
+      }
+    }
+
+    // Comparacion de performance
+    if (compareResult && !compareResult.error) {
+      h += `<h2>Comparacion de performance (original vs optimizado)</h2>`
+      const o = compareResult.original || {}, p = compareResult.optimized || {}
+      h += `<table><thead><tr><th></th><th>Original</th><th>Optimizado</th></tr></thead><tbody>`
+      h += `<tr><td>Tiempo (s)</td><td>${esc(o.seconds)}</td><td>${esc(p.seconds)}</td></tr>`
+      h += `<tr><td>Estado</td><td>${o.ok ? 'OK' : 'FALLO'}</td><td>${p.ok ? 'OK' : 'FALLO'}</td></tr>`
+      h += `</tbody></table>`
+      if (compareResult.speedup) h += `<p>Aceleracion: <b>${esc(compareResult.speedup)}x</b> (${esc(compareResult.faster_pct)}% mas rapido) · Salidas equivalentes: <b class="${compareResult.equivalent ? 'ok' : 'bad'}">${compareResult.equivalent ? 'SI' : 'NO'}</b></p>`
+      if ((compareResult.changes || []).length) {
+        h += `<h3>Cambios aplicados (${esc(compareResult.total_changes || compareResult.changes.length)})</h3><ul>`
+        for (const c of compareResult.changes.slice(0, 40)) h += `<li>${esc(typeof c === 'string' ? c : (c.detail || c.type || JSON.stringify(c)))}</li>`
+        h += `</ul>`
+      }
+    }
+
+    // Consola (ultimas lineas)
+    if ((consoleLines || []).length) {
+      const tail = consoleLines.slice(-120)
+      h += `<h2>Consola de ejecucion (ultimas ${tail.length} lineas)</h2>`
+      h += `<pre>${tail.map(l => esc(l.text)).join('\n')}</pre>`
+    }
+
+    const styles = `
+      * { box-sizing: border-box; }
+      body { font-family: -apple-system, Segoe UI, Arial, sans-serif; color: #111; margin: 24px; font-size: 12px; line-height: 1.5; }
+      h1 { font-size: 20px; margin: 0 0 2px; }
+      h2 { font-size: 15px; margin: 18px 0 8px; border-bottom: 2px solid #333; padding-bottom: 3px; break-after: avoid; }
+      h3 { font-size: 13px; margin: 12px 0 4px; break-after: avoid; }
+      .sub { color: #666; margin: 0 0 8px; font-size: 11px; }
+      .muted { color: #888; }
+      .ok { color: #15803d; } .bad { color: #b91c1c; }
+      table { width: 100%; border-collapse: collapse; margin: 6px 0; }
+      th, td { border: 1px solid #bbb; padding: 5px 7px; text-align: left; vertical-align: top; font-size: 11px; }
+      th { background: #eee; }
+      ul { margin: 4px 0; padding-left: 20px; }
+      li { margin: 2px 0; page-break-inside: avoid; }
+      .flow { font-family: monospace; font-size: 11px; }
+      .ty { color: #888; }
+      pre { background: #f5f5f5; border: 1px solid #ddd; padding: 8px; font-size: 10px; white-space: pre-wrap; word-break: break-word; }
+      @page { margin: 14mm; }
+    `
+    return `<!doctype html><html><head><meta charset="utf-8"><title>BNX — Reporte Data Redactada</title><style>${styles}</style></head><body>${h}</body></html>`
+  }
+
+  const exportReportPDF = () => {
+    const html = buildReportHTML()
+    const w = window.open('', '_blank')
+    if (!w) { alert('El navegador bloqueo la ventana. Permite pop-ups para exportar el PDF.'); return }
+    w.document.open(); w.document.write(html); w.document.close()
+    w.onload = () => { w.focus(); w.print() }
+    setTimeout(() => { try { w.focus(); w.print() } catch (e) {} }, 400)
+  }
+
   // Auto-limpiar cuando cambia el grafo del Compiler: los resultados viejos ya no
   // corresponden al grafo nuevo. Se compara la huella del .mp; en el primer render
   // solo se registra (no borra) para no perder el trabajo persistido de una sesion.
@@ -471,11 +604,19 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
           </p>
         </div>
         {(result || runResult || consoleLines.length > 0 || compareResult) && (
-          <button onClick={clearWork} title="Borra datos generados, resultado de prueba, consola y comparación"
-            style={{
-              padding: '8px 14px', borderRadius: 8, cursor: 'pointer', fontSize: 13, whiteSpace: 'nowrap',
-              background: '#ef444418', border: '1px solid #ef444440', color: '#ef4444', fontWeight: 600,
-            }}>🧹 Limpiar</button>
+          <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+            <button onClick={exportReportPDF} title="Reporte PDF de todo lo hecho en esta sesión (datos, prueba, comparación)"
+              style={{
+                padding: '8px 14px', borderRadius: 8, cursor: 'pointer', fontSize: 13, whiteSpace: 'nowrap',
+                background: (t.accent || '#6366f1') + '20', border: `1px solid ${t.accent || '#6366f1'}40`,
+                color: t.accent || '#6366f1', fontWeight: 600,
+              }}>📄 Reporte PDF</button>
+            <button onClick={clearWork} title="Borra datos generados, resultado de prueba, consola y comparación"
+              style={{
+                padding: '8px 14px', borderRadius: 8, cursor: 'pointer', fontSize: 13, whiteSpace: 'nowrap',
+                background: '#ef444418', border: '1px solid #ef444440', color: '#ef4444', fontWeight: 600,
+              }}>🧹 Limpiar</button>
+          </div>
         )}
       </div>
 
