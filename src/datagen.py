@@ -200,6 +200,70 @@ def _extract_numeric_constraints(xfr_rules):
     return constraints
 
 
+# Cast Ab Initio/DML de una columna a un tipo concreto:
+#   out.X :: (decimal(1)) in.X   |   out.X :: (integer(4)) in.X
+#   out.X :: (date("YYYYMMDD")) in.X   |   CAST(in.X AS DECIMAL(10,2))
+# Detecta el tipo destino y la columna ORIGEN (in.X) para tiparla en el SOURCE,
+# de modo que el dato sintetico sea compatible con el cast (si no, el cast a
+# decimal/int/date de un string aleatorio da NULL).
+_CAST_ABINITIO_RE = re.compile(
+    r'\(\s*(decimal|integer|int|real|double|float|numeric|date|datetime|timestamp)\b'
+    r'[^)]*(?:\([^)]*\))?[^)]*\)+\s*'               # (decimal(1)) / (date("YYYYMMDD")) — tolera parentesis interno y cierres multiples
+    r'(?:in\d*\.)?([A-Za-z_]\w*)',                  # columna origen in.X
+    re.IGNORECASE,
+)
+_CAST_SQL_RE = re.compile(
+    r'CAST\(\s*(?:in\d*\.)?([A-Za-z_]\w*)\s+AS\s+'
+    r'(decimal|integer|int|bigint|long|smallint|real|double|float|numeric|date|datetime|timestamp)\b',
+    re.IGNORECASE,
+)
+
+
+def _extract_cast_types(xfr_rules):
+    """Escanea dml_fields/raw_transform/select y detecta columnas ORIGEN que un
+    transform castea a un tipo concreto (decimal/int/date...). Devuelve
+    {col_lower: tipo_normalizado}. Permite tipar el SOURCE upstream para que el
+    dato sintetico sobreviva al cast (evita decimal(string)->NULL)."""
+    casts = {}
+    if not isinstance(xfr_rules, dict):
+        return casts
+
+    def _record(col, raw_type, precision=None):
+        cl = (col or "").lower()
+        if not cl or cl in _SQL_KEYWORDS:
+            return
+        t = normalize_type(raw_type)
+        if t != "string":
+            entry = {"type": t}
+            if precision is not None:
+                entry["precision"] = precision
+            casts[cl] = entry
+
+    def _prec(raw_type_full):
+        # Extrae la precision de un cast: decimal(1) -> 1, decimal(10,2) -> 10.
+        # Determina el rango maximo del valor sintetico para que no desborde.
+        m = re.search(r'\(\s*(\d+)', raw_type_full or "")
+        return int(m.group(1)) if m else None
+
+    def _scan(text):
+        if not isinstance(text, str) or not text:
+            return
+        # Ab Initio: capturamos el fragmento completo del cast para leer precision.
+        for m in _CAST_ABINITIO_RE.finditer(text):
+            _record(m.group(2), m.group(1), _prec(m.group(0)))
+        for m in _CAST_SQL_RE.finditer(text):
+            _record(m.group(1), m.group(2))
+
+    for rule in xfr_rules.values():
+        if not isinstance(rule, dict):
+            continue
+        _scan(rule.get("raw_transform"))
+        _scan(rule.get("select"))
+        for f in rule.get("dml_fields", []) or []:
+            _scan(str(f.get("expr") or ""))
+    return casts
+
+
 def infer_schema_from_graph(ast, xfr_rules, dml_schema=None):
     """Extrae el esquema de ENTRADA y SALIDA por nodo a partir del grafo.
 
@@ -223,6 +287,9 @@ def infer_schema_from_graph(ast, xfr_rules, dml_schema=None):
     # numeros. Se usan para (a) tipar esas columnas como numericas y (b) generar
     # valores que satisfagan el filtro, evitando salidas en 0 filas.
     num_constraints = _extract_numeric_constraints(xfr_rules)
+    # Tipos destino de casts (decimal/int/date): para tipar columnas ORIGEN y que
+    # el dato sintetico sobreviva al cast (evita decimal(string)->NULL en la salida).
+    cast_types = _extract_cast_types(xfr_rules)
 
     # Info por nodo: cols input/output (dict nombre_lower -> {name,type,pii})
     node_info = {}       # nname -> {"type", "in": {}, "out": {}}
@@ -305,7 +372,11 @@ def infer_schema_from_graph(ast, xfr_rules, dml_schema=None):
         for wkey in ("where", "filter", "selection", "condition"):
             wexpr = rule.get(wkey)
             if isinstance(wexpr, str) and wexpr.strip():
-                for src in re.findall(r'(?:in\d*\.)?([A-Za-z_]\w*)', wexpr):
+                # Quitar literales entre comillas ANTES de escanear identificadores.
+                # Sin esto, un filtro como event_type=='finish' or ...=='stdout'
+                # tomaria 'finish' y 'stdout' (valores, no columnas) como columnas.
+                wexpr_nolit = re.sub(r"'[^']*'|\"[^\"]*\"", " ", wexpr)
+                for src in re.findall(r'(?:in\d*\.)?([A-Za-z_]\w*)', wexpr_nolit):
                     sl = src.lower()
                     if sl not in _SQL_KEYWORDS and not src.isdigit() and len(src) > 1:
                         add_in(src, "string")
@@ -424,6 +495,18 @@ def infer_schema_from_graph(ast, xfr_rules, dml_schema=None):
                         col["num_not_equal"] = True
                     if cons.get("exact"):
                         col["num_exact"] = True
+            else:
+                # Sin constraint de filtro: si un transform castea esta columna a
+                # decimal/int/date, tiparla asi para que el dato sintetico sea
+                # compatible con el cast (evita decimal("STATUS_X")->NULL). No pisa
+                # tipos ya especificos (p.ej. una date declarada en el .dml).
+                ct = cast_types.get(col["name"].lower())
+                if ct and col.get("type", "string") == "string":
+                    col["type"] = ct["type"]
+                    # La precision del cast (decimal(1) -> 1 digito) acota el valor
+                    # sintetico para que no desborde y termine en NULL.
+                    if ct.get("precision") is not None:
+                        col["max_precision"] = ct["precision"]
 
         if ntype == "SOURCE":
             cols = out_cols or in_cols
@@ -573,9 +656,19 @@ def _gen_value(col, rng, row_idx):
 
     ctype = col.get("type", "string")
     name = col.get("name", "col")
+    max_prec = col.get("max_precision")  # nº de digitos del cast destino (decimal(N))
     if ctype == "integer":
+        if max_prec is not None:
+            hi = max(1, (10 ** max(1, max_prec)) - 1)  # decimal(1)->9, decimal(3)->999
+            return rng.randint(0, min(hi, 100000))
         return rng.randint(1, 100000)
     if ctype == "decimal":
+        if max_prec is not None:
+            # Acotar al numero de digitos del cast (p.ej. decimal(1) -> 0..9 enteros).
+            hi = max(1, (10 ** max(1, max_prec)) - 1)
+            if max_prec <= 1:
+                return rng.randint(0, hi)  # decimal(1): sin decimales, cabe 0..9
+            return round(rng.uniform(0, hi), 2)
         return round(rng.uniform(0, 100000), 2)
     if ctype == "date":
         return _rand_date(rng).strftime("%Y-%m-%d")
@@ -660,6 +753,10 @@ def build_synthetic_data(columns, n_rows=10, fmt="csv", seed=None, delimiter=","
             norm_col["str_not_equal"] = True
         if col.get("str_value_src"):
             norm_col["str_value_src"] = True
+        # Preservar la precision del cast destino (decimal(N)) para acotar el valor
+        # y que no desborde el tipo al aplicar el cast en el pipeline.
+        if col.get("max_precision") is not None:
+            norm_col["max_precision"] = col["max_precision"]
         norm_columns.append(norm_col)
 
     rows = generate_rows(norm_columns, n_rows=n_rows, seed=seed)
