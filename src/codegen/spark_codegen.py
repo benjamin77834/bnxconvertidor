@@ -1259,7 +1259,12 @@ def _build_transform(var_id, src_df, rule):
                 if lit_field.get("literal_type") == "number":
                     lines.append(f'{var_id}_df = {var_id}_df.withColumn("{fname}", lit({val}))')
                 else:
-                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{fname}", lit("{val}"))')
+                    # Limpiar backslashes de escape Ab Initio ($\{VAR\} -> ${VAR}) y
+                    # escapar para un literal Python valido. Sin esto el codigo emite
+                    # lit("$\{VAR\}") -> SyntaxWarning "invalid escape sequence".
+                    clean = str(val).replace("\\{", "{").replace("\\}", "}").replace("\\$", "$")
+                    clean = clean.replace("\\", "").replace('"', '\\"')
+                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{fname}", lit("{clean}"))')
         return "\n".join(lines)
 
     select = rule.get("select", "*")
