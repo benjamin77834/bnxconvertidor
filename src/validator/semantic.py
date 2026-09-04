@@ -103,6 +103,43 @@ def _infer_columns(node, dag, xfr_rules, col_cache, dml_schema=None):
     return cols
 
 
+def _is_generator_transform(node, rule):
+    """True si el TRANSFORM es un generador de registros (Create_Data de Ab Initio):
+    no tiene entrada y todas sus asignaciones son autocontenidas (sin 'in.').
+
+    Estos componentes crean filas de cabecera/trailer a partir de literales o
+    funciones (out.rec_identifier :: 'HDR'), por lo que NO tener padre es normal.
+    Se detecta de forma conservadora a partir del rule XFR o del prototipo.
+    """
+    import re as _re
+    # Pista fuerte: el prototipo/plantilla es Create_Data.
+    proto = (rule.get("prototype_path") or rule.get("mpname") or "")
+    if isinstance(proto, str) and ("create_data" in proto.lower() or proto.lower() == "create_data"):
+        return True
+    # Reunir el texto de las asignaciones disponibles en el rule.
+    blobs = []
+    for key in ("raw_transform", "select", "transform"):
+        v = rule.get(key)
+        if isinstance(v, str):
+            blobs.append(v)
+    for fld in (rule.get("dml_fields") or []):
+        e = fld.get("expr")
+        if isinstance(e, str):
+            blobs.append(e)
+    for e in (rule.get("transform_exprs") or []):
+        if isinstance(e, str):
+            blobs.append(e)
+    # literals sin transform_exprs tambien es un generador.
+    has_content = bool(blobs) or bool(rule.get("literals"))
+    if not has_content:
+        return False
+    text = " ".join(blobs)
+    # Si NINGUNA asignacion referencia in./in0., es un generador autocontenido.
+    if _re.search(r'\bin\d*\.', text):
+        return False
+    return True
+
+
 def validate(dag, xfr_rules, dml_schema=None):
     """
     Valida el DAG sem?nticamente.
@@ -171,7 +208,11 @@ def validate(dag, xfr_rules, dml_schema=None):
 
         # 2. TRANSFORM sin padre
         if ntype in ("TRANSFORM", "XFR") and not node.parents:
-            errors.append(f"[w] TRANSFORM '{node.name}' has no parent node")
+            # Excepcion: un Create_Data (generador de registros de Ab Initio) NO
+            # tiene entrada por diseno; produce filas a partir de literales/funciones
+            # (p.ej. out.rec_identifier :: 'HDR'). No es un error de conexion.
+            if not _is_generator_transform(node, rule):
+                errors.append(f"[w] TRANSFORM '{node.name}' has no parent node")
 
         # 3. SINK sin padre
         if ntype == "SINK" and not node.parents:
