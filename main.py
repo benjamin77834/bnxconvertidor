@@ -483,7 +483,9 @@ def _parse_gde_native(content):
     # internal component actually receives the data.
     # For collapsed subgraphs, we redirect these bindings to the SINK node.
     iport_binding_map = {}  # external_iport_id -> internal_iport_id
-    for m in re.finditer(r'XXGiport_binding_iport\|\d+\|\d+\|\d+\|\d+\|\{\d+\|\}(\d+)\|(\d+)\|', content):
+    # Formato real: XXGiport_binding_iport|...|{...|{N|}FLOW|}EXT_PORT|INT_PORT|}
+    # Los dos IDs relevantes son los ultimos antes del '|}' de cierre.
+    for m in re.finditer(r'XXGiport_binding_iport\|[^\n]*?\}(\d+)\|(\d+)\|\}', content):
         ext_iport = m.group(1)
         int_iport = m.group(2)
         iport_binding_map[ext_iport] = int_iport
@@ -501,7 +503,43 @@ def _parse_gde_native(content):
                 # Remap: the external iport should point to the subgraph SINK vertex
                 iport_to_vertex[ext_iport] = sg_id
                 print(f"  [dbg] iport_binding: ext_iport {ext_iport} -> SINK {sg_id} (was internal vertex {int_vertex})")
-    
+
+    # XXGoport_binding_oport: mapea el oport EXTERNO de un subgrafo al oport
+    # INTERNO del componente que realmente produce esa salida. Simetrico a
+    # iport_binding_iport pero para salidas. Formato: {..|}EXT_OPORT|INT_OPORT|}
+    oport_binding_map = {}  # external_oport_id -> internal_oport_id
+    # Mismo formato: los dos IDs (EXT|INT) van justo antes del '|}' de cierre.
+    for m in re.finditer(r'XXGoport_binding_oport\|[^\n]*?\}(\d+)\|(\d+)\|\}', content):
+        oport_binding_map[m.group(1)] = m.group(2)
+
+    # --- Subgrafos NO colapsables (contenedores intermedios) ---
+    # Sus conexiones externas apuntan al CONTENEDOR (p.ej. 264 -> 144, 144 -> 126),
+    # y el filtro de edges descarta cualquier arista que toque un contenedor de
+    # subgrafo. Resultado: los componentes internos (saldos_200k...) quedan
+    # huerfanos y se generan como X_df = None.
+    #
+    # Solucion: re-enrutar los puertos del contenedor a los componentes internos
+    # reales via los bindings de puerto. Asi el edge externo resuelve al componente
+    # interno (que SI esta en node_by_id) en vez de al contenedor, y el filtro ya no
+    # lo tira. Solo aplica a subgrafos NO colapsables (los colapsables ya se manejan
+    # arriba como un unico SINK).
+    _non_collapsible_sg = set(subgraph_ids) - set(collapsible_subgraphs)
+    if _non_collapsible_sg:
+        # iport externo del contenedor -> vertice interno real
+        for ext_iport, int_iport in iport_binding_map.items():
+            int_vertex = iport_to_vertex.get(int_iport)
+            ext_vertex = iport_to_vertex.get(ext_iport)
+            if int_vertex and int_vertex in node_by_id and ext_vertex in _non_collapsible_sg:
+                iport_to_vertex[ext_iport] = int_vertex
+                print(f"  [dbg] iport_binding(no-collapse): ext_iport {ext_iport} -> vertice interno {int_vertex} (era contenedor {ext_vertex})")
+        # oport externo del contenedor -> vertice interno real
+        for ext_oport, int_oport in oport_binding_map.items():
+            int_vertex = oport_to_vertex.get(int_oport)
+            ext_vertex = oport_to_vertex.get(ext_oport)
+            if int_vertex and int_vertex in node_by_id and ext_vertex in _non_collapsible_sg:
+                oport_to_vertex[ext_oport] = int_vertex
+                print(f"  [dbg] oport_binding(no-collapse): ext_oport {ext_oport} -> vertice interno {int_vertex} (era contenedor {ext_vertex})")
+
     # Now parse line-by-line for components and parameters
     for line in re.split(r'[\r\n]+', content):
         line = line.strip()

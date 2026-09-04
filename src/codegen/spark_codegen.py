@@ -908,6 +908,13 @@ def _translate_dml_expr(expr_clean):
     # _record_.CAMPO; en Spark es la columna directa. Sin quitarlo, Spark intenta
     # extraer un subcampo de una columna no-struct -> INVALID_EXTRACT_BASE_FIELD_TYPE).
     mapped = re.sub(r'\b_record_\.', '', mapped)
+    # Acceso a subcampo estilo Ab Initio: columna.subcampo (p.ej.
+    # cve_txnsistema.trx_cancelacion). En Spark la columna base es un STRING, no un
+    # STRUCT, asi que 'col.sub' lanza INVALID_EXTRACT_BASE_FIELD_TYPE. Lo aplanamos a
+    # un nombre de columna simple 'col_sub' (que _bnx_ensure_cols creara si falta).
+    # Solo aplica a identificador.identificador (no toca numeros decimales ni
+    # llamadas a funcion, que no matchean \w+\.\w+ entre limites de palabra).
+    mapped = re.sub(r'\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)\b', r'\1_\2', mapped)
     # Variables/parametros Ab Initio: $VAR o ${VAR}. Dentro de una expresion se
     # refieren a un campo/parametro; quitamos el $ para que sea un identificador
     # valido en Spark SQL (evita "Syntax error at or near '$'").
@@ -2000,19 +2007,35 @@ def _neutralize_unknown_functions(lines):
     """
     result = []
     wc_re = re.compile(r'^(\s*)(\w+)\s*=\s*(\w+)\.withColumn\(\s*("(?:[^"\\]|\\.)*")\s*,\s*expr\(\s*"(.*)"\s*\)\s*\)\s*$')
+    # X_df = SRC_df.where("....") / .filter("....")  con funcion Ab Initio sin traducir
+    wh_re = re.compile(r'^(\s*)(\w+)\s*=\s*(\w+)\.(where|filter)\(\s*"(.*)"\s*\)\s*$')
     for ln in lines:
         m = wc_re.match(ln.rstrip("\n"))
-        if not m:
-            result.append(ln)
+        if m:
+            indent, lhs, src, colname, sql = m.groups()
+            if _ABINITIO_FUNC_RE.search(sql):
+                bad = _ABINITIO_FUNC_RE.search(sql).group(1)
+                result.append(
+                    f'{indent}{lhs} = {src}.withColumn({colname}, lit(None))  '
+                    f'# [BNX] funcion Ab Initio sin traducir ({bad}); columna en NULL (revisar)\n'
+                )
+            else:
+                result.append(ln)
             continue
-        indent, lhs, src, colname, sql = m.groups()
-        # ¿Queda alguna funcion Ab Initio sin traducir en la expresion SQL?
-        if _ABINITIO_FUNC_RE.search(sql):
-            bad = _ABINITIO_FUNC_RE.search(sql).group(1)
-            result.append(
-                f'{indent}{lhs} = {src}.withColumn({colname}, lit(None))  '
-                f'# [BNX] funcion Ab Initio sin traducir ({bad}); columna en NULL (revisar)\n'
-            )
-        else:
-            result.append(ln)
+        # Filtros con funcion Ab Initio sin traducir: passthrough (sin filtro) para
+        # no romper con UNRESOLVED_ROUTINE. Preferimos dejar pasar las filas (con
+        # TODO) a que el job entero falle.
+        mw = wh_re.match(ln.rstrip("\n"))
+        if mw:
+            indent, lhs, src, _op, sql = mw.groups()
+            if _ABINITIO_FUNC_RE.search(sql):
+                bad = _ABINITIO_FUNC_RE.search(sql).group(1)
+                result.append(
+                    f'{indent}{lhs} = {src}  '
+                    f'# [BNX] filtro con funcion Ab Initio sin traducir ({bad}); passthrough (revisar)\n'
+                )
+            else:
+                result.append(ln)
+            continue
+        result.append(ln)
     return result
