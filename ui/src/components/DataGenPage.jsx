@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { COMPILE_URL, PIPELINE_URL, PIPELINE_STATUS_URL } from '../config'
 import CostEstimateCard from './CostEstimateCard'
-import { metricsFromResult } from '../costEstimator'
+import { metricsFromResult, estimateGraphCost } from '../costEstimator'
 import * as testRunner from '../testRunnerStore'
 
 // El endpoint /datagen vive en el mismo origen que /compile
@@ -243,11 +243,35 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
       h += `<tr><td>Estado</td><td>${o.ok ? 'OK' : 'FALLO'}</td><td>${p.ok ? 'OK' : 'FALLO'}</td></tr>`
       h += `</tbody></table>`
       if (compareResult.speedup) h += `<p>Aceleracion: <b>${esc(compareResult.speedup)}x</b> (${esc(compareResult.faster_pct)}% mas rapido) · Salidas equivalentes: <b class="${compareResult.equivalent ? 'ok' : 'bad'}">${compareResult.equivalent ? 'SI' : 'NO'}</b></p>`
+      // Resumen de optimizaciones aplicadas (lo que mejora en AWS)
+      const sm = compareResult.summary || {}
+      h += `<p>Optimizaciones: 🧠 cache reutilizado <b>${esc(sm.cache_reused || 0)}</b> · 📡 broadcast join <b>${esc(sm.broadcast_join || 0)}</b> · 🗜️ coalesce write <b>${esc(sm.coalesce_write || 0)}</b></p>`
+      // Benchmark simulando nube
+      const simRows = typeof compareResult.sim_rows === 'number' ? compareResult.sim_rows.toLocaleString() : '—'
+      const simAmp = compareResult.sim_amplify > 1 ? ` (datos amplificados ×${esc(compareResult.sim_amplify)})` : ''
+      h += `<p class="muted">Benchmark simulando nube: <b>${esc(compareResult.sim_workers ?? 2)} workers</b> · <b>${simRows} filas</b>${simAmp}</p>`
       if ((compareResult.changes || []).length) {
         h += `<h3>Cambios aplicados (${esc(compareResult.total_changes || compareResult.changes.length)})</h3><ul>`
         for (const c of compareResult.changes.slice(0, 40)) h += `<li>${esc(typeof c === 'string' ? c : (c.detail || c.type || JSON.stringify(c)))}</li>`
         h += `</ul>`
       }
+    }
+
+    // Costo estimado en AWS (Glue) segun la complejidad del grafo
+    if (runReport && (runReport.flow || []).length) {
+      const flow = runReport.flow || []
+      const nodes = flow.length
+      const joins = flow.filter(s => ['JOIN', 'LOOKUP'].includes(String(s.type || '').toUpperCase())).length
+      const edges = nodes > 0 ? nodes - 1 : 0
+      const cost = estimateGraphCost({ nodes, joins, edges })
+      h += `<h2>Costo estimado en AWS (Glue)</h2>`
+      h += `<table><tbody>`
+      h += `<tr><td>Complejidad</td><td><b>${esc(cost.level)}</b> (${esc(nodes)} nodos, ${esc(joins)} joins, ${esc(edges)} edges)</td></tr>`
+      h += `<tr><td>Recursos</td><td>${esc(cost.dpu)} DPU · ~${esc(cost.minutes)} min por corrida</td></tr>`
+      h += `<tr><td>Costo por corrida</td><td><b>$${esc(cost.costPerRun)}</b> USD (${esc(cost.dpuHours)} DPU-hora)</td></tr>`
+      h += `<tr><td>Costo mensual estimado</td><td><b>$${esc(cost.costPerMonth)}</b> USD (${esc(cost.runsPerMonth)} corridas/mes)</td></tr>`
+      h += `</tbody></table>`
+      h += `<p class="sub">${esc(cost.note)}</p>`
     }
 
     // Consola (ultimas lineas)
