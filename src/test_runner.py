@@ -842,6 +842,28 @@ try:
 except Exception:
     pass
 
+# Silenciar loggers de Spark que vuelcan el stacktrace Java completo de las
+# AnalysisException que NOSOTROS capturamos a proposito en _bnx_where (filtros
+# sobre columnas ausentes). Sin esto, cada filtro relajado imprime un traceback
+# JSON gigante que parece un fallo cuando en realidad se manejo correctamente.
+try:
+    _jlog = _bnx_session._jvm.org.apache.log4j.Logger
+    _jlevel = _bnx_session._jvm.org.apache.log4j.Level
+    for _lname in (
+        "org.apache.spark.sql.catalyst.util.SQLQueryContextLogger",
+        "SQLQueryContextLogger",
+        "org.apache.spark.sql.catalyst.analysis.CheckAnalysis",
+        "org.apache.spark.sql.execution.QueryExecution",
+    ):
+        try:
+            _jlog.getLogger(_lname).setLevel(_jlevel.OFF)
+        except Exception:
+            pass
+    # Subir el umbral global a ERROR->FATAL para el resto de ruido de la JVM.
+    _bnx_session.sparkContext.setLogLevel("FATAL")
+except Exception:
+    pass
+
 def _bnx_match_key(var):
     # var suele ser "NombreNodo_df" → buscamos "nombrenodo"
     base = var[:-3].lower() if var.lower().endswith("_df") else var.lower()
@@ -1254,12 +1276,19 @@ def run_pyspark_test(pyspark_code, datasets, timeout=120, job_name=None,
         # El reporte tambien es descargable como un "archivo de salida" mas.
         downloads = downloads + [report_dl]
 
+    # Filtrar ruido (tracebacks Java de errores capturados, logs de la JVM, etc.)
+    # tambien en la ruta no-streaming, igual que hace el streaming linea a linea.
+    def _strip_noise(text):
+        if not text:
+            return text
+        return "\n".join(l for l in text.splitlines() if not _is_noise(l))
+
     return {
         "ok": ok,
         "exit_code": exit_code,
         "timed_out": timed_out,
-        "stdout": _tail(stdout, 20000),
-        "stderr": _tail(stderr, 20000),
+        "stdout": _tail(_strip_noise(stdout), 20000),
+        "stderr": _tail(_strip_noise(stderr), 20000),
         "reads": reads_l,
         "writes": writes_l,
         "downloads": downloads,
@@ -1781,6 +1810,12 @@ _NOISE_PATTERNS = (
     # BrokenPipeError de workers de Spark tras df.show() — ruido inofensivo en local
     "BrokenPipeError", "daemon.py", "outfile.flush", "code = worker(", "Errno 32",
     "pyspark.zip/pyspark/daemon", "~~~~~~", "^^^^",
+    # Volcado JSON del logger de Spark (SQLQueryContextLogger) de las
+    # AnalysisException que capturamos a proposito en _bnx_where: es una linea
+    # JSON gigante con el stacktrace Java. Red de seguridad por si el silenciado
+    # del logger no lo suprime en alguna version de Spark.
+    '"logger": "SQLQueryContextLogger"',
+    '"errorClass": "UNRESOLVED_COLUMN',
 )
 
 
