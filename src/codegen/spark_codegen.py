@@ -1091,6 +1091,88 @@ def _translate_dml_expr(expr_clean):
     return mapped
 
 
+def _build_generator_transform(var_id, rule):
+    """Genera codigo para un TRANSFORM sin entrada de datos (Create_Data /
+    generador de registros de Ab Initio). Estos componentes producen filas a
+    partir de literales/funciones (p.ej. out.rec_identifier :: 'HDR'), no leen
+    de un padre. Devuelve el codigo PySpark (str) o None si el rule no parece
+    un generador de literales.
+
+    La deteccion es conservadora: solo tratamos como generador si TODAS las
+    asignaciones de campos son expresiones sin referencias 'in.' (que exigirian
+    un DataFrame de entrada). Emitimos un DataFrame de 1 fila.
+    """
+    lines = [f'# Create_Data / generador de registros (sin entrada, 1 fila de literales)']
+    lines.append(f'{var_id}_df = spark.range(1).drop("id")')
+    emitted = 0
+
+    # Caso A: rule con 'literals' (y opcionalmente 'transform_exprs'). Es el
+    # formato tipico de un Create_Data parseado (out.rec_identifier :: 'HDR').
+    literals = rule.get("literals")
+    transform_exprs = rule.get("transform_exprs")
+    if literals or transform_exprs:
+        if transform_exprs:
+            for expr_str in transform_exprs:
+                if " as " in expr_str.lower():
+                    parts = expr_str.rsplit(" as ", 1)
+                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{parts[1].strip()}", expr("{parts[0].strip()}"))')
+                    emitted += 1
+        if literals:
+            for lit_field in literals:
+                fname = lit_field["field"]
+                val = lit_field["literal"]
+                if lit_field.get("literal_type") == "number":
+                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{fname}", lit({val}))')
+                else:
+                    clean = str(val).replace("\\{", "{").replace("\\}", "}").replace("\\$", "$")
+                    clean = clean.replace("\\", "").replace('"', '\\"')
+                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{fname}", lit("{clean}"))')
+                emitted += 1
+        if emitted == 0:
+            return None
+        return "\n".join(lines)
+
+    # Caso B: rule con dml_fields o raw_transform de solo literales/funciones.
+    assigns = []  # list[(field, expr)]
+    dml_fields = rule.get("dml_fields")
+    if dml_fields:
+        for fld in dml_fields:
+            assigns.append((fld["field"], fld["expr"]))
+    else:
+        raw = rule.get("raw_transform")
+        if not raw:
+            return None
+        for field_name, expression in re.findall(r'out\.(\w+)\s*:(?:\d+)?:\s*([^;]+);', raw):
+            if field_name in ("newline", "*", "V_FILLER"):
+                continue
+            assigns.append((field_name, expression.strip()))
+
+    if not assigns:
+        return None
+
+    # Si CUALQUIER expresion referencia in./in0. no es un generador puro.
+    for _f, expr_txt in assigns:
+        if re.search(r'\bin\d*\.', expr_txt):
+            return None
+
+    for field_name, expr_txt in assigns:
+        mapped = _translate_dml_expr(expr_txt)
+        if not mapped or mapped.strip() in ("", "...", "."):
+            continue
+        if _is_untranslatable(mapped):
+            lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", lit(None))  # TODO: literal no traducible: {_one_line(expr_txt, 80)}')
+            emitted += 1
+            continue
+        mapped = _wrap_agg_for_withcolumn(mapped)
+        mapped_escaped = _sql_arg(mapped)
+        if len(mapped_escaped) < 200:
+            lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", expr("{mapped_escaped}"))')
+            emitted += 1
+    if emitted == 0:
+        return None
+    return "\n".join(lines)
+
+
 def _build_transform(var_id, src_df, rule):
     # --- SORT ---
     sort_by = rule.get("sort_by")
@@ -1581,7 +1663,18 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                         f.write(f'# [i] Componente aislado en el grafo original (sin entradas ni salidas conectadas)\n')
                         f.write(f'{var_id}_df = spark.createDataFrame([], StructType([]))  # nodo desconectado en origen\n')
                     else:
-                        f.write(f'{var_id}_df = None\n')
+                        # Tiene hijos pero no padres: es un generador de registros
+                        # (Create_Data) o un componente que produce datos sin leer
+                        # de una fuente. Intentar emitir 1 fila con los literales del
+                        # transform; si no es un generador reconocible, emitir un
+                        # DataFrame vacio (NUNCA None, para no romper el hijo con
+                        # None.selectExpr / None.join).
+                        gen_code = _build_generator_transform(var_id, rule) if rule else None
+                        if gen_code:
+                            f.write(gen_code + "\n")
+                        else:
+                            f.write(f'# [i] Nodo sin entrada de datos: se emite DataFrame vacio (evita None en hijos)\n')
+                            f.write(f'{var_id}_df = spark.createDataFrame([], StructType([]))\n')
                 f.write(f'print("[~] TRANSFORM: {log_name}")\n\n')
 
             elif ntype == "FILTER":
@@ -1674,7 +1767,9 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                         f.write(f'{var_id}_df = {src}\n')
                         f.write(f'{var_id}_reject_df = spark.createDataFrame([], {src}.schema)\n')
                 else:
-                    f.write(f'{var_id}_df = None\n')
+                    # Sin padres: emitir DataFrame vacio en vez de None para no
+                    # romper nodos hijos (None.filter / None.selectExpr).
+                    f.write(f'{var_id}_df = spark.createDataFrame([], StructType([]))\n')
                 f.write(f'print("[-] FILTER: {log_name}")\n\n')
 
             elif ntype == "JOIN":
@@ -1709,7 +1804,7 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                 elif len(parents) == 1:
                     f.write(f'{var_id}_df = {parents[0]}_df\n')
                 else:
-                    f.write(f'{var_id}_df = None\n')
+                    f.write(f'{var_id}_df = spark.createDataFrame([], StructType([]))\n')
                 f.write(f'print("[~] JOIN: {log_name}")\n\n')
 
             elif ntype == "DEDUP":
@@ -1725,7 +1820,7 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                     else:
                         f.write(f'{var_id}_df = {src}.dropDuplicates([{ks}])\n')
                 else:
-                    f.write(f'{var_id}_df = None\n')
+                    f.write(f'{var_id}_df = spark.createDataFrame([], StructType([]))\n')
                 f.write(f'print("[-] DEDUP: {log_name}")\n\n')
 
             elif ntype == "NORMALIZE":
@@ -1742,7 +1837,7 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                     else:
                         f.write(f'{var_id}_df = {src}\n')
                 else:
-                    f.write(f'{var_id}_df = None\n')
+                    f.write(f'{var_id}_df = spark.createDataFrame([], StructType([]))\n')
                 f.write(f'print("[=] NORMALIZE: {log_name}")\n\n')
 
             elif ntype == "LOOKUP":
@@ -1757,7 +1852,7 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                         f.write(f'_lkp_{var_id} = broadcast({parents[1]}_df)\n')
                     f.write(f'{var_id}_df = {parents[0]}_df.join(_lkp_{var_id}, on="{lk}", how="left")\n')
                 else:
-                    f.write(f'{var_id}_df = None\n')
+                    f.write(f'{var_id}_df = spark.createDataFrame([], StructType([]))\n')
                 f.write(f'print("[?] LOOKUP: {log_name}")\n\n')
 
             elif ntype == "SINK":
@@ -1818,7 +1913,14 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                     else:
                         f.write(f'{var_id}_df = {parents[0]}_df\n')
                 else:
-                    f.write(f'{var_id}_df = None\n')
+                    # Sin padres: si es un generador de registros emitir 1 fila de
+                    # literales; si no, DataFrame vacio (nunca None, para no romper
+                    # nodos hijos).
+                    gen_code = _build_generator_transform(var_id, rule) if rule else None
+                    if gen_code:
+                        f.write(gen_code + "\n")
+                    else:
+                        f.write(f'{var_id}_df = spark.createDataFrame([], StructType([]))\n')
                 f.write(f'print("[~] {ntype}: {log_name}")\n\n')
 
         # Retroceso iteration logic (cyclic plans)
