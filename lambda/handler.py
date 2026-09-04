@@ -120,11 +120,21 @@ def _generate_code(dag, xfr_rules, target):
 def _build_response(dag, ast, xfr_rules, dml_schema, target):
     errors, warnings = validate(dag, xfr_rules, dml_schema)
 
+    # Errores NO bloqueantes: nodos sin padre (Create_Data/generadores),
+    # sinks sin escritura, joins que 'necesitan 2 padres'. El codegen ya los
+    # maneja (genera 1 fila de literales o DataFrame vacio, nunca None), asi
+    # que no deben impedir la generacion de codigo. Mismo criterio que serve_ui.
+    blocking = [e for e in errors
+                if "no parent nod" not in e
+                and "nothing to write" not in e
+                and "has no parent" not in e
+                and "needs 2 parents" not in e]
+
     code = None
     stepfunctions_json = None
     terraform_code = None
     airflow_code = None
-    if not errors:
+    if not blocking:
         code = _generate_code(dag, xfr_rules, target)
 
         sf_out = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
