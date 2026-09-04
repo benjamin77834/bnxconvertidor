@@ -104,6 +104,7 @@ from src.test_runner import (
     BNX_LOCAL_OUTPUT_DIR,
     _describe_graph,
 )
+from src.equivalence import compare_outputs, read_csv_rows
 
 PORT = int(os.environ.get("BNX_PORT", 8081))
 UI_DIR = os.path.join(os.path.dirname(__file__), "ui", "dist")
@@ -151,6 +152,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_optimize_compare()
         elif "/optimize" in path:
             self._handle_optimize()
+        elif "/validate" in path:
+            self._handle_validate()
         elif "/compile" in path or "/api" in path:
             self._handle_compile()
         else:
@@ -1401,6 +1404,136 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             "sim_workers": SIM_WORKERS,
             "sim_rows": sim_rows,
             "sim_amplify": amplify,
+        })
+
+    def _handle_validate(self):
+        """Valida EQUIVALENCIA DE DATOS: corre el PySpark generado con los datos
+        de entrada y compara sus salidas contra una REFERENCIA (la que produce
+        Ab Initio en produccion). Prueba correctitud semantica, no solo que corra.
+
+        Body JSON:
+          {
+            "mp": "...", "xfr": "...", "dml": "...", "pset": "...",  # o "code"
+            "datasets":  [{"node","io":"input","format","content"|"rows"}],
+            "reference": [{"table"|"node","format":"csv"|"json","content"|"rows","columns"?}],
+            "timeout": 300
+          }
+        La referencia tambien puede venir dentro de 'datasets' con io=="expected".
+
+        Respuesta:
+          {"ok": bool,                 # la ejecucion corrio sin error
+           "equivalent": bool,         # TODAS las salidas coinciden con la referencia
+           "score": 0..100,            # promedio de equivalencia por sink
+           "total_sinks","equivalent_sinks",
+           "tables": [ ... compare_outputs ... ],
+           "run": {"writes","reads","summary","stderr_tail"}}
+        """
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        try:
+            data = json.loads(body.decode("utf-8", errors="replace"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._json_response(400, {"error": "Invalid JSON body"})
+            return
+
+        # 1. Codigo PySpark: regenerar desde el grafo (preferido) o usar 'code'.
+        code = data.get("code", "")
+        mp_content = data.get("mp", "")
+        graph_name = None
+        if mp_content.strip():
+            try:
+                compiled = self._compile_graph(
+                    mp_content, data.get("xfr", ""), data.get("dml", ""),
+                    data.get("pset", ""), target="spark",
+                )
+                fresh = compiled.get("code", "")
+                if fresh.strip():
+                    code = fresh
+                    graph_name = compiled.get("graph_name")
+            except Exception as e:
+                print(f"  [validate] no se pudo regenerar desde grafo: {e}")
+        if not code.strip():
+            self._json_response(400, {"error": "Falta 'code' (PySpark) o 'mp' (grafo)"})
+            return
+        if "awsglue" in code or "GlueContext" in code:
+            self._json_response(400, {
+                "error": "Solo se valida el target PySpark (ejecutable local). "
+                         "Compila con target 'spark'."
+            })
+            return
+
+        # 2. Separar datasets de ENTRADA de la REFERENCIA esperada.
+        datasets = data.get("datasets", []) or []
+        input_datasets = [d for d in datasets if d.get("io") != "expected"]
+        ref_from_datasets = [d for d in datasets if d.get("io") == "expected"]
+        reference = (data.get("reference") or []) + ref_from_datasets
+        if not reference:
+            self._json_response(400, {
+                "error": "Falta la referencia. Envia 'reference' (salidas esperadas "
+                         "de Ab Initio) o datasets con io=='expected'."
+            })
+            return
+
+        # 3. Construir el dict de tablas de referencia {nombre: {columns, rows}}.
+        expected_tables = {}
+        for ref in reference:
+            name = ref.get("table") or ref.get("node") or ref.get("name") or "salida"
+            rows = ref.get("rows")
+            cols = ref.get("columns")
+            if rows is None and ref.get("content"):
+                if ref.get("format") == "json":
+                    try:
+                        rows = json.loads(ref["content"])
+                        cols = cols or (list(rows[0].keys()) if rows else [])
+                    except (json.JSONDecodeError, TypeError):
+                        rows = []
+                else:
+                    cols_read, rows = read_csv_rows(ref["content"])
+                    cols = cols or cols_read
+            rows = rows or []
+            if cols is None:
+                cols = list(rows[0].keys()) if rows else []
+            expected_tables[name] = {"columns": cols, "rows": rows}
+
+        # 4. Ejecutar el PySpark generado con los datos de entrada.
+        timeout = max(10, min(int(data.get("timeout", 300) or 300), 900))
+        try:
+            run = run_pyspark_test(code, input_datasets, timeout=timeout,
+                                   job_name=data.get("job_name") or graph_name)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": str(e)})
+            return
+
+        # 5. Recolectar las salidas reales: los CSV que el harness volco a disco.
+        #    (downloads trae {name,path}; el .txt del reporte se ignora.)
+        actual_tables = {}
+        for dl in run.get("downloads", []) or []:
+            nm = dl.get("name", "")
+            path = dl.get("path", "")
+            if not nm.lower().endswith(".csv"):
+                continue
+            cols, rows = read_csv_rows(path)
+            actual_tables[nm] = {"columns": cols, "rows": rows}
+
+        # 6. Comparar equivalencia (esquema + conteo + contenido).
+        comparison = compare_outputs(actual_tables, expected_tables)
+
+        self._json_response(200, {
+            "ok": run.get("ok", False),
+            "equivalent": comparison["equivalent"],
+            "score": comparison["score"],
+            "total_sinks": comparison["total_sinks"],
+            "equivalent_sinks": comparison["equivalent_sinks"],
+            "tables": comparison["tables"],
+            "graph_name": graph_name,
+            "run": {
+                "writes": run.get("writes", []),
+                "reads": run.get("reads", []),
+                "summary": run.get("summary", ""),
+                "stderr_tail": (run.get("stderr", "") or "")[-1500:] if not run.get("ok") else "",
+            },
         })
 
     def _handle_compile(self):

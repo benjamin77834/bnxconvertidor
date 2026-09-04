@@ -1126,6 +1126,37 @@ def _bnx_output_split(df, index_expr, num_outputs):
     dfx = df.withColumn("_bnx_rr", _mid() % num_outputs)
     return [dfx.filter(_expr(f"_bnx_rr = {{i}}")).drop("_bnx_rr") for i in range(num_outputs)]
 
+def _bnx_content_checksum(df):
+    # Checksum de CONTENIDO independiente del orden de filas Y de columnas.
+    # Spark no garantiza orden de filas; y el orden de columnas puede variar
+    # entre la salida generada y la referencia. Estrategia:
+    #   1) ordenar los nombres de columna
+    #   2) por cada fila, construir una tupla (col=valor) en ese orden fijo
+    #   3) hashear cada fila y SUMAR los hashes (conmutativo -> order-insensitive)
+    # Devuelve (hash_hex, n_filas). Si algo falla, devuelve (None, count).
+    import hashlib as _hl
+    try:
+        cols = sorted(df.columns)
+        rows = df.limit(200000).collect()
+        acc = 0
+        _NULL = chr(0) + "NULL" + chr(0)
+        _SEP = chr(1)
+        for r in rows:
+            parts = []
+            for c in cols:
+                v = r[c]
+                parts.append(c + "=" + (_NULL if v is None else str(v)))
+            h = _hl.sha1(_SEP.join(parts).encode("utf-8", "replace")).digest()
+            acc = (acc + int.from_bytes(h, "big")) % (1 << 160)
+        # incluir el conjunto de columnas en el hash final (esquema importa)
+        schema_sig = _hl.sha1(("|".join(cols)).encode("utf-8")).hexdigest()[:12]
+        return (f"{{acc:040x}}.{{schema_sig}}", len(rows))
+    except Exception:
+        try:
+            return (None, df.count())
+        except Exception:
+            return (None, -1)
+
 def _bnx_write(df, var, dest=None):
     if df is None:
         print(f"[BNX-TEST] WRITE {{var}}: SKIP (DataFrame None — nodo sin datos)")
@@ -1136,6 +1167,12 @@ def _bnx_write(df, var, dest=None):
         _BNX_WRITES.append({{"var": var, "rows": n, "columns": cols}})
         print(f"[BNX-TEST] WRITE {{var}}: {{n}} filas, cols={{cols}}")
         df.show(5, truncate=False)
+        # Checksum de contenido (order-insensitive) para validar equivalencia
+        # semantica contra una salida de referencia. Se emite una linea parseable:
+        #   [BNX-TEST] CHECKSUM|<var>|<rows>|<hash>|<col1,col2,...>
+        chk, chk_rows = _bnx_content_checksum(df)
+        _cols_join = ",".join(cols)
+        print(f"[BNX-TEST] CHECKSUM|{{var}}|{{chk_rows}}|{{chk}}|{{_cols_join}}")
         # Volcar una copia CSV a disco para poder descargarla desde la GUI.
         # El nombre del archivo usa el destino (tabla/ruta del SINK); si no hay,
         # cae al nombre de la variable del DataFrame.
@@ -1255,6 +1292,17 @@ def run_pyspark_test(pyspark_code, datasets, timeout=120, job_name=None,
         {"name": d[0], "path": d[1]}
         for d in re.findall(r"\[BNX-TEST\] DOWNLOAD\|([^|]+)\|(\S+)", stdout)
     ]
+    # Checksums de contenido por SINK: CHECKSUM|<var>|<rows>|<hash>|<cols>
+    # Sirven para validar equivalencia semantica (mismo contenido, no solo mismo
+    # conteo) contra una salida de referencia.
+    checksums = {}
+    for m in re.finditer(r"\[BNX-TEST\] CHECKSUM\|([^|]*)\|(-?\d+)\|([^|]*)\|(.*)", stdout):
+        var = m.group(1)
+        checksums[var] = {
+            "rows": int(m.group(2)),
+            "checksum": (m.group(3) or "").strip() or None,
+            "columns": [c for c in m.group(4).split(",") if c] if m.group(4) else [],
+        }
 
     ok = (not timed_out) and exit_code == 0
     if ok:
@@ -1265,7 +1313,14 @@ def run_pyspark_test(pyspark_code, datasets, timeout=120, job_name=None,
         summary = "Falló la ejecución — revisa el error abajo"
 
     reads_l = [{"var": r[0], "node": r[1], "rows": int(r[2])} for r in reads]
-    writes_l = [{"var": w[0], "rows": int(w[1])} for w in writes]
+    writes_l = []
+    for w in writes:
+        entry = {"var": w[0], "rows": int(w[1])}
+        chk = checksums.get(w[0])
+        if chk:
+            entry["checksum"] = chk.get("checksum")
+            entry["columns"] = chk.get("columns", [])
+        writes_l.append(entry)
     steps = _parse_flow_steps(stdout)
     fidelity = _data_fidelity(datasets, pyspark_code, reads_l, writes_l, ok, timed_out)
     report = _build_run_report(reads_l, writes_l, downloads, steps, ok,
