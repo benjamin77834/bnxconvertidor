@@ -1477,8 +1477,34 @@ def _sync_library_from_s3():
               "El server sigue con los grafos que ya haya en disco.")
 
 
+def _git_version():
+    """Devuelve el commit de git actual (corto + fecha) para saber que version
+    del codigo esta corriendo el server. Asi, tras un 'git pull', se ve de un
+    vistazo si el server se reinicio con el codigo nuevo (Python NO recarga en
+    caliente: hay que matar y relanzar el proceso)."""
+    import subprocess
+    root = os.path.dirname(os.path.abspath(__file__))
+    try:
+        out = subprocess.run(
+            ["git", "-C", root, "log", "-1", "--format=%h %cd", "--date=format:%Y-%m-%d %H:%M"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            rev = out.stdout.strip()
+            # marcar si hay cambios locales sin commitear
+            dirty = subprocess.run(["git", "-C", root, "status", "--porcelain"],
+                                    capture_output=True, text=True, timeout=5)
+            if dirty.returncode == 0 and dirty.stdout.strip():
+                rev += " (+cambios locales)"
+            return rev
+    except Exception:
+        pass
+    return "desconocida (sin git)"
+
+
 if __name__ == "__main__":
     print(f"[*] BNX Convertidor - Local Server")
+    print(f"[*] Version (git): {_git_version()}")
     print(f"[*] Port: {PORT}")
     if UI_DIR:
         print(f"[*] UI: {UI_DIR}")
