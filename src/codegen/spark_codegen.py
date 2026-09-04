@@ -81,6 +81,50 @@ def _strip_dml_comments(expr):
     return re.sub(r'\s{2,}', ' ', result).strip()
 
 
+def _sub_outside_quotes(pattern, repl, expr):
+    """Aplica re.sub(pattern, repl, ...) SOLO en los tramos que estan fuera de
+    literales entre comillas simples o dobles.
+
+    Sirve para transformaciones que no deben tocar el contenido de un string
+    (p.ej. quitar el operador de prioridad :N: sin destrozar la hora
+    '00:00:01' de un literal). Respeta el escape con backslash dentro del
+    literal para no cerrar la comilla antes de tiempo.
+    """
+    if not expr:
+        return expr
+    rx = re.compile(pattern)
+    out = []
+    i = 0
+    n = len(expr)
+    quote = None
+    seg_start = 0
+    while i < n:
+        ch = expr[i]
+        if quote:
+            if ch == quote and expr[i - 1:i] != '\\':
+                # cerramos literal: copiar el literal tal cual (sin transformar)
+                out.append(expr[seg_start:i + 1])
+                quote = None
+                seg_start = i + 1
+            i += 1
+            continue
+        if ch in ('"', "'"):
+            # transformar el segmento acumulado (fuera de comillas) y abrir literal
+            out.append(rx.sub(repl, expr[seg_start:i]))
+            quote = ch
+            seg_start = i
+            i += 1
+            continue
+        i += 1
+    # cola final
+    if quote:
+        # literal sin cerrar: copiar crudo (mejor no corromper)
+        out.append(expr[seg_start:])
+    else:
+        out.append(rx.sub(repl, expr[seg_start:]))
+    return ''.join(out)
+
+
 _AGG_FUNCS = ("sum", "count", "avg", "mean", "min", "max", "stddev", "variance",
               "collect_list", "collect_set", "first", "last")
 
@@ -432,6 +476,28 @@ def _map_string_functions(expr):
     # cerraria en el ) interno y dejaria un ) huerfano -> ParseException.
     expr = _replace_balanced_call(expr, "lookup_match", lambda inner: "true")
     expr = _replace_balanced_call(expr, "lookup_count", lambda inner: "1")
+    # lookup("tabla", keys).campo  o  lookup("tabla", keys)  → NULL
+    # Sin la tabla de referencia materializada (join real), el valor devuelto es
+    # desconocido; lo neutralizamos a NULL para no dejar un lookup(...) crudo que
+    # rompa Spark (INVALID) ni marque toda la expresion como no-traducible. Se
+    # preserva la logica de fallback del if/else (p.ej. else trim(username)).
+    # Primero la forma con acceso a subcampo .campo (consume el .campo tambien).
+    _lk = re.compile(r'\blookup\s*\(')
+    guard = 0
+    while guard < 50:
+        guard += 1
+        m = _lk.search(expr)
+        if not m:
+            break
+        open_idx = m.end() - 1
+        close_idx = _match_paren(expr, open_idx)
+        if close_idx == -1:
+            break
+        after = expr[close_idx + 1:]
+        # si sigue .campo, incluirlo en el reemplazo
+        sub = re.match(r'\.\w+', after)
+        end = close_idx + 1 + (sub.end() if sub else 0)
+        expr = expr[:m.start()] + "NULL" + expr[end:]
     # string_upcase(x) → upper(x)
     expr = re.sub(r'string_upcase\(', 'upper(', expr)
     # string_downcase(x) → lower(x)
@@ -622,6 +688,88 @@ def _match_paren(s, open_idx):
                 return i
         i += 1
     return -1
+
+
+def _extract_local_vars(raw_transform):
+    """Extrae las variables locales de un reformat de Ab Initio y devuelve un
+    dict {nombre_var: expresion_cruda_resuelta}.
+
+    En el DML un reformat puede declarar variables temporales y reasignarlas
+    antes de usarlas en las salidas out.*:
+
+        let string("\\x01") v_emp_key = 'XXXX';
+        let string("\\x01") v_branch_cd = NULL;
+        v_emp_key = if(lookup_match("SOEID",in.username)) ... else string_lrtrim(in.username);
+        out.employee_key :: if(is_null(v_emp_key)...) 'XXXX' else string_lrtrim(v_emp_key);
+
+    Sin resolverlas, el generador emitia una columna 'v_emp_key' inexistente en
+    el DataFrame -> valores NULL o error en tiempo de ejecucion. Aqui:
+      1. Capturamos declaraciones `let TIPO var = valor;` y reasignaciones
+         `var = valor;` (que NO empiezan por out./in.).
+      2. Aplicamos "last write wins": la ultima asignacion define el valor.
+      3. Inlineamos variables previas dentro de asignaciones posteriores
+         (sustitucion por palabra completa), para que al expandir en las
+         salidas quede una sola expresion autocontenida.
+
+    Devuelve {} si no hay variables locales.
+    """
+    if not raw_transform or ('let ' not in raw_transform and '=' not in raw_transform):
+        return {}
+    body = _strip_dml_comments(raw_transform)
+    var_exprs = {}
+    order = []
+    # Statements terminados en ';'. Recorremos en orden respetando el ultimo valor.
+    # let [modificadores] TIPO(...)? nombre = valor ;   |   nombre = valor ;
+    stmt_re = re.compile(
+        r'(?:^|;)\s*'
+        r'(?:let\s+(?:[A-Za-z_]\w*(?:\s*\([^)]*\))?\s+)*)?'  # tipo opcional (let string("\x01"))
+        r'([A-Za-z_]\w*)\s*=\s*'                             # nombre =
+        r'(?!=)'                                             # no confundir con ==
+        r'([^;]+)',                                          # valor (hasta ;)
+    )
+    for m in stmt_re.finditer(body):
+        name = m.group(1)
+        value = m.group(2).strip()
+        # Ignorar asignaciones a salidas/entradas (out.x, in.x) y el operador ::
+        if name in ("out", "in") or '::' in value:
+            continue
+        # Ignorar el propio 'out'/'in' punteado ya viene filtrado; aceptar var normal
+        if value == "":
+            continue
+        # Inline de variables previas dentro de este valor (palabra completa).
+        for prev in order:
+            value = re.sub(r'\b' + re.escape(prev) + r'\b', f'({var_exprs[prev]})', value)
+        if name in var_exprs:
+            # reasignacion: actualizar valor y mover al final del orden
+            var_exprs[name] = value
+            order.remove(name)
+            order.append(name)
+        else:
+            var_exprs[name] = value
+            order.append(name)
+    return var_exprs
+
+
+def _inline_local_vars(expr, var_exprs):
+    """Sustituye las variables locales (palabra completa) por su expresion cruda
+    dentro de 'expr'. Se aplica ANTES de _translate_dml_expr para que el
+    resultado quede autocontenido (sin columnas fantasma)."""
+    if not expr or not var_exprs:
+        return expr
+    out = expr
+    guard = 0
+    # Varias pasadas por si una variable quedo dentro de otra ya sustituida.
+    while guard < 5:
+        guard += 1
+        changed = False
+        for name, val in var_exprs.items():
+            new = re.sub(r'\b' + re.escape(name) + r'\b', f'({val})', out)
+            if new != out:
+                out = new
+                changed = True
+        if not changed:
+            break
+    return out
 
 
 def _abinitio_cast_to_spark(tipo, args, target):
@@ -922,7 +1070,10 @@ def _translate_dml_expr(expr_clean):
     mapped = re.sub(r'\$\{(\w+)\}', r'\1', mapped)
     mapped = re.sub(r'\$(?![\[\{])(\w+)', r'\1', mapped)
     # Remove :N: (priority operator in Ab Initio: :0: :1: :2: ...)
-    mapped = re.sub(r'\s*:\d+:\s*', ' ', mapped)
+    # OJO: solo FUERA de literales entre comillas. Un literal de hora como
+    # '00010101 00:00:01' contiene ':00:' que este patron destrozaria
+    # (-> '00010101 00 01'). _sub_outside_quotes protege los strings.
+    mapped = _sub_outside_quotes(r'\s*:\d+:\s*', ' ', mapped)
     
     # Handle Ab Initio type casting patterns BEFORE function mapping:
     # Pattern: (date("FORMAT"))(string("delim"))field → to_date(cast(field as string), "spark_fmt")
@@ -1205,7 +1356,11 @@ def _build_transform(var_id, src_df, rule):
     if raw_transform and not rule.get("transform") == "lookup_join":
         lines = []
         lines.append(f'{var_id}_df = {src_df}')
-        
+
+        # Variables locales del reformat (let var = ...; var = ...;). Se inlinean
+        # en las expresiones out.* para no dejar columnas fantasma (v_emp_key, etc.).
+        local_vars = _extract_local_vars(raw_transform)
+
         # Detect if this is a complex transform with loops/vectors (not simple field mapping)
         has_loops = 'for(' in raw_transform or 'for (' in raw_transform or 'while(' in raw_transform
         has_let_complex = raw_transform.count('let ') > 3
@@ -1235,6 +1390,8 @@ def _build_transform(var_id, src_df, rule):
                     continue
                 if re.match(r'^in\d*\.' + field_name + r'$', expr_clean):
                     continue
+                # Inline de variables locales antes de traducir (evita columnas fantasma)
+                expr_clean = _inline_local_vars(expr_clean, local_vars)
                 # Apply mappings to simple expressions
                 mapped = _translate_dml_expr(expr_clean)
                 if mapped and len(mapped) < 150:
@@ -1260,6 +1417,10 @@ def _build_transform(var_id, src_df, rule):
                     continue
                 if re.match(r'^in\d*\.' + field_name + r'$', expr_clean):
                     continue
+                # Inline de variables locales (let v = ...; v = ...;) antes de traducir,
+                # para que la expresion quede autocontenida y no referencie columnas
+                # inexistentes (v_emp_key, v_branch_cd, etc.).
+                expr_clean = _inline_local_vars(expr_clean, local_vars)
                 mapped = _translate_dml_expr(expr_clean)
                 # Expresion vacia o no traducible a algo util (p.ej. "..." de un
                 # raw reformat): comentar en vez de emitir expr("...") invalido.
@@ -1273,10 +1434,16 @@ def _build_transform(var_id, src_df, rule):
                     continue
                 mapped = _wrap_agg_for_withcolumn(mapped)
                 mapped_escaped = _sql_arg(mapped)
-                if len(mapped_escaped) < 200:
+                # Emitir si la expresion esta bien formada (parentesis balanceados).
+                # Antes se cortaba en 200 chars, lo que tiraba a lit(None) expresiones
+                # largas pero validas (p.ej. un CASE WHEN grande tras inlinear
+                # variables locales). La longitud no implica invalidez; lo que
+                # importa es que el SQL este balanceado. Un tope alto evita el caso
+                # patologico de un blob gigante mal parseado.
+                if mapped_escaped.count('(') == mapped_escaped.count(')') and len(mapped_escaped) < 4000:
                     lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", expr("{mapped_escaped}"))')
                 else:
-                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", lit(None))  # TODO: expresion compleja (truncada): {_one_line(expr_clean, 100)}')
+                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", lit(None))  # TODO: expresion compleja/desbalanceada: {_one_line(expr_clean, 100)}')
         
         if len(lines) == 1:
             lines.append(f'# Raw DML transform — review for manual translation:')
