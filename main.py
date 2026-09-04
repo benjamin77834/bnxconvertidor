@@ -124,7 +124,29 @@ def _parse_gde_native(content):
         "ftp_to", "sftp_to", "write_multifile", "write_xml",
         "overwrite_output_file", "append_output_file",
     ]
+    # Subgrafos de sistema de Ab Initio que REPRESENTAN una LECTURA de datos.
+    # Sus internos (Find_Files_and_Read_Blocks, Read_Blocks, Partition_Blocks,
+    # Procedural_Transform, etc.) son detalle de implementacion de la plantilla
+    # $AB_COMPONENTS/Datasets/... — no pasos de datos separados. Colapsarlos a un
+    # unico SOURCE evita generar lecturas parquet fantasma (raw/read_blocks).
+    COLLAPSIBLE_SOURCE_SUBGRAPH_TYPES = [
+        "read_hive_table", "read_hive", "read_multiple_files",
+        "read_hdfs_files", "read_hdfs", "read_seq_file", "read_separated_values",
+        "read_from_hive", "read_impala_table",
+    ]
+    # Subgrafos de sistema que REPRESENTAN una ESCRITURA a base de datos (Oracle,
+    # Teradata, etc.). Se colapsan a un unico SINK con los params de la tabla.
+    COLLAPSIBLE_DBSINK_SUBGRAPH_TYPES = [
+        "output_table", "write_hive_table", "load_hive_table",
+    ]
     collapsible_subgraphs = set()  # subgraph IDs that should be collapsed
+    # Vertices que son primitivas internas de plantillas de dataset (plumbing
+    # HDFS). Se descartan como nodos; sus aristas se re-enrutan al vecino real.
+    internal_dataset_primitives = set()
+    # subgraph_id -> "SOURCE" | "SINK" para los subgrafos colapsados que son
+    # fuentes/destinos de datos (Hive/HDFS/Oracle). Los que no esten aqui se
+    # colapsan como SINK (comportamiento original, Write_Seq_File etc.).
+    collapsed_subgraph_kind = {}
     
     for m in re.finditer(r'XXGgraph_vertex_vertex\|\d+\|\d+\|\d+\|\d+\|\{([^}]*)\|\}?(\d+)\|(\d+)\|', content):
         name = m.group(1).strip().rstrip('|')
@@ -135,9 +157,24 @@ def _parse_gde_native(content):
         if vid2 in subgraph_ids:
             # Record the subgraph name for collapsing decisions
             subgraph_names[vid2] = name
+            # Registrar jerarquia subgrafo->subgrafo (anidacion multinivel).
+            # Read_Hive_Table (91) contiene Read_HDFS_Files (100) que contiene
+            # Read_Blocks/Find_Files/Partition_Blocks. Sin esto, al colapsar
+            # Read_Hive_Table solo se eliminan sus hijos DIRECTOS y los nietos
+            # quedan como SOURCE parquet fantasma.
+            if vid1 in subgraph_ids:
+                subgraph_parent_map[vid2] = vid1
             # Check if this subgraph should be collapsed (Write_Seq_File, etc.)
             name_lower = name.lower().replace(" ", "_").replace("-", "_")
-            if any(st in name_lower for st in COLLAPSIBLE_SUBGRAPH_TYPES):
+            if any(st in name_lower for st in COLLAPSIBLE_SOURCE_SUBGRAPH_TYPES):
+                collapsible_subgraphs.add(vid2)
+                collapsed_subgraph_kind[vid2] = "SOURCE"
+                print(f"  [dbg] Collapsible SOURCE subgraph detected: {name} (id={vid2})")
+            elif any(st in name_lower for st in COLLAPSIBLE_DBSINK_SUBGRAPH_TYPES):
+                collapsible_subgraphs.add(vid2)
+                collapsed_subgraph_kind[vid2] = "SINK"
+                print(f"  [dbg] Collapsible DB-SINK subgraph detected: {name} (id={vid2})")
+            elif any(st in name_lower for st in COLLAPSIBLE_SUBGRAPH_TYPES):
                 collapsible_subgraphs.add(vid2)
                 print(f"  [dbg] Collapsible subgraph detected: {name} (id={vid2})")
             continue
@@ -146,6 +183,22 @@ def _parse_gde_native(content):
         if vid1 in subgraph_ids:
             subgraph_children.add(vid2)
             subgraph_parent_map[vid2] = vid1
+        # Primitivas internas de plantillas de dataset de sistema de Ab Initio
+        # ($AB_COMPONENTS/Datasets/Hadoop/*): son plumbing (recorrer HDFS,
+        # particionar bloques, leer bloques), NO pasos de datos del usuario.
+        # Cuando aparecen DENTRO de un subgrafo, se descartan como nodos y sus
+        # aristas se re-enrutan (se tratan como transparentes). Fuera de un
+        # subgrafo (raiz) se respetan por si acaso.
+        _name_norm = name.lower().replace(" ", "_").replace("-", "_")
+        _is_internal_primitive = (
+            vid1 in subgraph_ids and _name_norm in (
+                "find_files_and_read_blocks", "read_blocks", "partition_blocks",
+                "read_hdfs_files",
+            )
+        )
+        if _is_internal_primitive:
+            internal_dataset_primitives.add(vid2)
+            continue
         if name and not name.startswith("{"):
             safe_name = re.sub(r'[^\w]', '_', name)
             if vid2 not in node_by_id:
@@ -169,9 +222,17 @@ def _parse_gde_native(content):
         )
         if proto_match:
             proto_path = proto_match.group(1).lower()
-            if any(st in proto_path for st in COLLAPSIBLE_SUBGRAPH_TYPES):
+            sg_name = subgraph_names.get(sgid, f"Subgraph_{sgid}")
+            if any(st in proto_path for st in COLLAPSIBLE_SOURCE_SUBGRAPH_TYPES):
                 collapsible_subgraphs.add(sgid)
-                sg_name = subgraph_names.get(sgid, f"Subgraph_{sgid}")
+                collapsed_subgraph_kind[sgid] = "SOURCE"
+                print(f"  [dbg] Collapsible SOURCE subgraph (by prototype): {sg_name} (id={sgid}, proto={proto_match.group(1)})")
+            elif any(st in proto_path for st in COLLAPSIBLE_DBSINK_SUBGRAPH_TYPES):
+                collapsible_subgraphs.add(sgid)
+                collapsed_subgraph_kind[sgid] = "SINK"
+                print(f"  [dbg] Collapsible DB-SINK subgraph (by prototype): {sg_name} (id={sgid}, proto={proto_match.group(1)})")
+            elif any(st in proto_path for st in COLLAPSIBLE_SUBGRAPH_TYPES):
+                collapsible_subgraphs.add(sgid)
                 print(f"  [dbg] Collapsible subgraph (by prototype): {sg_name} (id={sgid}, proto={proto_match.group(1)})")
     
     # For collapsible subgraphs: remove their children from node_by_id and create a single SINK node
@@ -179,12 +240,39 @@ def _parse_gde_native(content):
     collapsed_children = set()  # all vertex IDs that are inside collapsed subgraphs
     collapsed_sink_map = {}     # child_vertex_id -> collapsed_sink_vertex_id (for edge redirection)
     
-    for sg_id in collapsible_subgraphs:
+    # Si un subgrafo colapsable esta ANIDADO dentro de otro subgrafo colapsable,
+    # solo procesamos el de mas alto nivel (el ancestro lo absorbe). Evita crear
+    # nodos SOURCE espurios para Read_HDFS_Files cuando ya colapsa Read_Hive_Table.
+    def _has_collapsible_ancestor(vid):
+        p = subgraph_parent_map.get(vid)
+        while p is not None:
+            if p in collapsible_subgraphs:
+                return True
+            p = subgraph_parent_map.get(p)
+        return False
+
+    top_level_collapsible = [sg for sg in collapsible_subgraphs
+                             if not _has_collapsible_ancestor(sg)]
+
+    for sg_id in top_level_collapsible:
         sg_name = subgraph_names.get(sg_id, f"Write_Seq_{sg_id}")
         safe_sg_name = re.sub(r'[^\w]', '_', sg_name)
         
-        # Find all children of this subgraph
-        children_of_sg = [vid for vid, parent in subgraph_parent_map.items() if parent == sg_id]
+        # Find all descendants (transitively): hijos, nietos, etc. Un subgrafo de
+        # sistema como Read_Hive_Table anida Read_HDFS_Files que anida Read_Blocks;
+        # todos deben desaparecer al colapsar el contenedor de mas alto nivel.
+        children_of_sg = []
+        _stack = [vid for vid, parent in subgraph_parent_map.items() if parent == sg_id]
+        _seen = set()
+        while _stack:
+            _v = _stack.pop()
+            if _v in _seen:
+                continue
+            _seen.add(_v)
+            children_of_sg.append(_v)
+            # anidar: hijos de _v (si _v es a su vez un subgrafo)
+            _stack.extend(vid for vid, parent in subgraph_parent_map.items()
+                          if parent == _v and vid not in _seen)
         
         # Remove children from node_by_id (they shouldn't appear as separate nodes)
         for child_vid in children_of_sg:
@@ -193,15 +281,82 @@ def _parse_gde_native(content):
             if child_vid in node_by_id:
                 del node_by_id[child_vid]
         
-        # Create a single SINK node for the collapsed subgraph
-        # Use the subgraph ID as the vertex ID for the collapsed node
-        node_by_id[sg_id] = {
+        # Tipo del nodo colapsado: SOURCE (Read_Hive_Table/HDFS/...) o SINK
+        # (Output_Table Oracle, o Write_Seq_File por defecto).
+        node_kind = collapsed_subgraph_kind.get(sg_id, "SINK")
+
+        collapsed_node = {
             "name": safe_sg_name,
-            "type": "SINK",
+            "type": node_kind,
             "display_name": sg_name,
             "comp_type": sg_name,
         }
-        print(f"  [dbg] Collapsed subgraph {sg_name}: {len(children_of_sg)} internal components → 1 SINK node")
+
+        # Para fuentes/destinos de datos (Hive/HDFS/Oracle) extraer los parametros
+        # propios del subgrafo: HIVE_DB/HIVE_TABLE/HIVE_FILTER (lectura Hive),
+        # ORACLE_DB/ORACLE_TABLE/table_spec/dbms/config_file (Oracle). Se acota el
+        # bloque desde XXGgraph|<sg_id>| hasta el siguiente XXGgraph| para no
+        # tomar params de otros subgrafos.
+        if sg_id in collapsed_subgraph_kind:
+            sg_block_m = re.search(
+                r'XXGgraph\|' + re.escape(sg_id) + r'\|(.*?)(?=XXGgraph\||\Z)',
+                content, re.DOTALL
+            )
+            sg_block = sg_block_m.group(1) if sg_block_m else ""
+
+            def _sg_param(pname, blk=sg_block):
+                pm = re.search(
+                    r'XXparameter\|' + re.escape(pname) + r'\|([^|]*)\|',
+                    blk
+                )
+                return pm.group(1).strip() if pm else ""
+
+            def _clean_var(v):
+                # $\{VAR\} -> ${VAR}; deja la referencia legible para resolver
+                # despues contra los params del grafo.
+                return (v or "").replace("\\{", "{").replace("\\}", "}").replace("\\$", "$")
+
+            db_source = {}
+            if node_kind == "SOURCE":
+                hive_db = _clean_var(_sg_param("HIVE_DB") or _sg_param("DATABASE"))
+                hive_table = _clean_var(_sg_param("HIVE_TABLE") or _sg_param("TABLE"))
+                hive_filter = _clean_var(_sg_param("HIVE_FILTER") or _sg_param("FILTER_EXPR"))
+                fmt = _sg_param("FILE_FORMAT")
+                if hive_table:
+                    db_source["dbms"] = "hive"
+                    db_source["database"] = hive_db
+                    db_source["table"] = hive_table
+                    if hive_filter and hive_filter not in ("1", ""):
+                        db_source["filter"] = hive_filter
+                    if fmt:
+                        db_source["format"] = fmt
+                    # query legible para el extractor
+                    tbl_ref = f"{hive_db}.{hive_table}" if hive_db else hive_table
+                    q = f"SELECT * FROM {tbl_ref}"
+                    if hive_filter and hive_filter not in ("1", ""):
+                        q += f" WHERE {hive_filter}"
+                    db_source["query"] = q
+            else:  # SINK a base de datos
+                dbms = _sg_param("dbms") or "oracle"
+                table_spec = _clean_var(_sg_param("table_spec"))
+                oracle_db = _clean_var(_sg_param("ORACLE_DB"))
+                oracle_table = _clean_var(_sg_param("ORACLE_TABLE"))
+                config_file = _clean_var(_sg_param("config_file"))
+                db_source["dbms"] = dbms
+                if table_spec:
+                    db_source["table"] = table_spec
+                elif oracle_table:
+                    db_source["table"] = (f"{oracle_db}.{oracle_table}"
+                                          if oracle_db else oracle_table)
+                if config_file:
+                    db_source["config_file"] = config_file
+
+            if db_source:
+                collapsed_node["db_source"] = db_source
+                print(f"  [dbg]   {sg_name} db_source={db_source}")
+
+        node_by_id[sg_id] = collapsed_node
+        print(f"  [dbg] Collapsed {node_kind} subgraph {sg_name}: {len(children_of_sg)} internal components → 1 {node_kind} node")
     
     # Also redirect any port mappings that point to collapsed children
     # This ensures edges resolved via oport_to_vertex/iport_to_vertex go to the SINK

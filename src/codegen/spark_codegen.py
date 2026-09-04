@@ -1552,7 +1552,28 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                 table = rule.get("table") if rule else None
                 conn = rule.get("connection") if rule else None
 
-                if src_type == "kafka" and topic:
+                source_filter = rule.get("source_filter") if rule else None
+                if src_type == "hive" and table:
+                    # Lectura de tabla Hive (subgrafo Read_Hive_Table colapsado).
+                    # spark.read.table(...) en UNA linea: en AWS lee la tabla real
+                    # (requiere enableHiveSupport); en la prueba local el harness lo
+                    # intercepta e inyecta el dataset sintetico por nombre de nodo.
+                    f.write(f'{var_id}_df = spark.read.table("{table}")\n')
+                    if source_filter:
+                        # Solo emitir el filtro si parece SQL simple. Los HIVE_FILTER
+                        # de Ab Initio suelen traer casts tipo (date("YYYY-MM-DD"))(col)
+                        # o $\{VAR\} sin resolver, que no son SparkSQL valido: en ese
+                        # caso lo dejamos documentado en comentario para no romper.
+                        _f = source_filter
+                        _abinitio = ('date(' in _f or '${' in _f.replace('\\', '')
+                                     or '$(' in _f or 'datetime_add' in _f
+                                     or _f.strip() in ('1', ''))
+                        if _abinitio:
+                            f.write(f'# HIVE_FILTER (revisar, sintaxis Ab Initio no traducida): {_one_line(_f, 120)}\n')
+                        else:
+                            filt = _f.replace('"', '\\"')
+                            f.write(f'{var_id}_df = {var_id}_df.where("{filt}")  # HIVE_FILTER del grafo\n')
+                elif src_type == "kafka" and topic:
                     f.write(f'{var_id}_df = spark.readStream.format("kafka")')
                     f.write(f'.option("kafka.bootstrap.servers", "{conn or "localhost:9092"}")')
                     f.write(f'.option("subscribe", "{topic}").load()\n')
