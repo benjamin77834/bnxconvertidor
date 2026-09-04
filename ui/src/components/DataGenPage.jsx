@@ -48,17 +48,40 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
   const [nodeName, setNodeName] = useState('manual_dataset')
 
   // --- Comunes ---
+  // Persistencia: el trabajo de Data Redactada (datos generados, resultado de la
+  // prueba, consola, comparacion, reporte) sobrevive a recargas de pagina y a
+  // cambios de pestana. Se guarda en localStorage y solo se limpia cuando cambia
+  // el grafo del Compiler o el usuario pulsa "Limpiar". Asi no se pierde el avance.
+  const LS = {
+    result: 'bnx_dg_result', runResult: 'bnx_dg_runResult', console: 'bnx_dg_console',
+    downloads: 'bnx_dg_downloads', report: 'bnx_dg_report', compare: 'bnx_dg_compare',
+    fp: 'bnx_dg_graph_fp',
+  }
+  const _lsGetJSON = (k, fb) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : fb } catch { return fb } }
+  const _lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)) } catch {} }
+  // Huella del grafo actual del Compiler (para detectar cuando cambia).
+  const _graphFp = (s) => {
+    s = s || ''
+    let h = 0
+    for (let i = 0; i < s.length; i++) { h = ((h << 5) - h + s.charCodeAt(i)) | 0 }
+    return `${s.length}:${h}`
+  }
+
   const [nRows, setNRows] = useState(10)
   const [format, setFormat] = useState('csv')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [result, setResult] = useState(null) // {mode, schema, datasets}
+  const [result, setResult] = useState(() => _lsGetJSON(LS.result, null)) // {mode, schema, datasets}
   const [activeDataset, setActiveDataset] = useState(0)
   const [ioFilter, setIoFilter] = useState('all') // 'all' | 'input' | 'output'
 
   // --- Ejecutar prueba PySpark (consola en vivo) ---
   const [running, setRunning] = useState(false)
-  const [runTimeout, setRunTimeout] = useState(300) // limite de tiempo (s), configurable
+  // Limite de tiempo (s), configurable. Default 10 min (600s): las pruebas
+  // locales de grafos medianos/grandes no deben cortarse a 5 min.
+  const [runTimeout, setRunTimeout] = useState(() => {
+    try { return Number(localStorage.getItem('bnx_dg_timeout')) || 600 } catch { return 600 }
+  })
   // URL base de la EC2 interna de DataLab (subnet privada). Configurable y
   // persistida: cada quien pega la IP privada de la instancia cuando exista
   // (p.ej. http://10.0.1.23:8081). Vacio = solo esta disponible "Probar local".
@@ -66,14 +89,14 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
     try { return localStorage.getItem('bnx_ec2_url') || '' } catch { return '' }
   })
   const [showEc2Config, setShowEc2Config] = useState(false)
-  const [runResult, setRunResult] = useState(null) // {ok, summary, reads, writes}
-  const [consoleLines, setConsoleLines] = useState([]) // lineas en vivo
-  const [localDownloads, setLocalDownloads] = useState([]) // [{name, path}] CSV de resultado local
-  const [runReport, setRunReport] = useState(null) // {totals, inputs, outputs, flow, flow_counts}
+  const [runResult, setRunResult] = useState(() => _lsGetJSON(LS.runResult, null)) // {ok, summary, reads, writes}
+  const [consoleLines, setConsoleLines] = useState(() => _lsGetJSON(LS.console, [])) // lineas en vivo
+  const [localDownloads, setLocalDownloads] = useState(() => _lsGetJSON(LS.downloads, [])) // [{name, path}] CSV de resultado local
+  const [runReport, setRunReport] = useState(() => _lsGetJSON(LS.report, null)) // {totals, inputs, outputs, flow, flow_counts}
 
   // --- Comparar performance (original vs optimizado) ---
   const [comparing, setComparing] = useState(false)
-  const [compareResult, setCompareResult] = useState(null) // {original, optimized, speedup, faster_pct, equivalent, ...}
+  const [compareResult, setCompareResult] = useState(() => _lsGetJSON(LS.compare, null)) // {original, optimized, speedup, faster_pct, equivalent, ...}
 
   // --- Enviar a AWS ---
   const [awsSending, setAwsSending] = useState(false)
@@ -92,6 +115,38 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
   const awsLog = (m) => setAwsLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${m}`])
 
   useEffect(() => () => { if (awsPollRef.current) clearInterval(awsPollRef.current) }, [])
+
+  // Persistir el trabajo en localStorage cada vez que cambia (sobrevive a
+  // recargas y a cambios de pestana).
+  useEffect(() => { _lsSet(LS.result, result) }, [result])
+  useEffect(() => { _lsSet(LS.runResult, runResult) }, [runResult])
+  useEffect(() => { _lsSet(LS.console, consoleLines) }, [consoleLines])
+  useEffect(() => { _lsSet(LS.downloads, localDownloads) }, [localDownloads])
+  useEffect(() => { _lsSet(LS.report, runReport) }, [runReport])
+  useEffect(() => { _lsSet(LS.compare, compareResult) }, [compareResult])
+  useEffect(() => { try { localStorage.setItem('bnx_dg_timeout', String(runTimeout)) } catch {} }, [runTimeout])
+
+  // Limpiar TODO el trabajo (datos, resultado de prueba, consola, comparacion).
+  const clearWork = () => {
+    setResult(null); setRunResult(null); setConsoleLines([])
+    setLocalDownloads([]); setRunReport(null); setCompareResult(null)
+    setError(''); setActiveDataset(0)
+    Object.values(LS).forEach(k => { try { localStorage.removeItem(k) } catch {} })
+  }
+
+  // Auto-limpiar cuando cambia el grafo del Compiler: los resultados viejos ya no
+  // corresponden al grafo nuevo. Se compara la huella del .mp; en el primer render
+  // solo se registra (no borra) para no perder el trabajo persistido de una sesion.
+  useEffect(() => {
+    const fp = _graphFp(graphMp)
+    let prev = null
+    try { prev = localStorage.getItem(LS.fp) } catch {}
+    if (prev !== null && prev !== fp) {
+      clearWork()
+    }
+    try { localStorage.setItem(LS.fp, fp) } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [graphMp])
 
   const sendToAWS = async () => {
     setAwsSending(true)
@@ -424,11 +479,23 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: 24, display: 'flex', flexDirection: 'column', gap: 16 }}>
       {/* Header */}
-      <div>
-        <h2 style={{ margin: 0, fontSize: 22, color: t.text || '#e2e8f0' }}>🧪 Data Redactada</h2>
-        <p style={{ margin: '4px 0 0', fontSize: 13, color: t.muted || '#94a3b8' }}>
-          Genera datos sintéticos con PII enmascarada. Desde el grafo convertido o definiendo el esquema manualmente.
-        </p>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 22, color: t.text || '#e2e8f0' }}>🧪 Data Redactada</h2>
+          <p style={{ margin: '4px 0 0', fontSize: 13, color: t.muted || '#94a3b8' }}>
+            Genera datos sintéticos con PII enmascarada. Desde el grafo convertido o definiendo el esquema manualmente.
+          </p>
+          <p style={{ margin: '2px 0 0', fontSize: 11, color: t.dim || '#64748b' }}>
+            Tu trabajo se conserva al cambiar de pestaña o recargar. Se limpia solo al cambiar el grafo del Compiler.
+          </p>
+        </div>
+        {(result || runResult || consoleLines.length > 0 || compareResult) && (
+          <button onClick={clearWork} title="Borra datos generados, resultado de prueba, consola y comparación"
+            style={{
+              padding: '8px 14px', borderRadius: 8, cursor: 'pointer', fontSize: 13, whiteSpace: 'nowrap',
+              background: '#ef444418', border: '1px solid #ef444440', color: '#ef4444', fontWeight: 600,
+            }}>🧹 Limpiar</button>
+        )}
       </div>
 
       {/* Estado del codigo del Compiler (diagnostico) */}
