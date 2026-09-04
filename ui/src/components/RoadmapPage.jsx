@@ -164,6 +164,75 @@ const COMPLEXITY_STATUS = [
   },
 ]
 
+// Resumen honesto de lo que FALTA. Agrupado por area, con prioridad, para que
+// quede claro que sigue pendiente sin tener que expandir todo el timeline.
+const PENDIENTES = [
+  {
+    area: 'Conversion (grafos altos)',
+    priority: 'alta',
+    items: [
+      'Concatenate/Gather/Partition reales (hoy caen a passthrough)',
+      'DML con loops/vectores (hoy TODO/UDF manual)',
+      'Resolucion robusta de join keys en grafos densos',
+      'Resolver lookup como join real cuando la tabla esta conectada',
+      'Validar los 3 grafos mas grandes (apartados en bnx_library/ERROR/)',
+    ],
+  },
+  {
+    area: 'Testing / correctitud',
+    priority: 'alta',
+    items: [
+      'Formalizar el barrido de 36 grafos como suite pytest (cobertura >=60%)',
+      'Unit tests por parser (mp, xfr, dml, pset, plan, cobol) y por codegen',
+      'Exportar salidas reales de Ab Initio como golden data (validar contra produccion, no solo referencia sintetica)',
+    ],
+  },
+  {
+    area: 'Seguridad (SAST/DAST)',
+    priority: 'media',
+    items: [
+      'SAST scan (Checkmarx/Fortify/SonarQube Security) + remediacion',
+      'Input validation en todos los parsers',
+      'Dependency check (pip audit) sin CVEs',
+      'Threat model basico documentado',
+    ],
+  },
+  {
+    area: 'Code quality (SonarQube)',
+    priority: 'media',
+    items: [
+      'Configurar scanner + sonar-project.properties',
+      'Quality gate: 0 Critical, 0 Blocker, 0 vulnerabilities',
+      'Reducir code smells (duplicacion, complejidad)',
+    ],
+  },
+  {
+    area: 'SDLC bancario / documentacion',
+    priority: 'media',
+    items: [
+      'SAD (arquitectura) + DFD (flujo de datos) formato banco',
+      'Runbook operativo + plan de rollback + matriz de riesgos',
+      'Pipeline CI/CD del banco (lint -> test -> sonar -> security -> build -> deploy)',
+    ],
+  },
+  {
+    area: 'QA + CAB + Produccion',
+    priority: 'baja',
+    items: [
+      'QA formal + pruebas de regresion/performance/stress + UAT + sign-off',
+      'RFC + CAB (Change Advisory Board) + ventana de cambio',
+      'Deploy PROD + smoke tests + monitoreo CloudWatch/SNS + handover L1/L2/L3',
+    ],
+  },
+  {
+    area: 'Infraestructura',
+    priority: 'baja',
+    items: [
+      'EC2 en DataLab (cuenta correcta): pendiente IAM role + accesos del equipo DataLab',
+    ],
+  },
+]
+
 export default function RoadmapPage({ theme }) {
   const t = theme || {}
   const [expandedMes, setExpandedMes] = useState('mes1')
@@ -179,13 +248,20 @@ export default function RoadmapPage({ theme }) {
   return (
     <div style={{ padding: 32, overflowY: 'auto', height: '100%', display: 'flex', flexDirection: 'column', gap: 24 }}>
       {/* Header */}
-      <div>
-        <h2 style={{ fontSize: 22, fontWeight: 700, color: t.text || '#e2e8f0', margin: 0 }}>
-          Roadmap - Plan de Trabajo 3 Meses
-        </h2>
-        <p style={{ fontSize: 14, color: t.dim || '#64748b', marginTop: 4 }}>
-          SDLC Bancario + SonarQube + Produccion
-        </p>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16 }}>
+        <div>
+          <h2 style={{ fontSize: 22, fontWeight: 700, color: t.text || '#e2e8f0', margin: 0 }}>
+            Roadmap - Plan de Trabajo 3 Meses
+          </h2>
+          <p style={{ fontSize: 14, color: t.dim || '#64748b', marginTop: 4 }}>
+            SDLC Bancario + SonarQube + Produccion
+          </p>
+        </div>
+        <button onClick={() => window.print()} className="no-print" style={{
+          padding: '8px 16px', borderRadius: 8, cursor: 'pointer', fontSize: 13, whiteSpace: 'nowrap',
+          background: (t.accent || '#6366f1') + '20', border: `1px solid ${t.accent || '#6366f1'}40`,
+          color: t.accent || '#6366f1', fontWeight: 600,
+        }}>📄 Exportar PDF</button>
       </div>
 
       {/* Estatus del convertidor por complejidad */}
@@ -236,6 +312,43 @@ export default function RoadmapPage({ theme }) {
               <span style={{ color: t.dim || '#64748b', fontSize: 11 }}>{e.impact}</span>
             </div>
           ))}
+        </div>
+      </div>
+
+      {/* Resumen de faltantes */}
+      <div style={card}>
+        <h3 style={{ fontSize: 16, fontWeight: 600, color: t.text || '#e2e8f0', marginBottom: 4 }}>
+          Resumen de faltantes
+        </h3>
+        <p style={{ fontSize: 12, color: t.dim || '#64748b', marginBottom: 14 }}>
+          Lo que aun no esta hecho, agrupado por area y prioridad. Honesto: el convertidor cubre bajo/medio; falta lo de abajo para produccion bancaria.
+        </p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {PENDIENTES.map((p, i) => {
+            const pc = p.priority === 'alta' ? '#ef4444' : p.priority === 'media' ? '#f59e0b' : '#22c55e'
+            return (
+              <div key={i} style={{
+                background: t.bg || '#0f1117', borderRadius: 10, padding: 14,
+                border: `1px solid ${pc}44`,
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: t.text || '#e2e8f0' }}>{p.area}</span>
+                  <span style={{
+                    fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4,
+                    color: pc, background: `${pc}22`, textTransform: 'uppercase',
+                  }}>{p.priority}</span>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, paddingLeft: 4 }}>
+                  {p.items.map((it, j) => (
+                    <div key={j} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 12 }}>
+                      <span style={{ color: pc, fontFamily: 'monospace', fontWeight: 700 }}>[ ]</span>
+                      <span style={{ color: t.muted || '#94a3b8', lineHeight: 1.5 }}>{it}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          })}
         </div>
       </div>
 
