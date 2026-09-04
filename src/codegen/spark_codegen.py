@@ -184,6 +184,21 @@ def _is_untranslatable(mapped):
         return True
     if re.search(r'\bthen\s+end\b', low):     # CASE WHEN ... THEN END (rama vacia -> roto)
         return True
+    # Test ternario Ab Initio con '?' pegado al predicado (is_null?, is_defined?,
+    # is_blank?, is_valid?). No es SQL de Spark y su '?' rompe el parser (ademas
+    # confunde a la regex del ternario, que produce un CASE WHEN a medio traducir).
+    if re.search(r'\bis_(?:null|defined|blank|valid)\s*\?', low):
+        return True
+    # Cualquier '?' remanente: en SQL de Spark '?' solo es placeholder de bind, no
+    # un operador ternario. Si sobrevivio, la traduccion del ternario fallo.
+    if '?' in mapped:
+        return True
+    # Cast Ab Initio crudo sin traducir: (decimal(6,zerofill))x, (string(N))x, etc.
+    # Aparece cuando el 2do argumento no es numerico (p.ej. 'zerofill') o el target
+    # es una expresion parentizada, casos que translate_abinitio_casts no cubre.
+    # Ese prefijo '(tipo(args))' no es valido en Spark SQL -> ParseException.
+    if re.search(r'\((?:string|decimal|integer|int|long|double|real)\s*\([^)]*\)\)', low):
+        return True
     return False
 
 
@@ -773,11 +788,18 @@ def _inline_local_vars(expr, var_exprs):
 
 
 def _abinitio_cast_to_spark(tipo, args, target):
-    """Construye CAST(target AS TIPO) desde un cast Ab Initio (tipo(args))target."""
+    """Construye CAST(target AS TIPO) desde un cast Ab Initio (tipo(args))target.
+
+    args puede traer un modificador Ab Initio no numerico (p.ej. 'zerofill',
+    'unsigned') junto a la precision: decimal(6,zerofill). Se conservan solo los
+    tokens NUMERICOS (precision/escala) y se ignora el modificador, que no tiene
+    equivalente en el tipo SQL de Spark.
+    """
     if tipo == "decimal":
         # (decimal(18,2)) o (decimal(18.2)) → DECIMAL(18,2); (decimal(18)) → DECIMAL(18,0)
-        parts = [p.strip() for p in re.split(r'[,.]', args) if p.strip()]
-        if len(parts) == 2:
+        # (decimal(6,zerofill)) → DECIMAL(6,0)  (zerofill es un modificador, no escala)
+        parts = [p.strip() for p in re.split(r'[,.]', args) if p.strip().isdigit()]
+        if len(parts) >= 2:
             spark_type = f"DECIMAL({parts[0]},{parts[1]})"
         elif len(parts) == 1:
             spark_type = f"DECIMAL({parts[0]},0)"
@@ -801,8 +823,10 @@ def translate_abinitio_casts(expr):
     """
     if not expr or '(' not in expr:
         return expr
+    # args admite modificador no numerico (decimal(6,zerofill)); _abinitio_cast_to_spark
+    # ignora los tokens no numericos.
     _cast_prefix_re = re.compile(
-        r'\((string|decimal|integer|int|long|double|real)\(\s*([\d,.\s]+)\)\)\s*'
+        r'\((string|decimal|integer|int|long|double|real)\(\s*([\w,.\s]+)\)\)\s*'
     )
     guard = 0
     while guard < 50:
@@ -813,6 +837,14 @@ def translate_abinitio_casts(expr):
         tipo = m.group(1)
         args = m.group(2).strip()
         rest = expr[m.end():]
+        # Target parentizado: (expr)
+        if rest.startswith('('):
+            close = _match_paren(rest, 0)
+            if close != -1:
+                target = rest[:close + 1]
+                after = rest[close + 1:]
+                expr = expr[:m.start()] + _abinitio_cast_to_spark(tipo, args, target) + after
+                continue
         tm = re.match(r'[A-Za-z_][\w.]*', rest)
         if not tm:
             # Sin target claro: eliminar el prefijo de cast y continuar
@@ -1130,27 +1162,14 @@ def _translate_dml_expr(expr_clean):
         tipo = m.group(1)
         args = m.group(2).strip()  # el (largo) o (precision,escala)
         target = m.group(3)
-        if tipo == "decimal":
-            # (decimal(18,2)) o (decimal(18.2)) → DECIMAL(18,2); (decimal(18)) → DECIMAL(18,0)
-            # Ab Initio usa coma O punto como separador precision/escala.
-            parts = [p.strip() for p in re.split(r'[,.]', args) if p.strip()]
-            if len(parts) == 2:
-                spark_type = f"DECIMAL({parts[0]},{parts[1]})"
-            elif len(parts) == 1:
-                spark_type = f"DECIMAL({parts[0]},0)"
-            else:
-                spark_type = "DECIMAL(38,10)"
-        else:
-            spark_type = {
-                "string": "STRING", "integer": "INT",
-                "int": "INT", "long": "BIGINT", "double": "DOUBLE", "real": "DOUBLE",
-            }.get(tipo, "STRING")
-        return f'CAST({target} AS {spark_type})'
+        return _abinitio_cast_to_spark(tipo, args, target)
 
-    # (tipo(numeros))seguido_de_identificador_o_funcion (incluye llamadas con
-    # parentesis ANIDADOS, p.ej. (string(10))string_prefix(trim(x),10)).
-    # Detectamos el prefijo de cast y luego tomamos el target balanceando parentesis.
-    _cast_prefix_re = re.compile(r'\((string|decimal|integer|int|long|double|real)\(\s*([\d,.\s]+)\)\)\s*')
+    # (tipo(numeros[,modificador]))seguido_de_target.
+    # El target puede ser: identificador, llamada a funcion, o expresion
+    # parentizada (num_cliente % 1000000). Los args pueden incluir un modificador
+    # Ab Initio no numerico (p.ej. decimal(6,zerofill) rellena con ceros); se
+    # ignora el modificador y se conserva la precision numerica.
+    _cast_prefix_re = re.compile(r'\((string|decimal|integer|int|long|double|real)\(\s*([\w,.\s]+)\)\)\s*')
     guard = 0
     while guard < 50:
         guard += 1
@@ -1160,6 +1179,15 @@ def _translate_dml_expr(expr_clean):
         tipo = m.group(1)
         args = m.group(2).strip()
         rest = mapped[m.end():]
+        # Target parentizado: (expr) — capturar balanceando parentesis.
+        if rest.startswith('('):
+            close = _match_paren(rest, 0)
+            if close != -1:
+                target = rest[:close + 1]
+                after = rest[close + 1:]
+                cast_sql = _abinitio_cast_to_spark(tipo, args, target)
+                mapped = mapped[:m.start()] + cast_sql + after
+                continue
         # Tomar el identificador/llamada que sigue, balanceando parentesis anidados
         tm = re.match(r'[A-Za-z_][\w.]*', rest)
         if not tm:
@@ -1174,15 +1202,11 @@ def _translate_dml_expr(expr_clean):
             if close != -1:
                 target = target + after[:close + 1]
                 after = after[close + 1:]
-        # Construir el CAST usando la logica de _cast_num sobre 'target'
-        class _M:
-            def group(self, i):
-                return [None, tipo, args, target][i]
-        cast_sql = _cast_num(_M())
+        cast_sql = _abinitio_cast_to_spark(tipo, args, target)
         mapped = mapped[:m.start()] + cast_sql + after
 
     # Limpiar cualquier cast numerico remanente sin target claro: (string(40)) → nada
-    mapped = re.sub(r'\((?:string|decimal|integer|int|long|double|real)\(\s*[\d,.\s]+\)\)\s*', '', mapped)
+    mapped = re.sub(r'\((?:string|decimal|integer|int|long|double|real)\(\s*[\w,.\s]+\)\)\s*', '', mapped)
 
     mapped = mapped.strip()
 
