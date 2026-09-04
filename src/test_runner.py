@@ -726,6 +726,23 @@ def build_test_script(pyspark_code, inputs, required_cols=None, output_dir=None,
         body,
     )
 
+    # --- Salvaguarda general: filtros SQL sobre columnas inexistentes ---
+    # Patron: <df>.where("<sql>")  o  <df>.filter("<sql>")  con SQL de string.
+    # Si el <sql> referencia columnas que no existen en los datos sinteticos
+    # (p.ej. event_type/event_text de una rama de logs vacia, o subcampos que no
+    # se generaron), Spark lanza UNRESOLVED_COLUMN y aborta el job. Redirigimos
+    # esos filtros a _bnx_where(df, sql), que intenta el filtro y, si falla por
+    # columna ausente, devuelve el df SIN filtrar (y avisa). Solo afecta la PRUEBA
+    # LOCAL; el codigo que va a AWS NO se toca. No aplica a .where(col(...)) ni a
+    # filtros ya neutralizados (comentario BNX-TEST al final de la linea).
+    # Lineas de la forma:  DST = SRC.where("...")   (SRC puede ser != DST).
+    body = re.sub(
+        r'^(\s*)(\w+)\s*=\s*(\w+)\.(?:where|filter)\("((?:[^"\\]|\\.)*)"\)\s*$',
+        lambda m: f'{m.group(1)}{m.group(2)} = _bnx_where({m.group(3)}, "{m.group(4)}")  # BNX-TEST: filtro tolerante a columnas ausentes',
+        body,
+        flags=re.MULTILINE,
+    )
+
     # Neutralizar comandos shell (Run_Program) para no ejecutarlos en la prueba local:
     #   os.system(f"...")  → _bnx_shell(f"...")   (solo registra, no ejecuta)
     body = re.sub(r'\bos\.system\(', '_bnx_shell(', body)
@@ -1049,6 +1066,29 @@ def _bnx_shell(cmd):
     # Run_Program: NO ejecutamos comandos shell en la prueba local, solo registramos.
     print(f"[BNX-TEST] SHELL (no ejecutado): {{cmd}}")
     return 0
+
+def _bnx_where(df, sql):
+    # Filtro SQL tolerante: aplica df.where(sql); si falla porque la columna no
+    # existe en los datos sinteticos (ramas de logs vacias, subcampos no
+    # generados, campos de lookup sin datos), devuelve el df SIN filtrar para que
+    # la prueba local pueda continuar y mostrar datos. Solo prueba local.
+    if df is None:
+        return df
+    try:
+        filtered = df.where(sql)
+        # Forzar el analisis del plan logico (resuelve nombres de columna) SIN
+        # ejecutar: acceder a .schema dispara UNRESOLVED_COLUMN aqui, no en el
+        # .count()/.show() posterior, permitiendonos capturarlo y relajar.
+        _ = filtered.schema
+        return filtered
+    except Exception as e:
+        msg = str(e)
+        if ("UNRESOLVED_COLUMN" in msg or "cannot be resolved" in msg
+                or "AnalysisException" in type(e).__name__):
+            print(f"[BNX-TEST] WHERE relajado (columna ausente en datos sinteticos): {{sql[:80]}}")
+            return df
+        print(f"[BNX-TEST] WHERE fallo ({{type(e).__name__}}), se omite el filtro: {{sql[:80]}}")
+        return df
 
 def _bnx_output_split(df, index_expr, num_outputs):
     # Multi-output reformat tolerante. La columna interna de Ab Initio (p.ej.

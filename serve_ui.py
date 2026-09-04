@@ -978,6 +978,62 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                         xfr_rules[nid_lower]["path"] = clean
                         xfr_rules[nid_lower]["path_resolved"] = True
 
+            # Propagar db_source de nodos colapsados (Read_Hive_Table -> SOURCE Hive,
+            # Output_Table -> SINK Oracle) a xfr_rules para que el codegen genere una
+            # lectura/escritura de tabla real en vez de parquet fantasma. En la
+            # prueba local el harness intercepta spark.read.table(...) igual que
+            # cualquier otra lectura y le inyecta el dataset sintetico por nombre.
+            _graph_params = ast.get("abinitio_params", {}) or {}
+
+            def _resolve_vars(val):
+                # Resuelve ${VAR} y $VAR contra los params del grafo. Si no se
+                # puede resolver, deja el nombre de variable limpio (sin ${})
+                # para que el codigo generado sea legible y editable.
+                if not val:
+                    return val
+                # Limpiar escapes Ab Initio ($\{VAR\} -> ${VAR}) primero, si no
+                # los backslashes rompen el literal Python generado.
+                val = val.replace("\\{", "{").replace("\\}", "}").replace("\\$", "$")
+                def _sub(m):
+                    # Solo sustituir si el param existe, tiene valor no vacio y NO
+                    # es un script/expresion (bash $( ), backticks, PDL $[ ],
+                    # multilinea). En esos casos dejar ${VAR} para que el runtime/
+                    # usuario lo resuelva; sustituirlo generaria codigo corrupto.
+                    v = _graph_params.get(m.group(1))
+                    if not v:
+                        return m.group(0)
+                    if any(tok in v for tok in ('$(', '`', '$[', '\n')) or '[[' in v:
+                        return m.group(0)
+                    return v
+                out = re.sub(r'\$\{(\w+)\}', _sub, val)
+                out = re.sub(r'\$(\w+)', _sub, out)
+                return out
+
+            for nd in ast.get("nodes", []):
+                db = nd.get("db_source")
+                if not db:
+                    continue
+                ntype = nd["type"].upper()
+                nid_lower = nd["id"].lower()
+                if nid_lower not in xfr_rules:
+                    xfr_rules[nid_lower] = {}
+                # El nombre de tabla puede venir como 'table' (subgrafos Hive/
+                # Oracle colapsados) o como 'query' (XXGtvertex: table_spec).
+                table = _resolve_vars(db.get("table") or db.get("query"))
+                if ntype == "SOURCE":
+                    xfr_rules[nid_lower]["source_type"] = "hive" if db.get("dbms") == "hive" else "jdbc"
+                    if table:
+                        xfr_rules[nid_lower]["table"] = table
+                    if db.get("database"):
+                        xfr_rules[nid_lower]["database"] = _resolve_vars(db["database"])
+                    if db.get("filter"):
+                        xfr_rules[nid_lower]["source_filter"] = _resolve_vars(db["filter"])
+                elif ntype == "SINK":
+                    xfr_rules[nid_lower]["sink_type"] = "jdbc"
+                    xfr_rules[nid_lower]["dbms"] = db.get("dbms", "oracle")
+                    if table:
+                        xfr_rules[nid_lower]["table"] = table
+
             # Detect missing external .xfr references and add warnings
             missing_xfr = []
             with open(mp_path, "r", encoding="utf-8", errors="replace") as f_mp:
