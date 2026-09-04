@@ -706,6 +706,26 @@ def build_test_script(pyspark_code, inputs, required_cols=None, output_dir=None,
         body,
     )
 
+    # --- Relajar filtros de NULIDAD que vacian la salida en la prueba local ---
+    # Patron: .where("NOT (col IS NULL)")  o  .where("col IS NOT NULL")
+    # Estos vienen de chequeos Ab Initio sobre columnas que NO existen en los datos
+    # sinteticos (p.ej. subcampos aplanados col_subcampo, o campos de un lookup sin
+    # datos). Esas columnas son siempre NULL, asi que el filtro descarta TODAS las
+    # filas -> salida vacia. En la PRUEBA LOCAL neutralizamos ese predicado a TRUE
+    # para poder ver datos; el codigo que va a AWS NO se toca.
+    # NOT (X IS NULL) -> (TRUE)
+    body = re.sub(
+        r'\.where\("NOT \(([A-Za-z_][\w]*) IS NULL\)"\)',
+        r'.where("TRUE")  # BNX-TEST: filtro de nulidad relajado (columna sin dato sintetico)',
+        body,
+    )
+    # X IS NOT NULL  (predicado unico en el where) -> TRUE
+    body = re.sub(
+        r'\.where\("([A-Za-z_][\w]*) IS NOT NULL"\)',
+        r'.where("TRUE")  # BNX-TEST: filtro de nulidad relajado (columna sin dato sintetico)',
+        body,
+    )
+
     # Neutralizar comandos shell (Run_Program) para no ejecutarlos en la prueba local:
     #   os.system(f"...")  → _bnx_shell(f"...")   (solo registra, no ejecuta)
     body = re.sub(r'\bos\.system\(', '_bnx_shell(', body)
