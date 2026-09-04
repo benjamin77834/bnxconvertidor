@@ -347,17 +347,41 @@ En **Windows** fallaban Data Redactada y el Compiler con `'utf-8' codec can't de
 
 ---
 
+## 4 de septiembre — Dia 44: Correctitud del generador + accuracy honesto
+
+Tres bugs del generador, cada uno encontrado revisando el PySpark de un grafo real del banco (`S655690_EAL_D_MDWH`, formato GDE nativo, 449 entidades):
+
+- **Literal de hora destrozado**: el operador de prioridad `:N:` de Ab Initio se limpiaba con un regex que tambien mataba los `:` DENTRO de literales — `'00010101 00:00:01'` quedaba `'00010101 00 01'`. Ahora la limpieza solo aplica FUERA de comillas (`_sub_outside_quotes`).
+- **Variables `let` como columnas fantasma**: un reformat con `let string v_emp_key = ...; v_emp_key = if(lookup_match(...)) ... else string_lrtrim(in.username)` generaba una columna `v_emp_key` inexistente en Spark. Ahora se **inlinean** las variables locales en las salidas `out.*` (`_extract_local_vars`/`_inline_local_vars`), y `lookup(...).campo` cae a `NULL` cuando la tabla de referencia no esta materializada (preservando el fallback `else`).
+- **Create_Data marcado como error**: un generador de cabecera/trailer (sin entrada por diseno) disparaba el warning "has no parent node". Ahora el validador lo reconoce como generador y no lo marca.
+
+Ademas se corrigio el **calculo de accuracy**, que subvaloraba los grafos GDE nativos: solo contaba `select`/`group_by` como transform resuelto, ignorando el DML embebido (`raw_transform`, `dml_fields`, `sort_by`, filtros, generadores). Ahora los cuenta como logica real y **excluye del denominador los passthrough** (Redefine/Replicate/GZip/Copy/Gather) que por diseno no transforman valores. `S655690` paso de **69.1% a 98.6%**; barrido de regresion (Form2_MN, FZZPWM39, online_fz1d85ddeposit) en **96-100%**. El codigo generado no cambio con esto — la metrica ahora mide bien lo que ya se producia.
+
+---
+
+## 4 de septiembre — Dia 45: Validacion de equivalencia de datos
+
+Hasta ahora teniamos dos formas de "medir" el convertidor y ninguna probaba **correctitud semantica**: el accuracy mide cobertura de traduccion, y el unico compare (`/optimize/compare`) solo miraba conteos de filas. Construimos la validacion de equivalencia real:
+
+- **`src/equivalence.py`**: compara la salida del PySpark generado contra una salida de **REFERENCIA** (la que produce Ab Initio en produccion) a tres niveles: **esquema** (mismas columnas), **conteo** (mismas filas) y **contenido** (multiset de filas, order-insensitive). Normaliza ruido de formato: `NULL == vacio`, `1.0 == 1`. Empareja los SINK por nombre normalizado (`salida_df` ↔ `salida`).
+- **Checksum de contenido en el harness**: `_bnx_write` emite un hash agregado order-insensitive por SINK, y `run_pyspark_test` lo propaga (`writes` ahora trae `checksum` + `columns`).
+- **Endpoint `/validate`**: regenera el PySpark del grafo, lo corre con los datos de entrada, lee los CSV de salida y los compara contra la referencia (subida como `reference` o datasets con `io=="expected"`). Devuelve `{equivalent, score, tables[...]}` con las filas exactas que difieren.
+
+Verificado end-to-end: **mismo-vs-mismo = 100% equivalente**; **mismo-vs-referencia-alterada** detecta la tabla y las filas que difieren. Nota honesta: valida contra una referencia que aportes (el CSV de Ab Initio). Para cerrar el ciclo de correctitud contra produccion hay que exportar las salidas reales de Ab Initio como golden data.
+
+---
+
 ## Estatus del convertidor por complejidad de grafo
 
-Validado **ejecutando** el PySpark generado con datos redactados (barrido de 36 grafos: 35/36 ok).
+Validado **ejecutando** el PySpark generado con datos redactados (barrido de 36 grafos: 35/36 ok) y, desde el Dia 45, con **validacion de equivalencia de datos** (esquema + conteo + contenido) contra una referencia.
 
 | Complejidad | Rango aprox. | Estatus |
 |-------------|--------------|---------|
-| **Baja** | hasta ~15 componentes / ~10 flujos | ✅ 100% — convierte y ejecuta de punta a punta |
-| **Media** | ~15-50 componentes / hasta ~46 flujos | ✅ ~95% — cubierto por el barrido, con degradaciones puntuales (alguna columna en NULL o TODO en DML complejo) |
+| **Baja** | hasta ~15 componentes / ~10 flujos | ✅ 100% — convierte y ejecuta de punta a punta; correctitud verificable con `/validate` |
+| **Media** | ~15-50 componentes / hasta ~46 flujos | ✅ ~95% — barrido + accuracy 96-100%, equivalencia validable; degradaciones puntuales (lookup a NULL sin tabla conectada, TODO en DML con loops) |
 | **Alta** | 100+ componentes / 70+ flujos, DML con loops-vectores | ❌ pendiente — NO validado |
 
-**Para llegar a "altos" falta:** implementar Concatenate/Gather/Partition reales (hoy caen a passthrough), traducir DML con loops/vectores (hoy TODO/UDF manual), resolucion robusta de join keys en grafos densos, y meter como casos de prueba los 3 grafos mas grandes (hoy apartados en `bnx_library/ERROR/`).
+**Para llegar a "altos" falta:** implementar Concatenate/Gather/Partition reales (hoy caen a passthrough), traducir DML con loops/vectores (hoy TODO/UDF manual), resolucion robusta de join keys en grafos densos, resolver `lookup` como join real cuando la tabla esta conectada, y meter como casos de prueba los 3 grafos mas grandes (hoy apartados en `bnx_library/ERROR/`).
 
 ---
 
@@ -385,6 +409,7 @@ Validado **ejecutando** el PySpark generado con datos redactados (barrido de 36 
 | Motor de accuracy | Completo |
 | Data Redactada (datos sinteticos + PII masking) | Completo |
 | Ejecutor de prueba PySpark local | Completo |
+| Validacion de equivalencia de datos (vs referencia) | Completo |
 | Optimizador de performance (reglas, sin IA) | Completo |
 | Benchmark original vs optimizado (simula nube) | Completo |
 | UI React | Completo |
@@ -399,7 +424,8 @@ Validado **ejecutando** el PySpark generado con datos redactados (barrido de 36 
 ## Que sigue (segun plan de 3 meses)
 
 1. ~~Pruebas con grafos reales del banco (5+ grafos diferentes)~~ — HECHO: barrido de 36 grafos, 35/36 ok (Dia 38)
-2. Tests unitarios al 60% de cobertura (formalizar el barrido como suite pytest)
+2. Tests unitarios al 60% de cobertura (formalizar el barrido como suite pytest) — parcial: existe `/validate` para equivalencia de datos (Dia 45), falta la suite pytest formal
+3. Exportar salidas reales de Ab Initio como golden data para validar correctitud contra produccion (no solo contra referencia sintetica)
 3. SonarQube: 0 Critical, 0 Blocker
 4. SAST/DAST scan + remediacion
 5. Pipeline CI/CD bancario

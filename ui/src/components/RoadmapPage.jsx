@@ -31,7 +31,7 @@ const ROADMAP_DATA = {
         tasks: [
           { task: 'Unit tests para cada parser (mp, xfr, dml, pset, plan, cobol)', status: 'pending' },
           { task: 'Unit tests para cada codegen (glue, spark, flink, airflow)', status: 'pending' },
-          { task: 'Integration tests: .mp real -> job.py -> ejecucion con datos sinteticos', status: 'done' },
+          { task: 'Integration tests: .mp real -> job.py -> ejecucion + equivalencia de datos vs referencia', status: 'done' },
           { task: 'Test con grafos del banco (barrido 36 grafos, 35/36 ok)', status: 'done' },
           { task: 'Documentar casos de prueba en formato banco', status: 'pending' },
           { task: 'Configurar pytest + coverage report (formalizar el barrido)', status: 'in-progress' },
@@ -136,6 +136,8 @@ const CURRENT_EFFORTS = [
   { task: 'Prueba mas rapida (local[*], shuffle=8) + timeout configurable', status: 'done', impact: 'Menos timeouts en grafos grandes' },
   { task: 'Despliegue EC2 (Spark local) + CloudFront HTTPS', status: 'done', impact: 'Prueba PySpark en la nube igual que en local' },
   { task: 'Boton EC2 interno (DataLab) + runbook, y Probar local', status: 'done', impact: 'Preparado para la cuenta correcta; pendiente permisos DataLab' },
+  { task: 'Correctitud del generador (fecha :, let/lookup, Create_Data) + accuracy honesto', status: 'done', impact: 'S655690 de 69% a 98.6%; el score ya no subvalora el DML embebido' },
+  { task: 'Validacion de equivalencia de datos (generado vs referencia)', status: 'done', impact: 'Prueba correctitud semantica: esquema+conteo+contenido, no solo que compile' },
   { task: 'Package 7z para transferencia', status: 'done', impact: 'Mover codigo a servidor seguro' },
 ]
 
@@ -145,13 +147,13 @@ const COMPLEXITY_STATUS = [
   {
     level: 'Baja',
     range: 'hasta ~15 componentes / ~10 flujos',
-    detail: 'Read/Reformat/Filter/Join/Rollup/Write estandar. Convierte y ejecuta de punta a punta.',
+    detail: 'Read/Reformat/Filter/Join/Rollup/Write estandar. Convierte y ejecuta de punta a punta. Correctitud verificable con /validate (equivalencia de datos vs referencia).',
     status: 'done', pct: '100%', color: '#22c55e',
   },
   {
     level: 'Media',
     range: '~15 a ~50 componentes / hasta ~46 flujos',
-    detail: 'Lookups, dedup, multi-join, XFR/DML moderado. Cubierto por el barrido (35/36), con degradaciones puntuales (alguna columna en NULL o TODO en DML complejo).',
+    detail: 'Lookups, dedup, multi-join, XFR/DML moderado. Cubierto por el barrido (35/36), accuracy 96-100%. Correctitud validable por equivalencia de datos (esquema+conteo+contenido). Degradaciones puntuales: lookup a NULL cuando la tabla no esta conectada, TODO en DML con loops.',
     status: 'done', pct: '~95%', color: '#22c55e',
   },
   {
