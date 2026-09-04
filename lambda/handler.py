@@ -118,6 +118,62 @@ def _generate_code(dag, xfr_rules, target):
 
 
 def _build_response(dag, ast, xfr_rules, dml_schema, target):
+    import re as _re
+
+    # Propagar data_path y db_source de los nodos del AST a xfr_rules, igual que
+    # serve_ui._compile_graph. Sin esto, los subgrafos de dataset colapsados
+    # (Read_Hive_Table -> SOURCE Hive, Output_Table -> SINK Oracle) y los
+    # SOURCE/SINK con path resuelto no obtienen su tabla/ruta en el codegen y
+    # degeneran en lecturas parquet fantasma.
+    _graph_params = ast.get("abinitio_params", {}) or {}
+
+    def _resolve_vars(val):
+        if not val:
+            return val
+        val = val.replace("\\{", "{").replace("\\}", "}").replace("\\$", "$")
+        def _sub(m):
+            v = _graph_params.get(m.group(1))
+            if not v:
+                return m.group(0)
+            if any(tok in v for tok in ('$(', '`', '$[', '\n')) or '[[' in v:
+                return m.group(0)
+            return v
+        out = _re.sub(r'\$\{(\w+)\}', _sub, val)
+        out = _re.sub(r'\$(\w+)', _sub, out)
+        return out
+
+    for nd in ast.get("nodes", []):
+        ntype = nd["type"].upper()
+        nid_lower = nd["id"].lower()
+        if "data_path" in nd:
+            clean = nd["data_path"]
+            clean = _re.sub(r'^file:', '', clean)
+            clean = _re.sub(r'\$\\?\{?\w+\\?\}?/', '', clean)
+            clean = _re.sub(r'/+', '/', clean).lstrip('/')
+            if not clean:
+                clean = nid_lower
+            if ntype in ("SOURCE", "SINK"):
+                xfr_rules.setdefault(nid_lower, {})
+                xfr_rules[nid_lower]["path"] = clean
+                xfr_rules[nid_lower]["path_resolved"] = True
+        db = nd.get("db_source")
+        if db:
+            xfr_rules.setdefault(nid_lower, {})
+            table = _resolve_vars(db.get("table") or db.get("query"))
+            if ntype == "SOURCE":
+                xfr_rules[nid_lower]["source_type"] = "hive" if db.get("dbms") == "hive" else "jdbc"
+                if table:
+                    xfr_rules[nid_lower]["table"] = table
+                if db.get("database"):
+                    xfr_rules[nid_lower]["database"] = _resolve_vars(db["database"])
+                if db.get("filter"):
+                    xfr_rules[nid_lower]["source_filter"] = _resolve_vars(db["filter"])
+            elif ntype == "SINK":
+                xfr_rules[nid_lower]["sink_type"] = "jdbc"
+                xfr_rules[nid_lower]["dbms"] = db.get("dbms", "oracle")
+                if table:
+                    xfr_rules[nid_lower]["table"] = table
+
     errors, warnings = validate(dag, xfr_rules, dml_schema)
 
     # Errores NO bloqueantes: nodos sin padre (Create_Data/generadores),
