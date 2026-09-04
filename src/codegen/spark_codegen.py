@@ -1380,7 +1380,8 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
         f.write("from pyspark.sql import SparkSession\n")
         f.write("from pyspark.sql.functions import *\n")
         f.write("from pyspark.sql import functions as F\n")
-        f.write("from pyspark.sql.window import Window\n\n")
+        f.write("from pyspark.sql.window import Window\n")
+        f.write("from pyspark.sql.types import StructType\n\n")
         f.write('spark = SparkSession.builder.appName("BNX_Pipeline").getOrCreate()\n\n')
         f.write('# =========================\n# PARAMETERS\n# =========================\n')
         f.write('class PARAMS:\n')
@@ -1568,6 +1569,12 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                         f.write(f'# Run_Program: no commandline extracted from MP\n')
                         f.write(f'# os.system(f"{{PARAMS.BASE_PATH}}/scripts/{var_id.lower()}.sh")\n')
                         f.write(f'{var_id}_df = None  # Run_Program has no dataframe output\n')
+                    elif not node.children:
+                        # Nodo TRANSFORM aislado: sin padre y sin hijos. Es un
+                        # componente DESCONECTADO en el grafo original de Ab Initio
+                        # (deshabilitado o sin flujos). No es un fallo de conversion.
+                        f.write(f'# [i] Componente aislado en el grafo original (sin entradas ni salidas conectadas)\n')
+                        f.write(f'{var_id}_df = spark.createDataFrame([], StructType([]))  # nodo desconectado en origen\n')
                     else:
                         f.write(f'{var_id}_df = None\n')
                 f.write(f'print("[~] TRANSFORM: {log_name}")\n\n')
