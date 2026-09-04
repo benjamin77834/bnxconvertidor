@@ -813,53 +813,89 @@ def _abinitio_cast_to_spark(tipo, args, target):
     return f'CAST({target} AS {spark_type})'
 
 
-def translate_abinitio_casts(expr):
-    """Traduce casts Ab Initio con longitud numerica remanentes: (tipo(N[,M]))x → CAST(x AS TIPO).
+# Prefijo de cast Ab Initio con longitud numerica: (tipo(N[,M[,modificador]]))
+# args admite tokens no numericos (p.ej. 'zerofill'); _abinitio_cast_to_spark
+# ignora los no numericos.
+_ABINITIO_CAST_PREFIX_RE = re.compile(
+    r'\((string|decimal|integer|int|long|double|real)\(\s*([\w,.\s]+)\)\)\s*'
+)
 
-    Reutilizable como salvaguarda: aplica la misma logica que _translate_dml_expr
-    sobre expresiones que pudieron haber quedado con el cast crudo Ab Initio
-    (p.ej. substring((decimal(17,2))campo, 0, 17)). Balancea parentesis para
-    soportar targets que son llamadas a funcion anidadas.
+
+def _resolve_cast_target(rest):
+    """Dado el texto que sigue a un prefijo de cast, devuelve (target_sql, after).
+
+    Maneja tres formas de target:
+      1) Otro prefijo de cast encadenado: (tipo(..))X  → resuelve el interno
+         PRIMERO y anida: CAST(CAST(X AS TIPO_INT) AS TIPO_EXT) lo arma el caller.
+         Aqui devolvemos ya el CAST interno como target.
+      2) Expresion parentizada: (expr)  → toma el bloque balanceado.
+      3) Identificador o llamada a funcion: id / func(args...) balanceado.
+    Devuelve (None, rest) si no hay target reconocible.
+    """
+    # 1) Cast encadenado: el target es a su vez un cast Ab Initio.
+    mc = _ABINITIO_CAST_PREFIX_RE.match(rest)
+    if mc:
+        inner_tipo = mc.group(1)
+        inner_args = mc.group(2).strip()
+        inner_target, after = _resolve_cast_target(rest[mc.end():])
+        if inner_target is None:
+            return None, rest
+        return _abinitio_cast_to_spark(inner_tipo, inner_args, inner_target), after
+    # 2) Expresion parentizada.
+    if rest.startswith('('):
+        close = _match_paren(rest, 0)
+        if close != -1:
+            return rest[:close + 1], rest[close + 1:]
+        return None, rest
+    # 3) Identificador o llamada a funcion.
+    tm = re.match(r'[A-Za-z_][\w.]*', rest)
+    if not tm:
+        return None, rest
+    target = tm.group(0)
+    after = rest[tm.end():]
+    if after.startswith('('):
+        close = _match_paren(after, 0)
+        if close != -1:
+            target = target + after[:close + 1]
+            after = after[close + 1:]
+    return target, after
+
+
+def _apply_abinitio_casts(expr):
+    """Traduce TODOS los prefijos de cast Ab Initio de 'expr' a CAST(...) de Spark.
+
+    Soporta casts simples, casts sobre expresiones parentizadas, casts sobre
+    llamadas a funcion y CADENAS de casts (string(20))(decimal(20))campo →
+    CAST(CAST(campo AS DECIMAL(20,0)) AS STRING).
     """
     if not expr or '(' not in expr:
         return expr
-    # args admite modificador no numerico (decimal(6,zerofill)); _abinitio_cast_to_spark
-    # ignora los tokens no numericos.
-    _cast_prefix_re = re.compile(
-        r'\((string|decimal|integer|int|long|double|real)\(\s*([\w,.\s]+)\)\)\s*'
-    )
     guard = 0
     while guard < 50:
         guard += 1
-        m = _cast_prefix_re.search(expr)
+        m = _ABINITIO_CAST_PREFIX_RE.search(expr)
         if not m:
             break
         tipo = m.group(1)
         args = m.group(2).strip()
-        rest = expr[m.end():]
-        # Target parentizado: (expr)
-        if rest.startswith('('):
-            close = _match_paren(rest, 0)
-            if close != -1:
-                target = rest[:close + 1]
-                after = rest[close + 1:]
-                expr = expr[:m.start()] + _abinitio_cast_to_spark(tipo, args, target) + after
-                continue
-        tm = re.match(r'[A-Za-z_][\w.]*', rest)
-        if not tm:
-            # Sin target claro: eliminar el prefijo de cast y continuar
-            expr = expr[:m.start()] + rest
+        target, after = _resolve_cast_target(expr[m.end():])
+        if target is None:
+            # Sin target reconocible: quitar el prefijo para no dejar sintaxis cruda.
+            expr = expr[:m.start()] + expr[m.end():]
             continue
-        target = tm.group(0)
-        after = rest[tm.end():]
-        if after.startswith('('):
-            close = _match_paren(after, 0)
-            if close != -1:
-                target = target + after[:close + 1]
-                after = after[close + 1:]
-        cast_sql = _abinitio_cast_to_spark(tipo, args, target)
-        expr = expr[:m.start()] + cast_sql + after
+        expr = expr[:m.start()] + _abinitio_cast_to_spark(tipo, args, target) + after
     return expr
+
+
+def translate_abinitio_casts(expr):
+    """Traduce casts Ab Initio con longitud numerica remanentes: (tipo(N[,M]))x → CAST(x AS TIPO).
+
+    Salvaguarda reutilizable: delega en _apply_abinitio_casts, que soporta casts
+    simples, encadenados ((string(20))(decimal(20))campo), targets parentizados y
+    llamadas a funcion. Se conserva el nombre por compatibilidad con las llamadas
+    existentes.
+    """
+    return _apply_abinitio_casts(expr)
 
 
 def _split_else(s):
@@ -1156,54 +1192,9 @@ def _translate_dml_expr(expr_clean):
     mapped = re.sub(r'''\([a-z]+\(['"][^'"]*['"][^)]*\)\)\s*''', '', mapped)
 
     # Type casts con LONGITUD numerica: (string(40))x, (decimal(18,2))x, (integer(4))x
-    # Ab Initio: (tipo(largo))expr  →  Spark: CAST(expr AS TIPO)
-    # expr puede ser: un identificador, o una llamada a funcion (se toma el token siguiente).
-    def _cast_num(m):
-        tipo = m.group(1)
-        args = m.group(2).strip()  # el (largo) o (precision,escala)
-        target = m.group(3)
-        return _abinitio_cast_to_spark(tipo, args, target)
-
-    # (tipo(numeros[,modificador]))seguido_de_target.
-    # El target puede ser: identificador, llamada a funcion, o expresion
-    # parentizada (num_cliente % 1000000). Los args pueden incluir un modificador
-    # Ab Initio no numerico (p.ej. decimal(6,zerofill) rellena con ceros); se
-    # ignora el modificador y se conserva la precision numerica.
-    _cast_prefix_re = re.compile(r'\((string|decimal|integer|int|long|double|real)\(\s*([\w,.\s]+)\)\)\s*')
-    guard = 0
-    while guard < 50:
-        guard += 1
-        m = _cast_prefix_re.search(mapped)
-        if not m:
-            break
-        tipo = m.group(1)
-        args = m.group(2).strip()
-        rest = mapped[m.end():]
-        # Target parentizado: (expr) — capturar balanceando parentesis.
-        if rest.startswith('('):
-            close = _match_paren(rest, 0)
-            if close != -1:
-                target = rest[:close + 1]
-                after = rest[close + 1:]
-                cast_sql = _abinitio_cast_to_spark(tipo, args, target)
-                mapped = mapped[:m.start()] + cast_sql + after
-                continue
-        # Tomar el identificador/llamada que sigue, balanceando parentesis anidados
-        tm = re.match(r'[A-Za-z_][\w.]*', rest)
-        if not tm:
-            # No hay target claro: eliminar el prefijo de cast y seguir
-            mapped = mapped[:m.start()] + rest
-            continue
-        target = tm.group(0)
-        after = rest[tm.end():]
-        # Si es una llamada de funcion, capturar los argumentos balanceados
-        if after.startswith('('):
-            close = _match_paren(after, 0)
-            if close != -1:
-                target = target + after[:close + 1]
-                after = after[close + 1:]
-        cast_sql = _abinitio_cast_to_spark(tipo, args, target)
-        mapped = mapped[:m.start()] + cast_sql + after
+    # Incluye casts ENCADENADOS (string(20))(decimal(20))campo y targets que son
+    # expresiones parentizadas o llamadas a funcion. Ver _apply_abinitio_casts.
+    mapped = _apply_abinitio_casts(mapped)
 
     # Limpiar cualquier cast numerico remanente sin target claro: (string(40)) → nada
     mapped = re.sub(r'\((?:string|decimal|integer|int|long|double|real)\(\s*[\w,.\s]+\)\)\s*', '', mapped)
