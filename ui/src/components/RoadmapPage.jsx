@@ -233,6 +233,107 @@ const PENDIENTES = [
   },
 ]
 
+// Construye un documento HTML COMPLETO (texto real, no screenshot) con todo el
+// plan de 3 meses: lo hecho y lo que falta. Se abre en una ventana e imprime a
+// PDF. No depende del estado colapsado de la UI ni de librerias externas.
+function buildPlanHTML() {
+  const esc = (s) => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  const mark = (st) => st === 'done' ? '[x]' : st === 'in-progress' ? '[~]' : '[ ]'
+  const now = new Date().toLocaleString()
+
+  let h = ''
+  h += `<h1>BNX Convertidor — Plan de Trabajo 3 Meses</h1>`
+  h += `<p class="sub">SDLC Bancario + SonarQube + Produccion · Generado: ${esc(now)}</p>`
+
+  // Estatus por complejidad
+  h += `<h2>Estatus del convertidor por complejidad de grafo</h2>`
+  h += `<table><thead><tr><th>Complejidad</th><th>Rango</th><th>%</th><th>Detalle</th></tr></thead><tbody>`
+  for (const c of COMPLEXITY_STATUS) {
+    h += `<tr><td><b>${esc(c.level)}</b></td><td>${esc(c.range)}</td><td>${esc(c.pct)}</td><td>${esc(c.detail)}</td></tr>`
+  }
+  h += `</tbody></table>`
+
+  // Esfuerzos actuales (lo hecho)
+  h += `<h2>Esfuerzos actuales (hecho / en curso)</h2><ul class="tasks">`
+  for (const e of CURRENT_EFFORTS) {
+    h += `<li><span class="m">${mark(e.status)}</span> ${esc(e.task)} <span class="imp">— ${esc(e.impact)}</span></li>`
+  }
+  h += `</ul>`
+
+  // Plan mes a mes (todo, sin colapsar) — lo hecho y lo que falta
+  for (const [, mes] of Object.entries(ROADMAP_DATA)) {
+    h += `<h2>${esc(mes.title)}</h2>`
+    for (const wk of mes.weeks) {
+      const done = wk.tasks.filter(x => x.status === 'done').length
+      h += `<h3>${esc(wk.label)} <span class="pct">(${done}/${wk.tasks.length})</span></h3><ul class="tasks">`
+      for (const task of wk.tasks) {
+        const cls = task.status === 'done' ? 'done' : task.status === 'in-progress' ? 'prog' : 'pend'
+        h += `<li class="${cls}"><span class="m">${mark(task.status)}</span> ${esc(task.task)}</li>`
+      }
+      h += `</ul>`
+    }
+  }
+
+  // Resumen de faltantes
+  h += `<h2>Resumen de faltantes</h2>`
+  for (const p of PENDIENTES) {
+    h += `<h3>${esc(p.area)} <span class="prio ${esc(p.priority)}">${esc(p.priority).toUpperCase()}</span></h3><ul class="tasks">`
+    for (const it of p.items) h += `<li class="pend"><span class="m">[ ]</span> ${esc(it)}</li>`
+    h += `</ul>`
+  }
+
+  // Riesgos
+  h += `<h2>Riesgos</h2><table><thead><tr><th>Nivel</th><th>Riesgo</th><th>Mitigacion</th></tr></thead><tbody>`
+  for (const r of RISKS) {
+    h += `<tr><td>${esc(r.level).toUpperCase()}</td><td>${esc(r.risk)}</td><td>${esc(r.mitigation)}</td></tr>`
+  }
+  h += `</tbody></table>`
+
+  const styles = `
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, Segoe UI, Arial, sans-serif; color: #111; margin: 24px; font-size: 12px; line-height: 1.5; }
+    h1 { font-size: 20px; margin: 0 0 2px; }
+    h2 { font-size: 15px; margin: 20px 0 8px; border-bottom: 2px solid #333; padding-bottom: 3px; break-after: avoid; }
+    h3 { font-size: 13px; margin: 12px 0 4px; color: #222; break-after: avoid; }
+    .sub { color: #666; margin: 0 0 8px; font-size: 11px; }
+    .pct { color: #666; font-weight: normal; font-size: 11px; }
+    table { width: 100%; border-collapse: collapse; margin: 6px 0; }
+    th, td { border: 1px solid #bbb; padding: 5px 7px; text-align: left; vertical-align: top; font-size: 11px; }
+    th { background: #eee; }
+    ul.tasks { list-style: none; padding-left: 4px; margin: 4px 0; }
+    ul.tasks li { margin: 2px 0; page-break-inside: avoid; }
+    .m { font-family: monospace; font-weight: bold; }
+    li.done .m { color: #15803d; }
+    li.prog .m { color: #b45309; }
+    li.pend .m { color: #b91c1c; }
+    li.done { color: #15803d; }
+    .imp { color: #666; }
+    .prio { font-size: 10px; padding: 1px 6px; border-radius: 3px; border: 1px solid; }
+    .prio.alta { color: #b91c1c; border-color: #b91c1c; }
+    .prio.media { color: #b45309; border-color: #b45309; }
+    .prio.baja { color: #15803d; border-color: #15803d; }
+    @page { margin: 14mm; }
+  `
+  return `<!doctype html><html><head><meta charset="utf-8"><title>BNX — Plan 3 Meses</title><style>${styles}</style></head><body>${h}</body></html>`
+}
+
+function exportPlanPDF() {
+  const html = buildPlanHTML()
+  const w = window.open('', '_blank')
+  if (!w) {
+    alert('El navegador bloqueo la ventana. Permite pop-ups para exportar el PDF.')
+    return
+  }
+  w.document.open()
+  w.document.write(html)
+  w.document.close()
+  // Esperar a que renderice antes de lanzar el dialogo de impresion.
+  w.onload = () => { w.focus(); w.print() }
+  // Fallback por si onload no dispara (documento ya cargado).
+  setTimeout(() => { try { w.focus(); w.print() } catch (e) {} }, 400)
+}
+
 export default function RoadmapPage({ theme }) {
   const t = theme || {}
   const [expandedMes, setExpandedMes] = useState('mes1')
@@ -257,7 +358,7 @@ export default function RoadmapPage({ theme }) {
             SDLC Bancario + SonarQube + Produccion
           </p>
         </div>
-        <button onClick={() => window.print()} className="no-print" style={{
+        <button onClick={exportPlanPDF} className="no-print" style={{
           padding: '8px 16px', borderRadius: 8, cursor: 'pointer', fontSize: 13, whiteSpace: 'nowrap',
           background: (t.accent || '#6366f1') + '20', border: `1px solid ${t.accent || '#6366f1'}40`,
           color: t.accent || '#6366f1', fontWeight: 600,
