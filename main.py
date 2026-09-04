@@ -402,6 +402,22 @@ def _parse_gde_native(content):
             info["data_path"] = layout_paths[vid]
         if vid in db_sources:
             info["db_source"] = db_sources[vid]
+            # Un XXGtvertex es una tabla de base de datos (Teradata, etc.). Las de
+            # LECTURA (Itable_SQL / Input_Table / query con SELECT) son SOURCE, no
+            # TRANSFORM. Sin esto quedan como transforms huerfanos al inicio del
+            # grafo y no leen datos. Las de escritura (Output_Table/salida) -> SINK.
+            _nm = (info.get("display_name") or info.get("name") or "").lower()
+            _q = (db_sources[vid].get("query") or "").lower()
+            is_write = any(k in _nm for k in ("output", "_tgt", "write", "load", "insert", "upsert")) \
+                       or _q.strip().startswith(("insert", "update", "delete", "merge"))
+            if is_write:
+                if info.get("type") != "SINK":
+                    info["type"] = "SINK"
+                    print(f"  [dbg] Reclassified {info.get('display_name')} (vertex {vid}) as SINK (DB table de escritura)")
+            else:
+                if info.get("type") != "SOURCE":
+                    info["type"] = "SOURCE"
+                    print(f"  [dbg] Reclassified {info.get('display_name')} (vertex {vid}) as SOURCE (DB table de lectura)")
     
     # XXGraph_flow_flow: {2010604001|XXGraph_flow_flow|4|0|8|0|{Flow_1|}3|5|}
     # Format: {FLOW_NAME|}FROM_VERTEX|TO_VERTEX|}
