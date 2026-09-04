@@ -380,6 +380,24 @@ def infer_schema_from_graph(ast, xfr_rules, dml_schema=None):
         if ntype == "SINK" and not in_cols and not out_cols:
             in_cols = [_mk_col(n, t) for n, t in _GENERIC_COLUMNS]
 
+        # SOURCE con esquema POBRE (solo la clave de join, u <=2 columnas): el .mp
+        # no declara el resto de columnas de esa tabla, asi que downstream salen
+        # NULL. Rellenamos con columnas genericas CON datos para que las salidas
+        # no se vean vacias (mejora de fidelidad; los nombres genericos no adivinan
+        # los reales del banco, que no estan en el grafo).
+        if ntype == "SOURCE":
+            base = out_cols or in_cols
+            if base and len(base) <= 2:
+                existing = {c["name"].lower() for c in base}
+                for gn, gt in _GENERIC_COLUMNS:
+                    if gn.lower() not in existing:
+                        base.append(_mk_col(gn, gt))
+                        existing.add(gn.lower())
+                if out_cols:
+                    out_cols = base
+                else:
+                    in_cols = base
+
         # Marcar columnas que son clave de JOIN → se generan con valores compartidos
         for col in in_cols + out_cols:
             if col["name"].lower() in join_key_names:
