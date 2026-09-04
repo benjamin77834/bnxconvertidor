@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { COMPILE_URL, PIPELINE_URL, PIPELINE_STATUS_URL } from '../config'
 import CostEstimateCard from './CostEstimateCard'
 import { metricsFromResult } from '../costEstimator'
+import * as testRunner from '../testRunnerStore'
 
 // El endpoint /datagen vive en el mismo origen que /compile
 const DATAGEN_URL = COMPILE_URL.replace(/\/compile$/, '/datagen')
@@ -76,7 +77,9 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
   const [ioFilter, setIoFilter] = useState('all') // 'all' | 'input' | 'output'
 
   // --- Ejecutar prueba PySpark (consola en vivo) ---
-  const [running, setRunning] = useState(false)
+  // 'running' inicia desde el runner global: si al volver a la pestana la prueba
+  // sigue viva, se muestra el estado de "corriendo" de inmediato.
+  const [running, setRunning] = useState(() => testRunner.getState().running)
   // Limite de tiempo (s), configurable. Default 10 min (600s): las pruebas
   // locales de grafos medianos/grandes no deben cortarse a 5 min.
   const [runTimeout, setRunTimeout] = useState(() => {
@@ -89,10 +92,14 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
     try { return localStorage.getItem('bnx_ec2_url') || '' } catch { return '' }
   })
   const [showEc2Config, setShowEc2Config] = useState(false)
-  const [runResult, setRunResult] = useState(() => _lsGetJSON(LS.runResult, null)) // {ok, summary, reads, writes}
-  const [consoleLines, setConsoleLines] = useState(() => _lsGetJSON(LS.console, [])) // lineas en vivo
-  const [localDownloads, setLocalDownloads] = useState(() => _lsGetJSON(LS.downloads, [])) // [{name, path}] CSV de resultado local
-  const [runReport, setRunReport] = useState(() => _lsGetJSON(LS.report, null)) // {totals, inputs, outputs, flow, flow_counts}
+  // Estado inicial de la prueba tomado del runner GLOBAL (fuente de verdad), no
+  // de localStorage: asi al volver a la pestana se ve el estatus real (incluso
+  // si sigue corriendo en segundo plano).
+  const _rs0 = testRunner.getState()
+  const [runResult, setRunResult] = useState(_rs0.result) // {ok, summary, reads, writes}
+  const [consoleLines, setConsoleLines] = useState(_rs0.console || []) // lineas en vivo
+  const [localDownloads, setLocalDownloads] = useState(_rs0.downloads || []) // [{name, path}] CSV de resultado local
+  const [runReport, setRunReport] = useState(_rs0.report || null) // {totals, inputs, outputs, flow, flow_counts}
 
   // --- Comparar performance (original vs optimizado) ---
   const [comparing, setComparing] = useState(false)
@@ -117,17 +124,31 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
   useEffect(() => () => { if (awsPollRef.current) clearInterval(awsPollRef.current) }, [])
 
   // Persistir el trabajo en localStorage cada vez que cambia (sobrevive a
-  // recargas y a cambios de pestana).
+  // recargas y a cambios de pestana). El estado de la PRUEBA (running, consola,
+  // result, downloads, report) lo persiste el runner global (testRunnerStore);
+  // aqui solo persistimos lo que ese runner no maneja: los datos generados y la
+  // comparacion de performance.
   useEffect(() => { _lsSet(LS.result, result) }, [result])
-  useEffect(() => { _lsSet(LS.runResult, runResult) }, [runResult])
-  useEffect(() => { _lsSet(LS.console, consoleLines) }, [consoleLines])
-  useEffect(() => { _lsSet(LS.downloads, localDownloads) }, [localDownloads])
-  useEffect(() => { _lsSet(LS.report, runReport) }, [runReport])
   useEffect(() => { _lsSet(LS.compare, compareResult) }, [compareResult])
   useEffect(() => { try { localStorage.setItem('bnx_dg_timeout', String(runTimeout)) } catch {} }, [runTimeout])
 
+  // Suscripcion al runner GLOBAL: la prueba corre fuera de React (en
+  // testRunnerStore), asi que sigue viva aunque cambies de pestana. Al montar,
+  // sincronizamos el estado actual (corriendo / terminado / consola acumulada).
+  useEffect(() => {
+    const unsub = testRunner.subscribe((s) => {
+      setRunning(s.running)
+      setConsoleLines(s.console || [])
+      if (s.result) setRunResult(s.result)
+      if (s.downloads && s.downloads.length) setLocalDownloads(s.downloads)
+      if (s.report) setRunReport(s.report)
+    })
+    return unsub
+  }, [])
+
   // Limpiar TODO el trabajo (datos, resultado de prueba, consola, comparacion).
   const clearWork = () => {
+    testRunner.clearRunnerState()  // aborta prueba viva (si la hay) y resetea
     setResult(null); setRunResult(null); setConsoleLines([])
     setLocalDownloads([]); setRunReport(null); setCompareResult(null)
     setError(''); setActiveDataset(0)
@@ -255,6 +276,8 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
   const runTest = async (target = 'local') => {
     // target: 'local' = mismo origen (Mac de la persona / server local)
     //         'ec2'   = EC2 interna de DataLab (URL configurable en ec2Url)
+    // La prueba corre en el runner GLOBAL (testRunnerStore): sigue viva aunque
+    // cambies de pestana. Aqui solo preparamos el payload y la lanzamos.
     let streamUrl = RUNTEST_STREAM_URL
     if (target === 'ec2') {
       const base = (ec2Url || '').trim().replace(/\/+$/, '')
@@ -265,67 +288,25 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
       }
       streamUrl = `${base}/runtest/stream`
     }
-    setRunning(true)
+    // Limpiar resultado/reporte previos (la consola la resetea el runner).
     setRunResult(null)
     setLocalDownloads([])
     setRunReport(null)
-    setConsoleLines([{
-      text: target === 'ec2'
+
+    const inputs = (result?.datasets || []).filter(d => d.io === 'input')
+    const datasets = inputs.length ? inputs : (result?.datasets || [])
+    // Enviamos tambien el grafo (mp/xfr) para que el servidor REGENERE el PySpark
+    // fresco y la prueba nunca use codigo viejo cacheado en el navegador.
+    const payload = { code: compiledCode, mp: graphMp, xfr: graphXfr, datasets,
+                      timeout: runTimeout, job_name: (graphName || awsJobName) }
+    testRunner.startTest({
+      streamUrl,
+      payload,
+      target,
+      initialLine: target === 'ec2'
         ? `[*] Iniciando prueba en EC2 interna (${ec2Url})...`
         : '[*] Iniciando ejecución de prueba local...',
-      kind: 'info',
-    }])
-    try {
-      const inputs = (result?.datasets || []).filter(d => d.io === 'input')
-      const datasets = inputs.length ? inputs : (result?.datasets || [])
-      const res = await fetch(streamUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        // Enviamos tambien el grafo (mp/xfr) para que el servidor REGENERE el
-        // PySpark fresco y la prueba nunca use codigo viejo cacheado en el navegador.
-        body: JSON.stringify({ code: compiledCode, mp: graphMp, xfr: graphXfr, datasets, timeout: runTimeout, job_name: (graphName || awsJobName) }),
-      })
-      if (!res.ok || !res.body) {
-        let msg = `HTTP ${res.status}`
-        try { const j = await res.json(); msg = j.error || msg } catch {}
-        setRunResult({ ok: false, summary: msg })
-        setRunning(false)
-        return
-      }
-
-      // Leer el stream SSE incrementalmente
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ''
-      let finished = false
-
-      while (!finished) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        const parts = buffer.split('\n\n')
-        buffer = parts.pop() // resto incompleto
-        for (const part of parts) {
-          const line = part.replace(/^data:\s*/, '').trim()
-          if (!line) continue
-          let evt
-          try { evt = JSON.parse(line) } catch { continue }
-          if (evt.type === 'line') {
-            setConsoleLines(prev => [...prev, { text: evt.text, kind: classifyLine(evt.text) }])
-          } else if (evt.type === 'done') {
-            setRunResult({ ok: evt.ok, summary: evt.summary, reads: evt.reads, writes: evt.writes })
-            if (Array.isArray(evt.downloads)) setLocalDownloads(evt.downloads)
-            if (evt.report) setRunReport(evt.report)
-            finished = true
-          }
-        }
-      }
-    } catch (e) {
-      setRunResult({ ok: false, summary: `Error de red: ${e.message}` })
-      setConsoleLines(prev => [...prev, { text: `Error: ${e.message}`, kind: 'error' }])
-    } finally {
-      setRunning(false)
-    }
+    })
   }
 
   // Corre el codigo ORIGINAL y el OPTIMIZADO con los mismos datos y compara
