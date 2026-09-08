@@ -1964,7 +1964,7 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                         cmd_clean = re.sub(r'\$\{?(\w+)\}?', r'{PARAMS.\1}', cmd_clean)
                         f.write(f'# Run_Program: shell command from Ab Initio\n')
                         f.write(f'{var_id}_df = {src}  # passthrough data\n')
-                        f.write(f'os.system(f"{cmd_clean}")\n')
+                        f.write(f'os.system(f"{_emit_shell_literal(cmd_clean)}")\n')
                     elif is_run_program:
                         f.write(f'# Run_Program: no commandline extracted\n')
                         f.write(f'{var_id}_df = {src}  # passthrough (Run_Program)\n')
@@ -1993,7 +1993,7 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                         cmd_clean = re.sub(r'\$\{?AI_SERIAL\}?', f'{{PARAMS.BASE_PATH}}/raw', cmd_clean)
                         cmd_clean = re.sub(r'\$\{?(\w+)\}?', r'{PARAMS.\1}', cmd_clean)
                         f.write(f'# Run_Program: shell command (no data dependency)\n')
-                        f.write(f'os.system(f"{cmd_clean}")\n')
+                        f.write(f'os.system(f"{_emit_shell_literal(cmd_clean)}")\n')
                         f.write(f'{var_id}_df = None  # Run_Program has no dataframe output\n')
                     elif is_run_program:
                         f.write(f'# Run_Program: no commandline extracted from MP\n')
@@ -2441,6 +2441,21 @@ def _sanitize_generated_file(output_path):
     if changed or True:
         with open(output_path, "w", encoding="utf-8") as fh:
             fh.writelines(out)
+
+
+def _emit_shell_literal(cmd_clean):
+    """Prepara un comando shell (Run_Program) para incrustarlo en os.system(f"...").
+
+    Un comando como  printf "Hi Team,\\n..."  contiene comillas dobles y backslashes
+    que rompen el literal Python del f-string (SyntaxError). Escapamos:
+      - backslash  \\  -> \\\\   (para que el shell reciba el \\n literal de printf)
+      - comilla doble  "  -> \\"  (para no cerrar el f-string)
+    Las llaves {PARAMS.X} se PRESERVAN (interpolacion f-string deseada). Devuelve el
+    contenido listo para ir dentro de os.system(f"<aqui>").
+    """
+    if cmd_clean is None:
+        return ""
+    return cmd_clean.replace("\\", "\\\\").replace('"', '\\"')
 
 
 def _wrap_reformat_safe_col(lines):
