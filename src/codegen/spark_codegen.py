@@ -1100,7 +1100,12 @@ def _to_boolean_filter(expr):
         if then_v == 0 and else_v != 0:
             return f'NOT ({cond})'
         return f'({e}) <> 0'
-    if re.search(r'(>=|<=|<>|!=|==|=|>|<)\b|\bIS\s+(NOT\s+)?NULL\b|\b(AND|OR|NOT)\b|\bLIKE\b|\bIN\s*\(|\bRLIKE\b|\bBETWEEN\b',
+    # Ya es booleano si contiene un comparador (>=, <=, <>, !=, ==, =, >, <) o un
+    # operador logico/predicado (IS NULL, AND/OR/NOT, LIKE, IN, RLIKE, BETWEEN).
+    # OJO: los comparadores simbolicos NO llevan \b (=, <, > son no-palabra; un \b
+    # tras ellos no matchea cuando les sigue un espacio -> tiraba filtros booleanos
+    # validos al fallback '(e) <> 0', que Spark rechaza por BINARY_OP_DIFF_TYPES).
+    if re.search(r'(>=|<=|<>|!=|==|=|>|<)|\bIS\s+(NOT\s+)?NULL\b|\b(AND|OR|NOT)\b|\bLIKE\b|\bIN\s*\(|\bRLIKE\b|\bBETWEEN\b',
                  e, re.IGNORECASE):
         return e
     return f'({e}) <> 0'
@@ -1510,6 +1515,10 @@ def _build_transform(var_id, src_df, rule):
         lines = [f'{var_id}_df = {src_df}']
         where = rule.get("where")
         if where:
+            # Traducir DML→Spark, forzar booleano y normalizar comillas/backslashes
+            # (_sql_arg) para no emitir un literal Python roto (comillas dobles del
+            # literal SQL colisionan con las del string, y un '\' colgante lo parte).
+            where = _sql_arg(_to_boolean_filter(_translate_dml_expr(where)))
             lines.append(f'{var_id}_df = {var_id}_df.where("{where}")')
         if transform_exprs:
             for expr_str in transform_exprs:
@@ -1551,8 +1560,11 @@ def _build_transform(var_id, src_df, rule):
     # them together corrupts expressions like (date("YYYY-MM-DD")) (string("|")) field.
     # Each expression is translated individually after splitting in the has_as branch.
     if where:
-        where = _map_date_functions(where)
-        where = _map_string_functions(where)
+        # El where SI es una unica expresion booleana: traducir completo, forzar
+        # booleano y normalizar comillas/backslashes con _sql_arg. Sin _sql_arg, un
+        # literal Ab Initio como tvType == "FRTrk" deja comillas dobles (o un '\'
+        # colgante) que rompen el string Python de .where("...").
+        where = _sql_arg(_to_boolean_filter(_translate_dml_expr(where)))
 
     if group_by:
         # Deduplicate keys preserving order
