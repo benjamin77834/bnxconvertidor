@@ -1635,6 +1635,31 @@ def _build_transform(var_id, src_df, rule):
     return code
 
 
+def _sanitize_join_keys(jk):
+    """Filtra las claves de join dejando solo NOMBRES DE COLUMNA simples.
+
+    Spark exige que 'on=[...]' contenga nombres de columna (identificadores), no
+    expresiones. El parser del .mp a veces mete una expresion Ab Initio cruda como
+    clave (p.ej. $[re_match_replace(SORT_KEY, "(^.*jobSeq).*", "$1")]) o incluso
+    fragmentos de ella tras partir por comas. Esas 'claves' con comillas, parentesis,
+    '$', '[' o espacios generan Python roto en on=[...]. Aqui se descartan y se
+    conservan solo los identificadores validos (letras, digitos, '_', empezando por
+    letra/'_'). Devuelve la lista saneada (puede quedar vacia).
+    """
+    if not jk:
+        return []
+    if isinstance(jk, str):
+        jk = [jk]
+    out = []
+    seen = set()
+    for k in jk:
+        k = str(k).strip()
+        if re.fullmatch(r'[A-Za-z_]\w*', k) and k not in seen:
+            out.append(k)
+            seen.add(k)
+    return out
+
+
 def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
     xfr_rules = xfr_rules or {}
     pset_params = pset_params or {}
@@ -2000,22 +2025,32 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                         node_rule = xfr_rules.get(var_id.lower()) or xfr_rules.get(log_name.lower()) or {}
                         jt = node_rule.get("join_type", "left")
                     
+                    # Sanear: quedarnos solo con claves que sean nombres de columna
+                    # simples. Una clave que en realidad es una expresion Ab Initio
+                    # ($[re_match_replace(...)], comillas, parentesis) NO sirve como
+                    # columna de join y rompe on=[...] con Python invalido.
+                    keys = _sanitize_join_keys(jk)
+                    raw_key_note = ""
+                    if jk and not keys:
+                        # Habia clave pero era una expresion no soportada: dejar rastro.
+                        raw_key_note = f'  # TODO: join key era expresion Ab Initio no soportada: {_one_line(jk if isinstance(jk, str) else " ,".join(map(str, jk)), 80)}'
+
                     if not jk:
                         f.write(f'# ⚠️ WARNING: join key not found in .mp — sube el .xfr o revisa key={{}} en el MP\n')
-                    
-                    if jk and isinstance(jk, list):
-                        keys_list = "[" + ", ".join(f'"{k}"' for k in jk) + "]"
+
+                    if keys:
+                        keys_list = "[" + ", ".join(f'"{k}"' for k in keys) + "]"
                         f.write(f'{var_id}_df = {parents[0]}_df.join({parents[1]}_df, on={keys_list}, how="{jt}")\n')
                         for ep in parents[2:]:
                             f.write(f'{var_id}_df = {var_id}_df.join({ep}_df, on={keys_list}, how="{jt}")\n')
-                    elif jk:
-                        f.write(f'{var_id}_df = {parents[0]}_df.join({parents[1]}_df, on="{jk}", how="{jt}")\n')
-                        for ep in parents[2:]:
-                            f.write(f'{var_id}_df = {var_id}_df.join({ep}_df, on="{jk}", how="{jt}")\n')
                     else:
-                        f.write(f'{var_id}_df = {parents[0]}_df.join({parents[1]}_df, on=["TODO_JOIN_KEY"], how="{jt}")  # TODO: specify join key\n')
+                        # Sin clave valida: no podemos hacer un join por columna. Para no
+                        # romper el job, encadenamos por posicion (crossJoin es peligroso;
+                        # preferimos un left join sin condicion via monotonically_increasing_id)
+                        # NO es posible de forma segura -> passthrough del primer padre con TODO.
+                        f.write(f'{var_id}_df = {parents[0]}_df{raw_key_note or "  # TODO: specify join key (no valida en el grafo)"}\n')
                         for ep in parents[2:]:
-                            f.write(f'{var_id}_df = {var_id}_df.join({ep}_df, on=["TODO_JOIN_KEY"], how="{jt}")\n')
+                            f.write(f'# TODO: join {ep}_df — clave no valida\n')
                 elif len(parents) == 1:
                     f.write(f'{var_id}_df = {parents[0]}_df\n')
                 else:
