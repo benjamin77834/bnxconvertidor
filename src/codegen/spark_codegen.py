@@ -1348,8 +1348,26 @@ def _build_transform(var_id, src_df, rule):
     # --- SORT ---
     sort_by = rule.get("sort_by")
     if sort_by:
-        sort_cols = ", ".join(f'"{c}"' for c in sort_by)
-        return f'{var_id}_df = {src_df}.orderBy({sort_cols})'
+        # Sanear: quedarnos con columnas simples. Una sort key puede venir como una
+        # expresion Ab Initio ($[re_match_replace(SORT_KEY, "pat", "$1")]) fragmentada
+        # por comas, que como columna directa rompe .orderBy(...) (Python invalido).
+        cols = _sanitize_join_keys(sort_by)
+        if cols:
+            sort_cols = ", ".join(f'"{c}"' for c in cols)
+            return f'{var_id}_df = {src_df}.orderBy({sort_cols})'
+        # Sin columna simple: intentar clave DERIVADA (re_match_replace) y ordenar
+        # por la columna calculada.
+        derived = _derived_join_key_from_expr(sort_by, prefix="_sk_")
+        if derived:
+            scol, sexpr = derived
+            sexpr_sql = _sql_arg(sexpr)
+            return (
+                f'# Sort key DERIVADA (Ab Initio re_match_replace): {scol} = {sexpr}\n'
+                f'{var_id}_df = {src_df}.withColumn("{scol}", expr("{sexpr_sql}")).orderBy("{scol}")'
+            )
+        # Expresion de sort no soportada: passthrough con TODO para no romper el job.
+        raw_note = _one_line(_join_key_raw_text(sort_by), 80)
+        return f'{var_id}_df = {src_df}  # TODO: sort key era expresion Ab Initio no soportada: {raw_note}'
     
     # --- DML FIELDS (parsed from external .xfr with Ab Initio DML) ---
     # Sin esta rama, un rule con dml_fields caia en selectExpr("*") y se perdian
@@ -1674,7 +1692,7 @@ def _join_key_raw_text(jk):
     return ",".join(str(p) for p in jk).strip()
 
 
-def _derived_join_key_from_expr(jk):
+def _derived_join_key_from_expr(jk, prefix="_jk_"):
     """Detecta una join key que es una expresion Ab Initio derivada y la traduce.
 
     Soporta el patron re_match_replace(campo, "patron", "reemplazo") (envuelto o no
@@ -1712,7 +1730,7 @@ def _derived_join_key_from_expr(jk):
     # Escapar comillas simples dentro del patron/reemplazo.
     patron_sql = patron.replace("'", "\\'")
     reemplazo_sql = reemplazo.replace("'", "\\'")
-    col_name = f"_jk_{fuente}"
+    col_name = f"{prefix}{fuente}"
     spark_expr = f"regexp_replace({fuente}, '{patron_sql}', '{reemplazo_sql}')"
     return col_name, spark_expr
 
