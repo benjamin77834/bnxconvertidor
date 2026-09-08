@@ -1,7 +1,7 @@
 # src/codegen/glue_codegen.py
 import re
 from datetime import datetime
-from src.codegen.spark_codegen import _translate_dml_expr, _map_date_functions, _map_string_functions, _sanitize_generated_file, _emit_pset_params, _unescape_gde, _normalize_logical_ops, _sql_arg, _is_untranslatable, _one_line, _strip_dml_comments
+from src.codegen.spark_codegen import _translate_dml_expr, _map_date_functions, _map_string_functions, _sanitize_generated_file, _emit_pset_params, _unescape_gde, _normalize_logical_ops, _sql_arg, _is_untranslatable, _one_line, _strip_dml_comments, _emit_shell_literal
 
 
 # Local functions removed — using improved versions from spark_codegen
@@ -741,7 +741,7 @@ def generate_glue(dag, output_path, xfr_rules=None, pset_params=None):
                         cmd_clean = re.sub(r'\$\{?(\w+)\}?', r'{PARAMS.\1}', cmd_clean)
                         f.write(f'# Run_Program: shell command from Ab Initio\n')
                         f.write(f'{var_id}_df = {src}  # passthrough data\n')
-                        f.write(f'os.system(f"{cmd_clean}")\n')
+                        f.write(f'os.system(f"{_emit_shell_literal(cmd_clean)}")\n')
                     elif is_run_program:
                         f.write(f'# Run_Program: no commandline extracted\n')
                         f.write(f'{var_id}_df = {src}  # passthrough (Run_Program)\n')
@@ -771,7 +771,7 @@ def generate_glue(dag, output_path, xfr_rules=None, pset_params=None):
                         cmd_clean = re.sub(r'\$\{?AI_SERIAL\}?', f'{{PARAMS.BASE_PATH}}/raw', cmd_clean)
                         cmd_clean = re.sub(r'\$\{?(\w+)\}?', r'{PARAMS.\1}', cmd_clean)
                         f.write(f'# Run_Program: shell command (no data dependency)\n')
-                        f.write(f'os.system(f"{cmd_clean}")\n')
+                        f.write(f'os.system(f"{_emit_shell_literal(cmd_clean)}")\n')
                         f.write(f'{var_id}_df = None  # Run_Program has no dataframe output\n')
                     elif is_run_program_nop:
                         f.write(f'# Run_Program: no commandline extracted from MP\n')
