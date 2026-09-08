@@ -1787,6 +1787,24 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
         f.write('    """Filter rows where substring(field, start, length) is NOT in exclude_values."""\n')
         f.write("    return df.filter(~F.substring(F.col(field), start, length).isin(exclude_values))\n\n\n")
 
+        # Helper TOLERANTE para reformat: aplica expr(sql) sobre df; si el SQL
+        # referencia una columna que no existe en este punto del pipeline (los
+        # esquemas Ab Initio son fijos, pero en Spark una columna puede faltar
+        # segun lo que produjo el nodo previo, p.ej. un LOOKUP), la columna de
+        # salida queda NULL en vez de romper el job con UNRESOLVED_COLUMN.
+        # Es Python puro sobre df.columns -> portable a AWS Glue, no depende del harness.
+        f.write("def _bnx_safe_col(df, name, sql):\n")
+        f.write('    """withColumn(name, expr(sql)) tolerante a columnas fuente ausentes."""\n')
+        f.write("    try:\n")
+        f.write("        out = df.withColumn(name, F.expr(sql))\n")
+        f.write("        _ = out.schema  # fuerza el analisis (resuelve nombres) sin ejecutar\n")
+        f.write("        return out\n")
+        f.write("    except Exception as _e:\n")
+        f.write("        _msg = str(_e)\n")
+        f.write('        if "UNRESOLVED_COLUMN" in _msg or "cannot be resolved" in _msg or "AnalysisException" in type(_e).__name__:\n')
+        f.write("            return df.withColumn(name, F.lit(None))\n")
+        f.write("        raise\n\n\n")
+
         if True:
             f.write("def is_valid_record(df, validation_rules=None):\n")
             f.write('    """Validate records. Returns tuple: (valid_df, invalid_df)"""\n')
@@ -2195,6 +2213,12 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                     else:
                         f.write(f'_lkp_{var_id} = broadcast({parents[1]}_df)\n')
                     f.write(f'{var_id}_df = {parents[0]}_df.join(_lkp_{var_id}, on="{lk}", how="left")\n')
+                elif parents:
+                    # Un solo padre: sin tabla de lookup para unir. Passthrough del
+                    # flujo principal (conserva sus columnas) en vez de un DataFrame
+                    # vacio que borraria todas las columnas y romperia los reformats
+                    # posteriores con UNRESOLVED_COLUMN.
+                    f.write(f'{var_id}_df = {parents[0]}_df  # LOOKUP sin tabla (1 padre): passthrough\n')
                 else:
                     f.write(f'{var_id}_df = spark.createDataFrame([], StructType([]))\n')
                 f.write(f'print("[?] LOOKUP: {log_name}")\n\n')
@@ -2401,9 +2425,65 @@ def _sanitize_generated_file(output_path):
     # llamadas y degradamos esa asignacion a lit(None) con un TODO, en vez de romper.
     out = _neutralize_unknown_functions(out)
 
+    # --- GUARDARRAIL: reformat tolerante a columnas fuente ausentes ---
+    # Envuelve withColumn("col", expr("...")) en _bnx_safe_col(...) cuando el SQL
+    # referencia columnas (no literales puros). Si esa columna no existe en el df
+    # en ese punto (p.ej. tras un LOOKUP que no la produjo), la salida queda NULL
+    # en vez de romper con UNRESOLVED_COLUMN. Portable a Glue.
+    out = _wrap_reformat_safe_col(out)
+
     if changed or True:
         with open(output_path, "w", encoding="utf-8") as fh:
             fh.writelines(out)
+
+
+def _wrap_reformat_safe_col(lines):
+    """Reescribe '<lhs> = <src>.withColumn("col", expr("sql"))' a
+    '<lhs> = _bnx_safe_col(<src>, "col", "sql")' cuando el SQL referencia columnas.
+
+    Solo toca lineas de reformat con expr("..."). Deja intactas:
+      - withColumn(..., lit(...)) (literales, no referencian columnas)
+      - expr("...") de solo literales/constantes (p.ej. 'S500', '+', '0000')
+      - lineas con encadenamientos posteriores (.orderBy, .drop, etc.) tras el )
+    _bnx_safe_col se emite en el preambulo del job (Python puro, portable a Glue).
+    """
+    # <lhs>_df = <src>_df.withColumn("<col>", expr("<sql>"))   (linea completa)
+    wc_re = re.compile(
+        r'^(\s*)(\w+)\s*=\s*(\w+)\.withColumn\(\s*"([^"]+)"\s*,\s*expr\("(.*)"\)\)\s*$'
+    )
+    out = []
+    for ln in lines:
+        m = wc_re.match(ln.rstrip("\n"))
+        if not m:
+            out.append(ln)
+            continue
+        indent, lhs, src, col, sql = m.groups()
+        # ¿El SQL referencia alguna COLUMNA? Un identificador que no sea funcion
+        # conocida ni palabra clave. Si es solo literales ('S500', numeros), no
+        # hace falta la salvaguarda (no puede fallar por columna ausente).
+        # Quitar el contenido de los literales de string ('...') para no confundir
+        # su texto con nombres de columna (p.ej. 'S500' no es la columna S500).
+        sql_no_lit = re.sub(r"'(?:[^'\\]|\\.)*'", "''", sql)
+        idents = re.findall(r'[A-Za-z_]\w*', sql_no_lit)
+        refs_column = False
+        for tok in idents:
+            low = tok.lower()
+            if low in _SPARK_KNOWN_FUNCS:
+                continue
+            if low in ("as", "and", "or", "not", "null", "true", "false",
+                       "then", "when", "else", "end", "over", "partition",
+                       "order", "by", "asc", "desc", "is", "in", "like", "distinct"):
+                continue
+            # token pegado a '(' => es una llamada a funcion, no columna
+            if re.search(r'\b' + re.escape(tok) + r'\s*\(', sql_no_lit):
+                continue
+            refs_column = True
+            break
+        if not refs_column:
+            out.append(ln)
+            continue
+        out.append(f'{indent}{lhs} = _bnx_safe_col({src}, "{col}", "{sql}")\n')
+    return out
 
 
 # Funciones que SI existen en Spark SQL (o que ya traducimos) — lista blanca.
