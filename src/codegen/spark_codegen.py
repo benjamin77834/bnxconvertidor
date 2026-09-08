@@ -1356,14 +1356,16 @@ def _build_transform(var_id, src_df, rule):
             sort_cols = ", ".join(f'"{c}"' for c in cols)
             return f'{var_id}_df = {src_df}.orderBy({sort_cols})'
         # Sin columna simple: intentar clave DERIVADA (re_match_replace) y ordenar
-        # por la columna calculada.
+        # por la columna calculada. Materializacion TOLERANTE: si la columna fuente
+        # (artefacto interno SORT_KEY de Ab Initio) no existe en este punto, la clave
+        # queda NULL en vez de romper con UNRESOLVED_COLUMN.
         derived = _derived_join_key_from_expr(sort_by, prefix="_sk_")
         if derived:
-            scol, sexpr = derived
+            scol, sexpr, ssrc = derived
             sexpr_sql = _sql_arg(sexpr)
             return (
                 f'# Sort key DERIVADA (Ab Initio re_match_replace): {scol} = {sexpr}\n'
-                f'{var_id}_df = {src_df}.withColumn("{scol}", expr("{sexpr_sql}")).orderBy("{scol}")'
+                f'{var_id}_df = {src_df}.withColumn("{scol}", expr("{sexpr_sql}") if "{ssrc}" in {src_df}.columns else lit(None)).orderBy("{scol}")'
             )
         # Expresion de sort no soportada: passthrough con TODO para no romper el job.
         raw_note = _one_line(_join_key_raw_text(sort_by), 80)
@@ -1697,12 +1699,14 @@ def _derived_join_key_from_expr(jk, prefix="_jk_"):
 
     Soporta el patron re_match_replace(campo, "patron", "reemplazo") (envuelto o no
     en $[...]), que Ab Initio usa para calcular una clave a partir de un campo.
-    Devuelve (col_name, spark_expr) para materializar la columna derivada en ambos
-    lados del join, o None si la clave no encaja en un patron soportado.
+    Devuelve (col_name, spark_expr, fuente) para materializar la columna derivada en
+    ambos lados del join, o None si la clave no encaja en un patron soportado.
+    'fuente' es el nombre de la columna base (para poder chequear si existe antes de
+    aplicar el regexp_replace y no romper con UNRESOLVED_COLUMN).
 
     Ejemplo:
       $[re_match_replace(SORT_KEY, "(^.*jobSequenceNumber).*", "$1")]
-      -> ("_jk_SORT_KEY", "regexp_replace(SORT_KEY, '(^.*jobSequenceNumber).*', '$1')")
+      -> ("_jk_SORT_KEY", "regexp_replace(SORT_KEY, '(^.*jobSequenceNumber).*', '$1')", "SORT_KEY")
     """
     raw = _join_key_raw_text(jk)
     if not raw or "re_match_replace" not in raw:
@@ -1732,7 +1736,7 @@ def _derived_join_key_from_expr(jk, prefix="_jk_"):
     reemplazo_sql = reemplazo.replace("'", "\\'")
     col_name = f"{prefix}{fuente}"
     spark_expr = f"regexp_replace({fuente}, '{patron_sql}', '{reemplazo_sql}')"
-    return col_name, spark_expr
+    return col_name, spark_expr, fuente
 
 
 def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
@@ -2122,14 +2126,17 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                         # calculada (p.ej. extraer jobSequenceNumber de SORT_KEY).
                         derived = _derived_join_key_from_expr(jk)
                         if derived:
-                            dcol, dexpr = derived
+                            dcol, dexpr, dsrc = derived
                             dexpr_sql = _sql_arg(dexpr)
                             f.write(f'# Clave de join DERIVADA (Ab Initio re_match_replace): {dcol} = {dexpr}\n')
-                            f.write(f'{parents[0]}_df = {parents[0]}_df.withColumn("{dcol}", expr("{dexpr_sql}"))\n')
-                            f.write(f'{parents[1]}_df = {parents[1]}_df.withColumn("{dcol}", expr("{dexpr_sql}"))\n')
+                            # Materializacion TOLERANTE: la columna fuente ({dsrc}) es un
+                            # artefacto interno de Ab Initio (SORT_KEY) que puede no existir
+                            # como columna real en este punto. Si no esta, la clave derivada
+                            # queda NULL en vez de romper con UNRESOLVED_COLUMN.
+                            for pdf in [f'{parents[0]}_df', f'{parents[1]}_df'] + [f'{ep}_df' for ep in parents[2:]]:
+                                f.write(f'{pdf} = {pdf}.withColumn("{dcol}", expr("{dexpr_sql}") if "{dsrc}" in {pdf}.columns else lit(None))\n')
                             f.write(f'{var_id}_df = {parents[0]}_df.join({parents[1]}_df, on=["{dcol}"], how="{jt}")\n')
                             for ep in parents[2:]:
-                                f.write(f'{ep}_df = {ep}_df.withColumn("{dcol}", expr("{dexpr_sql}"))\n')
                                 f.write(f'{var_id}_df = {var_id}_df.join({ep}_df, on=["{dcol}"], how="{jt}")\n')
                         else:
                             # Expresion no soportada: passthrough del primer padre con TODO
