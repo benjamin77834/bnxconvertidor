@@ -1660,6 +1660,63 @@ def _sanitize_join_keys(jk):
     return out
 
 
+def _join_key_raw_text(jk):
+    """Reconstruye el texto original de una join key que pudo venir fragmentada.
+
+    El parser del .mp parte por comas, asi que una clave que es una expresion como
+    $[re_match_replace(SORT_KEY, "(^.*jobSeq).*", "$1")] llega como lista de 3
+    fragmentos. Los volvemos a unir con ',' para recuperar la expresion completa.
+    """
+    if jk is None:
+        return ""
+    if isinstance(jk, str):
+        return jk.strip()
+    return ",".join(str(p) for p in jk).strip()
+
+
+def _derived_join_key_from_expr(jk):
+    """Detecta una join key que es una expresion Ab Initio derivada y la traduce.
+
+    Soporta el patron re_match_replace(campo, "patron", "reemplazo") (envuelto o no
+    en $[...]), que Ab Initio usa para calcular una clave a partir de un campo.
+    Devuelve (col_name, spark_expr) para materializar la columna derivada en ambos
+    lados del join, o None si la clave no encaja en un patron soportado.
+
+    Ejemplo:
+      $[re_match_replace(SORT_KEY, "(^.*jobSequenceNumber).*", "$1")]
+      -> ("_jk_SORT_KEY", "regexp_replace(SORT_KEY, '(^.*jobSequenceNumber).*', '$1')")
+    """
+    raw = _join_key_raw_text(jk)
+    if not raw or "re_match_replace" not in raw:
+        return None
+    # re_match_replace(fuente, "patron", "reemplazo") — argumentos balanceados.
+    m = re.search(r're_match_replace\s*\(', raw)
+    if not m:
+        return None
+    open_idx = m.end() - 1
+    close_idx = _match_paren(raw, open_idx)
+    if close_idx == -1:
+        return None
+    inner = raw[open_idx + 1:close_idx]
+    args = _split_call_args(inner)  # respeta comillas y parentesis anidados
+    if len(args) < 3:
+        return None
+    fuente = args[0].strip()
+    # Quitar prefijos in./out. de la fuente y validar que sea una columna simple.
+    fuente = re.sub(r'^(?:in\d*|out)\.', '', fuente).strip()
+    if not re.fullmatch(r'[A-Za-z_]\w*', fuente):
+        return None
+    # Normalizar comillas de patron/reemplazo a simples (SQL) para expr("...").
+    patron = args[1].strip().strip('"').strip("'")
+    reemplazo = args[2].strip().strip('"').strip("'")
+    # Escapar comillas simples dentro del patron/reemplazo.
+    patron_sql = patron.replace("'", "\\'")
+    reemplazo_sql = reemplazo.replace("'", "\\'")
+    col_name = f"_jk_{fuente}"
+    spark_expr = f"regexp_replace({fuente}, '{patron_sql}', '{reemplazo_sql}')"
+    return col_name, spark_expr
+
+
 def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
     xfr_rules = xfr_rules or {}
     pset_params = pset_params or {}
@@ -2030,10 +2087,6 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                     # ($[re_match_replace(...)], comillas, parentesis) NO sirve como
                     # columna de join y rompe on=[...] con Python invalido.
                     keys = _sanitize_join_keys(jk)
-                    raw_key_note = ""
-                    if jk and not keys:
-                        # Habia clave pero era una expresion no soportada: dejar rastro.
-                        raw_key_note = f'  # TODO: join key era expresion Ab Initio no soportada: {_one_line(jk if isinstance(jk, str) else " ,".join(map(str, jk)), 80)}'
 
                     if not jk:
                         f.write(f'# ⚠️ WARNING: join key not found in .mp — sube el .xfr o revisa key={{}} en el MP\n')
@@ -2044,13 +2097,29 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                         for ep in parents[2:]:
                             f.write(f'{var_id}_df = {var_id}_df.join({ep}_df, on={keys_list}, how="{jt}")\n')
                     else:
-                        # Sin clave valida: no podemos hacer un join por columna. Para no
-                        # romper el job, encadenamos por posicion (crossJoin es peligroso;
-                        # preferimos un left join sin condicion via monotonically_increasing_id)
-                        # NO es posible de forma segura -> passthrough del primer padre con TODO.
-                        f.write(f'{var_id}_df = {parents[0]}_df{raw_key_note or "  # TODO: specify join key (no valida en el grafo)"}\n')
-                        for ep in parents[2:]:
-                            f.write(f'# TODO: join {ep}_df — clave no valida\n')
+                        # No hay clave de columna simple. Intentar clave DERIVADA:
+                        # re_match_replace(campo, "patron", "reemplazo") -> materializar
+                        # una columna calculada con regexp_replace en ambos lados y unir
+                        # por ella. Es la traduccion correcta de una clave Ab Initio
+                        # calculada (p.ej. extraer jobSequenceNumber de SORT_KEY).
+                        derived = _derived_join_key_from_expr(jk)
+                        if derived:
+                            dcol, dexpr = derived
+                            dexpr_sql = _sql_arg(dexpr)
+                            f.write(f'# Clave de join DERIVADA (Ab Initio re_match_replace): {dcol} = {dexpr}\n')
+                            f.write(f'{parents[0]}_df = {parents[0]}_df.withColumn("{dcol}", expr("{dexpr_sql}"))\n')
+                            f.write(f'{parents[1]}_df = {parents[1]}_df.withColumn("{dcol}", expr("{dexpr_sql}"))\n')
+                            f.write(f'{var_id}_df = {parents[0]}_df.join({parents[1]}_df, on=["{dcol}"], how="{jt}")\n')
+                            for ep in parents[2:]:
+                                f.write(f'{ep}_df = {ep}_df.withColumn("{dcol}", expr("{dexpr_sql}"))\n')
+                                f.write(f'{var_id}_df = {var_id}_df.join({ep}_df, on=["{dcol}"], how="{jt}")\n')
+                        else:
+                            # Expresion no soportada: passthrough del primer padre con TODO
+                            # para no romper el job.
+                            raw_note = _one_line(_join_key_raw_text(jk), 80)
+                            f.write(f'{var_id}_df = {parents[0]}_df  # TODO: join key era expresion Ab Initio no soportada: {raw_note}\n')
+                            for ep in parents[2:]:
+                                f.write(f'# TODO: join {ep}_df — clave no valida\n')
                 elif len(parents) == 1:
                     f.write(f'{var_id}_df = {parents[0]}_df\n')
                 else:
