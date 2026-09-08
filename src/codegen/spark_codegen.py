@@ -1801,7 +1801,13 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
         f.write("        return out\n")
         f.write("    except Exception as _e:\n")
         f.write("        _msg = str(_e)\n")
-        f.write('        if "UNRESOLVED_COLUMN" in _msg or "cannot be resolved" in _msg or "AnalysisException" in type(_e).__name__:\n')
+        f.write("        _cls = type(_e).__name__\n")
+        f.write('        # Columna ausente (UNRESOLVED_COLUMN), SQL malformado (ParseException),\n')
+        f.write('        # funcion inexistente (UNRESOLVED_ROUTINE) o cualquier error de analisis:\n')
+        f.write('        # neutralizar la columna a NULL en vez de tumbar el job.\n')
+        f.write('        if ("UNRESOLVED_COLUMN" in _msg or "cannot be resolved" in _msg\n')
+        f.write('                or "UNRESOLVED_ROUTINE" in _msg or "PARSE_SYNTAX_ERROR" in _msg\n')
+        f.write('                or "ParseException" in _cls or "AnalysisException" in _cls):\n')
         f.write("            return df.withColumn(name, F.lit(None))\n")
         f.write("        raise\n\n\n")
 
@@ -2458,6 +2464,12 @@ def _wrap_reformat_safe_col(lines):
             out.append(ln)
             continue
         indent, lhs, src, col, sql = m.groups()
+        # SQL con comillas simples DESBALANCEADAS: es una expresion truncada/rota
+        # (p.ej. "'echo ' + campo + '" con la comilla final abierta). No se puede
+        # ejecutar -> neutralizar a lit(None) en vez de emitir un ParseException.
+        if sql.count("'") % 2 != 0:
+            out.append(f'{indent}{lhs} = {src}.withColumn("{col}", lit(None))  # [BNX] expr con comillas desbalanceadas (truncada), columna en NULL\n')
+            continue
         # ¿El SQL referencia alguna COLUMNA? Un identificador que no sea funcion
         # conocida ni palabra clave. Si es solo literales ('S500', numeros), no
         # hace falta la salvaguarda (no puede fallar por columna ausente).
