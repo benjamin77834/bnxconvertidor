@@ -2294,7 +2294,14 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                         else:
                             f.write(f'{src}.write.mode("{mode}").parquet(f"{{PARAMS.BASE_PATH}}/output/{var_id.lower()}")\n')
                 else:
-                    f.write(f'# [!] SINK {log_name} has no parent\n')
+                    # SINK sin padre reconocido: aun asi DEBE definir su _df, porque
+                    # otro nodo puede consumirlo como fuente (p.ej. un SINK que ademas
+                    # lista archivos y alimenta un filtro posterior). Sin esto, el hijo
+                    # rompe con NameError al referenciar <sink>_df.
+                    f.write(f'# [!] SINK {log_name} sin padre — se define df vacio para consumidores\n')
+                    f.write(f'{var_id}_df = spark.createDataFrame([], StructType([]))\n')
+                    if var_id.lower() != var_id:
+                        f.write(f'{var_id.lower()}_df = {var_id}_df\n')
                 f.write(f'print("[>] SINK: {log_name}")\n\n')
 
             else:
