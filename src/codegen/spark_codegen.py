@@ -1596,9 +1596,13 @@ def _build_transform(var_id, src_df, rule):
             col = col.strip()
             m = re.match(r"(\w+)\((\w+)\)\s+as\s+(\w+)", col, re.I)
             if m:
-                # Agregacion explicita: sum(x) as y -> sum("x").alias("y")
+                # Agregacion explicita: sum(x) as y -> sum(_bnx_aggcol(df,"x")).alias("y")
+                # _bnx_aggcol resuelve el nombre real de la columna de forma tolerante
+                # (ignora mayus/minus y guiones bajos) porque el grafo Ab Initio a veces
+                # trae typos (p.ej. 'continousComputepoints' por 'continuousComputepoints')
+                # o distinto casing; si no existe ninguna variante, devuelve lit(None).
                 fn, field, alias = m.group(1).lower(), m.group(2), m.group(3)
-                agg_exprs.append(f'{fn}("{field}").alias("{alias}")')
+                agg_exprs.append(f'{fn}(_bnx_aggcol({src_df}, "{field}")).alias("{alias}")')
                 continue
             # Columnas no agregadas dentro de un Rollup:
             #  - "*" o vacio: no se puede meter en .agg() -> se omite
@@ -1608,7 +1612,7 @@ def _build_transform(var_id, src_df, rule):
             #    agregada; usar col("x") crudo provoca MISSING_AGGREGATION.
             if col in ("", "*") or col in group_set:
                 continue
-            agg_exprs.append(f'first("{col}").alias("{col}")')
+            agg_exprs.append(f'first(_bnx_aggcol({src_df}, "{col}")).alias("{col}")')
         if not agg_exprs:
             # Sin ninguna expresion agregable: Rollup se reduce a un conteo por grupo.
             agg_exprs.append('count("*").alias("count")')
@@ -1810,6 +1814,20 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
         f.write('                or "ParseException" in _cls or "AnalysisException" in _cls):\n')
         f.write("            return df.withColumn(name, F.lit(None))\n")
         f.write("        raise\n\n\n")
+
+        # Helper para AGREGACIONES tolerante al nombre de columna: el grafo Ab Initio
+        # a veces trae typos (continousComputepoints vs continuousComputepoints) o
+        # distinto casing. Resuelve el nombre real ignorando mayus/minus y guiones
+        # bajos; si no existe ninguna variante, devuelve lit(None) (agregado NULL en
+        # vez de romper con UNRESOLVED_COLUMN). Portable a AWS Glue.
+        f.write("def _bnx_aggcol(df, name):\n")
+        f.write('    """Resuelve una columna para agregar, tolerante a typo/casing; lit(None) si falta."""\n')
+        f.write("    if df is not None:\n")
+        f.write("        want = name.lower().replace('_', '')\n")
+        f.write("        for c in df.columns:\n")
+        f.write("            if c.lower().replace('_', '') == want:\n")
+        f.write("                return F.col(c)\n")
+        f.write("    return F.lit(None)\n\n\n")
 
         if True:
             f.write("def is_valid_record(df, validation_rules=None):\n")
