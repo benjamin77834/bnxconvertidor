@@ -131,6 +131,30 @@ export default function App() {
 
   const [compileTime, setCompileTime] = useState(null)
 
+  // Limpiar TODO el estado del Compiler para empezar con otro grafo: resultado
+  // compilado, editores (.mp/.xfr/.pset), archivos subidos y resultados de
+  // optimizar/refactor. Tambien borra las claves de localStorage para que no
+  // reaparezca el grafo anterior al recargar.
+  const clearCompiler = () => {
+    setResult(null)              // borra bnx_last_result (via setResult)
+    setEditorMp('')              // borra bnx_editor_mp (via setEditorMp)
+    setEditorXfr('')             // borra bnx_editor_xfr
+    setEditorPset('')            // borra bnx_editor_pset
+    setOptimizeResult(null)
+    setRefactorResult(null)
+    setCompileTime(null)
+    setCodeOpen(false)
+    setFiles({ mp: [], xfr: [], dml: [] })
+    setMpFiles([])
+    mpFilesData.current = []
+    setPsetFile(null)
+    setPlanXfrFile(null)
+    // Limpiar inputs de archivo (para poder re-subir el mismo nombre).
+    ;[cobolRef, planRef, psetRef, planXfrRef, mpFilesRef, refactorRef].forEach(r => {
+      if (r && r.current) { try { r.current.value = '' } catch { /* ignore */ } }
+    })
+  }
+
   const compile = async (selected) => {
     setLoading(true)
     const startTime = Date.now()
@@ -1250,6 +1274,14 @@ export default function App() {
                     background: t.card, border: `1px solid ${t.border}`, color: t.muted,
                   }}>🌀 Airflow</button>
                 )}
+                <span style={{ width: 1, height: 20, background: t.border }} />
+                <button onClick={clearCompiler}
+                  title="Limpia el grafo, el código y los editores para compilar otro grafo"
+                  style={{
+                    padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                    background: '#ef444415', border: '1px solid #ef444440', color: '#ef4444',
+                    fontWeight: 600,
+                  }}>🧹 Limpiar</button>
               </div>
               {/* Descripcion en lenguaje natural del grafo */}
               {result.description && (
