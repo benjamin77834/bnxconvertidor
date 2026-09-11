@@ -94,6 +94,13 @@ def _parse_gde_native(content):
     iport_to_vertex = {}  # input_port_id -> vertex_id
     oport_to_flow = {}    # output_port_id -> flow_id
     iport_from_flow = {}  # input_port_id -> flow_id
+    # Indice ORDINAL del puerto de entrada (in0=0, in1=1, ...). El .mp serializa
+    # el puerto como {N|inN|}vertex|port; ese N es la POSICION del input del
+    # componente. Un JOIN de Ab Initio referencia inN.col posicionalmente en su
+    # cuerpo (in0=current, in1=previous, etc.), asi que preservar N es lo unico
+    # que permite reconstruir el orden real de los padres (el edge_set/parents
+    # por si solos NO lo conservan). port_id -> ordinal.
+    iport_port_index = {}
     
     # Track vertex IDs (small numbers from port definitions)
     vertex_ids = set()
@@ -427,6 +434,42 @@ def _parse_gde_native(content):
                 info["type"] = "TRANSFORM"
             elif 'replicate' in proto:
                 info["type"] = "TRANSFORM"
+            elif 'update_table' in proto:
+                # Componente Update_Table (db-update): ejecuta un UPDATE/INSERT/
+                # MERGE/DELETE SQL sobre una tabla de base de datos. Es un SINK a
+                # DB, NO un TRANSFORM ni un SOURCE. Su nombre puede contener
+                # "input"/"update" y caer mal en _map_component_type; aqui se
+                # corrige por prototipo (fuente fiable). Ademas capturamos la
+                # sentencia SQL del parametro updateSqlFile para poder emitirla.
+                info["type"] = "SINK"
+                # Buscar el updateSqlFile CON contenido (hay una 2a definicion del
+                # parametro que viene vacia). El valor va hasta el cierre |N|N|flags|.
+                sql_txt = None
+                for sm in re.finditer(r'updateSqlFile\|(.+?)\|\d+\|\d+\|[A-Za-z$=?]*\|', block, re.DOTALL):
+                    cand = sm.group(1).strip()
+                    if cand:
+                        sql_txt = cand
+                        break
+                dbu = {"dbms": "teradata", "sql_kind": "update"}
+                # dbms real si esta declarado
+                _dm = re.search(r'\|dbms\|([^|]+)\|', block)
+                if _dm and _dm.group(1).strip():
+                    dbu["dbms"] = _dm.group(1).strip()
+                # tabla destino (table_spec) si esta
+                _ts = re.search(r'\|table_spec\|([^|]+)\|', block)
+                if _ts and _ts.group(1).strip():
+                    dbu["table"] = _ts.group(1).strip().replace("\\{", "{").replace("\\}", "}").replace("\\$", "$")
+                # config de conexion (DBConfigFile)
+                _cf = re.search(r'\|DBConfigFile\|([^|]+)\|', block)
+                if _cf and _cf.group(1).strip():
+                    dbu["config_file"] = _cf.group(1).strip()
+                if sql_txt:
+                    # Normalizar: colapsar saltos/espacios y des-escapar ${..}.
+                    sql_norm = re.sub(r'\s+', ' ', sql_txt).strip()
+                    sql_norm = sql_norm.replace("\\{", "{").replace("\\}", "}").replace("\\$", "$")
+                    dbu["update_sql"] = sql_norm
+                info["db_source"] = dbu
+                print(f"  [dbg] Reclassified {info['display_name']} (vertex {pvid}) as SINK (Update_Table, sql={dbu.get('update_sql','?')[:70]})")
     # Build a map: vertex_id -> has_write_port (iport with 'write' name)
     write_port_vertices = set()
     for m in re.finditer(r'XXGvertex_iport_iport\|\d+\|\d+\|\d+\|\d+\|\{\d+\|write\|\}(\d+)\|(\d+)\|', content):
@@ -616,18 +659,24 @@ def _parse_gde_native(content):
             vertex_ids.add(vertex_id)
     
     # Input ports: {2010211001|XXGvertex_iport_iport|2838|0|4563|0|{0|in|}1721|1726|}
-    for m in re.finditer(r'XXGvertex_iport_iport\|\d+\|\d+\|\d+\|\d+\|\{\d+\|[^|]+\|\}(\d+)\|(\d+)\|', content):
-        vertex_id = m.group(1)
-        port_id = m.group(2)
+    # El primer \d+ dentro de {..} es el ORDINAL del puerto (in0=0, in1=1). Lo
+    # capturamos (group 1) para reconstruir el orden de padres de un JOIN.
+    for m in re.finditer(r'XXGvertex_iport_iport\|\d+\|\d+\|\d+\|\d+\|\{(\d+)\|[^|]+\|\}(\d+)\|(\d+)\|', content):
+        port_ord = int(m.group(1))
+        vertex_id = m.group(2)
+        port_id = m.group(3)
         iport_to_vertex[port_id] = vertex_id
+        iport_port_index[port_id] = port_ord
         vertex_ids.add(vertex_id)
     
     # Simple _iport format: {2010211001|XXGvertex_iport|15|0|29|0|{0|in|}9|15|}
-    for m in re.finditer(r'XXGvertex_iport\|\d+\|\d+\|\d+\|\d+\|\{\d+\|[^|]+\|\}(\d+)\|(\d+)\|', content):
-        vertex_id = m.group(1)
-        port_id = m.group(2)
+    for m in re.finditer(r'XXGvertex_iport\|\d+\|\d+\|\d+\|\d+\|\{(\d+)\|[^|]+\|\}(\d+)\|(\d+)\|', content):
+        port_ord = int(m.group(1))
+        vertex_id = m.group(2)
+        port_id = m.group(3)
         if port_id not in iport_to_vertex:
             iport_to_vertex[port_id] = vertex_id
+            iport_port_index[port_id] = port_ord
             vertex_ids.add(vertex_id)
     
     # Oport to flow: {2010213001|XXGoport_dst_flow|2834|0|4556|0|{0|}1722|1720|}
@@ -797,12 +846,16 @@ def _parse_gde_native(content):
             continue
         
         # Vertex input port: {2010211001|XXGvertex_iport|19|0|37|0|{0|in|}17|19|}
+        # Captura el ordinal del puerto: in0->0, in1->1, in->None (una sola entrada).
         if "|XXGvertex_iport|" in line:
-            m = re.search(r'in\d*\|\}(\d+)\|(\d+)\|', line)
+            m = re.search(r'in(\d*)\|\}(\d+)\|(\d+)\|', line)
             if m:
-                vertex_id = m.group(1)
-                port_id = m.group(2)
+                port_ord = int(m.group(1)) if m.group(1) != "" else None
+                vertex_id = m.group(2)
+                port_id = m.group(3)
                 iport_to_vertex[port_id] = vertex_id
+                if port_ord is not None:
+                    iport_port_index[port_id] = port_ord
                 vertex_ids.add(vertex_id)
             else:
                 if len(iport_to_vertex) == 0 and len(vertex_ids) == 0:
@@ -846,6 +899,13 @@ def _parse_gde_native(content):
         if port_id in oport_to_vertex:
             for flow_id in flow_ids:
                 flow_to_src_vertex[flow_id] = oport_to_vertex[port_id]
+
+    # (src_vertex, dst_vertex) -> ordinal del puerto de ENTRADA del destino
+    # (in0=0, in1=1, ...). Permite ordenar los padres de un JOIN por su puerto
+    # real. Se guarda el MENOR ordinal visto por arista (una arista se define por
+    # el par de vertices; si el mismo origen alimentara varios puertos, tomamos el
+    # primero, que es el caso normal in0/in1 con origenes distintos).
+    edge_to_port = {}
     
     # For each iport that receives from a flow, find the source vertex
     # iport_from_flow values are now LISTS (fan-in support)
@@ -881,6 +941,12 @@ def _parse_gde_native(content):
                             continue
                         
                         edge_set.add((src_vertex, dst_vertex))
+                        # Registrar el ordinal del puerto de entrada del destino.
+                        _pord = iport_port_index.get(port_id)
+                        if _pord is not None:
+                            _key = (src_vertex, dst_vertex)
+                            if _key not in edge_to_port or _pord < edge_to_port[_key]:
+                                edge_to_port[_key] = _pord
     
     # Now map vertex IDs (small) to component names
     # The vertex IDs from ports should correspond to the order of components
@@ -972,10 +1038,17 @@ def _parse_gde_native(content):
             if src_vid in vertex_names and dst_vid in vertex_names:
                 src_name = vertex_names[src_vid].get("final_name", vertex_names[src_vid]["name"])
                 dst_name = vertex_names[dst_vid].get("final_name", vertex_names[dst_vid]["name"])
-                edges.append({
+                edge = {
                     "from": src_name,
                     "to": dst_name,
-                })
+                }
+                # Ordinal del puerto de entrada del destino (in0=0, in1=1, ...).
+                # Lo usa el DAG para ordenar los padres de un JOIN por su puerto
+                # real, de modo que inN del cuerpo DML mapee al nodo correcto.
+                _tp = edge_to_port.get((src_vid, dst_vid))
+                if _tp is not None:
+                    edge["to_port"] = _tp
+                edges.append(edge)
     else:
         # No edges resolved - just output components as disconnected nodes
         for cid, info in node_by_id.items():
@@ -1257,7 +1330,36 @@ def _extract_embedded_transforms(content):
     
     if keys_by_vertex:
         print(f"  [dbg] Keys by vertex: {keys_by_vertex}")
-    
+
+    # override_key0 / override_key1: en un JOIN de Ab Initio con keys ASIMETRICAS
+    # (los dos lados unen por columnas de NOMBRES distintos), 'key' define la key
+    # del lado in0 y override_keyN define la del lado inN. Ej. raw_tracking_staging
+    # (Add_toComponent_Depth_and_Ply):
+    #   key            = {jobSequenceNumber; toComponentName}   (in0)
+    #   override_key1  = {jobSequenceNumber; componentName}     (in1)
+    # Sin capturar override_key1, el codegen unia ambos lados por 'toComponentName'
+    # (que in1 no tiene) -> _bnx_ensure_side la creaba NULL -> 'null = ...' en el
+    # predicado del join. Guardamos las keys por lado y por vertice.
+    override_keys_by_vertex = {}   # vid -> {side_index: [cols]}
+    for m in re.finditer(r'XXparameter\|override_key(\d+)\|([^|]*)\|', content):
+        side = int(m.group(1))
+        raw_ov = m.group(2)
+        cleaned = raw_ov.replace('\\{', '').replace('\\}', '').replace('{', '').replace('}', '').strip()
+        if not cleaned:
+            continue
+        owning_vertex = None
+        for vpos, vid in vertex_positions:
+            if vpos < m.start():
+                owning_vertex = vid
+            else:
+                break
+        if owning_vertex:
+            cols = [f.strip() for f in cleaned.replace(';', ',').split(',') if f.strip()]
+            if cols:
+                override_keys_by_vertex.setdefault(owning_vertex, {})[side] = cols
+    if override_keys_by_vertex:
+        print(f"  [dbg] Override keys by vertex: {override_keys_by_vertex}")
+
     # Extract dedup 'keep' settings (first, last, unique-only)
     keeps = re.findall(r'XXparameter\|keep\|(\w+)\|', content)
     try:
@@ -1278,7 +1380,10 @@ def _extract_embedded_transforms(content):
     
     # Map filters (select_expr) to their containing vertex
     filters_by_vertex = {}
-    filter_positions = [(m.start(), m.group(1)) for m in re.finditer(r'XXparameter\|select_expr\|([^|]+)\|', content, re.DOTALL)]
+    # El valor de select_expr puede contener '|' ESCAPADOS como '\|' (p.ej.
+    # decimal("\|") en Filter_by_Expression). Un [^|]+ ingenuo trunca ahi.
+    # (?:\\.|[^|])+ consume los pares escapados sin cortar el valor.
+    filter_positions = [(m.start(), m.group(1)) for m in re.finditer(r'XXparameter\|select_expr\|((?:\\.|[^|])+)\|', content, re.DOTALL)]
     for fpos, fval in filter_positions:
         owning_vertex = None
         for vpos, vid in vertex_positions:
@@ -1287,8 +1392,12 @@ def _extract_embedded_transforms(content):
             else:
                 break
         if owning_vertex and fval.strip():
-            # Clean up newlines in filter expression
-            filters_by_vertex[owning_vertex] = fval.strip().replace('\n', ' ')
+            # Des-escapa el '\|' -> '|' y limpia newlines + trailing ';' (terminador
+            # DML que no debe entrar al SQL del .where) + espacios duplicados.
+            _clean = fval.replace('\\|', '|')
+            _clean = re.sub(r'\s+', ' ', _clean.strip().replace('\n', ' ')).strip()
+            _clean = _clean.rstrip().rstrip(';').rstrip()
+            filters_by_vertex[owning_vertex] = _clean
     
     # Also map 'select' filters (from Reformat components) by vertex
     select_filter_positions = [(m.start(), m.group(1)) for m in re.finditer(r'XXparameter\|select\|([^|]+)\|', content)]
@@ -1302,7 +1411,10 @@ def _extract_embedded_transforms(content):
                 else:
                     break
             if owning_vertex:
-                filters_by_vertex[owning_vertex] = sfval
+                # Normaliza espacios y quita ';' final (terminador DML) que
+                # arrastraria al SQL del .where (p.ej. Reformat_11_280).
+                _sfclean = re.sub(r'\s+', ' ', sfval).strip().rstrip(';').rstrip()
+                filters_by_vertex[owning_vertex] = _sfclean
     
     if filters_by_vertex:
         print(f"  [dbg] Filters by vertex: {filters_by_vertex}")
@@ -1460,25 +1572,111 @@ def _extract_embedded_transforms(content):
         print(f"  [dbg] Commandlines by vertex: {commandlines_by_vertex}")
     
     # Extract record_match_required for Join components (determines left vs inner join)
-    # Pattern: record_match_required1|False| or record_match_required|Explicit| etc.
+    # El tipo de join fiable es el parametro CONCRETO join_type del componente:
+    #   join_type|Inner Join (matching records required on all inputs)|
+    #   join_type|Full Outer Join (use null for missing records)|
+    #   join_type|Explicit|
+    # PERO ese parametro vive en el XXGpvertex del PROTOTIPO del join (p.ej. 215),
+    # no en el vertice de la INSTANCIA nombrada (p.ej. 204 Join_Latest_Records_Counts).
+    # La relacion instancia->proto la da XXGobject_proto_object ({}INST|PROTO|).
+    # Antes se usaba record_match_required, que es una FORMULA
+    # ('value join-type Inner* True ...'), no un valor, y se mapeaba por posicion a
+    # vertices internos equivocados -> el join salia 'left' cuando el GDE decia Inner.
     join_types_by_vertex = {}
-    rmr_positions = [(m.start(), m.group(1)) for m in re.finditer(
-        r'XXparameter\|record_match_required\d*\|([^|]+)\|', content
-    )]
-    for rpos, rval in rmr_positions:
-        owning_vertex = None
+
+    def _owner_vertex(pos):
+        ov = None
         for vpos, vid in vertex_positions:
-            if vpos < rpos:
-                owning_vertex = vid
+            if vpos < pos:
+                ov = vid
             else:
                 break
-        if owning_vertex:
-            rval_lower = rval.strip().lower()
-            if rval_lower == "false" or "optional" in rval_lower:
-                join_types_by_vertex[owning_vertex] = "left"
-            elif "inner" in rval_lower or rval_lower == "true":
-                join_types_by_vertex[owning_vertex] = "inner"
-    
+        return ov
+
+    _vertex_starts = sorted(p for p, _ in vertex_positions)
+
+    def _block_of(vertex_id):
+        """Devuelve (start, end) del bloque de un vertice (hasta el siguiente)."""
+        pos = None
+        for p, vid in vertex_positions:
+            if vid == vertex_id:
+                pos = p
+                break
+        if pos is None:
+            return None
+        end = len(content)
+        for s in _vertex_starts:
+            if s > pos:
+                end = s
+                break
+        return (pos, end)
+
+    def _jointype_in_block(blk):
+        """Tipo de join efectivo dentro de un bloque de texto del .mp.
+
+        - join_type|Inner...  -> 'inner'
+        - join_type|Full...   -> 'outer'
+        - join_type|Explicit  -> se refina con record_(match_)required por lado.
+        Dos interfaces (parameter_interface_internal):
+          * version-3-2-2: record_match_required{0,1}, booleano NORMAL
+              (True = ese lado es obligatorio / requiere match).
+          * legacy: record_required{0,1}, booleano INVERTIDO
+              (True = ese lado es OPCIONAL / no requiere match).
+        Normalizamos a required0/required1 (True=obligatorio) y mapeamos:
+          (T,T)->inner  (T,F)->left  (F,T)->right  (F,F)->outer.
+        Devuelve None si el bloque no declara un join_type concreto.
+        """
+        jt_val = None
+        for mm in re.finditer(r'join_type\|([^|]+)\|', blk):
+            v = mm.group(1).strip().lower()
+            if v.startswith(("inner", "full", "explicit")):
+                jt_val = v
+                break
+        if jt_val is None:
+            return None
+        if jt_val.startswith("inner"):
+            return "inner"
+        if jt_val.startswith("full"):
+            return "outer"
+        # Explicit: leer flags concretos por lado.
+        req = {}
+        for mm in re.finditer(r'record_match_required([01])\|(True|False|0|1)\|', blk):
+            req[int(mm.group(1))] = mm.group(2).lower() in ("true", "1")
+        for mm in re.finditer(r'(?<!match_)record_required([01])\|(True|False|0|1)\|', blk):
+            idx = int(mm.group(1))
+            # legacy invertido: record_required True => OPCIONAL (no obligatorio)
+            req.setdefault(idx, not (mm.group(2).lower() in ("true", "1")))
+        r0 = req.get(0, True)
+        r1 = req.get(1, True)
+        if r0 and r1:
+            return "inner"
+        if r0 and not r1:
+            return "left"
+        if not r0 and r1:
+            return "right"
+        return "outer"
+
+    # El join_type EFECTIVO puede estar en la propia INSTANCIA (que sobreescribe
+    # el default del template con Explicit + flags) o, si la instancia no lo
+    # declara, en su PROTO. Prioridad: instancia > proto. Recorremos las
+    # instancias join via XXGobject_proto_object ({}INST|PROTO|).
+    _inst_proto = {}
+    for m in re.finditer(r'XXGobject_proto_object\|\d+\|\d+\|\d+\|\d+\|\{\}(\d+)\|(\d+)\|', content):
+        _inst_proto[m.group(1)] = m.group(2)
+
+    for inst, proto in _inst_proto.items():
+        jt = None
+        _ib = _block_of(inst)
+        if _ib:
+            jt = _jointype_in_block(content[_ib[0]:_ib[1]])
+        if jt is None:
+            _pb = _block_of(proto)
+            if _pb:
+                jt = _jointype_in_block(content[_pb[0]:_pb[1]])
+        if jt:
+            join_types_by_vertex[inst] = jt
+            join_types_by_vertex.setdefault(proto, jt)
+
     if join_types_by_vertex:
         print(f"  [dbg] Join types by vertex: {join_types_by_vertex}")
     
@@ -1490,6 +1688,7 @@ def _extract_embedded_transforms(content):
         "transforms_by_vertex": transforms_by_vertex,
         "keys": keys,
         "keys_by_vertex": keys_by_vertex,
+        "override_keys_by_vertex": override_keys_by_vertex,
         "filters": filters,
         "filters_by_vertex": filters_by_vertex,
         "keeps": keeps,
@@ -1521,6 +1720,7 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
     keeps = embedded.get("keeps", [])
     commandlines_by_vertex = embedded.get("commandlines_by_vertex", {})
     join_types_by_vertex = embedded.get("join_types_by_vertex", {})
+    override_keys_by_vertex = embedded.get("override_keys_by_vertex", {})
     record_by_vertex = embedded.get("record_by_vertex", {})
 
     # Apply record formats (esquema real de columnas) a los nodos que lo tengan.
@@ -1558,22 +1758,50 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
         if vid in node_by_id:
             comp_name = node_by_id[vid]["name"]
             name_lower = comp_name.lower()
+            _info = node_by_id[vid]
+            _is_join = ("join" in str(_info.get("comp_type", "")).lower()
+                        or "join" in comp_name.lower()
+                        or _info.get("proto_type") == "JOIN")
+            # Un JOIN de Ab Initio con cuerpo begin...end define columnas derivadas
+            # (first_defined, if/else, record_count_difference...). Ese raw_body se
+            # descartaba: el nodo JOIN ya existia en xfr_rules (por join_type) y el
+            # `continue` de abajo lo saltaba. Aqui, ANTES del continue, preservamos
+            # el cuerpo como raw_transform SIN pisar join_key/join_type ya asignados,
+            # para que el codegen (Fase 2) pueda emitir las columnas del join.
+            if _is_join:
+                raw_body = trules.get("raw_body", "")
+                if raw_body and "out." in raw_body and "raw_transform" not in xfr_rules.get(name_lower, {}):
+                    xfr_rules.setdefault(name_lower, {})["raw_transform"] = raw_body[:3000]
+                    print(f"  [dbg] Join body preserved: {comp_name} ({vid}) → raw_transform ({len(raw_body)} chars)")
+                continue
             # Skip if already has external .xfr rules
             if name_lower in xfr_rules:
                 continue
             
-            if trules["type"] == "rollup" and trules["aggregations"]:
+            if trules["type"] == "rollup":
+                # Antes se exigia trules["aggregations"] para entrar aqui; un rollup
+                # con aggs=0 caia al SECOND PASS, que asignaba group_by por POSICION
+                # (keys[key_idx]) y agarraba la key de OTRO vertice -> group_by con
+                # una sola key equivocada. Ahora TODO rollup se resuelve por su
+                # propio vertice (keys_by_vertex[vid]), separando por ';' y ','.
                 rule = {}
-                # Get keys for this vertex
                 vertex_keys = keys_by_vertex.get(vid, [])
                 if vertex_keys:
-                    rule["group_by"] = [f.strip() for f in vertex_keys[0].replace(';', ',').split(',') if f.strip()]
-                rule["select"] = ", ".join(
-                    f'{a["function"]}({a["source_field"]}) as {a["field"]}' 
-                    for a in trules["aggregations"]
-                )
-                xfr_rules[name_lower] = rule
-                print(f"  [dbg] Direct vertex match: {comp_name} ({vid}) → rollup ({len(trules['aggregations'])} aggs)")
+                    group_by = []
+                    for k in vertex_keys:
+                        group_by.extend([f.strip() for f in k.replace(';', ',').split(',') if f.strip()])
+                    if group_by:
+                        rule["group_by"] = group_by
+                if trules["aggregations"]:
+                    rule["select"] = ", ".join(
+                        f'{a["function"]}({a["source_field"]}) as {a["field"]}'
+                        for a in trules["aggregations"]
+                    )
+                # Solo asignar si obtuvimos algo util (keys o aggregaciones); si no,
+                # dejar que otras rutas lo resuelvan.
+                if rule:
+                    xfr_rules[name_lower] = rule
+                    print(f"  [dbg] Direct vertex match: {comp_name} ({vid}) → rollup ({len(trules['aggregations'])} aggs, group_by={rule.get('group_by')})")
             elif trules["type"] == "reformat" and (trules["fields"] or trules.get("raw_body")):
                 raw_body = trules.get("raw_body", "")
                 fields = trules.get("fields", [])
@@ -1720,21 +1948,38 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
         
         # --- ROLLUP ---
         elif "rollup" in comp_type:
-            for tidx, trules in list(transforms.items()):
-                if trules["type"] == "rollup":
-                    rule = {}
-                    if keys and key_idx < len(keys):
-                        key_str = keys[key_idx]
-                        rule["group_by"] = [f.strip().rstrip('}').lstrip('{') for f in key_str.replace(';', ',').split(',') if f.strip()]
-                        key_idx += 1
-                    if trules["aggregations"]:
-                        rule["select"] = ", ".join(
-                            f'{a["function"]}({a["source_field"]}) as {a["field"]}' 
-                            for a in trules["aggregations"]
-                        )
-                    xfr_rules[name_lower] = rule
-                    del transforms[tidx]
-                    break
+            # Preferir el transform DE ESTE vertice; si no, el primer rollup libre.
+            trules = transforms_by_vertex.get(vid)
+            tidx_to_del = None
+            if not (trules and trules.get("type") == "rollup"):
+                trules = None
+                for tidx, tr in list(transforms.items()):
+                    if tr["type"] == "rollup":
+                        trules, tidx_to_del = tr, tidx
+                        break
+            if trules and trules.get("type") == "rollup":
+                rule = {}
+                # PRIORIZAR las keys del PROPIO vertice (como DEDUP/SORT/JOIN). El
+                # mapeo posicional keys[key_idx] agarraba la key de otro vertice y
+                # dejaba el group_by con una sola clave equivocada.
+                if vertex_keys:
+                    group_by = []
+                    for k in vertex_keys:
+                        group_by.extend([f.strip() for f in k.replace(';', ',').split(',') if f.strip()])
+                    if group_by:
+                        rule["group_by"] = group_by
+                elif keys and key_idx < len(keys):
+                    key_str = keys[key_idx]
+                    rule["group_by"] = [f.strip().rstrip('}').lstrip('{') for f in key_str.replace(';', ',').split(',') if f.strip()]
+                    key_idx += 1
+                if trules["aggregations"]:
+                    rule["select"] = ", ".join(
+                        f'{a["function"]}({a["source_field"]}) as {a["field"]}'
+                        for a in trules["aggregations"]
+                    )
+                xfr_rules[name_lower] = rule
+                if tidx_to_del is not None:
+                    del transforms[tidx_to_del]
         
         # --- JOIN ---
         elif "join" in comp_type or "join" in comp_name.lower() or info.get("proto_type") == "JOIN":
@@ -1748,6 +1993,19 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
                         xfr_rules[name_lower] = {}
                     xfr_rules[name_lower]["join_key"] = join_fields[0] if len(join_fields) == 1 else join_fields
                     print(f"  [dbg] Join key assigned: {comp_name} -> join_key={join_fields}")
+                    # Keys ASIMETRICAS por lado (override_keyN). 'key' (join_fields)
+                    # es la key del lado in0; override_keyN la del lado inN. Solo se
+                    # emite join_keys_by_side si ALGUN lado difiere de la key base,
+                    # para no alterar el caso simetrico (que sigue usando join_key).
+                    _ov = override_keys_by_vertex.get(vid)
+                    if _ov:
+                        by_side = {0: list(join_fields)}
+                        for side, cols in _ov.items():
+                            by_side[side] = cols
+                        # Solo si realmente hay asimetria (algun lado != in0).
+                        if any(by_side.get(s) != join_fields for s in by_side if s != 0):
+                            xfr_rules[name_lower]["join_keys_by_side"] = by_side
+                            print(f"  [dbg] Join keys ASIMETRICAS: {comp_name} -> {by_side}")
             elif keys and key_idx < len(keys):
                 key_str = keys[key_idx]
                 join_fields = [f.strip().rstrip('}').lstrip('{') for f in key_str.replace(';', ',').split(',') if f.strip()]
@@ -1841,7 +2099,16 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
                             rule["select"] = ", ".join(select_parts)
                         if literal_parts:
                             rule["literals"] = literal_parts
-                        if filters and filter_idx < len(filters):
+                        # El filtro (where) de un Reformat debe salir de SU PROPIO
+                        # vertice (filters_by_vertex[vid]); antes se tomaba de la lista
+                        # POSICIONAL filters[filter_idx], que cruzaba el filtro de otro
+                        # vertice (p.ej. Reformat_11_280 se llevaba el filtro del
+                        # FBE_Cur_Campaign_Exec). Fallback posicional solo si el vertice
+                        # no tiene filtro propio.
+                        _vf = filters_by_vertex.get(vid)
+                        if _vf:
+                            rule["where"] = _vf
+                        elif filters and filter_idx < len(filters):
                             rule["where"] = filters[filter_idx]
                             filter_idx += 1
                         if rule:
@@ -1851,7 +2118,10 @@ def _apply_embedded_transforms(node_by_id, embedded, xfr_rules):
                         xfr_rules[name_lower] = {"raw_transform": raw_body[:3000]}
                         print(f"  [dbg] Direct vertex match: {comp_name} ({vid}) → raw reformat ({len(raw_body)} chars)")
                     else:
-                        if filters and filter_idx < len(filters):
+                        _vf = filters_by_vertex.get(vid)
+                        if _vf:
+                            xfr_rules[name_lower] = {"where": _vf}
+                        elif filters and filter_idx < len(filters):
                             xfr_rules[name_lower] = {"where": filters[filter_idx]}
                             filter_idx += 1
                     

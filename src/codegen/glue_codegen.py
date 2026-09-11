@@ -1,7 +1,7 @@
 # src/codegen/glue_codegen.py
 import re
 from datetime import datetime
-from src.codegen.spark_codegen import _translate_dml_expr, _map_date_functions, _map_string_functions, _sanitize_generated_file, _emit_pset_params, _unescape_gde, _normalize_logical_ops, _sql_arg, _is_untranslatable, _one_line, _strip_dml_comments, _emit_shell_literal
+from src.codegen.spark_codegen import _translate_dml_expr, _map_date_functions, _map_string_functions, _sanitize_generated_file, _emit_pset_params, _unescape_gde, _normalize_logical_ops, _sql_arg, _is_untranslatable, _one_line, _strip_dml_comments, _emit_shell_literal, _emit_join_body_columns, _safe_path_fragment, _safe_dbtable, _emit_update_table_helper, _sanitize_join_keys, _derived_join_key_from_expr, _join_key_raw_text
 
 
 # Local functions removed — using improved versions from spark_codegen
@@ -165,7 +165,13 @@ def _to_boolean_filter(expr):
         return f'({e}) <> 0'
 
     # Caso 2: ya parece booleana (comparadores, IS NULL, AND/OR, NOT) -> dejar igual.
-    if re.search(r'(>=|<=|<>|!=|==|=|>|<)\b|\bIS\s+(NOT\s+)?NULL\b|\b(AND|OR|NOT)\b|\bLIKE\b|\bIN\s*\(|\bRLIKE\b|\bBETWEEN\b',
+    # OJO: los comparadores simbolicos NO llevan \b. Los simbolos =, <, > son
+    # caracteres no-palabra; un \b tras ellos solo matchea si les sigue un caracter
+    # de palabra. En un filtro como "plan_type != 'cancelled'" o "confirmed = true"
+    # tras el operador viene un espacio -> \b no matcheaba -> la expresion booleana
+    # valida caia al fallback "(e) <> 0" (que ademas Spark rechaza por tipos). Mismo
+    # arreglo ya aplicado en spark_codegen._to_boolean_filter.
+    if re.search(r'(>=|<=|<>|!=|==|=|>|<)|\bIS\s+(NOT\s+)?NULL\b|\b(AND|OR|NOT)\b|\bLIKE\b|\bIN\s*\(|\bRLIKE\b|\bBETWEEN\b',
                  e, re.IGNORECASE):
         return e
 
@@ -287,8 +293,26 @@ def _build_transform(var_id, src_df, rule):
     # --- SORT ---
     sort_by = rule.get("sort_by")
     if sort_by:
-        sort_cols = ", ".join(f'"{c}"' for c in sort_by)
-        return f'{var_id}_df = {src_df}.orderBy({sort_cols})'
+        # Sanear: solo columnas simples. Una sort key puede ser una expresion
+        # Ab Initio ($[re_match_replace(SORT_KEY, ...)]) fragmentada por comas que
+        # como columna directa rompe .orderBy(...) (Python invalido). Mismo saneo
+        # que spark_codegen (antes glue no lo hacia -> orderBy con la expresion cruda).
+        cols = _sanitize_join_keys(sort_by)
+        if cols:
+            sort_cols = ", ".join(f'"{c}"' for c in cols)
+            return f'{var_id}_df = {src_df}.orderBy({sort_cols})'
+        # Sin columna simple: intentar clave DERIVADA (re_match_replace) y ordenar
+        # por la columna calculada (materializacion tolerante si la fuente falta).
+        derived = _derived_join_key_from_expr(sort_by, prefix="_sk_")
+        if derived:
+            scol, sexpr, ssrc = derived
+            sexpr_sql = _sql_arg(sexpr)
+            return (
+                f'# Sort key DERIVADA (Ab Initio re_match_replace): {scol} = {sexpr}\n'
+                f'{var_id}_df = {src_df}.withColumn("{scol}", expr("{sexpr_sql}") if "{ssrc}" in {src_df}.columns else lit(None)).orderBy("{scol}")'
+            )
+        raw_note = _one_line(_join_key_raw_text(sort_by), 80)
+        return f'{var_id}_df = {src_df}  # TODO: sort key era expresion Ab Initio no soportada: {raw_note}'
     
     # --- LOOKUP JOIN (from Ab Initio lookup_count/lookup_next pattern) ---
     if rule.get("transform") == "lookup_join":
@@ -331,7 +355,7 @@ def _build_transform(var_id, src_df, rule):
             lines = [f'{var_id}_df = {src_df}']
             where = rule.get("where")
             if where:
-                where = _to_boolean_filter(_translate_abinitio_expr(where))
+                where = _sql_arg(_to_boolean_filter(_translate_abinitio_expr(where)))
                 lines.append(f'{var_id}_reject_df = {var_id}_df.where("NOT ({where})")')
                 lines.append(f'{var_id}_df = {var_id}_df.where("{where}")')
             else:
@@ -419,7 +443,7 @@ def _build_transform(var_id, src_df, rule):
         lines = [f'{var_id}_df = {src_df}']
         where = rule.get("where")
         if where:
-            where = _to_boolean_filter(_translate_abinitio_expr(where))
+            where = _sql_arg(_to_boolean_filter(_translate_abinitio_expr(where)))
             lines.append(f'{var_id}_df = {var_id}_df.where("{where}")')
         if transform_exprs:
             for expr_str in transform_exprs:
@@ -441,7 +465,13 @@ def _build_transform(var_id, src_df, rule):
                 if lit_field.get("literal_type") == "number":
                     lines.append(f'{var_id}_df = {var_id}_df.withColumn("{fname}", lit({val}))')
                 else:
-                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{fname}", lit("{val}"))')
+                    # Des-escapar formato GDE ($\{VAR\} -> ${VAR}) y neutralizar
+                    # comillas dobles: un literal como '$\{FILE_STATUS\}' generaba
+                    # lit("$\{...\}") con '\{' invalido (SyntaxError) o comillas que
+                    # rompen el string. _unescape_gde + escape lo dejan como literal
+                    # Python valido.
+                    _v = _unescape_gde(str(val)).replace('\\', '\\\\').replace('"', '\\"')
+                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{fname}", lit("{_v}"))')
         return "\n".join(lines)
 
     select = rule.get("select", "*")
@@ -464,7 +494,7 @@ def _build_transform(var_id, src_df, rule):
     # comma-separated expressions that must be translated individually after splitting.
     # Only translate for group_by aggregation (which expects already-split parts).
     if where:
-        where = _to_boolean_filter(_translate_abinitio_expr(where))
+        where = _sql_arg(_to_boolean_filter(_translate_abinitio_expr(where)))
 
     if group_by:
         # Deduplicate keys preserving order
@@ -577,6 +607,22 @@ def generate_glue(dag, output_path, xfr_rules=None, pset_params=None):
         f.write('    """Filter rows where substring(field, start, length) is NOT in exclude_values."""\n')
         f.write("    return df.filter(~F.substring(F.col(field), start, length).isin(exclude_values))\n\n\n")
 
+        # Garantiza que un lado de un JOIN tenga las columnas que el cuerpo del join
+        # referencia (in0.<col>/in1.<col>); ausentes -> NULL. Evita UNRESOLVED_COLUMN
+        # en `l`.`col`/`r`.`col` cuando un lado no trae la columna.
+        f.write("def _bnx_ensure_side(df, cols):\n")
+        f.write('    """Asegura que df tenga las columnas dadas (NULL si faltan). Para joins."""\n')
+        f.write("    if df is None:\n")
+        f.write("        return df\n")
+        f.write("    have = set(df.columns)\n")
+        f.write("    for c in cols:\n")
+        f.write("        if c not in have:\n")
+        f.write("            df = df.withColumn(c, F.lit(None).cast('string'))\n")
+        f.write("    return df\n\n\n")
+
+        # Helper compartido para el componente Update_Table (db-update).
+        _emit_update_table_helper(f)
+
         if True:
             f.write("def is_valid_record(df, validation_rules=None):\n")
             f.write('    """Validate records. Returns tuple: (valid_df, invalid_df)"""\n')
@@ -655,6 +701,9 @@ def generate_glue(dag, output_path, xfr_rules=None, pset_params=None):
                     import re as _re
                     query_clean = _re.sub(r'\$\\\{([^}]+)\\\}', r'${\1}', query)
                     query_clean = _re.sub(r'\$\{([^}]+)\}', r'${\1}', query_clean)
+                    # Colapsar saltos de linea: una query multilinea partiria el
+                    # comentario '# Original Query: ...' en lineas sin '#' -> SyntaxError.
+                    query_clean = _re.sub(r'\s*[\r\n]+\s*', ' ', query_clean)
                     f.write(f'# Original DB: {dbms}\n')
                     f.write(f'# Original Query: {query_clean[:200]}\n')
                     f.write(f'{var_id}_df = spark.read.parquet(f"{{PARAMS.BASE_PATH}}/landing/{var_id.lower()}")\n')
@@ -671,23 +720,28 @@ def generate_glue(dag, output_path, xfr_rules=None, pset_params=None):
                     f.write(f'{var_id}_df = {var_id}_df.selectExpr("CAST(value AS STRING) as json_value")\n')
                 elif src_type == "jdbc" and (table or conn):
                     f.write(f'{var_id}_df = spark.read.format("jdbc")')
+                    _tbl = _safe_dbtable(table) if table else var_id.lower()
                     f.write(f'.option("url", "{conn or "jdbc:mysql://localhost:3306/db"}")')
-                    f.write(f'.option("dbtable", "{table or var_id.lower()}").load()\n')
+                    f.write(f'.option("dbtable", "{_tbl}").load()\n')
                 else:
                     src_name = var_id.lower()
                     path_resolved = rule.get("path_resolved") if rule else False
                     if path and path_resolved:
-                        # Path from Layout, use PARAMS.BASE_PATH + relative path
+                        # Path from Layout, use PARAMS.BASE_PATH + relative path.
+                        # _safe_path_fragment resuelve $[string_concat(...)]/$VAR y
+                        # neutraliza comillas dobles que romperian el f-string.
+                        _p = _safe_path_fragment(path)
                         if fmt == "csv":
-                            f.write(f'{var_id}_df = spark.read.format("csv").option("header", "true").option("inferSchema", "true").load(f"{{PARAMS.BASE_PATH}}/raw/{path}")\n')
+                            f.write(f'{var_id}_df = spark.read.format("csv").option("header", "true").option("inferSchema", "true").load(f"{{PARAMS.BASE_PATH}}/raw/{_p}")\n')
                         else:
-                            f.write(f'{var_id}_df = spark.read.parquet(f"{{PARAMS.BASE_PATH}}/raw/{path}")\n')
+                            f.write(f'{var_id}_df = spark.read.parquet(f"{{PARAMS.BASE_PATH}}/raw/{_p}")\n')
                     elif path:
                         # Explicit full path (e.g. s3://...)
+                        _p = _safe_path_fragment(path)
                         if fmt == "csv":
-                            f.write(f'{var_id}_df = spark.read.format("csv").option("header", "true").option("inferSchema", "true").load("{path}")\n')
+                            f.write(f'{var_id}_df = spark.read.format("csv").option("header", "true").option("inferSchema", "true").load(f"{_p}")\n')
                         else:
-                            f.write(f'{var_id}_df = spark.read.parquet("{path}")\n')
+                            f.write(f'{var_id}_df = spark.read.parquet(f"{_p}")\n')
                     else:
                         if fmt == "csv":
                             f.write(f'{var_id}_df = spark.read.format("csv").option("header", "true").option("inferSchema", "true").load(f"{{PARAMS.BASE_PATH}}/raw/{src_name}")\n')
@@ -810,9 +864,76 @@ def generate_glue(dag, output_path, xfr_rules=None, pset_params=None):
                     
                     if not join_key:
                         f.write(f'# ⚠️ WARNING: join key not found in .mp — sube el .xfr o revisa key={{}} en el MP\n')
-                    
+
+                    # Sanear la join key: quedarnos SOLO con nombres de columna
+                    # simples. Una key que en realidad es una expresion Ab Initio
+                    # ($[re_match_replace(...)], comillas, parentesis) NO sirve como
+                    # columna de join y rompe on=[...] con Python invalido. Mismo
+                    # saneo que spark_codegen (antes glue no lo hacia -> el unico
+                    # grafo roto del barrido glue era este join con key derivada).
+                    _jk_raw = join_key
+                    join_key = _sanitize_join_keys(join_key) if join_key else join_key
+
+                    # Cuerpo DML del join (out.campo :: expr): si existe y hay 2
+                    # padres, unir con alias por lado (l/r) y emitir las columnas
+                    # derivadas via .select() (mismo enfoque que spark_codegen).
+                    join_body = rule.get("raw_transform") if rule else None
+                    has_join_body = bool(
+                        join_body and "out." in join_body and len(parents) >= 2
+                        and ("join(" in join_body.lower() or "::" in join_body)
+                    )
+
                     # Generate join
-                    if join_key and isinstance(join_key, list):
+                    if not join_key and _jk_raw:
+                        # La key era una expresion Ab Initio (no columna simple).
+                        # Intentar clave DERIVADA re_match_replace(campo, pat, repl):
+                        # materializar la columna en ambos lados y unir por ella.
+                        _derived = _derived_join_key_from_expr(_jk_raw)
+                        if _derived:
+                            dcol, dexpr, dsrc = _derived
+                            dexpr_sql = _sql_arg(dexpr)
+                            f.write(f'# Clave de join DERIVADA (Ab Initio re_match_replace): {dcol} = {dexpr}\n')
+                            for pdf in [f'{p}_df' for p in parents]:
+                                f.write(f'{pdf} = {pdf}.withColumn("{dcol}", expr("{dexpr_sql}") if "{dsrc}" in {pdf}.columns else lit(None))\n')
+                            f.write(f'{var_id}_df = {parents[0]}_df.join({parents[1]}_df, on=["{dcol}"], how="{join_type}")\n')
+                            for ep in parents[2:]:
+                                f.write(f'{var_id}_df = {var_id}_df.join({ep}_df, on=["{dcol}"], how="{join_type}")\n')
+                        else:
+                            _rawnote = _one_line(_join_key_raw_text(_jk_raw), 80)
+                            f.write(f'{var_id}_df = {parents[0]}_df  # TODO: join key era expresion Ab Initio no soportada: {_rawnote}\n')
+                            for ep in parents[1:]:
+                                f.write(f'# TODO: join {ep}_df — clave no valida\n')
+                        f.write(f'print("[~] JOIN: {log_name}")\n\n')
+                        continue
+                    if join_key and isinstance(join_key, list) and has_join_body:
+                        keys_list = "[" + ", ".join(f'"{k}"' for k in join_key) + "]"
+                        aliases = [f"s{i}" for i in range(len(parents))]
+                        select_items, out_fields, pass_by_side, cols_by_side = _emit_join_body_columns(
+                            var_id, join_body, aliases=aliases
+                        )
+                        f.write(f'# Cuerpo del join (Ab Initio) con {len(parents)} entradas: alias por lado (s0..)\n')
+                        for i, ep in enumerate(parents):
+                            side_cols = set(cols_by_side.get(i, set())) | set(join_key)
+                            cols_list = "[" + ", ".join(f'"{c}"' for c in sorted(side_cols)) + "]"
+                            f.write(f'_{aliases[i]}_{var_id} = _bnx_ensure_side({ep}_df, {cols_list}).alias("{aliases[i]}")\n')
+                        f.write(f'_j_{var_id} = _{aliases[0]}_{var_id}')
+                        for i in range(1, len(parents)):
+                            f.write(f'.join(_{aliases[i]}_{var_id}, on={keys_list}, how="{join_type}")')
+                        f.write("\n")
+                        real_items = [s for s in select_items if not s.lstrip().startswith("#")]
+                        comment_items = [s for s in select_items if s.lstrip().startswith("#")]
+                        for c in comment_items:
+                            f.write(c + "\n")
+                        prefix_parts = [f'col("{aliases[i]}.*")' for i in sorted(pass_by_side) if i < len(aliases)]
+                        if prefix_parts and not real_items:
+                            f.write(f'{var_id}_df = _j_{var_id}.select({", ".join(prefix_parts)})\n')
+                        elif real_items:
+                            prefix = (", ".join(prefix_parts) + ", ") if prefix_parts else ""
+                            items_str = ", ".join(real_items)
+                            f.write(f'{var_id}_df = _j_{var_id}.select({prefix}{items_str})\n')
+                        else:
+                            f.write(f'{var_id}_df = _j_{var_id}\n')
+                    elif join_key and isinstance(join_key, list):
                         keys_list = "[" + ", ".join(f'"{k}"' for k in join_key) + "]"
                         f.write(f'{var_id}_df = {parents[0]}_df.join({parents[1]}_df, on={keys_list}, how="{join_type}")\n')
                         for ep in parents[2:]:
@@ -1019,6 +1140,28 @@ def generate_glue(dag, output_path, xfr_rules=None, pset_params=None):
             # SINK
             elif ntype == "SINK":
                 f.write(f'# [*] SINK: {log_name}\n')
+                # Componente Update_Table (db-update): ejecuta un UPDATE/INSERT SQL
+                # sobre una tabla de BD, no escribe un DataFrame. Ver spark_codegen.
+                _node_u = next((n for n in dag.execution_order if n.id == var_id), None)
+                _dbu = getattr(_node_u, "db_source", None) if _node_u else None
+                _update_sql = _dbu.get("update_sql") if isinstance(_dbu, dict) else None
+                if _update_sql:
+                    _sql_esc = _sql_arg(_update_sql)
+                    _conn = _dbu.get("config_file") or ""
+                    _binds = sorted(set(re.findall(r':(\w+)', _update_sql)))
+                    f.write(f'# UPDATE a tabla {_dbu.get("dbms","db")}: {_one_line(_update_sql, 110)}\n')
+                    if parents:
+                        f.write(f'{var_id}_df = {parents[0]}_df\n')
+                    f.write(f'_bnx_run_update_table(\n')
+                    f.write(f'    spark,\n')
+                    f.write(f'    {_sql_esc!r},\n')
+                    f.write(f'    binds={_binds!r},\n')
+                    f.write(f'    src_df={(parents[0] + "_df") if parents else "None"},\n')
+                    f.write(f'    conn_config={_conn!r},\n')
+                    f.write(f'    dbms={_dbu.get("dbms","teradata")!r},\n')
+                    f.write(f')\n')
+                    f.write(f'print("[>] SINK (UPDATE tabla): {log_name}")\n\n')
+                    continue
                 if parents:
                     src = f'{parents[0]}_df'
                     # Exponer el SINK con su propio nombre de variable. Necesario
@@ -1049,18 +1192,18 @@ def generate_glue(dag, output_path, xfr_rules=None, pset_params=None):
                         f.write(f'.option("kafka.bootstrap.servers", "{conn or "localhost:9092"}")')
                         f.write(f'.option("topic", "{topic}").save()\n')
                     elif sink_type == "jdbc" and (table or conn):
+                        _tbl = _safe_dbtable(table) if table else var_id.lower()
                         f.write(f'{src}.write.format("jdbc").mode("{mode}")')
                         f.write(f'.option("url", "{conn or "jdbc:mysql://localhost:3306/db"}")')
-                        f.write(f'.option("dbtable", "{table or var_id.lower()}").save()\n')
+                        f.write(f'.option("dbtable", "{_tbl}").save()\n')
                     else:
-                        # Clean Ab Initio path expressions
-                        if path:
-                            path = re.sub(r'\$\[\(date\("YYYYMMDD"\)\)now\(\)\]', '{date_str}', path)
-                            path = re.sub(r'\$FILE_DATE', '{date_str}', path)
-                            path = re.sub(r'\$\{?(\w+)\}?', r'{PARAMS.\1}', path)
-                        if path:
-                            f.write(f'_date_str = spark.sql("SELECT date_format(current_date(), \'yyyyMMdd\')").collect()[0][0]\n')
-                            f.write(f'{src}.write.mode("{mode}").parquet(f"{{PARAMS.BASE_PATH}}/output/{path}")\n')
+                        # Clean Ab Initio path expressions con el helper unificado
+                        # (resuelve $[string_concat(...)]/$VAR y la fecha inline, y
+                        # neutraliza comillas dobles). Antes se emitia una variable
+                        # _date_str pero el f-string usaba {date_str} -> NameError.
+                        _p = _safe_path_fragment(path) if path else None
+                        if _p:
+                            f.write(f'{src}.write.mode("{mode}").parquet(f"{{PARAMS.BASE_PATH}}/output/{_p}")\n')
                         else:
                             f.write(f'{src}.write.mode("{mode}").parquet(f"{{PARAMS.BASE_PATH}}/output/{var_id.lower()}")\n')
                 else:

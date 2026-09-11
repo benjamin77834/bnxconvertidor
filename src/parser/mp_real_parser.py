@@ -38,7 +38,10 @@ class MPRealParser:
 
             keys_match = re.search(r'keys:\s*(.*)', block)
             if keys_match:
-                comp["keys"] = [x.strip() for x in keys_match.group(1).split(",")]
+                # Las keys de Ab Initio pueden venir como {a; b}: aceptar ',' y
+                # ';' y quitar llaves para no colapsar varias claves en una sola.
+                raw_keys = keys_match.group(1).strip().strip("{}")
+                comp["keys"] = [x.strip() for x in re.split(r"[;,]", raw_keys) if x.strip()]
 
             components.append(comp)
 

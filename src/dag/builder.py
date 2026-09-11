@@ -36,7 +36,14 @@ class DAG:
             for e in exclude_edges:
                 self._exclude.add((e["from"], e["to"]))
 
-        # asignar relaciones padre-hijo
+        # asignar relaciones padre-hijo.
+        # Ademas guardamos el ORDINAL del puerto de entrada del hijo por el que
+        # entra cada padre (e["to_port"]: in0=0, in1=1, ...). Para un JOIN de
+        # Ab Initio, el cuerpo DML referencia inN posicionalmente (in0=current,
+        # in1=previous, etc.), asi que el ORDEN de node.parents DEBE seguir el
+        # ordinal del puerto, no el orden arbitrario de aparicion de las aristas
+        # (que venia de un set y podia invertir in0/in1). Ver builder->codegen JOIN.
+        parent_ports = {}  # child_id -> {parent_id: port_ordinal}
         for e in edges_list:
             parent_id = e["from"]
             child_id = e["to"]
@@ -46,21 +53,61 @@ class DAG:
                 continue
             self.nodes[parent_id].children.append(child_id)
             self.nodes[child_id].parents.append(parent_id)
+            _tp = e.get("to_port")
+            if _tp is not None:
+                parent_ports.setdefault(child_id, {})[parent_id] = _tp
+
+        # Reordenar los padres de cada nodo por el ordinal de su puerto de entrada
+        # cuando lo conocemos. Estable: los padres sin puerto conocido conservan su
+        # posicion relativa (van al final, con clave grande). Solo afecta nodos con
+        # multiples entradas (JOIN/MERGE); los demas quedan igual.
+        for child_id, ports in parent_ports.items():
+            if len(self.nodes[child_id].parents) <= 1:
+                continue
+            parents = self.nodes[child_id].parents
+            self.nodes[child_id].parents = sorted(
+                parents,
+                key=lambda pid, _p=ports: (_p.get(pid, 1_000_000),),
+            )
 
         self.execution_order = self.topo_sort()
 
     def topo_sort(self):
-        visited = set()
+        # DFS con deteccion de ciclos por 3 estados (blanco/gris/negro):
+        #  - blanco: sin visitar (no esta en done ni en on_stack)
+        #  - gris: en la pila de recursion actual (on_stack) -> encontrar una arista
+        #    hacia un gris significa CICLO
+        #  - negro: procesado por completo (done)
+        # Antes se usaba un unico set 'visited' que NO detectaba ciclos: un grafo
+        # A->B->A incluia ambos nodos igualmente. Ahora, cuando una rama forma
+        # parte de un ciclo, sus nodos se EXCLUYEN del orden de ejecucion (no se
+        # pueden ordenar topologicamente) y se registran en self.cycle_nodes.
+        done = set()          # negro
+        on_stack = set()      # gris (pila de recursion)
         order = []
+        cycle_nodes = set()
 
         def visit(node_id):
-            if node_id in visited:
-                return
-            visited.add(node_id)
-            # Visit parents first (ensure all dependencies are processed)
+            if node_id in done:
+                return True          # ya procesado, sin ciclo por esta via
+            if node_id in on_stack:
+                # Arista hacia un nodo en la pila actual -> CICLO.
+                cycle_nodes.add(node_id)
+                return False
+            on_stack.add(node_id)
+            in_cycle = False
             for p in self.nodes[node_id].parents:
-                visit(p)
+                if not visit(p):
+                    in_cycle = True
+            on_stack.discard(node_id)
+            if in_cycle:
+                # Este nodo depende (transitivamente) de un ciclo: no se puede
+                # ordenar; se excluye del execution_order.
+                cycle_nodes.add(node_id)
+                return False
+            done.add(node_id)
             order.append(self.nodes[node_id])
+            return True
 
         # Sort nodes by vertex_id (numeric) for stable ordering that respects
         # the visual layout of the Ab Initio graph (lower vertex IDs first)
@@ -71,6 +118,8 @@ class DAG:
         ))
         for n in sorted_ids:
             visit(n)
+        # Exponer los nodos involucrados en ciclos para diagnostico.
+        self.cycle_nodes = cycle_nodes
         return order
 
 def build_dag(ast):
