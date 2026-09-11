@@ -998,7 +998,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         return xfr_rules
 
     def _compile_graph(self, mp_content, xfr_content="", dml_content="",
-                       pset_content="", target="glue"):
+                       pset_content="", target="glue", mp_filename=""):
         """Genera el codigo (PySpark/Glue/Flink/Python) desde el grafo Ab Initio.
 
         Reune todo el pipeline grafo->codigo (parseo .mp/.xfr/.dml/.pset, embedded
@@ -1270,9 +1270,16 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 ext_lines.append('print("[ok] BNX Extractor Finished")')
                 extractor_code = "\n".join(ext_lines)
 
-            # Extract graph name from params
+            # Nombre del grafo. Orden de preferencia:
+            #  1) AI_JOBNAME / PLAN_NAME (params, cuando el .mp los declara).
+            #  2) Nombre del archivo .mp subido (sin extension) — fallback fiable:
+            #     los grafos GDE no siempre traen AI_JOBNAME y el nombre serializado
+            #     internamente es inconsistente (a veces es un subgrafo).
             graph_params = ast.get("abinitio_params", {})
             graph_name = graph_params.get("AI_JOBNAME", "") or graph_params.get("PLAN_NAME", "") or ""
+            if not graph_name and mp_filename:
+                import os as _os
+                graph_name = _os.path.splitext(_os.path.basename(mp_filename))[0]
 
             # Descripcion en lenguaje natural del grafo (determinística) a partir
             # del orden de ejecucion del DAG. reads/writes van vacios porque en el
@@ -1322,10 +1329,14 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         dml_content = ""
         pset_content = ""
         target = "glue"
+        mp_filename = ""
 
         if "multipart/form-data" in content_type:
             fields, file_parts = parse_multipart(body, content_type)
             target = fields.get("target", "glue")
+            # Nombre del archivo .mp subido (fallback fiable para el nombre del
+            # grafo cuando el .mp no trae AI_JOBNAME/PLAN_NAME).
+            mp_filename = fields.get("mp_filename", "") or ""
             if "mp" in file_parts:
                 mp_content = file_parts["mp"]  # keep as bytes for GDE
             elif "mp" in fields:
@@ -1352,10 +1363,11 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             dml_content = data.get("dml", "")
             pset_content = data.get("pset", "")
             target = data.get("target", "glue")
+            mp_filename = data.get("mp_filename", "") or data.get("filename", "") or ""
 
         if not mp_content:
             raise ValueError("mp file is required")
-        return mp_content, xfr_content, dml_content, pset_content, target
+        return mp_content, xfr_content, dml_content, pset_content, target, mp_filename
 
     def _handle_optimize(self):
         """Optimiza el PySpark por REGLAS (sin IA) para mejorar performance.
@@ -1669,14 +1681,15 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
 
         try:
             try:
-                mp_content, xfr_content, dml_content, pset_content, target = \
+                mp_content, xfr_content, dml_content, pset_content, target, mp_filename = \
                     self._parse_compile_request(body, content_type)
             except ValueError as ve:
                 self._json_response(400, {"error": str(ve)})
                 return
 
             result = self._compile_graph(
-                mp_content, xfr_content, dml_content, pset_content, target
+                mp_content, xfr_content, dml_content, pset_content, target,
+                mp_filename=mp_filename,
             )
             self._json_response(200, result)
 

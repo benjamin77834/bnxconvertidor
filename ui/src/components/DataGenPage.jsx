@@ -10,6 +10,7 @@ const RUNTEST_URL = COMPILE_URL.replace(/\/compile$/, '/runtest')
 const RUNTEST_STREAM_URL = COMPILE_URL.replace(/\/compile$/, '/runtest/stream')
 const OPTIMIZE_COMPARE_URL = COMPILE_URL.replace(/\/compile$/, '/optimize/compare')
 const AWSCODE_URL = COMPILE_URL.replace(/\/compile$/, '/datagen/awscode')
+const EXPORT_BUNDLE_URL = COMPILE_URL.replace(/\/compile$/, '/export/bundle')
 const DOWNLOAD_URL = COMPILE_URL.replace(/\/compile$/, '/download')
 
 const TYPES = ['string', 'integer', 'decimal', 'date', 'datetime', 'boolean']
@@ -489,6 +490,43 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
     }
   }
 
+  // Exporta un ZIP descargable para PROBAR el job en Linux: contiene
+  // job_bundle.zip (job.py + run_test.py + requirements + run.sh) y
+  // data_bundle.zip (CSV sinteticos por nodo SOURCE + manifest).
+  const [exporting, setExporting] = useState(false)
+  const exportBundle = async () => {
+    setExporting(true)
+    try {
+      const res = await fetch(EXPORT_BUNDLE_URL, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mp: graphMp, xfr: graphXfr, dml: (dml || ''),
+          job_name: (graphName || awsJobName) }),
+      })
+      if (!res.ok) {
+        let msg = `Error ${res.status}`
+        try { const j = await res.json(); msg = j.error || msg } catch {}
+        alert('No se pudo exportar el bundle: ' + msg)
+        return
+      }
+      const blob = await res.blob()
+      // Nombre de archivo desde Content-Disposition, con fallback.
+      let fname = 'bnx_export.zip'
+      const cd = res.headers.get('Content-Disposition') || ''
+      const m = cd.match(/filename="?([^"]+)"?/)
+      if (m) fname = m[1]
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url; a.download = fname
+      document.body.appendChild(a); a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      alert('No se pudo exportar el bundle: ' + e.message)
+    } finally {
+      setExporting(false)
+    }
+  }
+
   // Clasifica una linea para colorearla en la consola
   const classifyLine = (text) => {
     if (/Traceback|Exception|Error|ERROR|SQLSTATE/.test(text)) return 'error'
@@ -620,6 +658,12 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 22, color: t.text || '#e2e8f0' }}>🧪 Data Redactada</h2>
+          {graphName && (
+            <div style={{ margin: '4px 0 0', fontSize: 13, fontWeight: 600 }}>
+              <span style={{ color: t.dim || '#64748b' }}>Grafo: </span>
+              <span style={{ color: t.accent || '#6366f1' }}>{graphName}</span>
+            </div>
+          )}
           <p style={{ margin: '4px 0 0', fontSize: 13, color: t.muted || '#94a3b8' }}>
             Genera datos sintéticos con PII enmascarada. Desde el grafo convertido o definiendo el esquema manualmente.
           </p>
@@ -942,6 +986,18 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
                   border: `1px solid ${t.border || '#334155'}`, fontSize: 14,
                 }}
               >⚙️</button>
+              <button
+                onClick={exportBundle}
+                disabled={exporting || !hasCompilerGraph}
+                title="Descarga un ZIP con el job PySpark + venv on-demand (run.sh) y otro con los datos de prueba, listo para correr en Linux"
+                style={{
+                  padding: '10px 18px', borderRadius: 8,
+                  cursor: (exporting || !hasCompilerGraph) ? 'not-allowed' : 'pointer',
+                  background: !hasCompilerGraph ? (t.border || '#334155') : '#10b981',
+                  color: '#fff', border: 'none', fontSize: 14, fontWeight: 700,
+                  opacity: exporting ? 0.6 : 1,
+                }}
+              >{exporting ? '⏳ Empaquetando...' : '📦 Exportar bundle (Linux)'}</button>
               <button
                 onClick={comparePerf}
                 disabled={running || comparing || !hasCode || !isPySpark}
