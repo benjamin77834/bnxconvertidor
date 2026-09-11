@@ -91,6 +91,7 @@ from src.codegen.flink_codegen import generate_flink
 from src.validator.semantic import validate
 from src.accuracy import compute_accuracy
 from src.perf_optimizer import optimize_pyspark
+from src.export_bundle import build_export_bundle
 from src.datagen import (
     infer_schema_from_graph,
     build_synthetic_data,
@@ -142,6 +143,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_awscode()
         elif "/datagen" in path:
             self._handle_datagen()
+        elif "/export/bundle" in path:
+            self._handle_export_bundle()
         elif "/runtest/graph" in path:
             self._handle_runtest_graph()
         elif "/runtest/stream" in path:
@@ -686,6 +689,129 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             import traceback
             traceback.print_exc()
             self._json_response(500, {"error": str(e)})
+
+    def _handle_export_bundle(self):
+        """Genera un ZIP descargable para probar el job en Linux.
+
+        El ZIP contenedor incluye:
+          - job_bundle.zip: job.py (PySpark) + requirements.txt + run.sh + README
+          - data_bundle.zip: data/<nodo>.csv sinteticos + manifest.json
+
+        Acepta el mismo formato de request que /compile (multipart o JSON con
+        mp/xfr/dml/pset). SIEMPRE regenera el job en target 'spark' (PySpark puro,
+        ejecutable en Linux) y genera datos sinteticos por nodo desde el grafo.
+        """
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        content_type = self.headers.get("Content-Type", "")
+        try:
+            try:
+                mp_content, xfr_content, dml_content, pset_content, _target = \
+                    self._parse_compile_request(body, content_type)
+            except ValueError as ve:
+                self._json_response(400, {"error": str(ve)})
+                return
+
+            # 1) Regenerar el job en PySpark puro (target spark).
+            compiled = self._compile_graph(
+                mp_content, xfr_content, dml_content, pset_content, target="spark"
+            )
+            job_code = compiled.get("code", "") or ""
+            if not job_code.strip():
+                self._json_response(200, {
+                    "ok": False,
+                    "error": "No se pudo generar el job PySpark del grafo (revisa errores).",
+                    "errors": compiled.get("errors", []),
+                })
+                return
+            job_name = compiled.get("graph_name") or "bnx_job"
+
+            # 2) Generar datos sinteticos por nodo (mismo camino que /datagen modo grafo).
+            datasets = self._synthetic_datasets_for_graph(
+                mp_content, xfr_content, dml_content
+            )
+
+            # 3) Script AUTONOMO de prueba (harness): intercepta lecturas/escrituras
+            #    y alimenta los datos por nodo. En Linux, BNX_DATA_DIR sobreescribe
+            #    los datos embebidos con los CSV del data_bundle (editables).
+            from src.test_runner import build_test_script, extract_referenced_columns, _normalize_inputs
+            inputs = _normalize_inputs(datasets)
+            required_cols = extract_referenced_columns(job_code)
+            run_test_code = build_test_script(
+                job_code, inputs, required_cols=required_cols,
+                output_dir="./_bnx_work/output", master="local[*]",
+            )
+
+            # 4) Armar el ZIP contenedor y devolverlo como descarga.
+            bundle_bytes, filename = build_export_bundle(
+                job_code, run_test_code, job_name, datasets
+            )
+            self._binary_response(bundle_bytes, filename)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": str(e)})
+
+    def _synthetic_datasets_for_graph(self, mp_content, xfr_content, dml_content):
+        """Infiere el esquema del grafo y genera datasets sinteticos por nodo.
+
+        Reutiliza la misma logica que /datagen (infer_schema_from_graph +
+        build_synthetic_data). Devuelve la lista de datasets (con 'content' CSV).
+        """
+        mp_path = self._save_temp(mp_content, ".mp")
+        xfr_path = self._save_temp(xfr_content, ".xfr") if xfr_content else None
+        dml_path = self._save_temp(dml_content, ".dml") if dml_content else None
+        try:
+            ast = parse_project(mp_path)
+            xfr_rules = parse_xfr(xfr_path) if xfr_path else {}
+            xfr_rules = self._prepare_xfr_rules(xfr_rules, ast, mp_path)
+            dml_data = parse_dml(dml_path) if dml_path else {}
+            dml_schema = dml_data.get("schema", {})
+            schema = infer_schema_from_graph(ast, xfr_rules, dml_schema)
+            datasets = []
+            seen_nodes = set()
+            for node_schema in schema:
+                # Datos de prueba = solo las SOURCE reales (nodos raiz que LEEN datos).
+                # infer_schema_from_graph marca el esquema de entrada de TODOS los
+                # nodos (io=input), pero los transforms intermedios los calcula el
+                # job; incluirlos como CSV seria ruido. Nos quedamos con node_type
+                # SOURCE y su esquema de entrada, evitando duplicar por nodo.
+                if node_schema.get("node_type") != "SOURCE":
+                    continue
+                if node_schema.get("io") not in (None, "input"):
+                    continue
+                nkey = str(node_schema.get("node", "")).lower()
+                if nkey in seen_nodes:
+                    continue
+                seen_nodes.add(nkey)
+                if not node_schema.get("columns"):
+                    continue
+                gen = build_synthetic_data(node_schema["columns"], n_rows=10, fmt="csv")
+                datasets.append({
+                    "node": node_schema["node"],
+                    "node_type": node_schema.get("node_type"),
+                    "io": node_schema.get("io", "input"),
+                    "format": gen["format"],
+                    "content": gen["content"],
+                    "columns": gen["columns"],
+                    "rows": gen["rows"],
+                })
+            return datasets
+        finally:
+            try:
+                os.unlink(mp_path)
+            except OSError:
+                pass
+            if xfr_path:
+                try:
+                    os.unlink(xfr_path)
+                except OSError:
+                    pass
+            if dml_path:
+                try:
+                    os.unlink(dml_path)
+                except OSError:
+                    pass
 
     def _handle_datagen(self):
         """Genera datos sintéticos redactados.
@@ -1576,6 +1702,16 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(json.dumps(data, default=str).encode())
+
+    def _binary_response(self, data_bytes, filename, content_type="application/zip"):
+        """Devuelve un archivo binario descargable (p.ej. el ZIP del bundle)."""
+        self.send_response(200)
+        self._cors_headers()
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(data_bytes)))
+        self.end_headers()
+        self.wfile.write(data_bytes)
 
     def _cors_headers(self):
         self.send_header("Access-Control-Allow-Origin", "*")

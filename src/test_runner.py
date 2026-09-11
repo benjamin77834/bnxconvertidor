@@ -104,6 +104,15 @@ def extract_referenced_columns(pyspark_code):
     for block in re.findall(r'(?:expr|where|filter)\(\s*"((?:[^"\\]|\\.)*)"', pyspark_code):
         # limpiar escapes
         clean = block.replace('\\"', '"')
+        # Referencias calificadas por alias de join: `l`.`col` / `r`.`col` (o
+        # l.col / r.col). El calificador (l/r) NO es una columna; es el alias del
+        # lado del join. Si se capturara como columna, _bnx_ensure_cols crearia una
+        # columna string 'l'/'r' y luego `l`.`col` fallaria con
+        # INVALID_EXTRACT_BASE_FIELD_TYPE. Reescribimos `alias`.`col` -> col
+        # (dejando solo la columna real) antes de tokenizar.
+        clean = re.sub(r'`?[A-Za-z_]\w*`?\s*\.\s*`([A-Za-z_]\w*)`', r'\1', clean)
+        # Quitar cualquier backtick residual para no romper la tokenizacion.
+        clean = clean.replace('`', ' ')
         for tok in re.findall(r'\b([a-zA-Z_]\w*)\b', clean):
             low = tok.lower()
             if low not in _NON_COLUMN_TOKENS and not tok.isdigit():
@@ -362,8 +371,12 @@ def build_test_script(pyspark_code, inputs, required_cols=None, output_dir=None,
     # Reescribir joins con clave para que toleren claves ausentes en datos sinteticos:
     #   A.join(B, on="k", how="left")       → _bnx_join(A, B, "k", "left")
     #   A.join(B, on=["k1","k2"], how="left")→ _bnx_join(A, B, ["k1","k2"], "left")
+    # NOTA: se EXCLUYEN los joins con alias por lado (_l_X.join(_r_X, ...)) que emite
+    # el codegen para el cuerpo DML de un join Ab Initio. Esos ya son tolerantes
+    # (usan _bnx_ensure_side) y dependen de los SubqueryAlias l/r que _bnx_join
+    # destruiria al renombrar columnas del lado derecho -> romperia `l`.`col`/`r`.`col`.
     body = re.sub(
-        r'(\w+)\.join\(\s*(\w+)\s*,\s*on\s*=\s*(\[[^\]]*\]|"[^"]*"|\'[^\']*\')\s*,\s*how\s*=\s*("[^"]*"|\'[^\']*\')\s*\)',
+        r'(?<!\w)(?!_(?:[lr]|s\d+)_)(\w+)\.join\(\s*(\w+)\s*,\s*on\s*=\s*(\[[^\]]*\]|"[^"]*"|\'[^\']*\')\s*,\s*how\s*=\s*("[^"]*"|\'[^\']*\')\s*\)',
         r'_bnx_join(\1, \2, on=\3, how=\4)',
         body,
     )
@@ -770,6 +783,23 @@ _BNX_WRITES = []
 _BNX_OUTPUT_DIR = _json.loads({json.dumps(json.dumps(output_dir))})
 _BNX_MASTER = {json.dumps(master)}
 _BNX_AMPLIFY = {int(amplify)}
+
+# Carga OPCIONAL de datos desde una carpeta externa (bundle de datos). Si la
+# variable de entorno BNX_DATA_DIR apunta a una carpeta con CSV por nodo
+# (data/<nodo>.csv), esos datos SOBRESCRIBEN los embebidos. Permite entregar los
+# datos en un zip separado y editarlos sin tocar el script.
+import os as _os_bnx, csv as _csv_bnx, glob as _glob_bnx
+_BNX_DATA_DIR = _os_bnx.environ.get("BNX_DATA_DIR", "")
+if _BNX_DATA_DIR and _os_bnx.path.isdir(_BNX_DATA_DIR):
+    for _csvf in _glob_bnx.glob(_os_bnx.path.join(_BNX_DATA_DIR, "*.csv")):
+        _node = _os_bnx.path.splitext(_os_bnx.path.basename(_csvf))[0].lower()
+        try:
+            with open(_csvf, newline="", encoding="utf-8", errors="replace") as _fh:
+                _rows = [dict(_r) for _r in _csv_bnx.DictReader(_fh)]
+            _BNX_INPUTS[_node] = _rows
+            print(f"[BNX-TEST] Datos externos cargados: {{_node}} ({{len(_rows)}} filas) desde {{_csvf}}")
+        except Exception as _e:
+            print(f"[BNX-TEST] WARN: no se pudo leer {{_csvf}}: {{_e}}")
 
 class _BnxParamsMeta(type):
     # Metaclase tolerante para PARAMS: atributos no definidos → placeholder.
@@ -2008,8 +2038,9 @@ def build_aws_selfcontained_code(pyspark_code, datasets, keep_writes=True,
     )
 
     # Reescrituras de robustez (igual que el runner local)
+    # Excluye los joins con alias por lado (_l_X.join(...)) del cuerpo DML de un join.
     body = re.sub(
-        r'(\w+)\.join\(\s*(\w+)\s*,\s*on\s*=\s*(\[[^\]]*\]|"[^"]*"|\'[^\']*\')\s*,\s*how\s*=\s*("[^"]*"|\'[^\']*\')\s*\)',
+        r'(?<!\w)(?!_(?:[lr]|s\d+)_)(\w+)\.join\(\s*(\w+)\s*,\s*on\s*=\s*(\[[^\]]*\]|"[^"]*"|\'[^\']*\')\s*,\s*how\s*=\s*("[^"]*"|\'[^\']*\')\s*\)',
         r'_bnx_join(\1, \2, on=\3, how=\4)',
         body,
     )

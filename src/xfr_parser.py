@@ -275,7 +275,11 @@ def parse_xfr(path):
             continue
 
         # Detect start of raw DML (Ab Initio native format)
-        if stripped.startswith("out") and "::" in stripped and ("reformat" in stripped or "rollup" in stripped):
+        # Reconoce el cuerpo de reformat/rollup y TAMBIEN de join: un
+        # "out :: join(in0, in1) = begin ... end;" define columnas derivadas
+        # (first_defined, if/else, etc.) que antes se perdian porque 'join' no
+        # estaba en la condicion y el cuerpo se trataba como directivas sueltas.
+        if stripped.startswith("out") and "::" in stripped and ("reformat" in stripped or "rollup" in stripped or "join" in stripped):
             in_raw_dml = True
             raw_dml_buffer = [line]
             continue
@@ -294,73 +298,91 @@ def parse_xfr(path):
                 in_raw_dml = False
                 raw_dml_buffer = []
             continue
-            if m_select:
-                xfr_map[current]["select"] = m_select.group(1).strip()
-                continue
 
-            m_where = re.match(r"(?i)^where\s+(.+)$", stripped)
-            if m_where:
-                xfr_map[current]["where"] = m_where.group(1).strip()
-                continue
+        # --- Directivas de nodo (a nivel del bucle) ---
+        # NOTA: antes este bloque estaba dentro del `if in_raw_dml:` y tras un
+        # `continue`, por lo que era CODIGO MUERTO: nunca se ejecutaba y todas las
+        # directivas (where/group_by/etc.) salian None. Ademas `m_select` no estaba
+        # definido. Se reindenta al nivel del `for` y se define `m_select`.
+        m_select = re.match(r"(?i)^select\s+(.+)$", stripped)
+        if m_select:
+            xfr_map[current]["select"] = m_select.group(1).strip()
+            continue
 
-            m_group = re.match(r"(?i)^group_by\s+(.+)$", stripped)
-            if m_group:
-                xfr_map[current]["group_by"] = [c.strip() for c in m_group.group(1).split(",")]
-                continue
+        m_where = re.match(r"(?i)^where\s+(.+)$", stripped)
+        if m_where:
+            xfr_map[current]["where"] = m_where.group(1).strip()
+            continue
 
-            m_jkey = re.match(r"(?i)^join_key\s+(.+)$", stripped)
-            if m_jkey:
-                xfr_map[current]["join_key"] = m_jkey.group(1).strip()
-                continue
+        m_group = re.match(r"(?i)^group_by\s+(.+)$", stripped)
+        if m_group:
+            # Las keys de Ab Initio llegan como {a; b} (separadas por ';' y
+            # entre llaves). Aceptamos tanto ',' como ';' y quitamos las
+            # llaves para no perder claves (antes solo se separaba por ',',
+            # dejando "a; b" como una unica key -> groupBy con 1 sola key).
+            raw_keys = m_group.group(1).strip().strip("{}")
+            xfr_map[current]["group_by"] = [
+                c.strip() for c in re.split(r"[;,]", raw_keys) if c.strip()
+            ]
+            continue
 
-            m_jtype = re.match(r"(?i)^join_type\s+(.+)$", stripped)
-            if m_jtype:
-                xfr_map[current]["join_type"] = m_jtype.group(1).strip()
-                continue
+        m_jkey = re.match(r"(?i)^join_key\s+(.+)$", stripped)
+        if m_jkey:
+            xfr_map[current]["join_key"] = m_jkey.group(1).strip()
+            continue
 
-            # DEDUP directives
-            m_dedup = re.match(r"(?i)^dedup_keys\s+(.+)$", stripped)
-            if m_dedup:
-                xfr_map[current]["dedup_keys"] = [c.strip() for c in m_dedup.group(1).split(",")]
-                continue
+        m_jtype = re.match(r"(?i)^join_type\s+(.+)$", stripped)
+        if m_jtype:
+            xfr_map[current]["join_type"] = m_jtype.group(1).strip()
+            continue
 
-            m_order = re.match(r"(?i)^order_by\s+(.+)$", stripped)
-            if m_order:
-                xfr_map[current]["order_by"] = m_order.group(1).strip()
-                continue
+        # DEDUP directives
+        m_dedup = re.match(r"(?i)^dedup_keys\s+(.+)$", stripped)
+        if m_dedup:
+            # Mismo criterio que group_by: aceptar ',' y ';' y quitar llaves.
+            raw_keys = m_dedup.group(1).strip().strip("{}")
+            xfr_map[current]["dedup_keys"] = [
+                c.strip() for c in re.split(r"[;,]", raw_keys) if c.strip()
+            ]
+            continue
 
-            # NORMALIZE directives
-            m_explode = re.match(r"(?i)^explode_col\s+(.+)$", stripped)
-            if m_explode:
-                xfr_map[current]["explode_col"] = m_explode.group(1).strip()
-                continue
+        m_order = re.match(r"(?i)^order_by\s+(.+)$", stripped)
+        if m_order:
+            xfr_map[current]["order_by"] = m_order.group(1).strip()
+            continue
 
-            m_split = re.match(r"(?i)^split_col\s+(.+)$", stripped)
-            if m_split:
-                xfr_map[current]["split_col"] = m_split.group(1).strip()
-                continue
+        # NORMALIZE directives
+        m_explode = re.match(r"(?i)^explode_col\s+(.+)$", stripped)
+        if m_explode:
+            xfr_map[current]["explode_col"] = m_explode.group(1).strip()
+            continue
 
-            m_delim = re.match(r"(?i)^delimiter\s+(.+)$", stripped)
-            if m_delim:
-                xfr_map[current]["delimiter"] = m_delim.group(1).strip()
-                continue
+        m_split = re.match(r"(?i)^split_col\s+(.+)$", stripped)
+        if m_split:
+            xfr_map[current]["split_col"] = m_split.group(1).strip()
+            continue
 
-            # LOOKUP directives
-            m_lkey = re.match(r"(?i)^lookup_key\s+(.+)$", stripped)
-            if m_lkey:
-                xfr_map[current]["lookup_key"] = m_lkey.group(1).strip()
-                continue
+        m_delim = re.match(r"(?i)^delimiter\s+(.+)$", stripped)
+        if m_delim:
+            xfr_map[current]["delimiter"] = m_delim.group(1).strip()
+            continue
 
-            m_lsel = re.match(r"(?i)^lookup_select\s+(.+)$", stripped)
-            if m_lsel:
-                xfr_map[current]["lookup_select"] = m_lsel.group(1).strip()
-                continue
+        # LOOKUP directives
+        m_lkey = re.match(r"(?i)^lookup_key\s+(.+)$", stripped)
+        if m_lkey:
+            xfr_map[current]["lookup_key"] = m_lkey.group(1).strip()
+            continue
 
-            # SOURCE/SINK directives
-            for directive in ["source_type", "sink_type", "path", "format", "topic", "table", "connection", "mode", "partition_keys", "num_partitions", "partition_filter", "scan_year", "scan_month", "window_size"]:
-                m = re.match(rf"(?i)^{directive}\s+(.+)$", stripped)
-                if m:
-                    xfr_map[current][directive] = m.group(1).strip()
-                    break
+        m_lsel = re.match(r"(?i)^lookup_select\s+(.+)$", stripped)
+        if m_lsel:
+            xfr_map[current]["lookup_select"] = m_lsel.group(1).strip()
+            continue
+
+        # SOURCE/SINK directives
+        for directive in ["source_type", "sink_type", "path", "format", "topic", "table", "connection", "mode", "partition_keys", "num_partitions", "partition_filter", "scan_year", "scan_month", "window_size"]:
+            m = re.match(rf"(?i)^{directive}\s+(.+)$", stripped)
+            if m:
+                xfr_map[current][directive] = m.group(1).strip()
+                break
 
     return xfr_map

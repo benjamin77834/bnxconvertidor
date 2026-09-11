@@ -331,6 +331,13 @@ def _map_date_functions(expr):
         r'to_timestamp(\1)',
         expr
     )
+    # date_difference_months(d1, d2) → meses entre dos fechas. Ab Initio devuelve
+    # un entero; months_between de Spark devuelve un double (con fraccion), asi que
+    # lo truncamos a entero. Reemplazo BALANCEADO para cerrar bien el cast(...).
+    expr = _replace_balanced_call(
+        expr, "date_difference_months",
+        lambda inner: f"cast(months_between({inner}) as int)",
+    )
     # date_add_months(date, N) → add_months(date, N)
     expr = re.sub(r'date_add_months\(', 'add_months(', expr)
     expr = re.sub(r'date_to_string\(', 'date_format(', expr)
@@ -341,6 +348,9 @@ def _map_date_functions(expr):
     expr = re.sub(r'date_add_days\(', 'date_add(', expr)
     expr = re.sub(r'date_sub_days\(', 'date_sub(', expr)
     expr = re.sub(r'\btoday\(\)', 'current_date()', expr)
+    # now() y now1() → timestamp actual (now1 es la variante de Ab Initio que
+    # fuerza reevaluacion; en Spark ambas equivalen a current_timestamp()).
+    expr = re.sub(r'\bnow1\(\)', 'current_timestamp()', expr)
     expr = re.sub(r'\bnow\(\)', 'current_timestamp()', expr)
     expr = re.sub(r'year_of\(', 'year(', expr)
     expr = re.sub(r'month_of\(', 'month(', expr)
@@ -474,6 +484,22 @@ def _map_string_functions(expr):
         expr, "decimal_strip",
         lambda inner: f"cast(trim(cast({inner} as string)) as decimal(18,2))",
     )
+    # decimal_truncate(x, n) → truncado (NO redondeo) de x a n decimales.
+    # Ab Initio trunca hacia cero; Spark no tiene truncate nativo por decimales,
+    # asi que lo emulamos: cast(x * 10^n as bigint) / 10^n. Balanceado para
+    # soportar x anidado (p.ej. ((a-b)/c)*100). Si no hay 2 args, se deja igual.
+    def _rewrite_decimal_truncate(inner):
+        head, n = _split_last_arg(inner)
+        if n is None:
+            return f"decimal_truncate({inner})"  # forma inesperada: no tocar
+        n = n.strip()
+        try:
+            factor = 10 ** int(n)
+        except ValueError:
+            # n no es literal entero: usar pow(10, n) en SQL
+            factor = f"pow(10, {n})"
+        return f"(cast(({head}) * {factor} as bigint) / {factor})"
+    expr = _replace_balanced_call(expr, "decimal_truncate", _rewrite_decimal_truncate)
     # is_null(x) → (x IS NULL) — balanceado para soportar argumentos anidados
     # como is_null(lookup(...).campo) o is_null(coalesce(a,b)).
     expr = _replace_balanced_call(expr, "is_null", lambda inner: f"({inner} IS NULL)")
@@ -562,6 +588,9 @@ def _map_string_functions(expr):
         expr = expr.replace(_p, _j)
     # string_concat(a, b) → concat(a, b)
     expr = re.sub(r'string_concat\(', 'concat(', expr)
+    # decimal_round(x, n) → round(x, n)  (redondeo a n decimales; Spark round es directo).
+    # decimal_round(x) sin 2do arg → round(x, 0).
+    expr = re.sub(r'\bdecimal_round\(', 'round(', expr)
     # Funciones math_* de Ab Initio → equivalentes de Spark SQL.
     expr = re.sub(r'\bmath_abs\(', 'abs(', expr)
     expr = re.sub(r'\bmath_round\(', 'round(', expr)
@@ -592,6 +621,19 @@ def _map_string_functions(expr):
     expr = re.sub(r'string_lrepad\(', 'lpad(', expr)
     # string_rrepad(x, n, c) → rpad(x, n, c)  (pad derecha, variante)
     expr = re.sub(r'string_rrepad\(', 'rpad(', expr)
+    # string_pad(x, n) → rpad(x, n, ' ')  (Ab Initio rellena a la DERECHA con
+    # espacios hasta longitud n). Reemplazo balanceado para inyectar el 3er arg
+    # (el caracter de relleno) respetando argumentos anidados. \b evita tocar
+    # string_lpad/string_rpad. Si ya trae 3 args, se deja como rpad(...) tal cual.
+    def _rewrite_string_pad(inner):
+        head, last = _split_last_arg(inner)
+        if head is None or last is None:
+            return f"rpad({inner}, 1, ' ')"
+        # si el ultimo arg ya parece un caracter de relleno (comillas), respetarlo
+        if last.strip().startswith(("'", '"')):
+            return f"rpad({inner})"
+        return f"rpad({inner}, ' ')"
+    expr = _replace_balanced_call(expr, "string_pad", _rewrite_string_pad)
     # string_lpad(x, n, c) → lpad(x, n, c)
     expr = re.sub(r'string_lpad\(', 'lpad(', expr)
     # string_rpad(x, n, c) → rpad(x, n, c)
@@ -705,6 +747,329 @@ def _match_paren(s, open_idx):
     return -1
 
 
+def _safe_path_fragment(path):
+    """Convierte un path Ab Initio en un fragmento SEGURO para interpolar dentro
+    de un f-string f"...{fragmento}...".
+
+    Problema que resuelve: un path como
+        $[string_concat(AI_SERIAL_TEMP,"/automation_",product,".dat")]
+    contiene comillas dobles internas. Si se inserta crudo en
+        f"{PARAMS.BASE_PATH}/raw/<path>"
+    esas comillas dobles CIERRAN el literal Python -> SyntaxError.
+
+    Estrategia:
+      1. $[string_concat(a,"lit",b,...)]  -> concatena resolviendo cada token:
+         identificadores -> {PARAMS.IDENT} ; literales 'x'/"x" -> texto plano.
+      2. $[(date("YYYYMMDD"))now()]       -> {date_format(current_date(), 'yyyyMMdd')}
+      3. $FILE_DATE / ${VAR} / $VAR       -> {PARAMS.VAR}
+      4. Cualquier comilla doble residual -> comilla simple (no rompe el f-string).
+    """
+    if not path:
+        return path
+    # Des-escapar formato GDE ($\{VAR\} -> ${VAR}) por si llega escapado.
+    p = path.replace("\\{", "{").replace("\\}", "}").replace("\\$", "$")
+
+    # 1) $[string_concat(...)] -> interpolacion f-string
+    def _concat_repl(m):
+        inner = m.group(1)
+        # separar argumentos de nivel superior por comas (respeta comillas)
+        args, buf, q, depth = [], "", None, 0
+        for ch in inner:
+            if q:
+                buf += ch
+                if ch == q:
+                    q = None
+            elif ch in ("'", '"'):
+                q = ch; buf += ch
+            elif ch == '(' :
+                depth += 1; buf += ch
+            elif ch == ')':
+                depth -= 1; buf += ch
+            elif ch == ',' and depth == 0:
+                args.append(buf.strip()); buf = ""
+            else:
+                buf += ch
+        if buf.strip():
+            args.append(buf.strip())
+        out = ""
+        for a in args:
+            if (a.startswith("'") and a.endswith("'")) or (a.startswith('"') and a.endswith('"')):
+                out += a[1:-1]                      # literal: texto plano
+            elif re.match(r'^[A-Za-z_]\w*$', a):
+                out += f"{{PARAMS.{a}}}"             # identificador -> PARAMS.X
+            else:
+                out += a                            # dejar tal cual (raro)
+        return out
+    p = re.sub(r'\$\[\s*string_concat\((.*?)\)\s*\]', _concat_repl, p, flags=re.DOTALL)
+
+    # 2) fecha inline
+    p = re.sub(r'\$\[\(date\("YYYYMMDD"\)\)now\(\)\]',
+               "{date_format(current_date(), 'yyyyMMdd')}", p)
+    # 3) variables simples
+    p = re.sub(r'\$FILE_DATE', '{PARAMS.FILE_DATE}', p)
+    p = re.sub(r'\$\{(\w+)\}', r'{PARAMS.\1}', p)
+    p = re.sub(r'\$(\w+)', r'{PARAMS.\1}', p)
+    # 4) red de seguridad: cualquier comilla doble residual romperia el f-string
+    #    (que usa comillas dobles). Reemplazar por comilla simple.
+    p = p.replace('"', "'")
+    return p
+
+
+def _emit_update_table_helper(f):
+    """Emite en el archivo generado el helper _bnx_run_update_table.
+
+    Representa el componente Update_Table (db-update) de Ab Initio: ejecuta una
+    sentencia UPDATE/INSERT/MERGE/DELETE sobre una tabla de BD. Resuelve ${VAR}
+    contra PARAMS y los binds :campo contra las filas del DataFrame padre (una
+    ejecucion por valor distinto del bind). Ejecuta via JDBC usando el gateway
+    JVM de Spark; si no hay URL JDBC (BNX_JDBC_URL), hace DRY-RUN (imprime el SQL)
+    para no romper el job en entornos de prueba sin base de datos. Compartido por
+    spark_codegen y glue_codegen para no divergir.
+    """
+    f.write("def _bnx_run_update_table(spark, sql_template, binds=None, src_df=None,\n")
+    f.write("                          conn_config='', dbms='teradata', jdbc_url=None):\n")
+    f.write('    """Ejecuta el UPDATE/INSERT SQL de un componente Update_Table.\n')
+    f.write('    - Resuelve ${VAR} usando PARAMS.\n')
+    f.write('    - Sustituye binds :campo con valores del DataFrame padre.\n')
+    f.write('    - Ejecuta via JDBC; si no hay jdbc_url, hace dry-run (print)."""\n')
+    f.write("    import re as _re\n")
+    f.write("    binds = binds or []\n")
+    f.write("    # 1) Resolver ${VAR} contra PARAMS (atributos de la clase PARAMS).\n")
+    f.write("    def _resolve_params(s):\n")
+    f.write("        def _sub(m):\n")
+    f.write("            return str(getattr(PARAMS, m.group(1), m.group(0)))\n")
+    f.write(r"        return _re.sub(r'\$\{(\w+)\}', _sub, s)")
+    f.write("\n")
+    f.write("    base_sql = _resolve_params(sql_template)\n")
+    f.write("    jdbc_url = jdbc_url or os.environ.get('BNX_JDBC_URL')\n")
+    f.write("    # 2) Valores de binds a partir del DataFrame padre (distinct).\n")
+    f.write("    rows = []\n")
+    f.write("    if binds and src_df is not None and set(binds).issubset(set(src_df.columns)):\n")
+    f.write("        rows = [r.asDict() for r in src_df.select(*binds).distinct().collect()]\n")
+    f.write("    elif not binds:\n")
+    f.write("        rows = [{}]  # sin binds: una sola ejecucion\n")
+    f.write("    def _bind_sql(row):\n")
+    f.write("        s = base_sql\n")
+    f.write("        for b in binds:\n")
+    f.write("            v = row.get(b)\n")
+    f.write("            lit = 'NULL' if v is None else (\"'\" + str(v).replace(\"'\", \"''\") + \"'\")\n")
+    f.write(r"            s = _re.sub(r':' + _re.escape(b) + r'\b', lit, s)")
+    f.write("\n")
+    f.write("        return s\n")
+    f.write("    stmts = [_bind_sql(r) for r in rows] if rows else [base_sql]\n")
+    f.write("    # 3) Ejecutar via JDBC (o dry-run si no hay URL).\n")
+    f.write("    if not jdbc_url:\n")
+    f.write("        print(f'[i] Update_Table DRY-RUN ({dbms}), {len(stmts)} sentencia(s). Config: {conn_config or \"(sin JDBC)\"}')\n")
+    f.write("        for s in stmts[:20]:\n")
+    f.write("            print('    ' + s)\n")
+    f.write("        if len(stmts) > 20:\n")
+    f.write("            print(f'    ... y {len(stmts)-20} mas')\n")
+    f.write("        return\n")
+    f.write("    gw = spark._sc._gateway.jvm\n")
+    f.write("    conn = gw.java.sql.DriverManager.getConnection(jdbc_url)\n")
+    f.write("    try:\n")
+    f.write("        st = conn.createStatement()\n")
+    f.write("        for s in stmts:\n")
+    f.write("            st.executeUpdate(s)\n")
+    f.write("        st.close()\n")
+    f.write("    finally:\n")
+    f.write("        conn.close()\n")
+    f.write("\n\n")
+
+
+def _safe_dbtable(table):
+    """Limpia un nombre de tabla/query JDBC de Ab Initio para incrustarlo en un
+    literal Python normal ("...").
+
+    El .mp trae escapes GDE ($\\{VAR\\}) que dejan '\\{'/'\\}' en el string; en un
+    literal Python normal '\\{' es una secuencia de escape invalida (SyntaxWarning
+    hoy, error en el futuro). Ademas las comillas dobles cerrarian el literal.
+    Se des-escapan las llaves y se neutralizan las comillas dobles.
+    """
+    if not table:
+        return table
+    t = table.replace("\\{", "{").replace("\\}", "}").replace("\\$", "$")
+    t = t.replace('"', "'")
+    # Colapsar saltos de linea/tabs: una query multilinea (select ... \n where ...)
+    # romperia el literal Python de una sola linea. Los unimos con espacios.
+    t = re.sub(r'\s*[\r\n]+\s*', ' ', t).strip()
+    # Quitar ';' final (Spark JDBC no lo quiere) para evitar dbtable invalido.
+    t = t.rstrip(';').strip()
+    return t
+
+
+def _emit_join_body_columns(var_id, raw_transform, aliases=None):
+    """Traduce el cuerpo begin...end de un JOIN de Ab Initio a un .select().
+
+    En Ab Initio un join define su salida con asignaciones out.campo :: expr,
+    donde expr referencia in0.<col>, in1.<col>, ... (uno por cada entrada). Tras
+    un join en Spark, las columnas homonimas de los lados coexisten y una
+    referencia cruda ('record_count') seria AMBIGUA. Por eso cada entrada se
+    aliasea (aliases[i]) y aqui referenciamos <alias>.<col>.
+
+    aliases: lista de alias por indice de input. Default ['l','r'] (2 entradas).
+    Para 3+ entradas se pasa ['s0','s1','s2',...].
+
+    Estrategia para no reescribir _translate_dml_expr (que aplana el prefijo
+    inN. a la columna directa): sustituimos inN.col por marcadores unicos ANTES
+    de traducir, y tras la traduccion los mapeamos a alias.col. Los marcadores no
+    matchean el patron del prefijo, asi que sobreviven a la traduccion.
+
+    Devuelve (select_items, out_fields, passthrough_by_side, cols_by_side):
+      - select_items: lineas para el .select (o comentarios '# ...').
+      - out_fields: nombres de columnas de salida.
+      - passthrough_by_side: dict {idx: True} para out.* :: inIdx.* .
+      - cols_by_side: dict {idx: set(cols)} columnas referenciadas por entrada.
+    """
+    if aliases is None:
+        aliases = ["l", "r"]
+    if not raw_transform:
+        return [], [], {}, {}
+
+    # Entradas del join NOMBRADAS: Ab Initio permite 'out :: join(stat, spec) ='
+    # y luego referenciar 'stat.col' / 'spec.col' en el cuerpo (en vez de
+    # in0/in1). Normalizamos los nombres a inN. por POSICION antes de procesar,
+    # para que el resto del pipeline (marcadores BNXJS, alias sN) funcione igual.
+    # Sin esto, 'stat.fromPortName' se aplanaba a 'stat_fromPortName' (regla
+    # col.sub -> col_sub) -> columna inexistente -> UNRESOLVED_COLUMN en runtime.
+    _sig = re.search(r'\bjoin\s*\(\s*([^)]*)\)', raw_transform)
+    if _sig:
+        _names = [n.strip() for n in _sig.group(1).split(',') if n.strip()]
+        for _idx, _nm in enumerate(_names):
+            # Solo nombres que NO sean ya inN (evita reescribir in0->in0).
+            if re.fullmatch(r'in\d+', _nm):
+                continue
+            # Reescribe '<nombre>.' -> 'inN.' como palabra completa (no toca
+            # subcadenas dentro de otros identificadores).
+            raw_transform = re.sub(
+                r'(?<![\w.])' + re.escape(_nm) + r'\.',
+                f'in{_idx}.',
+                raw_transform,
+            )
+
+    # Asignaciones out.campo :N: expr;  El numero N es la PRIORIDAD de regla de
+    # Ab Initio: varias reglas para el MISMO campo con distinta prioridad forman
+    # un coalesce ordenado (la de menor N gana; si su valor es NULL cae a la
+    # siguiente). NO son columnas distintas. Capturamos (campo, prioridad, expr)
+    # y mas abajo agrupamos por campo. Sin esto, 'out.x :1: a; out.x :2: b;'
+    # emitia dos columnas 'x' -> AMBIGUOUS_REFERENCE.
+    _assign_re = re.findall(r'out\.(\w+|\*)\s*:(\d*):\s*(.+?);', raw_transform, re.DOTALL)
+    # Agrupar por campo preservando el orden de primera aparicion. Cada entrada:
+    # field -> lista de (prioridad, expr). prioridad '' (::) = 0.
+    from collections import OrderedDict as _OD
+    _by_field = _OD()
+    for _fn, _pr, _ex in _assign_re:
+        _prio = int(_pr) if _pr != "" else 0
+        _by_field.setdefault(_fn, []).append((_prio, _ex))
+    # field_assigns: una entrada por campo. Si hay varias prioridades, se combinan
+    # en un coalesce(expr_prio_menor, ..., expr_prio_mayor). El passthrough (*) y
+    # los campos de una sola regla quedan igual que antes.
+    field_assigns = []
+    for _fn, _lst in _by_field.items():
+        if _fn == "*":
+            for _prio, _ex in _lst:
+                field_assigns.append((_fn, _ex))
+            continue
+        if len(_lst) == 1:
+            field_assigns.append((_fn, _lst[0][1]))
+        else:
+            _ordered = sorted(_lst, key=lambda t: t[0])
+            _coalesced = "first_defined(" + ", ".join(e.strip() for _p, e in _ordered) + ")"
+            field_assigns.append((_fn, _coalesced))
+
+    select_items = []
+    out_fields = []
+    passthrough_by_side = {}   # idx -> True  (out.* :: inIdx.*)
+    cols_by_side = {}          # idx -> set(cols)  (columnas referenciadas por lado)
+
+    # Variables LOCALES del cuerpo del join: 'let TIPO nombre = ...;' y
+    # reasignaciones 'nombre = ...;'. En Ab Initio el cuerpo puede calcular
+    # variables con logica PROCEDURAL (if/else, begin...end, re_replace,
+    # string_substring encadenados) y luego usarlas en out.campo :: var. Esa
+    # logica NO se traduce fielmente a una unica expresion Spark. Registramos sus
+    # NOMBRES para, si una salida referencia una variable local sin resolver,
+    # neutralizarla a lit(None) con un TODO en vez de emitir expr("var") -> que
+    # rompe en runtime con UNRESOLVED_COLUMN (p.ej. executableName/sandboxPath en
+    # raw_tracking_staging / Get_Job_Path_and_Status).
+    _local_var_names = set()
+    for _lm in re.finditer(r'\blet\s+(?:[A-Za-z_]\w*(?:\s*\([^)]*\))?\s+)*([A-Za-z_]\w*)\s*=', raw_transform):
+        _local_var_names.add(_lm.group(1))
+
+    def _alias_for(idx):
+        # Alias del input idx; si el cuerpo referencia mas inputs que aliases
+        # provistos, generamos uno derivado (no deberia pasar en la practica).
+        return aliases[idx] if idx < len(aliases) else f"s{idx}"
+
+    for field_name, expression in field_assigns:
+        expr_clean = expression.strip()
+        if field_name in ("newline", "V_FILLER"):
+            continue
+        # Passthrough de todos los campos de un lado: out.* :: inN.*
+        if field_name == "*":
+            m = re.match(r'^in(\d+)\.\*$', expr_clean)
+            if m:
+                passthrough_by_side[int(m.group(1))] = True
+            continue
+
+        # Registrar columnas referenciadas por lado (para garantizarlas antes del
+        # join y evitar UNRESOLVED_COLUMN si un lado no las trae).
+        for _m in re.finditer(r'\bin(\d+)\.(\w+)', expr_clean):
+            cols_by_side.setdefault(int(_m.group(1)), set()).add(_m.group(2))
+
+        # Sustituir inN.col por marcadores que sobreviven a la traduccion.
+        def _mark(m):
+            return f"BNXJS{m.group(1)}_{m.group(2)}"
+        marked = re.sub(r'\bin(\d+)\.(\w+)', _mark, expr_clean)
+
+        # Traducir la expresion (first_defined->coalesce, if/else->CASE, casts, etc.)
+        translated = _translate_dml_expr(marked)
+
+        # Restaurar los marcadores como referencias calificadas por lado:
+        # BNXJS<idx>_col -> `<alias_idx>`.`col`.
+        def _unmark(m):
+            idx = int(m.group(1))
+            col = m.group(2)
+            return f'`{_alias_for(idx)}`.`{col}`'
+        translated = re.sub(r'\bBNXJS(\d+)_(\w+)', _unmark, translated)
+
+        if not translated or translated.strip() in ("", "...", "."):
+            select_items.append(f'# {field_name}: expresion vacia/no traducible — omitida')
+            continue
+        # ¿La expresion referencia una VARIABLE LOCAL del cuerpo (logica procedural
+        # no traducible)? Si el identificador aparece suelto (no como columna
+        # calificada `sN`.`x`) y esta en _local_var_names, la columna no se puede
+        # calcular fielmente: neutralizar a lit(None) con TODO para que el job corra.
+        _refs_local = False
+        for _lv in _local_var_names:
+            if re.search(r'(?<![`.\w])' + re.escape(_lv) + r'(?![`\w])', translated):
+                _refs_local = True
+                break
+        if _refs_local:
+            select_items.append(
+                f'# TODO: {field_name}: usa variable local del join con logica procedural '
+                f'(if/else/re_replace/string_substring) no traducible a Spark SQL: '
+                f'{_one_line(expr_clean, 70)}'
+            )
+            select_items.append(f'lit(None).alias("{field_name}")')
+            out_fields.append(field_name)
+            continue
+        if _is_untranslatable(translated):
+            # El comentario TODO va como item-comentario SEPARADO (lo escribe el
+            # codegen antes del .select), NUNCA inline dentro del select: un '#'
+            # dentro de .select(a, b # ...) comentaria el cierre y romperia la
+            # sintaxis. El item real es un lit(None) limpio.
+            select_items.append(f'# TODO: {field_name}: Ab Initio no traducible: {_one_line(expr_clean, 80)}')
+            select_items.append(f'lit(None).alias("{field_name}")')
+            out_fields.append(field_name)
+            continue
+
+        translated_escaped = _sql_arg(translated)
+        select_items.append(f'expr("{translated_escaped}").alias("{field_name}")')
+        out_fields.append(field_name)
+
+    return select_items, out_fields, passthrough_by_side, cols_by_side
+
+
 def _extract_local_vars(raw_transform):
     """Extrae las variables locales de un reformat de Ab Initio y devuelve un
     dict {nombre_var: expresion_cruda_resuelta}.
@@ -752,8 +1117,13 @@ def _extract_local_vars(raw_transform):
         if value == "":
             continue
         # Inline de variables previas dentro de este valor (palabra completa).
+        # OJO: el reemplazo se pasa como FUNCION (lambda), no como string. Si el
+        # valor de la variable contiene un backslash (p.ej. el delimitador Ab Initio
+        # \x01), un replacement string haria que re.sub interprete '\x' como escape
+        # -> re.PatternError: bad escape \x. Una funcion devuelve el texto literal.
         for prev in order:
-            value = re.sub(r'\b' + re.escape(prev) + r'\b', f'({var_exprs[prev]})', value)
+            _repl = f'({var_exprs[prev]})'
+            value = re.sub(r'\b' + re.escape(prev) + r'\b', lambda _m, _r=_repl: _r, value)
         if name in var_exprs:
             # reasignacion: actualizar valor y mover al final del orden
             var_exprs[name] = value
@@ -805,19 +1175,32 @@ def _abinitio_cast_to_spark(tipo, args, target):
             spark_type = f"DECIMAL({parts[0]},0)"
         else:
             spark_type = "DECIMAL(38,10)"
+    elif tipo in ("integer", "int"):
+        # Ab Initio: integer(N) es el TAMAÑO EN BYTES. 1/2->SMALLINT, 4->INT,
+        # 8->BIGINT. (integer(N) big/little endian mapea igual; el endianness no
+        # afecta el tipo logico de Spark.)
+        _n = next((int(p) for p in re.split(r'[,.\s]', args) if p.strip().isdigit()), 4)
+        spark_type = {1: "SMALLINT", 2: "SMALLINT", 4: "INT", 8: "BIGINT"}.get(_n, "INT")
+    elif tipo in ("long",):
+        spark_type = "BIGINT"
+    elif tipo in ("real", "double"):
+        # real(4)->FLOAT, real(8)->DOUBLE (por defecto DOUBLE).
+        _n = next((int(p) for p in re.split(r'[,.\s]', args) if p.strip().isdigit()), 8)
+        spark_type = "FLOAT" if _n == 4 else "DOUBLE"
     else:
-        spark_type = {
-            "string": "STRING", "integer": "INT",
-            "int": "INT", "long": "BIGINT", "double": "DOUBLE", "real": "DOUBLE",
-        }.get(tipo, "STRING")
+        spark_type = {"string": "STRING"}.get(tipo, "STRING")
     return f'CAST({target} AS {spark_type})'
 
 
 # Prefijo de cast Ab Initio con longitud numerica: (tipo(N[,M[,modificador]]))
 # args admite tokens no numericos (p.ej. 'zerofill'); _abinitio_cast_to_spark
 # ignora los no numericos.
+# El tipo puede llevar un modificador de ENDIANNESS ('big endian'/'little endian')
+# antes del nombre base (p.ej. (big endian integer(4))x). El endianness es
+# irrelevante para el tipo SQL de Spark; lo capturamos y descartamos. Sin esto,
+# '(big endian integer(4))' quedaba crudo -> ParseException.
 _ABINITIO_CAST_PREFIX_RE = re.compile(
-    r'\((string|decimal|integer|int|long|double|real)\(\s*([\w,.\s]+)\)\)\s*'
+    r'\((?:(?:big|little)\s+endian\s+)?(string|decimal|integer|int|long|double|real)\(\s*([\w,.\s]+)\)\)\s*'
 )
 
 
@@ -1140,8 +1523,18 @@ def _translate_dml_expr(expr_clean):
     # refieren a un campo/parametro; quitamos el $ para que sea un identificador
     # valido en Spark SQL (evita "Syntax error at or near '$'").
     # NOTA: $[...] (expresion inline con corchetes) se maneja aparte mas abajo.
-    mapped = re.sub(r'\$\{(\w+)\}', r'\1', mapped)
-    mapped = re.sub(r'\$(?![\[\{])(\w+)', r'\1', mapped)
+    # OJO: solo FUERA de literales entre comillas. Un filtro como
+    # proc_date < '${CAMPAIGN_DATE}' lleva el parametro DENTRO de un literal SQL;
+    # ahi _sub_outside_quotes NO lo toca y conserva '${CAMPAIGN_DATE}' intacto.
+    # FUERA de comillas (p.ej. una comparacion numerica contra un parametro:
+    #   op_record_count_difference <= $RECORD_COUNT_DIFFERENCE)
+    # NO borramos el $ (eso degradaba el parametro a una referencia de columna
+    # inexistente 'RECORD_COUNT_DIFFERENCE', comparando dos columnas en vez de
+    # comparar contra el valor del parametro). Lo NORMALIZAMOS a ${VAR}, el mismo
+    # placeholder de parametro que ya usa el resto del where (${CAMPAIGN_DATE}),
+    # que el usuario resuelve al inyectar los parametros del job.
+    mapped = _sub_outside_quotes(r'\$\{(\w+)\}', r'${\1}', mapped)
+    mapped = _sub_outside_quotes(r'\$(?![\[\{])(\w+)', r'${\1}', mapped)
     # Remove :N: (priority operator in Ab Initio: :0: :1: :2: ...)
     # OJO: solo FUERA de literales entre comillas. Un literal de hora como
     # '00010101 00:00:01' contiene ':00:' que este patron destrozaria
@@ -1829,6 +2222,24 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
         f.write("                return F.col(c)\n")
         f.write("    return F.lit(None)\n\n\n")
 
+        # Garantiza que un lado de un JOIN tenga todas las columnas que el cuerpo
+        # del join referencia (via in0.<col>/in1.<col>). Las ausentes se crean como
+        # NULL para que <alias>.<col> no rompa con UNRESOLVED_COLUMN cuando ese lado
+        # no trae la columna (p.ej. datos de prueba parciales, o esquemas distintos
+        # entre las dos ramas del grafo). Portable a AWS Glue (solo df.columns/lit).
+        f.write("def _bnx_ensure_side(df, cols):\n")
+        f.write('    """Asegura que df tenga las columnas dadas (NULL si faltan). Para joins."""\n')
+        f.write("    if df is None:\n")
+        f.write("        return df\n")
+        f.write("    have = set(df.columns)\n")
+        f.write("    for c in cols:\n")
+        f.write("        if c not in have:\n")
+        f.write("            df = df.withColumn(c, F.lit(None).cast('string'))\n")
+        f.write("    return df\n\n\n")
+
+        # Helper para el componente Update_Table (db-update) de Ab Initio.
+        _emit_update_table_helper(f)
+
         if True:
             f.write("def is_valid_record(df, validation_rules=None):\n")
             f.write('    """Validate records. Returns tuple: (valid_df, invalid_df)"""\n')
@@ -1919,28 +2330,33 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                     f.write(f'.option("subscribe", "{topic}").load()\n')
                     f.write(f'{var_id}_df = {var_id}_df.selectExpr("CAST(value AS STRING) as json_value")\n')
                 elif src_type == "jdbc" and (table or conn):
+                    _tbl = _safe_dbtable(table) if table else var_id.lower()
                     f.write(f'{var_id}_df = spark.read.format("jdbc")')
                     f.write(f'.option("url", "{conn or "jdbc:mysql://localhost:3306/db"}")')
-                    f.write(f'.option("dbtable", "{table or var_id.lower()}").load()\n')
+                    f.write(f'.option("dbtable", "{_tbl}").load()\n')
                 else:
                     src_name = var_id.lower()
                     path_resolved = rule.get("path_resolved") if rule else False
                     if path and path_resolved:
-                        # Layout-derived path, prefix with PARAMS.BASE_PATH
+                        # Layout-derived path, prefix with PARAMS.BASE_PATH.
+                        # _safe_path_fragment resuelve $[string_concat(...)]/$VAR y
+                        # neutraliza comillas dobles que romperian el f-string.
+                        _p = _safe_path_fragment(path)
                         if fmt == "csv":
-                            f.write(f'{var_id}_df = spark.read.option("header", "true").option("inferSchema", "true").csv(f"{{PARAMS.BASE_PATH}}/raw/{path}")\n')
+                            f.write(f'{var_id}_df = spark.read.option("header", "true").option("inferSchema", "true").csv(f"{{PARAMS.BASE_PATH}}/raw/{_p}")\n')
                         elif fmt == "json":
-                            f.write(f'{var_id}_df = spark.read.json(f"{{PARAMS.BASE_PATH}}/raw/{path}")\n')
+                            f.write(f'{var_id}_df = spark.read.json(f"{{PARAMS.BASE_PATH}}/raw/{_p}")\n')
                         else:
-                            f.write(f'{var_id}_df = spark.read.parquet(f"{{PARAMS.BASE_PATH}}/raw/{path}")\n')
+                            f.write(f'{var_id}_df = spark.read.parquet(f"{{PARAMS.BASE_PATH}}/raw/{_p}")\n')
                     elif path:
                         # Explicit full path
+                        _p = _safe_path_fragment(path)
                         if fmt == "csv":
-                            f.write(f'{var_id}_df = spark.read.option("header", "true").option("inferSchema", "true").csv("{path}")\n')
+                            f.write(f'{var_id}_df = spark.read.option("header", "true").option("inferSchema", "true").csv(f"{_p}")\n')
                         elif fmt == "json":
-                            f.write(f'{var_id}_df = spark.read.json("{path}")\n')
+                            f.write(f'{var_id}_df = spark.read.json(f"{_p}")\n')
                         else:
-                            f.write(f'{var_id}_df = spark.read.parquet("{path}")\n')
+                            f.write(f'{var_id}_df = spark.read.parquet(f"{_p}")\n')
                     else:
                         if fmt == "csv":
                             f.write(f'{var_id}_df = spark.read.option("header", "true").option("inferSchema", "true").csv(f"{{PARAMS.BASE_PATH}}/raw/{src_name}")\n')
@@ -2155,7 +2571,103 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                     if not jk:
                         f.write(f'# ⚠️ WARNING: join key not found in .mp — sube el .xfr o revisa key={{}} en el MP\n')
 
-                    if keys:
+                    # Cuerpo DML del join (out.campo :: expr). Si existe y hay
+                    # exactamente 2 padres, unimos con alias por lado (l/r) y
+                    # emitimos las columnas derivadas (first_defined->coalesce,
+                    # if/else, record_count_difference, etc.). Sin esto, el join
+                    # perdia todas las columnas calculadas de su salida.
+                    join_body = rule.get("raw_transform") if rule else None
+                    has_join_body = bool(
+                        join_body and "out." in join_body and len(parents) >= 2
+                        and ("join(" in join_body.lower() or "::" in join_body)
+                    )
+
+                    if keys and has_join_body:
+                        # Keys por lado (override_keyN). Si el .mp declaro keys
+                        # ASIMETRICAS (in0 y in1 unen por columnas de nombres
+                        # distintos), usamos condicion explicita s0.kL == s1.kR en
+                        # vez de on=[...]; asi NO forzamos columnas inexistentes en
+                        # un lado (que _bnx_ensure_side rellenaria con NULL y daria
+                        # 'null = ...' en el predicado). Caso simetrico: on=[keys].
+                        keys_by_side = rule.get("join_keys_by_side") if rule else None
+                        keys_list = "[" + ", ".join(f'"{k}"' for k in keys) + "]"
+                        # Alias por entrada: s0, s1, s2, ... (uno por padre). Esto
+                        # generaliza el join de 2 lados a N lados (in0/in1/in2...).
+                        aliases = [f"s{i}" for i in range(len(parents))]
+                        select_items, out_fields, pass_by_side, cols_by_side = _emit_join_body_columns(
+                            var_id, join_body, aliases=aliases
+                        )
+                        f.write(f'# Cuerpo del join (Ab Initio) con {len(parents)} entradas: columnas\n')
+                        f.write(f'# derivadas via alias por lado (s0..s{len(parents)-1}) y .select() explicito\n')
+                        f.write(f'# (evita AMBIGUOUS_REFERENCE de columnas homonimas no-key).\n')
+                        # Keys efectivas por lado (para _bnx_ensure_side y el predicado).
+                        def _side_keys(i):
+                            if keys_by_side and i in keys_by_side:
+                                return list(keys_by_side[i])
+                            return list(keys)
+                        # Garantizar en cada lado SOLO las columnas del cuerpo (inN)
+                        # MAS las keys DE ESE lado (no las del otro).
+                        for i, ep in enumerate(parents):
+                            side_cols = set(cols_by_side.get(i, set())) | set(_side_keys(i))
+                            cols_list = "[" + ", ".join(f'"{c}"' for c in sorted(side_cols)) + "]"
+                            f.write(f'_{aliases[i]}_{var_id} = _bnx_ensure_side({ep}_df, {cols_list}).alias("{aliases[i]}")\n')
+                        # Join encadenado.
+                        f.write(f'_j_{var_id} = _{aliases[0]}_{var_id}')
+                        if keys_by_side:
+                            # Condicion explicita por lado: s0.kL[j] == sN.kR[j].
+                            # (encadenado: cada lado inN se une contra s0 por sus keys).
+                            k0 = _side_keys(0)
+                            for i in range(1, len(parents)):
+                                ki = _side_keys(i)
+                                pairs = list(zip(k0, ki))
+                                cond = " & ".join(
+                                    f'(col("{aliases[0]}.{a}") == col("{aliases[i]}.{b}"))'
+                                    for a, b in pairs
+                                )
+                                f.write(f'.join(_{aliases[i]}_{var_id}, on=({cond}), how="{jt}")')
+                        else:
+                            for i in range(1, len(parents)):
+                                f.write(f'.join(_{aliases[i]}_{var_id}, on={keys_list}, how="{jt}")')
+                        f.write("\n")
+                        real_items = [s for s in select_items if not s.lstrip().startswith("#")]
+                        comment_items = [s for s in select_items if s.lstrip().startswith("#")]
+                        for c in comment_items:
+                            f.write(c + "\n")
+                        # SALIDA APLANADA (sin prefijo de alias) para que nodos
+                        # posteriores (sort/rollup/dedup) encuentren las columnas por
+                        # su nombre simple. El passthrough out.* :: inN.* arrastra las
+                        # columnas de ese lado; para las keys asimetricas, la key del
+                        # lado izquierdo (in0) es la que sobrevive con su nombre.
+                        # Estrategia: por cada lado con passthrough, seleccionar sus
+                        # columnas reales aliasadas a nombre simple, con PRIORIDAD del
+                        # primer lado (in0) sobre los siguientes para homonimas; luego
+                        # las columnas derivadas del cuerpo (real_items) sobreescriben.
+                        pass_sides = sorted(i for i in pass_by_side if i < len(aliases))
+                        derived_names = set(out_fields)
+                        if pass_sides:
+                            # Construccion en runtime: recolectar columnas de cada lado
+                            # (evita listar nombres que no conocemos en tiempo de codegen).
+                            f.write(f'_seen_{var_id} = set()\n')
+                            f.write(f'_sel_{var_id} = []\n')
+                            f.write(f'_derived_{var_id} = {sorted(derived_names)!r}\n')
+                            for i in pass_sides:
+                                f.write(
+                                    f'for _c in _{aliases[i]}_{var_id}.columns:\n'
+                                )
+                                f.write(f'    if _c in _seen_{var_id} or _c in _derived_{var_id}:\n')
+                                f.write(f'        continue\n')
+                                f.write(f'    _seen_{var_id}.add(_c)\n')
+                                f.write(f'    _sel_{var_id}.append(col("{aliases[i]}." + _c).alias(_c))\n')
+                            if real_items:
+                                f.write(f'_sel_{var_id} += [{", ".join(real_items)}]\n')
+                            f.write(f'{var_id}_df = _j_{var_id}.select(*_sel_{var_id})\n')
+                        elif real_items:
+                            items_str = ", ".join(real_items)
+                            f.write(f'{var_id}_df = _j_{var_id}.select({items_str})\n')
+                        else:
+                            # Cuerpo sin asignaciones utiles: dejar el join crudo.
+                            f.write(f'{var_id}_df = _j_{var_id}\n')
+                    elif keys:
                         keys_list = "[" + ", ".join(f'"{k}"' for k in keys) + "]"
                         f.write(f'{var_id}_df = {parents[0]}_df.join({parents[1]}_df, on={keys_list}, how="{jt}")\n')
                         for ep in parents[2:]:
@@ -2249,6 +2761,33 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
 
             elif ntype == "SINK":
                 f.write(f'# [*] SINK: {log_name}\n')
+                # Componente Update_Table (db-update): ejecuta un UPDATE/INSERT/MERGE
+                # SQL sobre una tabla de BD. NO escribe un DataFrame; ejecuta la
+                # sentencia via JDBC. La query trae binds :campo (por registro de
+                # entrada) que en Spark batch se resuelven a partir de las filas del
+                # DataFrame padre. Emitimos la ejecucion del UPDATE por cada valor
+                # distinto de los binds presentes en el padre.
+                _dbu = getattr(node, "db_source", None) or {}
+                _update_sql = _dbu.get("update_sql") if isinstance(_dbu, dict) else None
+                if _update_sql:
+                    src = f'{parents[0]}_df' if parents else None
+                    _sql_esc = _sql_arg(_update_sql)
+                    _conn = _dbu.get("config_file") or ""
+                    f.write(f'# UPDATE a tabla {_dbu.get("dbms","db")}: {_one_line(_update_sql, 110)}\n')
+                    if src:
+                        f.write(f'{var_id}_df = {src}\n')
+                    # Binds :campo del UPDATE -> columnas del DataFrame padre.
+                    _binds = sorted(set(re.findall(r':(\w+)', _update_sql)))
+                    f.write(f'_bnx_run_update_table(\n')
+                    f.write(f'    spark,\n')
+                    f.write(f'    {_sql_esc!r},\n')
+                    f.write(f'    binds={_binds!r},\n')
+                    f.write(f'    src_df={(parents[0] + "_df") if parents else "None"},\n')
+                    f.write(f'    conn_config={_conn!r},\n')
+                    f.write(f'    dbms={_dbu.get("dbms","teradata")!r},\n')
+                    f.write(f')\n')
+                    f.write(f'print("[>] SINK (UPDATE tabla): {log_name}")\n\n')
+                    continue
                 if parents:
                     src = f'{parents[0]}_df'
                     # Exponer el SINK con su propio nombre de variable. Necesario
@@ -2280,17 +2819,17 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                         f.write(f'.option("kafka.bootstrap.servers", "{conn or "localhost:9092"}")')
                         f.write(f'.option("topic", "{topic}").save()\n')
                     elif sink_type == "jdbc" and (table or conn):
+                        _tbl = _safe_dbtable(table) if table else var_id.lower()
                         f.write(f'{src}.write.format("jdbc").mode("{mode}")')
                         f.write(f'.option("url", "{conn or "jdbc:mysql://localhost:3306/db"}")')
-                        f.write(f'.option("dbtable", "{table or var_id.lower()}").save()\n')
+                        f.write(f'.option("dbtable", "{_tbl}").save()\n')
                     else:
-                        # Clean Ab Initio path expressions
-                        if path:
-                            path = re.sub(r'\$\[\(date\("YYYYMMDD"\)\)now\(\)\]', '{date_format(current_date(), "yyyyMMdd")}', path)
-                            path = re.sub(r'\$FILE_DATE', '{PARAMS.FILE_DATE}', path)
-                            path = re.sub(r'\$\{?(\w+)\}?', r'{PARAMS.\1}', path)
-                        if path:
-                            f.write(f'{src}.write.mode("{mode}").parquet(f"{{PARAMS.BASE_PATH}}/output/{path}")\n')
+                        # Clean Ab Initio path expressions con el helper unificado
+                        # (resuelve $[string_concat(...)]/$VAR y neutraliza comillas
+                        # dobles internas que romperian el f-string).
+                        _p = _safe_path_fragment(path) if path else None
+                        if _p:
+                            f.write(f'{src}.write.mode("{mode}").parquet(f"{{PARAMS.BASE_PATH}}/output/{_p}")\n')
                         else:
                             f.write(f'{src}.write.mode("{mode}").parquet(f"{{PARAMS.BASE_PATH}}/output/{var_id.lower()}")\n')
                 else:
