@@ -397,7 +397,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             job_name = None
             if "multipart/form-data" in content_type:
                 try:
-                    mp_content, xfr_content, dml_content, pset_content, _target = \
+                    mp_content, xfr_content, dml_content, pset_content, _target, _mp_filename = \
                         self._parse_compile_request(body, content_type)
                 except ValueError as ve:
                     self._json_response(400, {"error": str(ve)})
@@ -706,7 +706,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         content_type = self.headers.get("Content-Type", "")
         try:
             try:
-                mp_content, xfr_content, dml_content, pset_content, _target = \
+                mp_content, xfr_content, dml_content, pset_content, _target, _mp_filename = \
                     self._parse_compile_request(body, content_type)
             except ValueError as ve:
                 self._json_response(400, {"error": str(ve)})
