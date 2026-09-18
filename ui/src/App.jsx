@@ -15,6 +15,7 @@ import GraphLibrary from './components/GraphLibrary'
 import GrafosPage from './components/GrafosPage'
 import DataGenPage from './components/DataGenPage'
 import CostEstimateCard from './components/CostEstimateCard'
+import Py2SparkPage from './components/Py2SparkPage'
 import { metricsFromResult } from './costEstimator'
 import { COMPILE_URL } from './config'
 
@@ -60,6 +61,13 @@ function download(content, filename, mime = 'text/plain') {
 
 export default function App() {
   const [files, setFiles]       = useState({ mp: [], xfr: [], dml: [] })
+  // Codigo PySpark generado por Py->Spark (py2spark). Cuando tiene valor, Data
+  // Redactada opera en "modo py2spark" (usa este codigo en vez de un grafo .mp).
+  // Se declara ANTES de setResult para poder LIMPIARLO cuando llega un resultado
+  // de compilacion de grafo: asi compilar un grafo "gana" sobre un py2spark
+  // previo y Data Redactada vuelve a trabajar con el grafo (antes quedaba
+  // pegado en modo py2spark y el grafo no funcionaba).
+  const [py2sparkCode, setPy2sparkCode] = useState('')
   // result persiste en localStorage para que el codigo compilado sobreviva a
   // recargas de pagina (asi Data Redactada / Pipeline no pierden el codigo).
   const [result, _setResult]    = useState(() => {
@@ -70,6 +78,9 @@ export default function App() {
   })
   const setResult = (val) => {
     _setResult(val)
+    // Un resultado de grafo con codigo desactiva el modo py2spark (fuente activa
+    // = la ultima accion del usuario: compilar un grafo).
+    if (val && val.code) setPy2sparkCode('')
     try {
       if (val && val.code) localStorage.setItem('bnx_last_result', JSON.stringify(val))
       else if (!val) localStorage.removeItem('bnx_last_result')
@@ -592,6 +603,7 @@ export default function App() {
             { id: 'roadmap', label: '🗺️ Roadmap' },
             { id: 'pipeline', label: '🧪 Pipeline' },
             { id: 'grafos', label: '📁 Grafos' },
+            { id: 'py2spark', label: '🐍 Py→Spark' },
             { id: 'datagen', label: '🧪 Data Redactada' },
             { id: 'history', label: '📜 History' },
           ].map(tab => (
@@ -659,10 +671,21 @@ export default function App() {
               if (compileBtn) compileBtn.click()
             }, 500)
           }} />
+        ) : page === 'py2spark' ? (
+          <Py2SparkPage theme={t} onSendToDataGen={(code) => {
+            // Enviar el PySpark generado a Data Redactada. Se pasa como
+            // compiledCode y se limpia el grafo .mp para que DataGen use el
+            // codigo directo (genera datos sinteticos por los spark.read.* y
+            // lo ejecuta en el harness local igual que un grafo compilado).
+            setPy2sparkCode(code)
+            setPage('datagen')
+          }} />
         ) : page === 'datagen' ? (
-          <DataGenPage theme={t} graphMp={editorMp} graphXfr={editorXfr}
-            compiledCode={result?.code || ''} compiledTarget={target}
-            graphName={result?.graph_name || ''} graphDescription={result?.description || ''} />
+          <DataGenPage theme={t}
+            graphMp={py2sparkCode ? '' : editorMp} graphXfr={py2sparkCode ? '' : editorXfr}
+            compiledCode={py2sparkCode || result?.code || ''} compiledTarget={py2sparkCode ? 'spark' : target}
+            graphName={py2sparkCode ? 'py2spark_job' : (result?.graph_name || '')}
+            graphDescription={py2sparkCode ? 'Job PySpark generado desde Python (pandas) con py2spark.' : (result?.description || '')} />
         ) : page === 'designer' ? (
           <DesignerPage theme={t} />
         ) : page === 'ocr' ? (

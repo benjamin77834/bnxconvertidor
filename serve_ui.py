@@ -90,6 +90,8 @@ from src.codegen.spark_codegen import generate_spark
 from src.codegen.flink_codegen import generate_flink
 from src.validator.semantic import validate
 from src.accuracy import compute_accuracy
+from src.py2spark import convert_code as py2spark_convert
+from src.py2spark import infer_input_schema as py2spark_infer_schema
 from src.perf_optimizer import optimize_pyspark
 from src.export_bundle import build_export_bundle
 from src.datagen import (
@@ -157,6 +159,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_optimize()
         elif "/validate" in path:
             self._handle_validate()
+        elif "/py2spark" in path:
+            self._handle_py2spark()
         elif "/compile" in path or "/api" in path:
             self._handle_compile()
         else:
@@ -168,6 +172,16 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         # API health check
         if path == "/api/health":
             self._json_response(200, {"status": "ok", "version": "V54"})
+            return
+
+        # Descarga del addon de VS Code (.vsix) generado on-demand.
+        if path == "/download/vsix" or path == "/api/download/vsix":
+            self._handle_download_vsix()
+            return
+
+        # Ejemplos de codigo ML (pandas) para la seccion Py->Spark.
+        if path == "/py2spark/examples" or path == "/api/py2spark/examples":
+            self._handle_py2spark_examples()
             return
 
         # Descarga de resultados de la prueba LOCAL (CSV generados por el runner).
@@ -589,6 +603,72 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             except Exception:
                 pass
 
+    def _handle_download_vsix(self):
+        """Genera y sirve el .vsix de la extension de VS Code (py2spark).
+
+        El .vsix se construye on-demand con vscode-extension/build_vsix.py (no
+        depende de vsce/npm). Asi el usuario descarga el addon directo del portal.
+        """
+        try:
+            ext_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vscode-extension")
+            builder_path = os.path.join(ext_dir, "build_vsix.py")
+            if not os.path.isfile(builder_path):
+                self._json_response(404, {"error": "Extension no disponible (falta vscode-extension)."})
+                return
+            # Importar el builder por ruta y construir el .vsix en un temporal.
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("bnx_build_vsix", builder_path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            out_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".vsix")
+            out_tmp.close()
+            vsix_path = mod.build(out_tmp.name)
+            with open(vsix_path, "rb") as fh:
+                data = fh.read()
+            try:
+                os.unlink(vsix_path)
+            except OSError:
+                pass
+            self._binary_response(
+                data, "py2spark.vsix",
+                content_type="application/vsix",
+            )
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": f"No se pudo generar el .vsix: {e}"})
+
+    def _handle_py2spark_examples(self):
+        """Devuelve los ejemplos de codigo ML (pandas) de examples/py2spark/.
+
+        Respuesta: {"examples": [{"id","title","code"}]}. El titulo se toma de la
+        primera linea de comentario del archivo (o del nombre).
+        """
+        try:
+            ex_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  "examples", "py2spark")
+            examples = []
+            if os.path.isdir(ex_dir):
+                for fname in sorted(os.listdir(ex_dir)):
+                    if not fname.endswith(".py"):
+                        continue
+                    fpath = os.path.join(ex_dir, fname)
+                    with open(fpath, "r", encoding="utf-8", errors="replace") as fh:
+                        code = fh.read()
+                    # Titulo: primera linea de comentario significativa.
+                    title = fname[:-3]
+                    for line in code.splitlines():
+                        s = line.strip()
+                        if s.startswith("#") and len(s) > 2:
+                            title = s.lstrip("# ").strip()
+                            break
+                    examples.append({"id": fname[:-3], "title": title, "code": code})
+            self._json_response(200, {"examples": examples})
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": str(e)})
+
     def _handle_download(self):
         """Sirve un archivo de resultado de la prueba local para descargarlo.
 
@@ -874,11 +954,43 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 })
                 return
 
+            # --- MODO PYSPARK: inferir esquema desde CODIGO PySpark (py2spark) ---
+            # Cuando el job viene de la seccion Py->Spark (no de un grafo .mp),
+            # inferimos las columnas de entrada analizando el codigo y generamos
+            # datos sinteticos por cada fuente de lectura. Asi Data Redactada
+            # funciona igual para un PySpark que para un grafo.
+            pyspark_code = data.get("pyspark_code", "") or data.get("code", "")
+            if pyspark_code and not data.get("mp"):
+                schema = py2spark_infer_schema(pyspark_code)
+                datasets = []
+                for node_schema in schema:
+                    gen = build_synthetic_data(
+                        node_schema["columns"], n_rows=n_rows, fmt=fmt,
+                        seed=seed, delimiter=delimiter,
+                    )
+                    datasets.append({
+                        "node": node_schema["node"],
+                        "node_type": node_schema.get("node_type", "SOURCE"),
+                        "io": node_schema.get("io", "input"),
+                        "format": gen["format"],
+                        "content": gen["content"],
+                        "columns": gen["columns"],
+                        "rows": gen["rows"],
+                    })
+                resp = {"mode": "pyspark", "schema": schema, "datasets": datasets}
+                if not datasets:
+                    resp["message"] = (
+                        "No se detectaron fuentes de lectura (spark.read.*) en el codigo. "
+                        "Usa el modo Manual para definir el esquema de entrada."
+                    )
+                self._json_response(200, resp)
+                return
+
             # --- MODO GRAFO: inferir esquema del grafo ---
             mp_content = data.get("mp", "")
             if not mp_content:
                 self._json_response(400, {
-                    "error": "Provide either 'columns' (manual) or 'mp' (graph)"
+                    "error": "Provide either 'columns' (manual), 'mp' (graph) or 'pyspark_code'"
                 })
                 return
 
@@ -1698,6 +1810,51 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             err_msg = str(e)
             traceback.print_exc()
             self._json_response(500, {"error": err_msg})
+
+    def _handle_py2spark(self):
+        """Convierte codigo Python (pandas) a PySpark 3 usando la libreria py2spark.
+
+        Acepta el codigo por multipart (archivo/campo 'py' o 'code') o por JSON
+        ({"code": "..."} / {"python": "..."}). Devuelve
+        {ok, code, warnings, unsupported} — el mismo shape que la libreria.
+        """
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        content_type = self.headers.get("Content-Type", "")
+
+        try:
+            py_code = ""
+            add_preamble = True
+            if "multipart/form-data" in content_type:
+                fields, file_parts = parse_multipart(body, content_type)
+                if "py" in file_parts:
+                    py_code = file_parts["py"].decode("utf-8", errors="replace")
+                elif "code" in file_parts:
+                    py_code = file_parts["code"].decode("utf-8", errors="replace")
+                else:
+                    py_code = fields.get("py", "") or fields.get("code", "") or ""
+                if str(fields.get("no_preamble", "")).lower() in ("1", "true", "yes"):
+                    add_preamble = False
+            else:
+                try:
+                    data = json.loads(body.decode("utf-8", errors="replace"))
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    self._json_response(400, {"error": "Invalid request format"})
+                    return
+                py_code = data.get("code", "") or data.get("python", "") or data.get("py", "")
+                add_preamble = not bool(data.get("no_preamble", False))
+
+            if not py_code.strip():
+                self._json_response(400, {"error": "Se requiere codigo Python (campo 'code'/'py')."})
+                return
+
+            result = py2spark_convert(py_code, add_preamble=add_preamble)
+            self._json_response(200, result)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": str(e)})
 
     def _save_temp(self, content, suffix):
         if isinstance(content, bytes):

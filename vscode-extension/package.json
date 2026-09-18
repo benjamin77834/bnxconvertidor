@@ -1,0 +1,71 @@
+{
+  "name": "py2spark",
+  "displayName": "py2spark — Python a PySpark 3",
+  "description": "Convierte codigo Python (pandas) a PySpark 3 usando el motor py2spark del portal BNX.",
+  "version": "0.1.0",
+  "publisher": "bnx",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Other",
+    "Programming Languages"
+  ],
+  "keywords": [
+    "pyspark",
+    "pandas",
+    "spark",
+    "python",
+    "etl",
+    "migration"
+  ],
+  "activationEvents": [],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "py2spark.convertSelection",
+        "title": "py2spark: Convertir selección a PySpark"
+      },
+      {
+        "command": "py2spark.convertFile",
+        "title": "py2spark: Convertir archivo Python a PySpark"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "py2spark.convertSelection",
+          "when": "editorLangId == python",
+          "group": "1_modification"
+        },
+        {
+          "command": "py2spark.convertFile",
+          "when": "editorLangId == python",
+          "group": "1_modification"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "py2spark",
+      "properties": {
+        "py2spark.serverUrl": {
+          "type": "string",
+          "default": "http://localhost:8081",
+          "description": "URL base del portal BNX que expone el endpoint /py2spark."
+        },
+        "py2spark.openInNewEditor": {
+          "type": "boolean",
+          "default": true,
+          "description": "Abrir el PySpark generado en un editor nuevo (en vez de reemplazar la selección)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "package": "vsce package --allow-missing-repository -o py2spark.vsix"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^2.15.0"
+  }
+}
