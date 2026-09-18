@@ -51,3 +51,6 @@ bnx_library/
 *_accessKeys.csv
 # Backups pesados del repo
 bnx_library/Repo_Git/
+
+# .vsix generado on-demand por /download/vsix (no versionar)
+vscode-extension/*.vsix

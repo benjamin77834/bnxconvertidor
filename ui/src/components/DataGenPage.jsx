@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { COMPILE_URL, PIPELINE_URL, PIPELINE_STATUS_URL } from '../config'
 import CostEstimateCard from './CostEstimateCard'
+import TerminalGuide from './TerminalGuide'
 import { metricsFromResult, estimateGraphCost } from '../costEstimator'
 import * as testRunner from '../testRunnerStore'
 
@@ -604,6 +605,11 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
           node_name: nodeName,
           n_rows: Number(nRows), format,
         }
+      } else if (!mp.trim() && (compiledCode || '').trim()) {
+        // Job PySpark que viene de Py->Spark (sin .mp): el backend infiere el
+        // esquema de entrada desde el propio codigo (spark.read.* + columnas
+        // referenciadas) y genera datos sinteticos por fuente de lectura.
+        payload = { pyspark_code: compiledCode, n_rows: Number(nRows), format }
       } else {
         if (!mp.trim()) { setError('Pega o carga un .mp primero'); setLoading(false); return }
         payload = { mp, xfr, dml, n_rows: Number(nRows), format }
@@ -1447,6 +1453,34 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
           )}
         </div>
       )}
+
+      {/* Guia de comandos de terminal para Data Redactada / ejecucion PySpark. */}
+      <TerminalGuide theme={t} title="Guía de comandos (terminal) — Data Redactada / PySpark" sections={[
+        {
+          label: 'Generar datos sintéticos desde un grafo (.mp) por línea de comando',
+          cmd: `curl -s -X POST ${(typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8081')}/datagen \\\n  -H "Content-Type: application/json" \\\n  -d '{"mp": "<contenido .mp>", "n_rows": 20, "format": "csv"}'`,
+          note: 'Devuelve datasets sintéticos (uno por nodo SOURCE) con PII enmascarada.',
+        },
+        {
+          label: 'Generar datos desde código PySpark (Py→Spark, sin grafo)',
+          cmd: `curl -s -X POST ${(typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8081')}/datagen \\\n  -H "Content-Type: application/json" \\\n  -d '{"pyspark_code": "<tu PySpark>", "n_rows": 20}'`,
+        },
+        {
+          label: 'Ejecutar el PySpark localmente con datos sintéticos (prueba)',
+          cmd: `curl -s -X POST ${(typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8081')}/runtest \\\n  -H "Content-Type: application/json" \\\n  -d '{"code": "<PySpark>", "datasets": [...], "timeout": 180}'`,
+          note: 'Devuelve {ok, reads, writes, summary, stderr}. Solo target Spark (no Glue).',
+        },
+        {
+          label: 'Ejecutar el job PySpark directo (en tu máquina)',
+          cmd: 'python job_pyspark.py',
+          note: 'Requiere pyspark + Java. Para cluster: spark-submit --master local[*] job_pyspark.py',
+        },
+        {
+          label: 'Levantar el portal localmente (server + GUI)',
+          cmd: '.venv/bin/python serve_ui.py',
+          note: 'Sirve la GUI y la API en http://localhost:8081',
+        },
+      ]} />
     </div>
   )
 }

@@ -10,7 +10,8 @@ setup(
     ],
     entry_points={
         "console_scripts": [
-            "etl-migrate=migrator.main:main"
+            "etl-migrate=migrator.main:main",
+            "py2spark=py2spark.cli:main"
         ]
     }
 )
