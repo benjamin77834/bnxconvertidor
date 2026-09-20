@@ -114,3 +114,55 @@ def test_pure_pandas_example_no_mllib():
             continue
         r = convert_code(open(f, encoding="utf-8").read())
         assert "pyspark.ml" not in r["code"], name
+
+
+def test_xgboost_neutralized():
+    # xgb.XGBClassifier(...) no tiene equivalente MLlib: TODO honesto, no NameError.
+    import ast as _ast
+    from src.py2spark import convert_code
+    r = convert_code(
+        'import pandas as pd\n'
+        'import xgboost as xgb\n'
+        'df = pd.read_csv("f.csv")\n'
+        'model = xgb.XGBClassifier(n_estimators=100)\n'
+        'model.fit(df)\n'
+    )
+    assert r["ok"]
+    _ast.parse(r["code"])  # Python valido
+    code_lines = [ln for ln in r["code"].splitlines()
+                  if ln.strip() and not ln.lstrip().startswith("#")]
+    # la construccion cruda de xgb NO queda como codigo ejecutable
+    assert not any("xgb.XGBClassifier" in ln for ln in code_lines)
+    assert "TODO py2spark" in r["code"]
+
+
+def test_lightgbm_neutralized():
+    import ast as _ast
+    from src.py2spark import convert_code
+    r = convert_code(
+        'import pandas as pd\n'
+        'import lightgbm as lgb\n'
+        'df = pd.read_csv("f.csv")\n'
+        'm = lgb.LGBMClassifier(n_estimators=200)\n'
+    )
+    assert r["ok"]
+    _ast.parse(r["code"])
+    code_lines = [ln for ln in r["code"].splitlines()
+                  if ln.strip() and not ln.lstrip().startswith("#")]
+    assert not any("lgb.LGBMClassifier" in ln for ln in code_lines)
+    assert "TODO py2spark" in r["code"]
+
+
+def test_stacking_classifier_neutralized():
+    import ast as _ast
+    from src.py2spark import convert_code
+    r = convert_code(
+        'import pandas as pd\n'
+        'from sklearn.ensemble import StackingClassifier\n'
+        'from sklearn.linear_model import LogisticRegression\n'
+        'df = pd.read_csv("f.csv")\n'
+        'st = StackingClassifier(estimators=[], final_estimator=LogisticRegression())\n'
+    )
+    assert r["ok"]
+    _ast.parse(r["code"])
+    assert "TODO py2spark" in r["code"]

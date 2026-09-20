@@ -534,6 +534,10 @@ class PandasToSparkTransformer(ast.NodeTransformer):
             for nm in _names_in_target(tgt):
                 self.dead_vars.add(nm)
 
+    def _comment_lines(self, lines):
+        """Texto multi-linea de comentarios (para usarse como snippet MLlib)."""
+        return "\n".join(f"# {ln}" if ln else "#" for ln in lines)
+
     def _emit_comment(self, lines):
         """Neutraliza un statement no traducible dejando comentarios en su lugar.
 
@@ -542,7 +546,7 @@ class PandasToSparkTransformer(ast.NodeTransformer):
         (sin el '#'); cada una se emite como comentario."""
         self._mllib_seq += 1
         pid = f"__PY2SPARK_MLLIB_{self._mllib_seq}__"
-        block = "\n".join(f"# {ln}" if ln else "#" for ln in lines)
+        block = self._comment_lines(lines)
         self.mllib_blocks[pid] = block
         return ast.Expr(value=ast.Name(pid, ast.Load()))
 
@@ -615,6 +619,39 @@ class PandasToSparkTransformer(ast.NodeTransformer):
             snip, kinds = _mllib.snippet_get_dummies(value, out_target, self.last_df)
             self.mllib_kinds |= kinds
             return snip
+
+        # Constructor de un framework ML SIN equivalente en pyspark.ml estandar:
+        #   xgb.XGBClassifier(...), lgb.LGBMClassifier(...), nn.Sequential(...),
+        #   torch.optim.Adam(...), StackingClassifier(...), etc.
+        # Estos quedaban crudos y rompian con NameError (su import se elimino).
+        # Los neutralizamos a TODO honesto y marcamos el target como ml_var para
+        # neutralizar sus .fit()/.predict() posteriores.
+        recv_mod = func.value.id if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) else None
+        is_ext_ml_ctor = (
+            (recv_mod is not None and recv_mod in self.ml_names)          # xgb.X / lgb.X / nn.X
+            or (called in self.ml_names or called in _ML_CALLABLES)        # importado directo
+        )
+        if is_ext_ml_ctor and called and called[:1].isupper():
+            try:
+                orig = ast.unparse(node)
+            except Exception:
+                orig = "<statement>"
+            hint = _MLLIB_HINT.get(called)
+            extra = f" Equivalente aproximado en Spark: {hint}." if hint else \
+                    " No existe en pyspark.ml estandar (XGBoost/LightGBM/PyTorch/etc.)."
+            self.diag.unsup(
+                f"'{called}(...)' es de un framework ML sin equivalente 1:1 en Spark "
+                f"MLlib.{extra} Considera GBTClassifier (MLlib) o el conector Spark del "
+                f"framework."
+            )
+            for tgt in node.targets:
+                for nm in _names_in_target(tgt):
+                    self.ml_vars.add(nm)
+                    self.dead_vars.add(nm)
+            return self._comment_lines([
+                f"TODO py2spark: '{called}(...)' no tiene equivalente en Spark MLlib estandar.",
+                f"Original: {orig}",
+            ])
 
         # Metodos de estimador: X = scaler.fit_transform(...) / model.predict(...)
         if isinstance(func, ast.Attribute) and func.attr in (
