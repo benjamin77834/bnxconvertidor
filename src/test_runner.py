@@ -25,10 +25,30 @@ import subprocess
 
 # Carpeta donde el runner LOCAL vuelca los resultados de cada escritura para que
 # se puedan descargar desde la GUI. Vive en la raiz del proyecto (fuera de git).
-BNX_LOCAL_OUTPUT_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "output", "local_test",
-)
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BNX_LOCAL_OUTPUT_DIR = os.path.join(_PROJECT_ROOT, "output", "local_test")
+
+
+def _resolve_python():
+    """Python con el que ejecutar la prueba PySpark.
+
+    Prefiere el interprete del .venv del PROYECTO (donde estan pyspark, numpy y
+    demas dependencias), sin importar con que Python se arranco el server. Antes
+    se usaba sys.executable ciego: si el server se lanzaba con el Python del
+    sistema (sin numpy), pyspark.ml (MLlib) fallaba con 'No module named numpy'.
+    Orden: BNX_PYTHON (env) > .venv del proyecto > sys.executable.
+    """
+    env_py = os.environ.get("BNX_PYTHON")
+    if env_py and os.path.isfile(env_py):
+        return env_py
+    for cand in (
+        os.path.join(_PROJECT_ROOT, ".venv", "bin", "python"),
+        os.path.join(_PROJECT_ROOT, ".venv", "bin", "python3"),
+        os.path.join(_PROJECT_ROOT, "venv", "bin", "python"),
+    ):
+        if os.path.isfile(cand):
+            return cand
+    return sys.executable
 
 
 # Palabras que aparecen dentro de expresiones pero NO son columnas
@@ -1288,14 +1308,17 @@ def run_pyspark_test(pyspark_code, datasets, timeout=120, job_name=None,
     tmp.write(script)
     tmp.close()
 
+    _py = _resolve_python()
     env = dict(os.environ)
-    # Silenciar logs verbosos de Spark
-    env.setdefault("PYSPARK_PYTHON", sys.executable)
+    # Ejecutar Spark (driver Y workers) con el MISMO Python del venv, donde estan
+    # pyspark + numpy. Sin esto, pyspark.ml fallaba con 'No module named numpy'.
+    env["PYSPARK_PYTHON"] = _py
+    env["PYSPARK_DRIVER_PYTHON"] = _py
 
     timed_out = False
     try:
         proc = subprocess.run(
-            [sys.executable, tmp.name],
+            [_py, tmp.name],
             capture_output=True, text=True, timeout=timeout, env=env,
         )
         exit_code = proc.returncode
@@ -1790,8 +1813,11 @@ def stream_pyspark_test(pyspark_code, datasets, timeout=300, job_name=None):
     tmp.write(script)
     tmp.close()
 
+    _py = _resolve_python()
     env = dict(os.environ)
-    env.setdefault("PYSPARK_PYTHON", sys.executable)
+    # Driver Y workers de Spark con el Python del venv (pyspark + numpy).
+    env["PYSPARK_PYTHON"] = _py
+    env["PYSPARK_DRIVER_PYTHON"] = _py
     # Forzar salida sin buffer para ver el progreso en vivo
     env["PYTHONUNBUFFERED"] = "1"
 
@@ -1801,7 +1827,7 @@ def stream_pyspark_test(pyspark_code, datasets, timeout=300, job_name=None):
     steps_all = []
 
     proc = subprocess.Popen(
-        [sys.executable, "-u", tmp.name],
+        [_py, "-u", tmp.name],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, bufsize=1, env=env,
     )
