@@ -208,3 +208,56 @@ def test_reset_index_neutralized():
     )
     assert not any("reset_index" in ln for ln in _code_lines(r))
     assert "TODO py2spark" in r["code"]
+
+
+def test_astype_to_cast():
+    # col.astype(int) -> col.cast('int'); astype('float64') -> cast('double')
+    r = _conv(
+        'import pandas as pd\n'
+        'df = pd.read_csv("f.csv")\n'
+        'df["a"] = df["a"].astype(int)\n'
+        'df["b"] = df["b"].astype("float64")\n'
+    )
+    assert "F.col('a').cast('int')" in r["code"]
+    assert "F.col('b').cast('double')" in r["code"]
+    assert ".astype(" not in "\n".join(_code_lines(r))
+
+
+def test_astype_bool_expr():
+    # (col == valor).astype(int) -> (col == valor).cast('int')
+    r = _conv(
+        'import pandas as pd\n'
+        'df = pd.read_csv("f.csv")\n'
+        'df["flag"] = (df["c"] == ">50K").astype(int)\n'
+    )
+    assert ".cast('int')" in r["code"]
+
+
+def test_sklearn_bunch_data_is_dataframe():
+    # X = bunch.data -> X = bunch (DataFrame completo)
+    r = _conv(
+        'import pandas as pd\n'
+        'from sklearn.datasets import load_iris\n'
+        'iris = load_iris()\n'
+        'X = iris.data\n'
+    )
+    assert "X = iris" in r["code"]
+    assert ".data" not in "\n".join(_code_lines(r))
+
+
+def test_sklearn_bunch_target_neutralized():
+    # y = bunch.target -> TODO (no existe en Spark); dependencias posteriores mueren
+    r = _conv(
+        'import pandas as pd\n'
+        'from sklearn.datasets import fetch_openml\n'
+        'adult = fetch_openml("adult", as_frame=True)\n'
+        'X = adult.data\n'
+        'y = adult.target\n'
+        'y = (y == ">50K").astype(int)\n'
+    )
+    lines = _code_lines(r)
+    # ni .target ni la reasignacion rota quedan como codigo ejecutable
+    assert not any(".target" in ln for ln in lines)
+    assert not any("'>50K'" in ln for ln in lines)
+    assert "TODO py2spark" in r["code"]
+    assert any(".target" in u for u in r["unsupported"])
