@@ -72,6 +72,17 @@ _ML_CALLABLES = {
     "XGBClassifier", "XGBRegressor", "LGBMClassifier", "Pipeline",
 }
 
+# Cargadores de datasets de sklearn: NO tienen equivalente en Spark (los datos
+# vienen de una fuente real: CSV/parquet/tabla). Los reconocemos para traducirlos
+# a un spark.read con TODO, y NO dejarlos crudos (que daria NameError al borrar
+# el import 'from sklearn.datasets import ...').
+_ML_DATA_LOADERS = {
+    "fetch_openml", "fetch_california_housing", "fetch_covtype", "fetch_20newsgroups",
+    "load_iris", "load_digits", "load_wine", "load_breast_cancer", "load_diabetes",
+    "load_boston", "load_linnerud", "make_classification", "make_regression",
+    "make_blobs", "make_moons", "make_circles",
+}
+
 # Sugerencia de equivalente en Spark MLlib por clase sklearn.
 _MLLIB_HINT = {
     "LogisticRegression": "pyspark.ml.classification.LogisticRegression",
@@ -353,6 +364,31 @@ class PandasToSparkTransformer(ast.NodeTransformer):
         # Target subscript df[cols] = ... -> el destino es el df base.
         out_target = targets_names[0] if targets_names else self.last_df
         called = func.id if isinstance(func, ast.Name) else (func.attr if isinstance(func, ast.Attribute) else None)
+
+        # Cargador de datos sklearn: fetch_openml/load_iris/make_classification...
+        # En Spark los datos vienen de una fuente real. Traducimos a spark.read
+        # (placeholder) y marcamos los targets como DataFrame. Sin esto quedaba
+        # 'X, y = fetch_openml(...)' crudo -> NameError (el import se elimino).
+        if called in _ML_DATA_LOADERS or (called and called in self.ml_names
+                                          and called.startswith(("fetch_", "load_", "make_"))):
+            df_name = targets_names[0] if targets_names else "df"
+            self.last_df = df_name
+            self.df_names.add(df_name)
+            self.diag.warn(
+                f"'{called}(...)' es un cargador de datos de sklearn: en Spark los "
+                f"datos vienen de una fuente real. Se reemplazo por spark.read.* "
+                f"(ajusta la ruta/tabla). Si separabas X, y: la columna label viaja "
+                f"dentro del DataFrame."
+            )
+            lines = [
+                f"# Origen de datos: reemplaza sklearn.datasets.{called} por tu fuente real.",
+                f'{df_name} = spark.read.option("header", True).option("inferSchema", True).csv("datos.csv")',
+            ]
+            # Si habia mas de un target (X, y), avisar que en Spark es un solo df.
+            if len(targets_names) > 1:
+                lines.append(f"# NOTA: {', '.join(targets_names[1:])} no aplican en Spark; "
+                             f"la columna label es una columna mas de {df_name}.")
+            return "\n".join(lines)
 
         # train_test_split(...)
         if called == "train_test_split" and (called in self.ml_names or called in _ML_CALLABLES):
