@@ -166,3 +166,45 @@ def test_sample_frac():
     assert "df.sample(fraction=0.1, seed=7)" in r["code"]
     assert ".limit(" not in r["code"]
     assert "random_state" not in r["code"]
+
+
+def _code_lines(r):
+    """Lineas de CODIGO ejecutable del resultado (sin comentarios ni vacias)."""
+    return [ln for ln in r["code"].splitlines()
+            if ln.strip() and not ln.lstrip().startswith("#")]
+
+
+def test_loc_index_neutralized():
+    # y = y.loc[X.index] usa el indice de fila de pandas: no traducible.
+    # Debe neutralizarse a un comentario TODO, NO emitir codigo que rompe.
+    r = _conv(
+        'import pandas as pd\n'
+        'df = pd.read_csv("f.csv")\n'
+        'X = df.drop("target", axis=1)\n'
+        'y = df["target"]\n'
+        'y = y.loc[X.index]\n'
+    )
+    # el statement roto no debe quedar como codigo ejecutable
+    assert not any(".loc[" in ln for ln in _code_lines(r))
+    assert "TODO py2spark" in r["code"]         # queda marcado honestamente
+    assert any(".loc" in u for u in r["unsupported"])
+
+
+def test_iloc_neutralized():
+    r = _conv(
+        'import pandas as pd\n'
+        'df = pd.read_csv("f.csv")\n'
+        'sub = df.iloc[0:100]\n'
+    )
+    assert not any(".iloc[" in ln for ln in _code_lines(r))
+    assert "TODO py2spark" in r["code"]
+
+
+def test_reset_index_neutralized():
+    r = _conv(
+        'import pandas as pd\n'
+        'df = pd.read_csv("f.csv")\n'
+        'df2 = df.reset_index(drop=True)\n'
+    )
+    assert not any("reset_index" in ln for ln in _code_lines(r))
+    assert "TODO py2spark" in r["code"]
