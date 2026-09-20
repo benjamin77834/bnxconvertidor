@@ -82,7 +82,7 @@ export default function Py2SparkPage({ theme, onSendToDataGen }) {
 
   const sendToDataGen = () => {
     if (!result?.code) return
-    onSendToDataGen && onSendToDataGen(result.code)
+    onSendToDataGen && onSendToDataGen(result.code, src)
   }
 
   const EXAMPLE = `import pandas as pd

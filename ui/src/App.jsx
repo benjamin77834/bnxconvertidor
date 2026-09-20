@@ -68,6 +68,9 @@ export default function App() {
   // previo y Data Redactada vuelve a trabajar con el grafo (antes quedaba
   // pegado en modo py2spark y el grafo no funcionaba).
   const [py2sparkCode, setPy2sparkCode] = useState('')
+  // Python ORIGINAL de py2spark: se envia al runtest para reconvertir fresco en
+  // el servidor (evita ejecutar PySpark viejo cacheado).
+  const [py2sparkSource, setPy2sparkSource] = useState('')
   // result persiste en localStorage para que el codigo compilado sobreviva a
   // recargas de pagina (asi Data Redactada / Pipeline no pierden el codigo).
   const [result, _setResult]    = useState(() => {
@@ -672,18 +675,22 @@ export default function App() {
             }, 500)
           }} />
         ) : page === 'py2spark' ? (
-          <Py2SparkPage theme={t} onSendToDataGen={(code) => {
+          <Py2SparkPage theme={t} onSendToDataGen={(code, source) => {
             // Enviar el PySpark generado a Data Redactada. Se pasa como
             // compiledCode y se limpia el grafo .mp para que DataGen use el
             // codigo directo (genera datos sinteticos por los spark.read.* y
             // lo ejecuta en el harness local igual que un grafo compilado).
+            // Tambien pasamos el Python ORIGINAL para que el runtest lo
+            // reconvierta fresco en el servidor (nunca PySpark viejo cacheado).
             setPy2sparkCode(code)
+            setPy2sparkSource(source || '')
             setPage('datagen')
           }} />
         ) : page === 'datagen' ? (
           <DataGenPage theme={t}
             graphMp={py2sparkCode ? '' : editorMp} graphXfr={py2sparkCode ? '' : editorXfr}
             compiledCode={py2sparkCode || result?.code || ''} compiledTarget={py2sparkCode ? 'spark' : target}
+            pythonSource={py2sparkCode ? py2sparkSource : ''}
             graphName={py2sparkCode ? 'py2spark_job' : (result?.graph_name || '')}
             graphDescription={py2sparkCode ? 'Job PySpark generado desde Python (pandas) con py2spark.' : (result?.description || '')} />
         ) : page === 'designer' ? (
