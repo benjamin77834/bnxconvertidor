@@ -493,6 +493,16 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 return
 
             code = data.get("code", "")
+            # Job py2spark: si viene el PYTHON ORIGINAL, reconvertir a PySpark fresco
+            # (evita ejecutar PySpark viejo cacheado en el navegador).
+            py_src = data.get("python_source", "")
+            if py_src.strip() and not data.get("mp"):
+                try:
+                    conv = py2spark_convert(py_src)
+                    if conv.get("ok") and conv.get("code", "").strip():
+                        code = conv["code"]
+                except Exception:
+                    pass
             if not code.strip():
                 self._json_response(400, {"error": "Falta 'code' (PySpark)"})
                 return
@@ -554,6 +564,19 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                         data["job_name"] = compiled.get("graph_name") or None
             except Exception as e:
                 regen_warning = f"No se pudo regenerar desde el grafo ({e}); se usa el codigo recibido."
+
+        # Job py2spark: si el cliente manda el PYTHON ORIGINAL (python_source),
+        # lo reconvertimos a PySpark fresco con la version actual del converter.
+        # Asi la prueba nunca usa PySpark viejo cacheado en el navegador.
+        py_src = data.get("python_source", "")
+        if py_src.strip() and not mp_content.strip():
+            try:
+                conv = py2spark_convert(py_src)
+                if conv.get("ok") and conv.get("code", "").strip():
+                    code = conv["code"]
+                    regen_warning = None
+            except Exception as e:
+                regen_warning = f"No se pudo reconvertir el Python ({e}); se usa el codigo recibido."
 
         if not code.strip():
             self._json_response(400, {"error": "Falta 'code' (PySpark) o 'mp' (grafo)"})

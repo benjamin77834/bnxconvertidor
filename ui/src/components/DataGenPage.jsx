@@ -24,7 +24,7 @@ const IO_META = {
 }
 const ioMeta = (io) => IO_META[io] || IO_META.output
 
-export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compiledCode = '', compiledTarget = '', graphName = '', graphDescription = '' }) {
+export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compiledCode = '', compiledTarget = '', pythonSource = '', graphName = '', graphDescription = '' }) {
   const t = theme || {}
   const [mode, setMode] = useState('graph') // 'graph' | 'manual'
 
@@ -457,6 +457,7 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
     // Enviamos tambien el grafo (mp/xfr) para que el servidor REGENERE el PySpark
     // fresco y la prueba nunca use codigo viejo cacheado en el navegador.
     const payload = { code: compiledCode, mp: graphMp, xfr: graphXfr, datasets,
+                      python_source: pythonSource || '',
                       timeout: runTimeout, job_name: (graphName || awsJobName) }
     testRunner.startTest({
       streamUrl,
