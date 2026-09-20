@@ -892,6 +892,40 @@ try:
 except Exception:
     pass
 
+# createDataFrame TOLERANTE: versiones previas de py2spark podian generar
+# spark.createDataFrame({{col: valores}}) (dict de columnas) o
+# spark.createDataFrame([escalares]) — Spark no infiere esquema de eso (crea la
+# columna '_1' o falla con CANNOT_INFER_SCHEMA). Envolvemos el metodo para
+# normalizar esas estructuras en runtime, sin importar la version del codigo.
+def _bnx_norm_scalar(_v):
+    return _v.item() if hasattr(_v, "item") else _v
+
+_bnx_orig_cdf = _bnx_session.createDataFrame
+def _bnx_create_df(data=None, schema=None, *a, **kw):
+    try:
+        # dict {{col: <secuencia>}} -> filas transpuestas + schema=nombres
+        if isinstance(data, dict) and data:
+            cols = list(data.keys())
+            cols_vals = [list(v) for v in data.values()]
+            n = min((len(c) for c in cols_vals), default=0)
+            rows = [tuple(_bnx_norm_scalar(cv[i]) for cv in cols_vals) for i in range(n)]
+            return _bnx_orig_cdf(rows, schema=(schema or cols), *a, **kw)
+        # lista/tupla de ESCALARES -> [(v,) ...]
+        if isinstance(data, (list, tuple)) and len(data) > 0:
+            _first = data[0]
+            if not isinstance(_first, (list, tuple, dict, _Row)) and not hasattr(_first, "asDict"):
+                rows = [(_bnx_norm_scalar(x),) for x in data]
+                _sch = schema if schema else ["value"]
+                return _bnx_orig_cdf(rows, schema=_sch, *a, **kw)
+            # lista de listas/tuplas: normalizar escalares numpy dentro
+            if isinstance(_first, (list, tuple)):
+                rows = [tuple(_bnx_norm_scalar(x) for x in r) for r in data]
+                return _bnx_orig_cdf(rows, schema=schema, *a, **kw)
+    except Exception as _e_cdf:
+        print(f"[BNX-TEST] createDataFrame normalizado fallo, uso original: {{_e_cdf}}")
+    return _bnx_orig_cdf(data, schema=schema, *a, **kw)
+_bnx_session.createDataFrame = _bnx_create_df
+
 # Silenciar loggers de Spark que vuelcan el stacktrace Java completo de las
 # AnalysisException que NOSOTROS capturamos a proposito en _bnx_where (filtros
 # sobre columnas ausentes). Sin esto, cada filtro relajado imprime un traceback
