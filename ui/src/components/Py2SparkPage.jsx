@@ -47,6 +47,14 @@ export default function Py2SparkPage({ theme, onSendToDataGen }) {
       })
       const data = await res.json()
       if (data.error) { setError(data.error); return }
+      // ok:false = el codigo de entrada NO es Python valido. En ese caso el
+      // backend devuelve el codigo SIN convertir, asi que no debemos tratarlo
+      // como exito (ni enviarlo a Data Redactada). Mostramos el error real.
+      if (data.ok === false) {
+        const why = (data.unsupported && data.unsupported[0]) || 'El codigo no es Python valido.'
+        setError(why + ' Revisa la sintaxis (p. ej. def __init__, indentacion, o simbolos ** de Markdown pegados).')
+        return
+      }
       setResult(data)
     } catch (e) {
       setError('Error de red: ' + e.message)
