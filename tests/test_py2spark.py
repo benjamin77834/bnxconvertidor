@@ -261,3 +261,39 @@ def test_sklearn_bunch_target_neutralized():
     assert not any("'>50K'" in ln for ln in lines)
     assert "TODO py2spark" in r["code"]
     assert any(".target" in u for u in r["unsupported"])
+
+
+def test_mllib_injects_source_when_no_reader():
+    # Entrenamiento MLlib partiendo de arrays numpy (sin pd.read_*): el df_hint
+    # 'df' no se define -> debe inyectarse una fuente spark.read placeholder para
+    # que el job ejecute y Data Redactada infiera esquema.
+    from src.py2spark import infer_input_schema
+    r = _conv(
+        'import numpy as np\n'
+        'from sklearn.linear_model import LogisticRegression\n'
+        'X = np.random.rand(100, 4)\n'
+        'y = np.random.randint(0, 2, 100)\n'
+        'model = LogisticRegression()\n'
+        'model.fit(X, y)\n'
+    )
+    # se inyecta exactamente una fuente para 'df'
+    reads = [ln for ln in r["code"].splitlines() if "spark.read" in ln]
+    assert len(reads) == 1
+    assert "df = spark.read" in r["code"]
+    # y el esquema ya no queda vacio
+    schema = infer_input_schema(r["code"])
+    assert schema and schema[0]["node"] == "df"
+
+
+def test_mllib_no_duplicate_source_when_reader_present():
+    # Si ya hay una fuente real (pd.read_csv), NO se debe inyectar otra.
+    r = _conv(
+        'import pandas as pd\n'
+        'from sklearn.ensemble import RandomForestClassifier\n'
+        'adult = pd.read_csv("a.csv")\n'
+        'model = RandomForestClassifier(n_estimators=10)\n'
+        'model.fit(adult)\n'
+    )
+    reads = [ln for ln in r["code"].splitlines() if "spark.read" in ln]
+    assert len(reads) == 1
+    assert "adult = spark.read" in r["code"]

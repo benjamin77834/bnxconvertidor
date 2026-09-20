@@ -1051,6 +1051,13 @@ def convert_code(source, add_preamble=True):
         body_code = _expand_mllib_placeholders(body_code, transformer.mllib_blocks)
 
     used_ml = bool(transformer.mllib_blocks)
+
+    # Si el MLlib generado referencia un DataFrame (df_hint) que nunca se define
+    # en el codigo (p.ej. el entrenamiento partia de arrays numpy, sin pd.read_*),
+    # inyectamos una fuente placeholder para ese df. Sin esto el job rompe con
+    # NameError y Data Redactada no detecta ninguna fuente (schema vacio).
+    if used_ml:
+        body_code = _ensure_mllib_source(body_code, transformer)
     if not used_pandas and not used_ml:
         diag.warn("No se detecto uso de pandas; el codigo se dejo casi intacto. "
                   "py2spark hoy traduce principalmente pandas->PySpark.")
@@ -1076,6 +1083,53 @@ def convert_code(source, add_preamble=True):
         "warnings": diag.warnings,
         "unsupported": diag.unsupported,
     }
+
+
+def _ensure_mllib_source(body_code, transformer):
+    """Garantiza que el DataFrame usado por el MLlib exista.
+
+    El MLlib usa `transformer.last_df` como df_hint. Si ese nombre nunca se
+    asigna en el codigo (porque el original partia de arrays numpy / datos en
+    memoria y no de un pd.read_*), inyectamos una fuente placeholder para que el
+    job ejecute y Data Redactada infiera un esquema."""
+    df_hint = getattr(transformer, "last_df", "df") or "df"
+    try:
+        tree = ast.parse(body_code)
+    except SyntaxError:
+        return body_code
+
+    # Buscamos una definicion INICIAL valida de df_hint: una asignacion a nivel
+    # de modulo (no dentro de if/for/try) cuyo valor NO dependa del propio
+    # df_hint. Las reasignaciones como `df = df.withColumn(...)` dentro del bloque
+    # MLlib NO cuentan como definicion (df aun no existe ahi).
+    def _value_uses(node, name):
+        return any(isinstance(s, ast.Name) and s.id == name for s in ast.walk(node))
+
+    defined = False
+    for stmt in tree.body:  # solo statements top-level
+        if isinstance(stmt, ast.Assign):
+            names = []
+            for tgt in stmt.targets:
+                names.extend(_names_in_target(tgt))
+            if df_hint in names and not _value_uses(stmt.value, df_hint):
+                defined = True
+                break
+
+    if defined:
+        return body_code  # ya se define en el codigo
+
+    reader = (
+        f"# Origen de datos: define aqui tu fuente real (el codigo original no\n"
+        f"# leia de un archivo/tabla; usaba datos en memoria).\n"
+        f'{df_hint} = spark.read.option("header", True).option("inferSchema", True).csv("datos.csv")'
+    )
+    transformer.df_names.add(df_hint)
+    transformer.diag.warn(
+        f"El entrenamiento MLlib usa '{df_hint}' pero el codigo no leia de una "
+        f"fuente real (datos en memoria/numpy). Se inyecto un spark.read.* "
+        f"placeholder: ajusta la ruta/tabla."
+    )
+    return reader + "\n" + body_code
 
 
 def _expand_mllib_placeholders(body_code, blocks):
