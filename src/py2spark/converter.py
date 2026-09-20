@@ -305,11 +305,7 @@ class PandasToSparkTransformer(ast.NodeTransformer):
         # pd.DataFrame(...) -> spark.createDataFrame(...) (aprox)
         if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) \
                 and f.value.id in self.pandas_alias and f.attr == "DataFrame":
-            self.diag.warn("pd.DataFrame(...) -> spark.createDataFrame(...): revisa el esquema/estructura de entrada.")
-            return ast.Call(
-                func=ast.Attribute(value=ast.Name("spark", ast.Load()), attr="createDataFrame", ctx=ast.Load()),
-                args=node.args, keywords=node.keywords,
-            )
+            return self._pd_dataframe(node)
 
         # df.metodo(...)
         if isinstance(f, ast.Attribute) and self._is_df(f.value):
@@ -803,6 +799,91 @@ class PandasToSparkTransformer(ast.NodeTransformer):
             args=[path_arg] if path_arg else [], keywords=[],
         )
         return call
+
+    def _pd_dataframe(self, node):
+        """pd.DataFrame(...) -> spark.createDataFrame(...) preservando el esquema.
+
+        Spark NO infiere esquema de escalares sueltos (lista de str/int) ni de un
+        dict {col: [valores]} como lo hace pandas. Ajustamos la estructura:
+          - dict {col: [v...]} -> filas [(v0a, v0b), ...] + schema=[cols]
+          - lista de escalares  -> [(v,) ...] + schema=["value"]
+        Lista de tuplas/listas/dicts se deja tal cual (Spark ya la entiende)."""
+        data = node.args[0] if node.args else _kw(node, "data")
+        cols_kw = _kw(node, "columns")
+
+        def _make(create_args, create_kws):
+            return ast.Call(
+                func=ast.Attribute(value=ast.Name("spark", ast.Load()),
+                                   attr="createDataFrame", ctx=ast.Load()),
+                args=create_args, keywords=create_kws,
+            )
+
+        # Caso dict literal {"a": [..], "b": [..]}: transponer a filas.
+        if isinstance(data, ast.Dict) and data.keys and \
+                all(isinstance(v, (ast.List, ast.Tuple)) for v in data.values):
+            col_names = [k.value for k in data.keys if _is_str_const(k)]
+            value_lists = list(data.values)
+            if len(col_names) == len(data.keys):
+                n = min(len(v.elts) for v in value_lists)
+                rows = []
+                for i in range(n):
+                    rows.append(ast.Tuple(elts=[v.elts[i] for v in value_lists], ctx=ast.Load()))
+                schema = ast.List(elts=[ast.Constant(c) for c in col_names], ctx=ast.Load())
+                self.diag.warn("pd.DataFrame({col:[...]}) -> spark.createDataFrame(filas, schema): "
+                               "revisa tipos si mezclas numeros y texto.")
+                return _make([ast.List(elts=rows, ctx=ast.Load())],
+                             [ast.keyword(arg="schema", value=schema)])
+
+        # Caso lista/tupla de ESCALARES: envolver cada uno en (v,) y dar columna.
+        if isinstance(data, (ast.List, ast.Tuple)) and data.elts and \
+                all(not isinstance(e, (ast.List, ast.Tuple, ast.Dict)) for e in data.elts):
+            wrapped = ast.List(
+                elts=[ast.Tuple(elts=[e], ctx=ast.Load()) for e in data.elts], ctx=ast.Load())
+            if isinstance(cols_kw, ast.List) and cols_kw.elts:
+                schema = cols_kw
+            else:
+                schema = ast.List(elts=[ast.Constant("value")], ctx=ast.Load())
+            self.diag.warn("pd.DataFrame([escalares]) -> spark.createDataFrame([(v,) ...], schema): "
+                           "Spark no infiere esquema de escalares sueltos.")
+            return _make([wrapped], [ast.keyword(arg="schema", value=schema)])
+
+        # Caso data = <variable> (no literal): no conocemos su forma en tiempo de
+        # conversion. Generamos una normalizacion defensiva que envuelve cada
+        # escalar en (v,) pero respeta filas que ya son list/tuple. Asi Spark
+        # puede inferir el esquema tanto de escalares como de tuplas.
+        if isinstance(data, ast.Name):
+            # [((r,) if not isinstance(r, (list, tuple)) else tuple(r)) for r in <data>]
+            comp = ast.ListComp(
+                elt=ast.IfExp(
+                    test=ast.UnaryOp(op=ast.Not(), operand=ast.Call(
+                        func=ast.Name("isinstance", ast.Load()),
+                        args=[ast.Name("_r", ast.Load()),
+                              ast.Tuple(elts=[ast.Name("list", ast.Load()),
+                                              ast.Name("tuple", ast.Load())], ctx=ast.Load())],
+                        keywords=[])),
+                    body=ast.Tuple(elts=[ast.Name("_r", ast.Load())], ctx=ast.Load()),
+                    orelse=ast.Call(func=ast.Name("tuple", ast.Load()),
+                                    args=[ast.Name("_r", ast.Load())], keywords=[]),
+                ),
+                generators=[ast.comprehension(
+                    target=ast.Name("_r", ast.Store()), iter=data, ifs=[], is_async=0)],
+            )
+            self.diag.warn("pd.DataFrame(<variable>) -> spark.createDataFrame(...): se normaliza "
+                           "cada fila a tupla (Spark no infiere esquema de escalares sueltos).")
+            kws = []
+            if isinstance(cols_kw, ast.List) and cols_kw.elts:
+                kws = [ast.keyword(arg="schema", value=cols_kw)]
+            return _make([comp], kws)
+
+        # Otros casos (lista de tuplas/dicts): dejar createDataFrame.
+        self.diag.warn("pd.DataFrame(...) -> spark.createDataFrame(...): revisa el esquema/estructura "
+                       "de entrada (Spark no infiere esquema de escalares sueltos).")
+        kws = list(node.keywords)
+        # pandas usa 'columns='; Spark usa 'schema='. Renombrar si viene columns=.
+        if cols_kw is not None:
+            kws = [ast.keyword(arg="schema", value=k.value) if k.arg == "columns" else k
+                   for k in kws]
+        return _make(list(node.args), kws)
 
     def _df_method(self, node, f):
         """Reescribe <df>.<metodo>(...)."""

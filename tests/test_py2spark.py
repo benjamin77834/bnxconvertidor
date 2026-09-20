@@ -297,3 +297,29 @@ def test_mllib_no_duplicate_source_when_reader_present():
     reads = [ln for ln in r["code"].splitlines() if "spark.read" in ln]
     assert len(reads) == 1
     assert "adult = spark.read" in r["code"]
+
+
+def test_pd_dataframe_list_of_scalars():
+    # pd.DataFrame(["a","b"]) -> spark no infiere esquema de escalares -> envolver
+    r = _conv('import pandas as pd\ndf = pd.DataFrame(["a", "b", "c"])\n')
+    assert "createDataFrame" in r["code"]
+    assert "('a',)" in r["code"] and "schema=['value']" in r["code"]
+
+
+def test_pd_dataframe_dict_transposed():
+    # pd.DataFrame({"a":[..],"b":[..]}) -> filas transpuestas + schema
+    r = _conv('import pandas as pd\ndf = pd.DataFrame({"a": [1, 2], "b": ["x", "y"]})\n')
+    assert "(1, 'x')" in r["code"] and "(2, 'y')" in r["code"]
+    assert "schema=['a', 'b']" in r["code"]
+
+
+def test_pd_dataframe_variable_normalized():
+    # pd.DataFrame(<variable>, columns=[...]) -> normaliza cada fila a tupla
+    r = _conv(
+        'import pandas as pd\n'
+        'data = ["a", "b"]\n'
+        'df = pd.DataFrame(data, columns=["c"])\n'
+    )
+    assert "createDataFrame" in r["code"]
+    assert "isinstance(_r, (list, tuple))" in r["code"]
+    assert "schema=['c']" in r["code"]
