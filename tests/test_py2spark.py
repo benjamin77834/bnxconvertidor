@@ -323,3 +323,21 @@ def test_pd_dataframe_variable_normalized():
     assert "createDataFrame" in r["code"]
     assert "isinstance(_r, (list, tuple))" in r["code"]
     assert "schema=['c']" in r["code"]
+
+
+def test_pd_dataframe_dict_of_arrays():
+    # pd.DataFrame({"a": np.random.randint(...), "b": ...}) : valores NO literales.
+    # Debe transponer con zip en runtime + nombrar columnas (no dejar dict crudo,
+    # que Spark interpreta como columna '_1'). Y convertir escalares numpy.
+    r = _conv(
+        'import pandas as pd\n'
+        'import numpy as np\n'
+        'df = pd.DataFrame({"sueldo": np.random.randint(1000, 5000, 100), '
+        '"visitas": np.random.randint(0, 10, 100)})\n'
+        'df["compra"] = (df["sueldo"] > 2500).astype(int)\n'
+    )
+    assert "zip(" in r["code"]
+    assert "schema=['sueldo', 'visitas']" in r["code"]
+    assert ".item()" in r["code"]  # conversion numpy -> Python nativo
+    # el dict crudo NO debe quedar como argumento de createDataFrame
+    assert "createDataFrame({" not in r["code"]

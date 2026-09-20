@@ -818,21 +818,55 @@ class PandasToSparkTransformer(ast.NodeTransformer):
                 args=create_args, keywords=create_kws,
             )
 
-        # Caso dict literal {"a": [..], "b": [..]}: transponer a filas.
+        # Caso dict {"a": <valores>, "b": <valores>}: Spark NO acepta un dict de
+        # columnas. Transponemos a filas. Si TODOS los valores son listas/tuplas
+        # literales lo hacemos en tiempo de conversion; si son arrays/expresiones
+        # (p.ej. np.random.randint(...)) generamos un zip defensivo en runtime.
         if isinstance(data, ast.Dict) and data.keys and \
-                all(isinstance(v, (ast.List, ast.Tuple)) for v in data.values):
-            col_names = [k.value for k in data.keys if _is_str_const(k)]
-            value_lists = list(data.values)
-            if len(col_names) == len(data.keys):
-                n = min(len(v.elts) for v in value_lists)
-                rows = []
-                for i in range(n):
-                    rows.append(ast.Tuple(elts=[v.elts[i] for v in value_lists], ctx=ast.Load()))
-                schema = ast.List(elts=[ast.Constant(c) for c in col_names], ctx=ast.Load())
+                all(_is_str_const(k) for k in data.keys):
+            col_names = [k.value for k in data.keys]
+            value_exprs = list(data.values)
+            schema = ast.List(elts=[ast.Constant(c) for c in col_names], ctx=ast.Load())
+
+            if all(isinstance(v, (ast.List, ast.Tuple)) for v in value_exprs):
+                # Literales: transponer directamente.
+                n = min(len(v.elts) for v in value_exprs)
+                rows = [ast.Tuple(elts=[v.elts[i] for v in value_exprs], ctx=ast.Load())
+                        for i in range(n)]
                 self.diag.warn("pd.DataFrame({col:[...]}) -> spark.createDataFrame(filas, schema): "
                                "revisa tipos si mezclas numeros y texto.")
                 return _make([ast.List(elts=rows, ctx=ast.Load())],
                              [ast.keyword(arg="schema", value=schema)])
+
+            # Valores no literales (arrays/expresiones): zip en runtime + conversion
+            # de escalares numpy (np.int64/np.float64) a tipos Python nativos, que
+            # Spark SI sabe inferir. Genera:
+            #   [tuple((_v.item() if hasattr(_v,'item') else _v) for _v in _r)
+            #    for _r in zip(<v1>, <v2>, ...)]
+            zip_call = ast.Call(func=ast.Name("zip", ast.Load()), args=value_exprs, keywords=[])
+            inner = ast.GeneratorExp(
+                elt=ast.IfExp(
+                    test=ast.Call(func=ast.Name("hasattr", ast.Load()),
+                                  args=[ast.Name("_v", ast.Load()), ast.Constant("item")],
+                                  keywords=[]),
+                    body=ast.Call(func=ast.Attribute(value=ast.Name("_v", ast.Load()),
+                                                     attr="item", ctx=ast.Load()),
+                                  args=[], keywords=[]),
+                    orelse=ast.Name("_v", ast.Load()),
+                ),
+                generators=[ast.comprehension(
+                    target=ast.Name("_v", ast.Store()),
+                    iter=ast.Name("_r", ast.Load()), ifs=[], is_async=0)],
+            )
+            comp = ast.ListComp(
+                elt=ast.Call(func=ast.Name("tuple", ast.Load()), args=[inner], keywords=[]),
+                generators=[ast.comprehension(
+                    target=ast.Name("_r", ast.Store()), iter=zip_call, ifs=[], is_async=0)],
+            )
+            self.diag.warn("pd.DataFrame({col: <array>}) -> spark.createDataFrame(zip(...), schema): "
+                           "las columnas se combinan por posicion y se convierten escalares "
+                           "numpy a tipos Python; revisa tipos.")
+            return _make([comp], [ast.keyword(arg="schema", value=schema)])
 
         # Caso lista/tupla de ESCALARES: envolver cada uno en (v,) y dar columna.
         if isinstance(data, (ast.List, ast.Tuple)) and data.elts and \
