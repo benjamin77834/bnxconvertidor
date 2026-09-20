@@ -123,6 +123,20 @@ def _names_in_target(tgt):
     return []
 
 
+# Accesos de pandas basados en el INDICE de fila / posicion. Spark no tiene
+# indice de fila, asi que estos no son traducibles 1:1.
+_PANDAS_INDEX_ATTRS = {"loc", "iloc", "ix", "at", "iat", "index", "values", "reset_index", "set_index"}
+
+
+def _uses_pandas_index(node):
+    """True si el nodo AST usa un accesor de indice/posicion de pandas
+    (.loc, .iloc, .at, .iat, .ix, .index, .values, set_index/reset_index)."""
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Attribute) and sub.attr in _PANDAS_INDEX_ATTRS:
+            return sub.attr
+    return None
+
+
 class _Warnings:
     def __init__(self):
         self.warnings = []
@@ -302,6 +316,25 @@ class PandasToSparkTransformer(ast.NodeTransformer):
                     self.ml_vars.add(nm)
             return self._emit_mllib(ml_snippet)
 
+        # Accesos por indice/posicion de pandas (.loc/.iloc/.index/...): Spark no
+        # tiene indice de fila. En vez de emitir codigo que rompe (NameError /
+        # AttributeError), neutralizamos el statement a un comentario TODO honesto.
+        idx_attr = _uses_pandas_index(node.value)
+        if idx_attr is not None:
+            try:
+                orig = ast.unparse(node)
+            except Exception:
+                orig = "<statement>"
+            self.diag.unsup(
+                f"'.{idx_attr}' usa el indice/posicion de fila de pandas, que no "
+                f"existe en Spark. Revisa manualmente: en Spark 'X' e 'y' suelen "
+                f"ser columnas del mismo DataFrame (no se alinean por indice)."
+            )
+            return self._emit_comment([
+                f"TODO py2spark: no traducible ('.{idx_attr}' depende del indice de pandas).",
+                f"Original: {orig}",
+            ])
+
         # visitar primero el valor (transforma pd.read_*, etc.)
         node.value = self.visit(node.value)
 
@@ -336,6 +369,20 @@ class PandasToSparkTransformer(ast.NodeTransformer):
         snip = self._ml_snippet_for_expr(node.value, out_targets=[])
         if snip is not None:
             return self._emit_mllib(snip)
+        idx_attr = _uses_pandas_index(node.value)
+        if idx_attr is not None:
+            try:
+                orig = ast.unparse(node)
+            except Exception:
+                orig = "<statement>"
+            self.diag.unsup(
+                f"'.{idx_attr}' usa el indice/posicion de fila de pandas, que no "
+                f"existe en Spark. Revisa manualmente."
+            )
+            return self._emit_comment([
+                f"TODO py2spark: no traducible ('.{idx_attr}' depende del indice de pandas).",
+                f"Original: {orig}",
+            ])
         self.generic_visit(node)
         return node
 
@@ -350,6 +397,18 @@ class PandasToSparkTransformer(ast.NodeTransformer):
         self.mllib_blocks[pid] = snippet_text
         # Statement placeholder valido: `pid`  (un Name suelto). El post-proceso
         # reemplaza la linea completa por el bloque MLlib multi-linea.
+        return ast.Expr(value=ast.Name(pid, ast.Load()))
+
+    def _emit_comment(self, lines):
+        """Neutraliza un statement no traducible dejando comentarios en su lugar.
+
+        Reusa el mecanismo de placeholders (mllib_blocks) para inyectar texto
+        multi-linea preservando la indentacion. `lines` es una lista de strings
+        (sin el '#'); cada una se emite como comentario."""
+        self._mllib_seq += 1
+        pid = f"__PY2SPARK_MLLIB_{self._mllib_seq}__"
+        block = "\n".join(f"# {ln}" if ln else "#" for ln in lines)
+        self.mllib_blocks[pid] = block
         return ast.Expr(value=ast.Name(pid, ast.Load()))
 
     def _ml_snippet_for_assign(self, node):
