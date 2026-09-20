@@ -67,3 +67,22 @@ def test_pii_detection():
     assert pii.get("nombre") is True
     assert pii.get("email") is True
     assert pii.get("monto") is False
+
+
+def test_never_empty_for_pyspark_job():
+    # Un job PySpark generado por py2spark SIEMPRE debe producir >=1 dataset,
+    # aunque no tenga fuente clara, para no bloquear Data Redactada.
+    sch = _schema_of('import pandas as pd\nx = 1 + 2\nprint("hola")\n')
+    assert len(sch) >= 1
+    assert sch[0]["node"] == "input"
+
+
+def test_regex_safety_net_detects_spark_read():
+    # Aunque el AST no capture la fuente, el regex de red de seguridad la detecta.
+    code = (
+        "from pyspark.sql import SparkSession\n"
+        "spark = SparkSession.builder.getOrCreate()\n"
+        "mi_tabla = spark.read.parquet('/ruta/x')\n"
+    )
+    sch = infer_input_schema(code)
+    assert any(s["node"] == "mi_tabla" for s in sch)

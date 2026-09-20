@@ -182,4 +182,28 @@ def infer_input_schema(code, n_default_cols=3):
             "io": "input",
             "columns": _mk_cols(),
         })
+
+    # RED DE SEGURIDAD (regex): si el AST no capturo la fuente pero el texto tiene
+    # una asignacion 'X = spark.read...' / spark.table / spark.sql, la tomamos por
+    # regex. Cubre variaciones de formato que el walk del AST pudo no reconocer.
+    if not datasets:
+        for m in re.finditer(r'(\w+)\s*=\s*spark\s*\.\s*(?:read\b|table\s*\(|sql\s*\(|createDataFrame\s*\()', code):
+            var = m.group(1)
+            node = var[:-3] if var.lower().endswith("_df") else var
+            if node.lower() in seen:
+                continue
+            seen.add(node.lower())
+            datasets.append({
+                "node": node, "node_type": "SOURCE", "io": "input",
+                "columns": _mk_cols(),
+            })
+
+    # ULTIMO RECURSO: es un job PySpark generado por py2spark (tiene el marcador o
+    # SparkSession) pero no se detecto ninguna fuente. En vez de bloquear Data
+    # Redactada, generamos un dataset generico para que el job pueda ejecutar.
+    if not datasets and ("py2spark" in code or "SparkSession" in code):
+        datasets.append({
+            "node": "input", "node_type": "SOURCE", "io": "input",
+            "columns": _mk_cols(),
+        })
     return datasets
