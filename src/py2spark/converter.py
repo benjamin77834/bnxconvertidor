@@ -702,6 +702,58 @@ class PandasToSparkTransformer(ast.NodeTransformer):
                 args=[path] if path else [], keywords=[],
             )
 
+        # sample: pandas df.sample(n=..., frac=..., random_state=...) ->
+        #   Spark df.sample(withReplacement, fraction, seed)
+        # OJO: pandas 'n' es NUMERO de filas; Spark solo acepta 'fraction'.
+        if m == "sample":
+            frac = _kw(node, "frac")
+            n = _kw(node, "n")
+            if n is None and node.args and not _kw(node, "frac"):
+                # primer posicional en pandas es 'n' (numero de filas)
+                n = node.args[0]
+            rs = _kw(node, "random_state") or _kw(node, "seed")
+            replace = _kw(node, "replace")
+
+            kws = []
+            if replace is not None:
+                kws.append(ast.keyword(arg="withReplacement", value=replace))
+
+            if frac is not None:
+                kws.append(ast.keyword(arg="fraction", value=frac))
+                if rs is not None:
+                    kws.append(ast.keyword(arg="seed", value=rs))
+                return ast.Call(
+                    func=ast.Attribute(value=recv, attr="sample", ctx=ast.Load()),
+                    args=[], keywords=kws,
+                )
+
+            if n is not None:
+                # Spark no toma numero de filas: tomamos una fraccion segura (1.0)
+                # con el mismo seed y luego .limit(n) para obtener n filas.
+                self.diag.warn(
+                    "df.sample(n): Spark.sample usa fraccion, no numero de filas. "
+                    "Se traduce a .sample(fraction=1.0, seed=...).limit(n)."
+                )
+                kws.append(ast.keyword(arg="fraction", value=ast.Constant(1.0)))
+                if rs is not None:
+                    kws.append(ast.keyword(arg="seed", value=rs))
+                sampled = ast.Call(
+                    func=ast.Attribute(value=recv, attr="sample", ctx=ast.Load()),
+                    args=[], keywords=kws,
+                )
+                return ast.Call(
+                    func=ast.Attribute(value=sampled, attr="limit", ctx=ast.Load()),
+                    args=[n], keywords=[],
+                )
+
+            # sin n ni frac: traducir random_state->seed si existe
+            if rs is not None:
+                kws.append(ast.keyword(arg="seed", value=rs))
+            return ast.Call(
+                func=ast.Attribute(value=recv, attr="sample", ctx=ast.Load()),
+                args=[], keywords=kws,
+            )
+
         # fillna / dropna / distinct: mismos nombres en Spark (fillna, dropna, distinct)
         if m in ("fillna", "dropna", "distinct"):
             return node

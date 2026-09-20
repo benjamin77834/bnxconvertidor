@@ -142,3 +142,27 @@ def test_full_pipeline_compiles():
     assert "df.groupBy('region')" in r["code"]
     assert "df.join(cli, on='cliente_id', how='inner')" in r["code"]
     assert "j.write.mode('overwrite').parquet('salida')" in r["code"]
+
+
+def test_sample_n_rows():
+    # pandas df.sample(n, random_state=X): Spark no acepta n -> fraction=1.0 + limit(n)
+    r = _conv(
+        'import pandas as pd\n'
+        'df = pd.read_csv("f.csv")\n'
+        'x = df.sample(20000, random_state=42)\n'
+    )
+    assert "df.sample(fraction=1.0, seed=42).limit(20000)" in r["code"]
+    assert "random_state" not in r["code"]
+    assert any("Spark.sample usa fraccion" in w for w in r["warnings"])
+
+
+def test_sample_frac():
+    # pandas df.sample(frac=..., random_state=X) -> Spark sample(fraction=..., seed=...)
+    r = _conv(
+        'import pandas as pd\n'
+        'df = pd.read_csv("f.csv")\n'
+        'x = df.sample(frac=0.1, random_state=7)\n'
+    )
+    assert "df.sample(fraction=0.1, seed=7)" in r["code"]
+    assert ".limit(" not in r["code"]
+    assert "random_state" not in r["code"]
