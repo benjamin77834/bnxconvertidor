@@ -127,6 +127,33 @@ def _names_in_target(tgt):
 # indice de fila, asi que estos no son traducibles 1:1.
 _PANDAS_INDEX_ATTRS = {"loc", "iloc", "ix", "at", "iat", "index", "values", "reset_index", "set_index"}
 
+# Atributos de un Bunch de sklearn (fetch_openml/load_*): no existen en Spark.
+_SKLEARN_BUNCH_ATTRS = {"data", "target", "feature_names", "target_names", "DESCR", "frame"}
+
+# astype de pandas -> cast de Spark. Mapea el tipo Python/numpy/str al tipo Spark.
+_ASTYPE_MAP = {
+    "int": "int", "int32": "int", "int64": "bigint", "long": "bigint",
+    "float": "double", "float32": "float", "float64": "double",
+    "str": "string", "string": "string", "object": "string",
+    "bool": "boolean", "boolean": "boolean",
+    "int8": "tinyint", "int16": "smallint",
+}
+
+
+def _astype_to_spark(arg):
+    """Devuelve el nombre de tipo Spark para el argumento de pandas .astype(...).
+    Acepta int/float/str (Name), 'int64' (str const) o np.int64 (Attribute)."""
+    name = None
+    if isinstance(arg, ast.Name):
+        name = arg.id
+    elif isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+        name = arg.value
+    elif isinstance(arg, ast.Attribute):
+        name = arg.attr  # np.int64 -> 'int64'
+    if name is None:
+        return None
+    return _ASTYPE_MAP.get(name, _ASTYPE_MAP.get(name.lower()))
+
 
 def _uses_pandas_index(node):
     """True si el nodo AST usa un accesor de indice/posicion de pandas
@@ -134,6 +161,16 @@ def _uses_pandas_index(node):
     for sub in ast.walk(node):
         if isinstance(sub, ast.Attribute) and sub.attr in _PANDAS_INDEX_ATTRS:
             return sub.attr
+    return None
+
+
+def _sklearn_bunch_attr(node):
+    """Si el nodo es <name>.data / .target / .feature_names / ... (atributo de un
+    Bunch de sklearn), devuelve el atributo. Estos no existen en un DataFrame de
+    Spark (los datos vienen de una fuente real)."""
+    if isinstance(node, ast.Attribute) and node.attr in _SKLEARN_BUNCH_ATTRS \
+            and isinstance(node.value, ast.Name):
+        return node.attr
     return None
 
 
@@ -188,6 +225,10 @@ class PandasToSparkTransformer(ast.NodeTransformer):
         self._mllib_seq = 0
         # Nombre del ultimo DataFrame "principal" visto (para df_hint de MLlib).
         self.last_df = "df"
+        # Variables "muertas": provienen de un statement no traducible que se
+        # neutralizo a TODO (p.ej. y = adult.target). Cualquier statement que las
+        # use tambien se neutraliza para no romper con NameError.
+        self.dead_vars = set()
 
     # ---- imports: detectar alias de pandas, y neutralizar 'import pandas' ----
     def visit_Import(self, node):
@@ -274,6 +315,21 @@ class PandasToSparkTransformer(ast.NodeTransformer):
         if isinstance(f, ast.Attribute) and self._is_df(f.value):
             return self._df_method(node, f)
 
+        # col.astype(tipo) -> col.cast('tipo_spark')   (sobre expresion de columna)
+        if isinstance(f, ast.Attribute) and f.attr == "astype":
+            arg = node.args[0] if node.args else (node.keywords[0].value if node.keywords else None)
+            spark_type = _astype_to_spark(arg) if arg is not None else None
+            if spark_type is not None:
+                return ast.Call(
+                    func=ast.Attribute(value=f.value, attr="cast", ctx=ast.Load()),
+                    args=[ast.Constant(spark_type)], keywords=[],
+                )
+            self.diag.warn("astype(...) con tipo no reconocido: revisa el .cast() manualmente.")
+            return ast.Call(
+                func=ast.Attribute(value=f.value, attr="cast", ctx=ast.Load()),
+                args=[arg] if arg is not None else [], keywords=[],
+            )
+
         # Series.apply/map/applymap (sobre columnas F.col(...) o df["x"]): logica
         # elementwise no traducible directamente. Se marca aunque el receptor no
         # sea un df completo (p.ej. df["x"].apply(...)).
@@ -300,6 +356,21 @@ class PandasToSparkTransformer(ast.NodeTransformer):
 
     # ---- Assign: x = pd.read_*  |  df["c"] = expr  |  x = <df>.metodo() ----
     def visit_Assign(self, node):
+        # Si el valor usa una variable "muerta" (proveniente de un statement no
+        # traducible), este statement tambien se neutraliza a TODO.
+        dead = self._refs_dead_var(node.value)
+        if dead is not None:
+            try:
+                orig = ast.unparse(node)
+            except Exception:
+                orig = "<statement>"
+            self._kill_targets(node)
+            return self._emit_comment([
+                f"TODO py2spark: no traducible (depende de '{dead}', que no tiene",
+                f"equivalente en Spark).",
+                f"Original: {orig}",
+            ])
+
         # --- Deteccion de ML (sklearn/xgboost/etc.): el entrenamiento no se
         # traduce 1:1. Neutralizamos el statement a una asignacion a None y
         # registramos un TODO con el equivalente MLlib, para que el resto del
@@ -316,6 +387,39 @@ class PandasToSparkTransformer(ast.NodeTransformer):
                     self.ml_vars.add(nm)
             return self._emit_mllib(ml_snippet)
 
+        # Atributos de un Bunch de sklearn: X = adult.data / y = adult.target ...
+        # No existen en Spark. '.data' y '.frame' -> el DataFrame completo (util
+        # para seguir el pipeline). '.target' y demas -> TODO honesto.
+        bunch_attr = _sklearn_bunch_attr(node.value)
+        if bunch_attr is not None:
+            base = node.value.value  # el Name del Bunch (p.ej. 'adult')
+            base_is_df = isinstance(base, ast.Name) and self._is_df(base)
+            if bunch_attr in ("data", "frame") and base_is_df:
+                self.diag.warn(
+                    f"'.{bunch_attr}' (Bunch de sklearn) -> se usa el DataFrame "
+                    f"completo. Selecciona/elimina la columna objetivo segun tu caso."
+                )
+                # x = adult  (marcar x como df)
+                if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                    self.df_names.add(node.targets[0].id)
+                    self.last_df = node.targets[0].id
+                return ast.Assign(targets=node.targets, value=base)
+            # .target / .feature_names / .DESCR / .target_names: sin equivalente.
+            try:
+                orig = ast.unparse(node)
+            except Exception:
+                orig = "<statement>"
+            self.diag.unsup(
+                f"'.{bunch_attr}' es un atributo del Bunch de sklearn (no existe en "
+                f"Spark). En Spark la columna objetivo es una columna del DataFrame; "
+                f"ajusta labelCol y selecciona la columna real."
+            )
+            self._kill_targets(node)
+            return self._emit_comment([
+                f"TODO py2spark: no traducible ('.{bunch_attr}' es atributo de sklearn.Bunch).",
+                f"Original: {orig}",
+            ])
+
         # Accesos por indice/posicion de pandas (.loc/.iloc/.index/...): Spark no
         # tiene indice de fila. En vez de emitir codigo que rompe (NameError /
         # AttributeError), neutralizamos el statement a un comentario TODO honesto.
@@ -330,6 +434,7 @@ class PandasToSparkTransformer(ast.NodeTransformer):
                 f"existe en Spark. Revisa manualmente: en Spark 'X' e 'y' suelen "
                 f"ser columnas del mismo DataFrame (no se alinean por indice)."
             )
+            self._kill_targets(node)
             return self._emit_comment([
                 f"TODO py2spark: no traducible ('.{idx_attr}' depende del indice de pandas).",
                 f"Original: {orig}",
@@ -362,6 +467,10 @@ class PandasToSparkTransformer(ast.NodeTransformer):
                 self.df_names.add(node.targets[0].id)
                 # recordar el ultimo df principal para usarlo como hint en MLlib
                 self.last_df = node.targets[0].id
+        # El target se reasigno con un valor traducible: "revive" (ya no es muerto).
+        for tgt in node.targets:
+            for nm in _names_in_target(tgt):
+                self.dead_vars.discard(nm)
         return node
 
     # ---- Expr suelto: model.fit(...) / model.predict(...) sin asignacion ----
@@ -369,6 +478,16 @@ class PandasToSparkTransformer(ast.NodeTransformer):
         snip = self._ml_snippet_for_expr(node.value, out_targets=[])
         if snip is not None:
             return self._emit_mllib(snip)
+        dead = self._refs_dead_var(node.value)
+        if dead is not None:
+            try:
+                orig = ast.unparse(node)
+            except Exception:
+                orig = "<statement>"
+            return self._emit_comment([
+                f"TODO py2spark: no traducible (depende de '{dead}', sin equivalente en Spark).",
+                f"Original: {orig}",
+            ])
         idx_attr = _uses_pandas_index(node.value)
         if idx_attr is not None:
             try:
@@ -398,6 +517,22 @@ class PandasToSparkTransformer(ast.NodeTransformer):
         # Statement placeholder valido: `pid`  (un Name suelto). El post-proceso
         # reemplaza la linea completa por el bloque MLlib multi-linea.
         return ast.Expr(value=ast.Name(pid, ast.Load()))
+
+    def _refs_dead_var(self, node):
+        """Nombre de la primera variable 'muerta' referenciada en el nodo, o None."""
+        if not self.dead_vars:
+            return None
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Name) and sub.id in self.dead_vars \
+                    and isinstance(sub.ctx, ast.Load):
+                return sub.id
+        return None
+
+    def _kill_targets(self, node):
+        """Marca los targets de una asignacion como variables muertas."""
+        for tgt in getattr(node, "targets", []):
+            for nm in _names_in_target(tgt):
+                self.dead_vars.add(nm)
 
     def _emit_comment(self, lines):
         """Neutraliza un statement no traducible dejando comentarios en su lugar.
