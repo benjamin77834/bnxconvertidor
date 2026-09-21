@@ -173,9 +173,13 @@ def _ensure_features(df_hint):
         f"    _feat_cols = [c for c in {df_hint}.columns "
         f"if c not in _skip and not c.lower().endswith(('_id', '_idx', '_ohe'))]",
         f"    for _c in _feat_cols:",
-        f"        {df_hint} = {df_hint}.withColumn(_c, F.col(_c).cast('double'))",
+        # cast a double y rellenar nulls con 0.0: sin esto, columnas string no
+        # numericas (p.ej. categoricas) quedan null al castear y el assembler con
+        # handleInvalid='skip' descartaba TODAS las filas -> 'empty dataset'.
+        f"        {df_hint} = {df_hint}.withColumn(_c, F.coalesce(F.col(_c).cast('double'), F.lit(0.0)))",
+        # handleInvalid='keep' (no descarta filas) para no vaciar el dataset.
         f'    {df_hint} = VectorAssembler(inputCols=_feat_cols, outputCol="features", '
-        f'handleInvalid="skip").transform({df_hint})',
+        f'handleInvalid="keep").transform({df_hint})',
     ]
 
 

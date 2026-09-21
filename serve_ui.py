@@ -985,10 +985,17 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             pyspark_code = data.get("pyspark_code", "") or data.get("code", "")
             if pyspark_code and not data.get("mp"):
                 schema = py2spark_infer_schema(pyspark_code)
+                # Si el codigo usa MLlib (pyspark.ml), generamos MAS filas: los
+                # estimadores (StandardScaler, RandomForest, etc.) necesitan un
+                # minimo de datos para no fallar con 'empty dataset'/'Nothing added
+                # to summarizer'. Con 10 filas y filtros/casts el dataset se vacia.
+                ml_rows = n_rows
+                if "pyspark.ml" in pyspark_code and n_rows < 100:
+                    ml_rows = 100
                 datasets = []
                 for node_schema in schema:
                     gen = build_synthetic_data(
-                        node_schema["columns"], n_rows=n_rows, fmt=fmt,
+                        node_schema["columns"], n_rows=ml_rows, fmt=fmt,
                         seed=seed, delimiter=delimiter,
                     )
                     datasets.append({
