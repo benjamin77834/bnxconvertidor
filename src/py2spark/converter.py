@@ -1127,15 +1127,7 @@ class PandasToSparkTransformer(ast.NodeTransformer):
             for kk, vv in zip(d.keys, d.values):
                 if _is_str_const(kk) and _is_str_const(vv):
                     fun = _AGG_MAP.get(vv.value, vv.value)
-                    call = ast.Call(
-                        func=ast.Attribute(value=ast.Name("F", ast.Load()), attr=fun, ctx=ast.Load()),
-                        args=[ast.Constant(kk.value)], keywords=[],
-                    )
-                    call = ast.Call(
-                        func=ast.Attribute(value=call, attr="alias", ctx=ast.Load()),
-                        args=[ast.Constant(kk.value)], keywords=[],
-                    )
-                    items.append(call)
+                    items.append(self._agg_call(fun, kk.value))
                 else:
                     self.diag.warn("agg con clave/valor no literal: revisar.")
             return ast.Call(
@@ -1145,6 +1137,33 @@ class PandasToSparkTransformer(ast.NodeTransformer):
         # .agg("sum") o .agg(["sum","mean"]) sobre un groupby: aproximacion
         self.diag.warn("agg(...) con forma no-dict: revisar la traduccion de agregaciones.")
         return node
+
+    def _agg_call(self, fun, colname):
+        """Construye F.<fun>(<col>).alias(<col>).
+
+        Para funciones NUMERICAS (sum/avg/stddev/variance) casteamos la columna a
+        double: pandas suma booleanos como 0/1, pero Spark.sum(boolean) rompe con
+        DATATYPE_MISMATCH. El cast replica el comportamiento de pandas y tolera
+        columnas boolean/string numericas. count/min/max NO se castean."""
+        if fun in ("sum", "avg", "stddev", "variance"):
+            arg = ast.Call(
+                func=ast.Attribute(
+                    value=ast.Call(func=ast.Attribute(value=ast.Name("F", ast.Load()),
+                                                       attr="col", ctx=ast.Load()),
+                                   args=[ast.Constant(colname)], keywords=[]),
+                    attr="cast", ctx=ast.Load()),
+                args=[ast.Constant("double")], keywords=[],
+            )
+        else:
+            arg = ast.Constant(colname)
+        call = ast.Call(
+            func=ast.Attribute(value=ast.Name("F", ast.Load()), attr=fun, ctx=ast.Load()),
+            args=[arg], keywords=[],
+        )
+        return ast.Call(
+            func=ast.Attribute(value=call, attr="alias", ctx=ast.Load()),
+            args=[ast.Constant(colname)], keywords=[],
+        )
 
 
 def _detect_pandas(source):

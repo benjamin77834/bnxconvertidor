@@ -1237,7 +1237,18 @@ def _bnx_groupby(df, *cols):
     # Las claves ausentes (datos sinteticos sin esa columna) provocarian
     # UNRESOLVED_COLUMN; las ignoramos. Si no queda ninguna clave valida, se agrega
     # una columna constante para agrupar todo en un solo grupo (agregacion global).
-    from pyspark.sql.functions import lit as _lit
+    from pyspark.sql.functions import lit as _lit, col as _col
+    from pyspark.sql.types import BooleanType as _BoolT
+    # Castear columnas BOOLEAN a int: pandas suma booleanos como 0/1, pero
+    # Spark.sum(boolean) rompe con DATATYPE_MISMATCH. Casteamos antes de agrupar
+    # para que cualquier sum/avg posterior sobre esas columnas funcione (tolerante
+    # aun con codigo viejo que no aplica el cast en el .agg()).
+    try:
+        for _f in df.schema.fields:
+            if isinstance(_f.dataType, _BoolT):
+                df = df.withColumn(_f.name, _col(_f.name).cast("int"))
+    except Exception:
+        pass
     real = list(df.columns)
     lower = {{c.lower(): c for c in real}}
     keys = []
