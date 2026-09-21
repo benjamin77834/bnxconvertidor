@@ -407,3 +407,19 @@ def test_pd_dataframe_of_existing_df_helper():
     assert "_py2spark_df(X" in r["code"]
     # el helper contiene la guarda de DataFrame existente
     assert 'hasattr(data, "columns")' in r["code"]
+
+
+def test_loader_extra_target_is_dead():
+    # X, y = make_classification(...): 'y' no existe en Spark. Un uso posterior
+    # (df['label'] = y) debe neutralizarse a TODO, no romper con NameError.
+    r = _conv(
+        'import pandas as pd\n'
+        'from sklearn.datasets import make_classification\n'
+        'X, y = make_classification(n_samples=100, n_features=4)\n'
+        'df = pd.DataFrame(X)\n'
+        'df["label"] = y\n'
+    )
+    lines = _code_lines(r)
+    # la asignacion con 'y' no debe quedar como codigo ejecutable
+    assert not any("withColumn('label', y)" in ln for ln in lines)
+    assert "TODO py2spark" in r["code"]

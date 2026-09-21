@@ -644,9 +644,14 @@ class PandasToSparkTransformer(ast.NodeTransformer):
                 f'{df_name} = spark.read.option("header", True).option("inferSchema", True).csv("datos.csv")',
             ]
             # Si habia mas de un target (X, y), avisar que en Spark es un solo df.
+            # Los targets extra (y, etc.) NO existen como variable en Spark: los
+            # marcamos como muertos para que usos posteriores (df['label'] = y)
+            # se neutralicen a TODO en vez de romper con NameError.
             if len(targets_names) > 1:
                 lines.append(f"# NOTA: {', '.join(targets_names[1:])} no aplican en Spark; "
                              f"la columna label es una columna mas de {df_name}.")
+                for _extra in targets_names[1:]:
+                    self.dead_vars.add(_extra)
             return "\n".join(lines)
 
         # train_test_split(...)
