@@ -60,8 +60,9 @@ _AGG_MAP = {
 
 
 # Modulos de ML cuyo entrenamiento NO se traduce 1:1 a Spark (se usa MLlib).
+# joblib/pickle: persistencia de modelos sklearn; en Spark se usa Model.save().
 _ML_MODULES = ("sklearn", "xgboost", "lightgbm", "catboost", "tensorflow",
-               "keras", "torch", "statsmodels")
+               "keras", "torch", "statsmodels", "joblib")
 
 # Nombres de clases/funciones ML tipicas (para detectar uso sin import explicito).
 _ML_CALLABLES = {
@@ -229,6 +230,9 @@ class PandasToSparkTransformer(ast.NodeTransformer):
         # neutralizo a TODO (p.ej. y = adult.target). Cualquier statement que las
         # use tambien se neutraliza para no romper con NameError.
         self.dead_vars = set()
+        # True si el codigo usa pd.DataFrame(<variable>): inyectamos el helper
+        # _py2spark_rows en el preambulo.
+        self.needs_rows_helper = False
 
     # ---- imports: detectar alias de pandas, y neutralizar 'import pandas' ----
     def visit_Import(self, node):
@@ -240,7 +244,11 @@ class PandasToSparkTransformer(ast.NodeTransformer):
                 # marcamos para omitir esta linea.
                 continue
             if _is_ml_module(alias.name):
-                self._note_ml_import(alias.asname or alias.name.split(".")[0])
+                _alias = alias.asname or alias.name.split(".")[0]
+                # registrar el nombre del modulo para detectar usos tipo
+                # joblib.dump(...), xgb.XGBClassifier(...), etc.
+                self.ml_names.add(_alias)
+                self._note_ml_import(_alias)
                 continue  # se omite el import de sklearn/ML
             new_names.append(alias)
         if not new_names:
@@ -484,6 +492,22 @@ class PandasToSparkTransformer(ast.NodeTransformer):
                 f"TODO py2spark: no traducible (depende de '{dead}', sin equivalente en Spark).",
                 f"Original: {orig}",
             ])
+        # Statement (p.ej. print(...)) que llama a una funcion ML no traducible
+        # anidada: accuracy_score/classification_report/etc. Se neutraliza a TODO.
+        ml_fn = self._calls_ml_function(node.value)
+        if ml_fn is not None:
+            try:
+                orig = ast.unparse(node)
+            except Exception:
+                orig = "<statement>"
+            self.diag.unsup(
+                f"'{ml_fn}(...)' (scikit-learn) no tiene equivalente 1:1 en Spark: "
+                f"usa los Evaluators de pyspark.ml.evaluation."
+            )
+            return self._emit_comment([
+                f"TODO py2spark: no traducible (usa '{ml_fn}' de scikit-learn).",
+                f"Original: {orig}",
+            ])
         idx_attr = _uses_pandas_index(node.value)
         if idx_attr is not None:
             try:
@@ -513,6 +537,27 @@ class PandasToSparkTransformer(ast.NodeTransformer):
         # Statement placeholder valido: `pid`  (un Name suelto). El post-proceso
         # reemplaza la linea completa por el bloque MLlib multi-linea.
         return ast.Expr(value=ast.Name(pid, ast.Load()))
+
+    def _calls_ml_function(self, node):
+        """Nombre de una funcion ML de sklearn (metrica/util) llamada dentro del
+        nodo, o None. Detecta accuracy_score(...), classification_report(...), etc.
+        para neutralizar statements como print(classification_report(...))."""
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Call):
+                f = sub.func
+                # <ml_module>.<algo>(...)  p.ej. joblib.dump(...), xgb.plot(...)
+                if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) \
+                        and f.value.id in self.ml_names:
+                    return f"{f.value.id}.{f.attr}"
+                name = f.id if isinstance(f, ast.Name) else (f.attr if isinstance(f, ast.Attribute) else None)
+                if not name:
+                    continue
+                if name in self.ml_names and (
+                    name.endswith(("_score", "_report", "_error", "_matrix", "_curve", "_loss"))
+                    or name in ("classification_report", "confusion_matrix")
+                ):
+                    return name
+        return None
 
     def _refs_dead_var(self, node):
         """Nombre de la primera variable 'muerta' referenciada en el nodo, o None."""
@@ -627,7 +672,14 @@ class PandasToSparkTransformer(ast.NodeTransformer):
             (recv_mod is not None and recv_mod in self.ml_names)          # xgb.X / lgb.X / nn.X
             or (called in self.ml_names or called in _ML_CALLABLES)        # importado directo
         )
-        if is_ext_ml_ctor and called and called[:1].isupper():
+        # Funciones de sklearn.metrics y utilidades (minusculas): accuracy_score,
+        # classification_report, precision_score, roc_auc_score, etc. Sin
+        # equivalente 1:1 (en Spark se usan los Evaluators de pyspark.ml.evaluation).
+        is_metric_fn = (called in self.ml_names or called in _ML_CALLABLES) and \
+            (called.endswith(("_score", "_report", "_error", "_matrix", "_curve", "_loss"))
+             or called in ("classification_report", "confusion_matrix", "roc_auc_score",
+                           "mean_squared_error", "mean_absolute_error", "r2_score"))
+        if is_ext_ml_ctor and called and (called[:1].isupper() or is_metric_fn):
             try:
                 orig = ast.unparse(node)
             except Exception:
@@ -886,28 +938,23 @@ class PandasToSparkTransformer(ast.NodeTransformer):
         # escalar en (v,) pero respeta filas que ya son list/tuple. Asi Spark
         # puede inferir el esquema tanto de escalares como de tuplas.
         if isinstance(data, ast.Name):
-            # [((r,) if not isinstance(r, (list, tuple)) else tuple(r)) for r in <data>]
-            comp = ast.ListComp(
-                elt=ast.IfExp(
-                    test=ast.UnaryOp(op=ast.Not(), operand=ast.Call(
-                        func=ast.Name("isinstance", ast.Load()),
-                        args=[ast.Name("_r", ast.Load()),
-                              ast.Tuple(elts=[ast.Name("list", ast.Load()),
-                                              ast.Name("tuple", ast.Load())], ctx=ast.Load())],
-                        keywords=[])),
-                    body=ast.Tuple(elts=[ast.Name("_r", ast.Load())], ctx=ast.Load()),
-                    orelse=ast.Call(func=ast.Name("tuple", ast.Load()),
-                                    args=[ast.Name("_r", ast.Load())], keywords=[]),
-                ),
-                generators=[ast.comprehension(
-                    target=ast.Name("_r", ast.Store()), iter=data, ifs=[], is_async=0)],
-            )
+            # data es una variable: no sabemos si es dict {col:[...]}, lista de
+            # escalares o lista de tuplas. Delegamos a un helper de runtime
+            # (_py2spark_rows) que normaliza cualquiera de esas formas a
+            # (rows, schema) que Spark entiende. Cubre el caso 'data = {..}'
+            # (dict) que antes se iteraba por claves -> columna '_1'.
+            self.needs_rows_helper = True
+            schema_arg = cols_kw if (isinstance(cols_kw, ast.List) and cols_kw.elts) else ast.Constant(None)
+            rows_call = ast.Call(
+                func=ast.Name("_py2spark_rows", ast.Load()),
+                args=[data, schema_arg], keywords=[])
+            # _py2spark_rows devuelve (rows, schema); desempaquetamos con *.
             self.diag.warn("pd.DataFrame(<variable>) -> spark.createDataFrame(...): se normaliza "
-                           "cada fila a tupla (Spark no infiere esquema de escalares sueltos).")
-            kws = []
-            if isinstance(cols_kw, ast.List) and cols_kw.elts:
-                kws = [ast.keyword(arg="schema", value=cols_kw)]
-            return _make([comp], kws)
+                           "en runtime (dict de columnas, lista de tuplas o escalares).")
+            return ast.Call(
+                func=ast.Attribute(value=ast.Name("spark", ast.Load()),
+                                   attr="createDataFrame", ctx=ast.Load()),
+                args=[ast.Starred(value=rows_call, ctx=ast.Load())], keywords=[])
 
         # Otros casos (lista de tuplas/dicts): dejar createDataFrame.
         self.diag.warn("pd.DataFrame(...) -> spark.createDataFrame(...): revisa el esquema/estructura "
@@ -1181,6 +1228,38 @@ spark = SparkSession.builder.appName("py2spark_job").getOrCreate()
 '''
 
 
+_ROWS_HELPER = '''\
+def _py2spark_rows(data, schema=None):
+    """Normaliza pd.DataFrame(data) a (rows, schema) que Spark entiende.
+    Soporta: dict {col: secuencia}, lista de dicts, lista de tuplas/listas,
+    lista de escalares. Convierte escalares numpy a tipos Python nativos."""
+    def _n(v):
+        return v.item() if hasattr(v, "item") else v
+    # dict de columnas -> transponer a filas
+    if isinstance(data, dict):
+        cols = list(data.keys())
+        vals = [list(v) for v in data.values()]
+        m = min((len(c) for c in vals), default=0)
+        rows = [tuple(_n(vals[j][i]) for j in range(len(cols))) for i in range(m)]
+        return rows, (schema or cols)
+    data = list(data)
+    if not data:
+        return [], (schema or ["value"])
+    first = data[0]
+    # lista de dicts -> filas por union de claves
+    if isinstance(first, dict):
+        cols = list(first.keys())
+        rows = [tuple(_n(d.get(c)) for c in cols) for d in data]
+        return rows, (schema or cols)
+    # lista de tuplas/listas
+    if isinstance(first, (list, tuple)):
+        rows = [tuple(_n(x) for x in r) for r in data]
+        return rows, schema
+    # lista de escalares
+    return [(_n(x),) for x in data], (schema or ["value"])
+'''
+
+
 def convert_code(source, add_preamble=True):
     """Convierte codigo Python (pandas) a PySpark 3.
 
@@ -1240,6 +1319,9 @@ def convert_code(source, add_preamble=True):
         ml_imports = _mllib.imports_for(transformer.mllib_kinds)
         if ml_imports:
             preamble = preamble + "\n" + "\n".join(ml_imports) + "\n"
+        # Helper para pd.DataFrame(<variable>): normaliza dict/lista/escalares.
+        if transformer.needs_rows_helper:
+            preamble = preamble + "\n" + _ROWS_HELPER + "\n"
         code = preamble + "\n" + body_code
 
     # Inyectar comentarios TODO por cada 'unsupported' al inicio, para que queden
