@@ -1047,12 +1047,31 @@ def _bnx_patch_mllib():
             pass
         return dataset
 
+    def _adjust_k(self, dataset):
+        # KMeans/clustering: k no puede superar el numero de filas (Spark rompe
+        # con ArrayIndexOutOfBounds/empty cluster). Ajustamos k = min(k, filas).
+        try:
+            if not hasattr(self, "getK"):
+                return
+            k = self.getK()
+            n = dataset.count()
+            if n <= 0:
+                return
+            new_k = max(1, min(k, n))
+            if new_k != k:
+                self.setK(new_k)
+                print(f"[BNX-TEST] KMeans: k ajustado de {{k}} a {{new_k}} (filas={{n}})")
+        except Exception:
+            pass
+
     def _wrap_estimator(cls):
         _of = getattr(cls, "fit", None)
         if _of is None:
             return
         def fit(self, dataset, *a, **kw):
-            return _of(self, _ensure_label_features(self, dataset), *a, **kw)
+            ds = _ensure_label_features(self, dataset)
+            _adjust_k(self, ds)
+            return _of(self, ds, *a, **kw)
         cls.fit = fit
 
     _ml_estimator_modules = []
