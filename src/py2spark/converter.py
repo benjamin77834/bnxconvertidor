@@ -502,6 +502,13 @@ class PandasToSparkTransformer(ast.NodeTransformer):
         snip = self._ml_snippet_for_expr(node.value, out_targets=[])
         if snip is not None:
             return self._emit_mllib(snip)
+        # print(classification_report(y_test, y_pred)) / classification_report(...)
+        # -> reporte con Evaluators (accuracy/f1/weightedPrecision/weightedRecall).
+        if self._calls_named_fn(node.value, "classification_report"):
+            snip, kinds = _mllib.snippet_classification_report()
+            self.mllib_kinds |= kinds
+            self.diag.warn("classification_report -> metricas MLlib (Evaluator) + preds.show().")
+            return self._emit_mllib(snip)
         dead = self._refs_dead_var(node.value)
         if dead is not None:
             try:
@@ -557,6 +564,17 @@ class PandasToSparkTransformer(ast.NodeTransformer):
         # Statement placeholder valido: `pid`  (un Name suelto). El post-proceso
         # reemplaza la linea completa por el bloque MLlib multi-linea.
         return ast.Expr(value=ast.Name(pid, ast.Load()))
+
+    def _calls_named_fn(self, node, name):
+        """True si el nodo contiene una llamada a la funcion `name` (por Name o
+        Attribute), y ese nombre esta importado de ML (o es conocido)."""
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Call):
+                f = sub.func
+                fn = f.id if isinstance(f, ast.Name) else (f.attr if isinstance(f, ast.Attribute) else None)
+                if fn == name and (name in self.ml_names or name in _ML_CALLABLES):
+                    return True
+        return False
 
     def _calls_ml_function(self, node):
         """Nombre de una funcion ML de sklearn (metrica/util) llamada dentro del
@@ -684,6 +702,22 @@ class PandasToSparkTransformer(ast.NodeTransformer):
                 and isinstance(func.value, ast.Name) and func.value.id in self.pandas_alias:
             snip, kinds = _mllib.snippet_get_dummies(value, out_target, self.last_df)
             self.mllib_kinds |= kinds
+            return snip
+
+        # Metricas de sklearn -> Evaluators de Spark (codigo real, no TODO).
+        #   acc = accuracy_score(y_test, y_pred) -> MulticlassClassificationEvaluator
+        if called == "accuracy_score" and (called in self.ml_names or called in _ML_CALLABLES):
+            snip, kinds = _mllib.snippet_metric([out_target], metric="accuracy")
+            self.mllib_kinds |= kinds
+            self.diag.warn("accuracy_score -> MulticlassClassificationEvaluator(accuracy).")
+            return snip
+        if called in ("f1_score", "precision_score", "recall_score") \
+                and (called in self.ml_names or called in _ML_CALLABLES):
+            _mn = {"f1_score": "f1", "precision_score": "weightedPrecision",
+                   "recall_score": "weightedRecall"}[called]
+            snip, kinds = _mllib.snippet_metric([out_target], metric=_mn)
+            self.mllib_kinds |= kinds
+            self.diag.warn(f"{called} -> MulticlassClassificationEvaluator({_mn}).")
             return snip
 
         # Constructor de un framework ML SIN equivalente en pyspark.ml estandar:
