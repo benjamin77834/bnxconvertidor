@@ -115,10 +115,15 @@ def _referenced_columns(code):
     for block in re.findall(r'inputCols\s*=\s*\[([^\]]*)\]', code):
         for m in re.findall(r'["\'](\w+)["\']', block):
             cols.add(m)
-    # descartar derivadas y sufijos tipicos de features de MLlib
+    # descartar derivadas y sufijos tipicos de features/salidas de MLlib. Las
+    # columnas de SALIDA del pipeline (prediction/probability/rawPrediction/
+    # label_indexed) NO existen en el dataset de entrada; si las dejaramos, los
+    # datos sinteticos tendrian solo derivadas y el job no tendria features.
+    _ml_out = ("features", "scaled_features", "raw_features", "prediction",
+               "probability", "rawprediction", "label_indexed")
     def _is_derived(c):
         lc = c.lower()
-        return (c in derived or lc in ("features", "scaled_features", "raw_features")
+        return (c in derived or lc in _ml_out
                 or lc.endswith(("_idx", "_ohe", "_scaled", "_vec", "_features")))
     return {c for c in cols
             if c.lower() not in _NON_COLUMN and not c.isdigit() and not _is_derived(c)}
@@ -144,11 +149,28 @@ def infer_input_schema(code, n_default_cols=3):
     read_vars = _read_var_names(tree)
     all_cols = _referenced_columns(code)
 
+    # ¿Es un job MLlib supervisado (clasificacion/regresion)? Si lo es y solo se
+    # detecto 'label' (u otra columna objetivo), el dataset NO tendria columnas de
+    # features y el VectorAssembler fallaria. Anadimos features numericas
+    # sinteticas para que el modelo tenga con que entrenar.
+    _is_supervised_ml = bool(re.search(
+        r'labelCol|RandomForestClassifier|LogisticRegression|GBTClassifier|'
+        r'DecisionTreeClassifier|LinearRegression|RandomForestRegressor|'
+        r'MulticlassClassificationEvaluator', code))
+    _label_like = {"label", "label_indexed", "churn", "target", "y"}
+
     def _mk_cols():
         out = []
         for c in sorted(all_cols):
             ctype = "decimal" if _numeric_hint(c, code) else "string"
             out.append({"name": c, "type": ctype, "pii": _detect_pii(c)})
+        # Job ML supervisado sin features reales (solo label/derivadas): anadir
+        # 3 columnas de features numericas sinteticas para que el modelo entrene.
+        if _is_supervised_ml:
+            _non_label = [c for c in all_cols if c.lower() not in _label_like]
+            if not _non_label:
+                for i in range(3):
+                    out.append({"name": f"feature{i+1}", "type": "decimal", "pii": False})
         # si no se detecto ninguna columna, poner unas genericas para no dar vacio
         if not out:
             out = [{"name": f"col{i+1}", "type": "string", "pii": False}
