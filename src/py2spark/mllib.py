@@ -265,11 +265,18 @@ def snippet_get_dummies(call, out_target, df_hint="df"):
     tgt = out_target or df_hint
     lines = ["# MLlib: one-hot = StringIndexer + OneHotEncoder por columna categorica"]
     if col_list:
+        # Envuelto en try/except: con datos de prueba pobres (1 sola categoria)
+        # el OneHotEncoder puede fallar ('at least two distinct values'); en ese
+        # caso el pipeline continua sin one-hot en vez de romper.
+        lines.append("try:")
+        cur = df_hint
         for c in col_list:
             base = c.strip("'\"")
-            lines.append(f'{tgt} = StringIndexer(inputCol={c}, outputCol="{base}_idx").fit({df_hint}).transform({df_hint})')
-            lines.append(f'{tgt} = OneHotEncoder(inputCol="{base}_idx", outputCol="{base}_ohe").fit({tgt}).transform({tgt})')
-            df_hint = tgt
+            lines.append(f'    {tgt} = StringIndexer(inputCol={c}, outputCol="{base}_idx", handleInvalid="keep").fit({cur}).transform({cur})')
+            lines.append(f'    {tgt} = OneHotEncoder(inputCol="{base}_idx", outputCol="{base}_ohe", handleInvalid="keep").fit({tgt}).transform({tgt})')
+            cur = tgt
+        lines.append("except Exception as _e_ml:")
+        lines.append('    print("[py2spark] one-hot omitido (datos de prueba insuficientes):", _e_ml)')
     else:
         lines.append(f'# indexer = StringIndexer(inputCol="cat", outputCol="cat_idx")')
         lines.append(f'# {tgt} = OneHotEncoder(inputCol="cat_idx", outputCol="cat_ohe").fit({df_hint}).transform({df_hint})')
