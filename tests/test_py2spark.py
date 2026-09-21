@@ -315,15 +315,31 @@ def test_pd_dataframe_dict_transposed():
 
 
 def test_pd_dataframe_variable_normalized():
-    # pd.DataFrame(<variable>, columns=[...]) -> normaliza cada fila a tupla
+    # pd.DataFrame(<variable>, columns=[...]) -> helper _py2spark_rows en runtime
+    # (normaliza dict de columnas, lista de tuplas o escalares).
     r = _conv(
         'import pandas as pd\n'
         'data = ["a", "b"]\n'
         'df = pd.DataFrame(data, columns=["c"])\n'
     )
-    assert "createDataFrame" in r["code"]
-    assert "isinstance(_r, (list, tuple))" in r["code"]
-    assert "schema=['c']" in r["code"]
+    assert "_py2spark_rows(data" in r["code"]
+    assert "def _py2spark_rows(" in r["code"]  # el helper se inyecta en el preambulo
+    assert "['c']" in r["code"]
+
+
+def test_pd_dataframe_variable_dict():
+    # pd.DataFrame(<variable>) donde la variable es un dict -> el helper lo
+    # transpone en runtime (antes se iteraba por claves -> columna '_1').
+    r = _conv(
+        'import pandas as pd\n'
+        'import numpy as np\n'
+        'data = {"a": np.arange(5), "b": np.arange(5)}\n'
+        'df = pd.DataFrame(data)\n'
+        'df = df[df["a"] > 0]\n'
+    )
+    assert "_py2spark_rows(data" in r["code"]
+    # el codigo generado NO debe iterar la variable directamente como escalares
+    assert "for _r in data]" not in r["code"]
 
 
 def test_pd_dataframe_dict_of_arrays():
