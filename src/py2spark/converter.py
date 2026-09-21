@@ -233,6 +233,8 @@ class PandasToSparkTransformer(ast.NodeTransformer):
         # True si el codigo usa pd.DataFrame(<variable>): inyectamos el helper
         # _py2spark_rows en el preambulo.
         self.needs_rows_helper = False
+        # Alias de numpy (import numpy as np) para traducir np.where/np.random.
+        self.numpy_alias = {"np", "numpy"}
 
     # ---- imports: detectar alias de pandas, y neutralizar 'import pandas' ----
     def visit_Import(self, node):
@@ -314,6 +316,24 @@ class PandasToSparkTransformer(ast.NodeTransformer):
         if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) \
                 and f.value.id in self.pandas_alias and f.attr == "DataFrame":
             return self._pd_dataframe(node)
+
+        # np.<fn>(...): traducir las que tienen equivalente de columna en Spark.
+        if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) \
+                and f.value.id in self.numpy_alias:
+            np_tr = self._numpy_call(node, f.attr)
+            if np_tr is not None:
+                return np_tr
+
+        # np.random.<fn>(...) -> F.rand() escalado (valor aleatorio por fila).
+        # Sirve tanto en expresiones de columna (df["c"] = ... + np.random...)
+        # como dentro de pd.DataFrame({col: np.random...}). En este ultimo caso
+        # _py2spark_rows genera datos reales a partir de esas columnas F.*.
+        if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Attribute) \
+                and f.value.attr == "random" and isinstance(f.value.value, ast.Name) \
+                and f.value.value.id in self.numpy_alias:
+            np_tr = self._numpy_random_call(node, f.attr)
+            if np_tr is not None:
+                return np_tr
 
         # df.metodo(...)
         if isinstance(f, ast.Attribute) and self._is_df(f.value):
@@ -810,6 +830,10 @@ class PandasToSparkTransformer(ast.NodeTransformer):
                 and value.func.attr == "createDataFrame" \
                 and isinstance(value.func.value, ast.Name) and value.func.value.id == "spark":
             return True
+        # _py2spark_df(...) (helper que construye un DataFrame desde pd.DataFrame)
+        if isinstance(value, ast.Call) and isinstance(value.func, ast.Name) \
+                and value.func.id == "_py2spark_df":
+            return True
         # <df>.<metodo que devuelve df>(...)
         if isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute) \
                 and value.func.attr in _DF_RETURNING and self._is_df(value.func.value):
@@ -945,16 +969,12 @@ class PandasToSparkTransformer(ast.NodeTransformer):
             # (dict) que antes se iteraba por claves -> columna '_1'.
             self.needs_rows_helper = True
             schema_arg = cols_kw if (isinstance(cols_kw, ast.List) and cols_kw.elts) else ast.Constant(None)
-            rows_call = ast.Call(
-                func=ast.Name("_py2spark_rows", ast.Load()),
-                args=[data, schema_arg], keywords=[])
-            # _py2spark_rows devuelve (rows, schema); desempaquetamos con *.
-            self.diag.warn("pd.DataFrame(<variable>) -> spark.createDataFrame(...): se normaliza "
-                           "en runtime (dict de columnas, lista de tuplas o escalares).")
+            self.diag.warn("pd.DataFrame(<variable>) -> _py2spark_df(...): se normaliza en runtime "
+                           "(dict de columnas, columnas Spark, lista de tuplas o escalares).")
+            # _py2spark_df devuelve directamente un DataFrame de Spark.
             return ast.Call(
-                func=ast.Attribute(value=ast.Name("spark", ast.Load()),
-                                   attr="createDataFrame", ctx=ast.Load()),
-                args=[ast.Starred(value=rows_call, ctx=ast.Load())], keywords=[])
+                func=ast.Name("_py2spark_df", ast.Load()),
+                args=[data, schema_arg], keywords=[])
 
         # Otros casos (lista de tuplas/dicts): dejar createDataFrame.
         self.diag.warn("pd.DataFrame(...) -> spark.createDataFrame(...): revisa el esquema/estructura "
@@ -965,6 +985,79 @@ class PandasToSparkTransformer(ast.NodeTransformer):
             kws = [ast.keyword(arg="schema", value=k.value) if k.arg == "columns" else k
                    for k in kws]
         return _make(list(node.args), kws)
+
+    def _numpy_call(self, node, fn):
+        """Traduce np.<fn>(...) con equivalente de columna en Spark.
+        np.where(cond, a, b) -> F.when(cond, a).otherwise(b).
+        np.log/exp/sqrt/abs/... -> F.<fn>(col). Devuelve None si no aplica."""
+        if fn == "where" and len(node.args) == 3:
+            cond, a, b = node.args
+            when_call = ast.Call(
+                func=ast.Attribute(value=ast.Name("F", ast.Load()), attr="when", ctx=ast.Load()),
+                args=[cond, a], keywords=[])
+            return ast.Call(
+                func=ast.Attribute(value=when_call, attr="otherwise", ctx=ast.Load()),
+                args=[b], keywords=[])
+        # funciones matematicas elementwise con equivalente directo en F.
+        _np_math = {"log": "log", "log1p": "log1p", "exp": "exp", "sqrt": "sqrt",
+                    "abs": "abs", "floor": "floor", "ceil": "ceil", "round": "round",
+                    "sin": "sin", "cos": "cos", "tan": "tan", "power": "pow"}
+        if fn in _np_math and node.args:
+            return ast.Call(
+                func=ast.Attribute(value=ast.Name("F", ast.Load()), attr=_np_math[fn], ctx=ast.Load()),
+                args=list(node.args), keywords=[])
+        if fn == "maximum" and len(node.args) == 2:
+            return ast.Call(func=ast.Attribute(value=ast.Name("F", ast.Load()), attr="greatest", ctx=ast.Load()),
+                            args=list(node.args), keywords=[])
+        if fn == "minimum" and len(node.args) == 2:
+            return ast.Call(func=ast.Attribute(value=ast.Name("F", ast.Load()), attr="least", ctx=ast.Load()),
+                            args=list(node.args), keywords=[])
+        self.diag.warn(f"np.{fn}(...) no tiene equivalente directo en Spark: revisa manualmente "
+                       f"(usa funciones de columna F.* o una UDF).")
+        return None
+
+    def _numpy_random_call(self, node, fn):
+        """np.random.<fn>(...) dentro de una expresion de columna -> F.rand().
+        randint(a,b[,n]) -> (F.floor(F.rand()*(b-a))+a); rand/random -> F.rand()."""
+        if fn == "randint" and len(node.args) >= 2:
+            a, b = node.args[0], node.args[1]
+            # F.floor(F.rand() * (b - a)) + a   (aprox de enteros aleatorios [a,b))
+            span = ast.BinOp(left=b, op=ast.Sub(), right=a)
+            rand = ast.Call(func=ast.Attribute(value=ast.Name("F", ast.Load()), attr="rand", ctx=ast.Load()),
+                            args=[], keywords=[])
+            scaled = ast.BinOp(left=rand, op=ast.Mult(), right=span)
+            floored = ast.Call(func=ast.Attribute(value=ast.Name("F", ast.Load()), attr="floor", ctx=ast.Load()),
+                               args=[scaled], keywords=[])
+            self.diag.warn("np.random.randint(...) -> F.floor(F.rand()*(b-a))+a: valores aleatorios "
+                           "por fila (aprox; en Spark no es el mismo generador que numpy).")
+            return ast.BinOp(left=floored, op=ast.Add(), right=a)
+        if fn in ("rand", "random", "random_sample", "uniform"):
+            self.diag.warn(f"np.random.{fn}(...) -> F.rand() (valor aleatorio por fila).")
+            return ast.Call(func=ast.Attribute(value=ast.Name("F", ast.Load()), attr="rand", ctx=ast.Load()),
+                            args=[], keywords=[])
+        # np.random.choice([a, b, ...], n) -> elige uno por fila:
+        #   F.element_at(F.array(lit(a), lit(b), ...), (F.floor(F.rand()*k)+1).cast('int'))
+        if fn == "choice" and node.args:
+            opts = node.args[0]
+            if isinstance(opts, (ast.List, ast.Tuple)) and opts.elts:
+                k = len(opts.elts)
+                arr = ast.Call(func=ast.Attribute(value=ast.Name("F", ast.Load()), attr="array", ctx=ast.Load()),
+                               args=[ast.Call(func=ast.Attribute(value=ast.Name("F", ast.Load()), attr="lit", ctx=ast.Load()),
+                                              args=[e], keywords=[]) for e in opts.elts],
+                               keywords=[])
+                rand = ast.Call(func=ast.Attribute(value=ast.Name("F", ast.Load()), attr="rand", ctx=ast.Load()),
+                                args=[], keywords=[])
+                idx = ast.Call(func=ast.Attribute(value=ast.Name("F", ast.Load()), attr="floor", ctx=ast.Load()),
+                               args=[ast.BinOp(left=rand, op=ast.Mult(), right=ast.Constant(k))], keywords=[])
+                idx1 = ast.Call(func=ast.Attribute(value=ast.BinOp(left=idx, op=ast.Add(), right=ast.Constant(1)),
+                                                   attr="cast", ctx=ast.Load()),
+                                args=[ast.Constant("int")], keywords=[])
+                self.diag.warn("np.random.choice([...], n) -> F.element_at(F.array(...), rand): "
+                               "elige un valor por fila (aprox).")
+                return ast.Call(func=ast.Attribute(value=ast.Name("F", ast.Load()), attr="element_at", ctx=ast.Load()),
+                                args=[arr, idx1], keywords=[])
+        self.diag.warn(f"np.random.{fn}(...) no tiene equivalente directo en Spark: revisa manualmente.")
+        return None
 
     def _df_method(self, node, f):
         """Reescribe <df>.<metodo>(...)."""
@@ -1229,34 +1322,38 @@ spark = SparkSession.builder.appName("py2spark_job").getOrCreate()
 
 
 _ROWS_HELPER = '''\
-def _py2spark_rows(data, schema=None):
-    """Normaliza pd.DataFrame(data) a (rows, schema) que Spark entiende.
-    Soporta: dict {col: secuencia}, lista de dicts, lista de tuplas/listas,
-    lista de escalares. Convierte escalares numpy a tipos Python nativos."""
+def _py2spark_df(data, schema=None, _n_rows=100):
+    """Construye un DataFrame de Spark desde pd.DataFrame(data).
+    Soporta: dict {col: secuencia|Column}, lista de dicts, lista de tuplas/listas,
+    lista de escalares. Si algun valor del dict es una Column de Spark (p.ej. tras
+    traducir np.random.*/np.where), genera _n_rows filas evaluando esas columnas.
+    Convierte escalares numpy a tipos Python nativos."""
     def _n(v):
         return v.item() if hasattr(v, "item") else v
-    # dict de columnas -> transponer a filas
     if isinstance(data, dict):
         cols = list(data.keys())
+        # Column de Spark presente -> construir con spark.range + withColumn.
+        if any(hasattr(v, "_jc") for v in data.values()):
+            _rng = spark.range(_n_rows)
+            for _c, _v in data.items():
+                _rng = _rng.withColumn(_c, _v if hasattr(_v, "_jc") else F.lit(_v))
+            return _rng.select(*cols)
         vals = [list(v) for v in data.values()]
         m = min((len(c) for c in vals), default=0)
         rows = [tuple(_n(vals[j][i]) for j in range(len(cols))) for i in range(m)]
-        return rows, (schema or cols)
+        return spark.createDataFrame(rows, schema or cols)
     data = list(data)
     if not data:
-        return [], (schema or ["value"])
+        return spark.createDataFrame([], schema or "value string")
     first = data[0]
-    # lista de dicts -> filas por union de claves
     if isinstance(first, dict):
         cols = list(first.keys())
         rows = [tuple(_n(d.get(c)) for c in cols) for d in data]
-        return rows, (schema or cols)
-    # lista de tuplas/listas
+        return spark.createDataFrame(rows, schema or cols)
     if isinstance(first, (list, tuple)):
         rows = [tuple(_n(x) for x in r) for r in data]
-        return rows, schema
-    # lista de escalares
-    return [(_n(x),) for x in data], (schema or ["value"])
+        return spark.createDataFrame(rows, schema)
+    return spark.createDataFrame([(_n(x),) for x in data], schema or ["value"])
 '''
 
 
