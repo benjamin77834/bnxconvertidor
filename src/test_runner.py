@@ -1017,6 +1017,64 @@ def _bnx_patch_mllib():
                 _wrap(_cls, _getter, _mode)
             except Exception as _e:
                 print(f"[BNX-TEST] no se pudo envolver {{_name}}: {{_e}}")
+
+    # Estimadores de clasificacion/regresion/clustering: garantizan featuresCol y
+    # labelCol antes de .fit(). El labelCol de un clasificador debe ser un entero
+    # >= 0 (Spark lo exige); lo creamos como 0/1 sintetico si falta. featuresCol
+    # se rellena solo si falta (normalmente lo crea el VectorAssembler).
+    def _ensure_label_features(self, dataset):
+        from pyspark.sql import functions as _F
+        try:
+            have = {{c.lower() for c in dataset.columns}}
+            # featuresCol
+            try:
+                fc = self.getFeaturesCol()
+            except Exception:
+                fc = None
+            if fc and fc.lower() not in have:
+                dataset = dataset.withColumn(fc, (_F.abs(_F.hash(_F.rand())) % 1000).cast("double"))
+                have.add(fc.lower())
+            # labelCol (solo clasificacion/regresion tienen)
+            try:
+                lc = self.getLabelCol()
+            except Exception:
+                lc = None
+            if lc and lc.lower() not in have:
+                # label binaria sintetica 0/1 (valida para clf/reg)
+                dataset = dataset.withColumn(lc, (_F.abs(_F.hash(_F.rand())) % 2).cast("double"))
+                have.add(lc.lower())
+        except Exception:
+            pass
+        return dataset
+
+    def _wrap_estimator(cls):
+        _of = getattr(cls, "fit", None)
+        if _of is None:
+            return
+        def fit(self, dataset, *a, **kw):
+            return _of(self, _ensure_label_features(self, dataset), *a, **kw)
+        cls.fit = fit
+
+    _ml_estimator_modules = []
+    for _modname in ("classification", "regression", "clustering"):
+        try:
+            _ml_estimator_modules.append(__import__("pyspark.ml." + _modname,
+                                                    fromlist=[_modname]))
+        except Exception:
+            pass
+    for _mod in _ml_estimator_modules:
+        for _est in ("LogisticRegression", "RandomForestClassifier", "GBTClassifier",
+                     "DecisionTreeClassifier", "NaiveBayes", "LinearSVC",
+                     "MultilayerPerceptronClassifier", "LinearRegression",
+                     "RandomForestRegressor", "GBTRegressor", "DecisionTreeRegressor",
+                     "GeneralizedLinearRegression", "KMeans", "BisectingKMeans",
+                     "GaussianMixture"):
+            _cls = getattr(_mod, _est, None)
+            if _cls is not None:
+                try:
+                    _wrap_estimator(_cls)
+                except Exception as _e:
+                    print(f"[BNX-TEST] no se pudo envolver estimador {{_est}}: {{_e}}")
 _bnx_patch_mllib()
 
 # Silenciar loggers de Spark que vuelcan el stacktrace Java completo de las
