@@ -120,6 +120,26 @@ def extract_referenced_columns(pyspark_code):
     for m in re.findall(r'withColumn\(\s*["\'](\w+)["\']', pyspark_code):
         cols.add(m)
 
+    # MLlib: inputCol="x" (StringIndexer/Scaler/etc.) e inputCols=[...] (Assembler).
+    # Son columnas de ENTRADA que deben existir. Excluimos las derivadas por el
+    # pipeline (outputCol y sufijos _idx/_ohe/_scaled/features).
+    _ml_derived = set()
+    for m in re.findall(r'outputCol\s*=\s*["\'](\w+)["\']', pyspark_code):
+        _ml_derived.add(m)
+    for m in re.findall(r'inputCol\s*=\s*["\'](\w+)["\']', pyspark_code):
+        cols.add(m)
+    for block in re.findall(r'inputCols\s*=\s*\[([^\]]*)\]', pyspark_code):
+        for m in re.findall(r'["\'](\w+)["\']', block):
+            cols.add(m)
+    # descartar las derivadas capturadas arriba
+    for _d in _ml_derived:
+        cols.discard(_d)
+    for _c in list(cols):
+        _lc = _c.lower()
+        if _lc in ("features", "scaled_features", "raw_features") \
+                or _lc.endswith(("_idx", "_ohe", "_scaled", "_vec", "_features")):
+            cols.discard(_c)
+
     # expr("... texto ...") y where/filter("... texto ...") → tokens tipo identificador
     for block in re.findall(r'(?:expr|where|filter)\(\s*"((?:[^"\\]|\\.)*)"', pyspark_code):
         # limpiar escapes
@@ -925,6 +945,79 @@ def _bnx_create_df(data=None, schema=None, *a, **kw):
         print(f"[BNX-TEST] createDataFrame normalizado fallo, uso original: {{_e_cdf}}")
     return _bnx_orig_cdf(data, schema=schema, *a, **kw)
 _bnx_session.createDataFrame = _bnx_create_df
+
+# MLlib TOLERANTE: si un StringIndexer/OneHotEncoder/VectorAssembler/Scaler recibe
+# una columna de entrada (inputCol/inputCols) que NO existe en el DataFrame, el
+# .fit()/.transform() de Spark rompe con "Input column X does not exist". Esto
+# pasa cuando la columna era categorica/derivada en pandas y no viajo en los
+# datos sinteticos. En la prueba local la CREAMOS con datos validos (categorias
+# para indexer, numeros para assembler/scaler) para que el pipeline ejecute.
+def _bnx_add_missing(df, names, mode):
+    from pyspark.sql import functions as _F
+    have = {{c.lower() for c in df.columns}}
+    for nm in names:
+        if nm is None or nm.lower() in have:
+            continue
+        if mode == "cat":
+            # categoria sintetica deterministica (3 niveles) a partir de un hash
+            col = (_F.element_at(
+                _F.array(_F.lit("A"), _F.lit("B"), _F.lit("C")),
+                (_F.abs(_F.hash(_F.rand())) % 3 + 1).cast("int"))
+            )
+        else:
+            col = (_F.abs(_F.hash(_F.rand())) % 1000).cast("double")
+        df = df.withColumn(nm, col)
+        have.add(nm.lower())
+    return df
+
+def _bnx_patch_mllib():
+    try:
+        from pyspark.ml import feature as _mlf
+    except Exception:
+        return
+    def _wrap(cls, get_inputs, mode):
+        _orig_fit = getattr(cls, "fit", None)
+        _orig_tr = getattr(cls, "transform", None)
+        def _ensure(self, dataset):
+            try:
+                names = get_inputs(self)
+                return _bnx_add_missing(dataset, names, mode)
+            except Exception:
+                return dataset
+        if _orig_fit is not None:
+            def fit(self, dataset, *a, **kw):
+                return _orig_fit(self, _ensure(self, dataset), *a, **kw)
+            cls.fit = fit
+        if _orig_tr is not None:
+            def transform(self, dataset, *a, **kw):
+                return _orig_tr(self, _ensure(self, dataset), *a, **kw)
+            cls.transform = transform
+    def _one(self):
+        try: return [self.getInputCol()]
+        except Exception: return []
+    def _many(self):
+        try: return list(self.getInputCols())
+        except Exception: return []
+    # Envolvemos tanto el estimador (fit) como su Model (transform). El Model es
+    # el que ejecuta transform tras fit, y usa las mismas inputCol(s).
+    for _name, _getter, _mode in (
+        ("StringIndexer", _one, "cat"),
+        ("StringIndexerModel", _one, "cat"),
+        ("OneHotEncoder", _one, "num"),
+        ("OneHotEncoderModel", _one, "num"),
+        ("VectorAssembler", _many, "num"),
+        ("StandardScaler", _one, "num"),
+        ("StandardScalerModel", _one, "num"),
+        ("MinMaxScaler", _one, "num"),
+        ("MinMaxScalerModel", _one, "num"),
+    ):
+        _cls = getattr(_mlf, _name, None)
+        if _cls is not None:
+            try:
+                _wrap(_cls, _getter, _mode)
+            except Exception as _e:
+                print(f"[BNX-TEST] no se pudo envolver {{_name}}: {{_e}}")
+_bnx_patch_mllib()
 
 # Silenciar loggers de Spark que vuelcan el stacktrace Java completo de las
 # AnalysisException que NOSOTROS capturamos a proposito en _bnx_where (filtros
