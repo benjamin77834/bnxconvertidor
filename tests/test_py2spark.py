@@ -393,3 +393,17 @@ def test_np_random_choice_per_row():
     )
     assert "element_at" in r["code"] and "F.array(" in r["code"]
     assert "np.random.choice" not in "\n".join(_code_lines(r))
+
+
+def test_pd_dataframe_of_existing_df_helper():
+    # pd.DataFrame(X) donde X ya es un DataFrame de Spark: el helper _py2spark_df
+    # debe devolverlo tal cual (no intentar .item() sobre columnas).
+    r = _conv(
+        'import pandas as pd\n'
+        'from sklearn.datasets import make_classification\n'
+        'X, y = make_classification(n_samples=100, n_features=4)\n'
+        'df = pd.DataFrame(X)\n'
+    )
+    assert "_py2spark_df(X" in r["code"]
+    # el helper contiene la guarda de DataFrame existente
+    assert 'hasattr(data, "columns")' in r["code"]

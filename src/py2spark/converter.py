@@ -1324,12 +1324,22 @@ spark = SparkSession.builder.appName("py2spark_job").getOrCreate()
 _ROWS_HELPER = '''\
 def _py2spark_df(data, schema=None, _n_rows=100):
     """Construye un DataFrame de Spark desde pd.DataFrame(data).
-    Soporta: dict {col: secuencia|Column}, lista de dicts, lista de tuplas/listas,
-    lista de escalares. Si algun valor del dict es una Column de Spark (p.ej. tras
-    traducir np.random.*/np.where), genera _n_rows filas evaluando esas columnas.
-    Convierte escalares numpy a tipos Python nativos."""
+    Soporta: DataFrame de Spark (se devuelve tal cual), dict {col: secuencia|Column},
+    lista de dicts, lista de tuplas/listas, lista de escalares. Si algun valor del
+    dict es una Column de Spark (tras traducir np.random.*/np.where), genera
+    _n_rows filas evaluando esas columnas. Convierte escalares numpy a nativos."""
+    # Ya es un DataFrame de Spark (p.ej. pd.DataFrame(X) donde X vino de spark.read):
+    # devolverlo tal cual (opcionalmente renombrando columnas si se dio schema).
+    if hasattr(data, "columns") and hasattr(data, "schema") and hasattr(data, "select"):
+        if schema and isinstance(schema, (list, tuple)) and len(schema) == len(data.columns):
+            return data.toDF(*schema)
+        return data
     def _n(v):
-        return v.item() if hasattr(v, "item") else v
+        # numpy escalar -> nativo; NO llamar .item si es una Column de Spark.
+        if hasattr(v, "_jc"):
+            return v
+        it = getattr(v, "item", None)
+        return it() if callable(it) else v
     if isinstance(data, dict):
         cols = list(data.keys())
         # Column de Spark presente -> construir con spark.range + withColumn.
