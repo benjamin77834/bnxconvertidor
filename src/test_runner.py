@@ -945,6 +945,7 @@ def _bnx_create_df(data=None, schema=None, *a, **kw):
         print(f"[BNX-TEST] createDataFrame normalizado fallo, uso original: {{_e_cdf}}")
     return _bnx_orig_cdf(data, schema=schema, *a, **kw)
 _bnx_session.createDataFrame = _bnx_create_df
+print("[BNX-TEST] harness v2 activo (createDataFrame patch + MLlib tolerante)")
 
 # MLlib TOLERANTE: si un StringIndexer/OneHotEncoder/VectorAssembler/Scaler recibe
 # una columna de entrada (inputCol/inputCols) que NO existe en el DataFrame, el
