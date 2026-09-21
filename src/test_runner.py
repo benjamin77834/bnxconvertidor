@@ -1065,15 +1065,45 @@ def _bnx_patch_mllib():
         except Exception:
             pass
 
+    def _ensure_features_vec(self, dataset):
+        # Si el Model necesita 'features' (u otro featuresCol) y no existe,
+        # ensamblamos las columnas numericas en un vector antes de transform().
+        from pyspark.sql import functions as _F
+        from pyspark.ml.feature import VectorAssembler as _VA
+        try:
+            fc = self.getFeaturesCol()
+        except Exception:
+            fc = "features"
+        try:
+            if fc in dataset.columns:
+                return dataset
+            _skip = {{fc, "label", "prediction", "rawPrediction", "probability"}}
+            _num = [f.name for f in dataset.schema.fields
+                    if f.name not in _skip and not f.name.lower().endswith(("_id", "_idx", "_ohe"))]
+            for _c in _num:
+                dataset = dataset.withColumn(_c, _F.coalesce(_F.col(_c).cast("double"), _F.lit(0.0)))
+            if _num:
+                dataset = _VA(inputCols=_num, outputCol=fc, handleInvalid="keep").transform(dataset)
+        except Exception:
+            pass
+        return dataset
+
     def _wrap_estimator(cls):
         _of = getattr(cls, "fit", None)
-        if _of is None:
-            return
-        def fit(self, dataset, *a, **kw):
-            ds = _ensure_label_features(self, dataset)
-            _adjust_k(self, ds)
-            return _of(self, ds, *a, **kw)
-        cls.fit = fit
+        if _of is not None:
+            def fit(self, dataset, *a, **kw):
+                ds = _ensure_label_features(self, dataset)
+                _adjust_k(self, ds)
+                return _of(self, ds, *a, **kw)
+            cls.fit = fit
+
+    def _wrap_model(cls):
+        # El Model resultante del fit: garantiza 'features' antes de transform().
+        _ot = getattr(cls, "transform", None)
+        if _ot is not None:
+            def transform(self, dataset, *a, **kw):
+                return _ot(self, _ensure_features_vec(self, dataset), *a, **kw)
+            cls.transform = transform
 
     _ml_estimator_modules = []
     for _modname in ("classification", "regression", "clustering"):
@@ -1095,6 +1125,15 @@ def _bnx_patch_mllib():
                     _wrap_estimator(_cls)
                 except Exception as _e:
                     print(f"[BNX-TEST] no se pudo envolver estimador {{_est}}: {{_e}}")
+            # su Model correspondiente (p.ej. RandomForestClassificationModel)
+            for _mname in (_est + "Model", _est.replace("Classifier", "ClassificationModel"),
+                           _est.replace("Regressor", "RegressionModel")):
+                _mcls = getattr(_mod, _mname, None)
+                if _mcls is not None:
+                    try:
+                        _wrap_model(_mcls)
+                    except Exception:
+                        pass
 _bnx_patch_mllib()
 
 # Silenciar loggers de Spark que vuelcan el stacktrace Java completo de las
