@@ -48,8 +48,9 @@ def test_withcolumn_assignment():
 def test_groupby_agg():
     r = _conv('import pandas as pd\ndf = pd.read_csv("f.csv")\ng = df.groupby("k").agg({"a": "sum", "b": "mean"})\n')
     assert "df.groupBy('k')" in r["code"]
-    assert "F.sum('a').alias('a')" in r["code"]
-    assert "F.avg('b').alias('b')" in r["code"]
+    # sum/avg castean a double (pandas suma booleanos como 0/1; Spark.sum(bool) rompe)
+    assert "F.sum(F.col('a').cast('double')).alias('a')" in r["code"]
+    assert "F.avg(F.col('b').cast('double')).alias('b')" in r["code"]
 
 
 def test_merge_to_join():
