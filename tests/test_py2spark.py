@@ -322,8 +322,8 @@ def test_pd_dataframe_variable_normalized():
         'data = ["a", "b"]\n'
         'df = pd.DataFrame(data, columns=["c"])\n'
     )
-    assert "_py2spark_rows(data" in r["code"]
-    assert "def _py2spark_rows(" in r["code"]  # el helper se inyecta en el preambulo
+    assert "_py2spark_df(data" in r["code"]
+    assert "def _py2spark_df(" in r["code"]  # el helper se inyecta en el preambulo
     assert "['c']" in r["code"]
 
 
@@ -337,7 +337,7 @@ def test_pd_dataframe_variable_dict():
         'df = pd.DataFrame(data)\n'
         'df = df[df["a"] > 0]\n'
     )
-    assert "_py2spark_rows(data" in r["code"]
+    assert "_py2spark_df(data" in r["code"]
     # el codigo generado NO debe iterar la variable directamente como escalares
     assert "for _r in data]" not in r["code"]
 
@@ -358,3 +358,38 @@ def test_pd_dataframe_dict_of_arrays():
     assert ".item()" in r["code"]  # conversion numpy -> Python nativo
     # el dict crudo NO debe quedar como argumento de createDataFrame
     assert "createDataFrame({" not in r["code"]
+
+
+def test_np_where_to_when_otherwise():
+    # np.where(cond, a, b) -> F.when(cond, a).otherwise(b)
+    r = _conv(
+        'import pandas as pd\n'
+        'import numpy as np\n'
+        'df = pd.read_csv("f.csv")\n'
+        'df["cat"] = np.where(df["x"] > 10, "alto", "bajo")\n'
+    )
+    assert "F.when(F.col('x') > 10, 'alto').otherwise('bajo')" in r["code"]
+    assert "np.where" not in "\n".join(_code_lines(r))
+
+
+def test_np_random_randint_to_rand():
+    # np.random.randint(a,b,n) en expresion de columna -> F.floor(F.rand()*(b-a))+a
+    r = _conv(
+        'import pandas as pd\n'
+        'import numpy as np\n'
+        'df = pd.read_csv("f.csv")\n'
+        'df["ruido"] = np.random.randint(0, 100, 50)\n'
+    )
+    assert "F.rand()" in r["code"] and "F.floor" in r["code"]
+
+
+def test_np_random_choice_per_row():
+    # np.random.choice([...], n) -> F.element_at(F.array(...), rand) (uno por fila)
+    r = _conv(
+        'import pandas as pd\n'
+        'import numpy as np\n'
+        'df = pd.read_csv("f.csv")\n'
+        'df["zona"] = np.random.choice(["centro", "norte"], 100)\n'
+    )
+    assert "element_at" in r["code"] and "F.array(" in r["code"]
+    assert "np.random.choice" not in "\n".join(_code_lines(r))
