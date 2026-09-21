@@ -1044,6 +1044,20 @@ def _bnx_patch_mllib():
                 # label binaria sintetica 0/1 (valida para clf/reg)
                 dataset = dataset.withColumn(lc, (_F.abs(_F.hash(_F.rand())) % 2).cast("double"))
                 have.add(lc.lower())
+            elif lc:
+                # label existe: si es STRING, indexar a numerico (RandomForest exige
+                # label numerico). Red de seguridad si el codigo no lo hizo.
+                _real = next((c for c in dataset.columns if c.lower() == lc.lower()), None)
+                if _real is not None:
+                    _t = dict(dataset.dtypes).get(_real, "string")
+                    if _t == "string":
+                        from pyspark.ml.feature import StringIndexer as _SI
+                        _tmp = _real + "_bnx_idx"
+                        dataset = _SI(inputCol=_real, outputCol=_tmp,
+                                      handleInvalid="keep").fit(dataset).transform(dataset)
+                        dataset = dataset.drop(_real).withColumnRenamed(_tmp, _real)
+                    elif _t not in ("double", "int", "bigint", "float"):
+                        dataset = dataset.withColumn(_real, _F.col(_real).cast("double"))
         except Exception:
             pass
         return dataset

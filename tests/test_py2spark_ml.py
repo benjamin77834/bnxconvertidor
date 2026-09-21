@@ -166,3 +166,36 @@ def test_stacking_classifier_neutralized():
     assert r["ok"]
     _ast.parse(r["code"])
     assert "TODO py2spark" in r["code"]
+
+
+def test_rf_label_string_and_evaluators():
+    # RandomForest + CSV: label string -> StringIndexer; split train/test;
+    # accuracy_score/classification_report -> Evaluators de Spark.
+    from src.py2spark import convert_code
+    r = convert_code(
+        "import pandas as pd\n"
+        "from sklearn.ensemble import RandomForestClassifier\n"
+        "from sklearn.metrics import accuracy_score, classification_report\n"
+        "df = pd.read_csv('datos.csv')\n"
+        "modelo = RandomForestClassifier(n_estimators=100)\n"
+        "modelo.fit(df)\n"
+        "y_pred = modelo.predict(df)\n"
+        "acc = accuracy_score(df, y_pred)\n"
+        "print(classification_report(df, y_pred))\n"
+    )
+    code = r["code"]
+    # 1. label string -> StringIndexer(outputCol='label_indexed')
+    assert "StringIndexer" in code and "label_indexed" in code
+    # 2. labelCol dinamico (_label_col), no hardcode 'label'
+    assert "labelCol=_label_col" in code
+    # 3. split train/test 80/20 seed 42 + fit sobre train_df
+    assert "randomSplit([0.8, 0.2], seed=42)" in code
+    assert "modelo.fit(_train)" in code
+    # 4. guard de features vacias
+    assert "no hay columnas de features" in code
+    # 5. Evaluators (no sklearn)
+    assert "MulticlassClassificationEvaluator" in code
+    assert 'metricName="accuracy"' in code
+    assert "weightedPrecision" in code and "weightedRecall" in code
+    assert "accuracy_score" not in "\n".join(
+        ln for ln in code.splitlines() if not ln.lstrip().startswith("#"))

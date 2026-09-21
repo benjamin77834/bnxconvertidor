@@ -59,6 +59,8 @@ def imports_for(kinds):
         imp.add("from pyspark.ml.classification import DecisionTreeClassifier")
     if "kmeans" in kinds:
         imp.add("from pyspark.ml.clustering import KMeans")
+    if "evaluator" in kinds:
+        imp.add("from pyspark.ml.evaluation import MulticlassClassificationEvaluator")
     return sorted(imp)
 
 
@@ -126,17 +128,25 @@ def snippet_estimator(call, var_name, klass, df_hint="df"):
             if mi is not None:
                 params.append(f"maxIter={_lit(mi)}")
         params.append('featuresCol="features"')
-        if family in ("clf", "reg"):
-            params.append('labelCol="label"')
-    params_txt = ", ".join(params)
     lines = [
         f"# MLlib: {mllib_class} (equivalente de sklearn {klass})",
-        f"# Asegura la columna vector 'features' (ensambla las numericas si falta).",
+        f"# Prepara 'features' (VectorAssembler) y la columna label (indexa si es string).",
     ]
-    lines += _ensure_features(df_hint)
-    if family in ("clf", "reg"):
-        lines.append('# NOTA: ajusta labelCol al nombre real de tu columna objetivo.')
-    lines.append(f"{var_name} = {mllib_class}({params_txt})")
+    is_supervised = family in ("clf", "reg")
+    lines += _ensure_features(df_hint, with_label=is_supervised)
+    if is_supervised:
+        # labelCol = _label_col (variable runtime: 'label' o 'label_indexed').
+        # Split train/test 80/20 con seed fijo; fit se hara sobre train_df.
+        params.append("labelCol=_label_col")
+        param_kw = ", ".join(params)
+        lines += [
+            f"# Split train/test (80/20) reproducible; el fit va sobre train_df.",
+            f"train_df, test_df = {df_hint}.randomSplit([0.8, 0.2], seed=42)",
+            f"{var_name} = {mllib_class}({param_kw})",
+        ]
+    else:
+        param_kw = ", ".join(params)
+        lines.append(f"{var_name} = {mllib_class}({param_kw})")
     return "\n".join(lines), {kind, "assembler"}
 
 
@@ -161,26 +171,53 @@ def snippet_scaler(call, var_name, klass, df_hint="df"):
     return "\n".join(lines), {kind, "assembler"}
 
 
-def _ensure_features(df_hint):
-    """Lineas que aseguran la columna vector 'features' ensamblando las columnas
-    numericas. Castea a double las columnas candidatas (excluye ids/label/las ya
-    derivadas) para tolerar datos leidos como string (CSV) y evitar que el
-    VectorAssembler falle por tipos. Portable a datos reales."""
-    return [
+def _ensure_features(df_hint, with_label=False, label_col="label"):
+    """Lineas que preparan el DataFrame para MLlib.
+
+    - Ensambla la columna vector 'features' con las columnas numericas (todas
+      menos la label y las derivadas), casteando a double y rellenando nulls.
+    - Si with_label=True: maneja el tipo de la columna label. Si es STRING, la
+      indexa con StringIndexer(outputCol='label_indexed'); si es numerica, la
+      castea a double. El nombre final de la columna label queda en la variable
+      runtime `_label_col` (para pasarlo como labelCol al estimador).
+    - Falla con mensaje claro si no hay columnas de features.
+    """
+    lines = [
         f'if "features" not in {df_hint}.columns:',
-        f"    import re as _re_ml",
-        f"    _skip = ('features', 'scaled_features', 'label', 'prediction')",
+    ]
+    if with_label:
+        lines += [
+            f"    # --- Label: string -> StringIndexer; numerico -> cast double ---",
+            f'    _label_col = "{label_col}"',
+            f'    if "{label_col}" in {df_hint}.columns:',
+            f'        _lt = dict({df_hint}.dtypes).get("{label_col}", "string")',
+            f'        if _lt == "string":',
+            f'            from pyspark.ml.feature import StringIndexer as _SI',
+            f'            {df_hint} = _SI(inputCol="{label_col}", outputCol="label_indexed", '
+            f'handleInvalid="keep").fit({df_hint}).transform({df_hint})',
+            f'            _label_col = "label_indexed"',
+            f'        else:',
+            f'            {df_hint} = {df_hint}.withColumn("{label_col}", '
+            f'F.col("{label_col}").cast("double"))',
+        ]
+    else:
+        lines += [f'    _label_col = "{label_col}"']
+    lines += [
+        f"    # --- Features: todas las columnas menos la label / derivadas ---",
+        f"    _skip = ('features', 'scaled_features', 'prediction', 'label_indexed', "
+        f"'rawPrediction', 'probability', _label_col, '{label_col}')",
         f"    _feat_cols = [c for c in {df_hint}.columns "
         f"if c not in _skip and not c.lower().endswith(('_id', '_idx', '_ohe'))]",
+        f"    if not _feat_cols:",
+        f"        raise ValueError('py2spark: no hay columnas de features "
+        f"(todas son label/derivadas). Revisa el esquema de entrada.')",
         f"    for _c in _feat_cols:",
-        # cast a double y rellenar nulls con 0.0: sin esto, columnas string no
-        # numericas (p.ej. categoricas) quedan null al castear y el assembler con
-        # handleInvalid='skip' descartaba TODAS las filas -> 'empty dataset'.
+        # cast a double + rellenar nulls con 0.0 para no vaciar el dataset.
         f"        {df_hint} = {df_hint}.withColumn(_c, F.coalesce(F.col(_c).cast('double'), F.lit(0.0)))",
-        # handleInvalid='keep' (no descarta filas) para no vaciar el dataset.
         f'    {df_hint} = VectorAssembler(inputCols=_feat_cols, outputCol="features", '
         f'handleInvalid="keep").transform({df_hint})',
     ]
+    return lines
 
 
 def snippet_fit_transform(recv_name, out_targets, df_hint="df"):
@@ -204,10 +241,13 @@ def snippet_fit_transform(recv_name, out_targets, df_hint="df"):
 
 
 def snippet_fit(recv_name, df_hint="df"):
+    # Entrena sobre train_df si existe (lo crea snippet_estimator con el split);
+    # si no, sobre el df completo.
     lines = [
-        f"# MLlib: entrenar el modelo (.fit devuelve un Model)",
+        f"# MLlib: entrenar el modelo (.fit devuelve un Model). Usa train_df si hay split.",
+        f'_train = train_df if "train_df" in globals() else {df_hint}',
         f"try:",
-        f"    {recv_name}_fitted = {recv_name}.fit({df_hint})",
+        f"    {recv_name}_fitted = {recv_name}.fit(_train)",
         f"except Exception as _e_ml:",
         f'    print("[py2spark] fit omitido (datos de prueba insuficientes):", _e_ml)',
         f"    {recv_name}_fitted = None",
@@ -217,14 +257,17 @@ def snippet_fit(recv_name, df_hint="df"):
 
 def snippet_predict(recv_name, out_targets, df_hint="df"):
     tgt = out_targets[0] if out_targets else "pred_df"
+    # Predice sobre test_df si existe (del split); si no, sobre el df completo.
     lines = [
-        f"# MLlib: predecir = transform() del Model entrenado (col 'prediction')",
+        f"# MLlib: predecir = transform() del Model entrenado (col 'prediction'). Usa test_df si hay split.",
+        f'_test = test_df if "test_df" in globals() else {df_hint}',
         f"try:",
-        f"    _m = globals().get('{recv_name}_fitted') or {recv_name}.fit({df_hint})",
-        f"    {tgt} = _m.transform({df_hint})",
+        f"    _m = globals().get('{recv_name}_fitted') or {recv_name}.fit(_test)",
+        f"    {tgt} = _m.transform(_test)",
+        f"    globals()['_bnx_pred'] = {tgt}",
         f"except Exception as _e_ml:",
         f'    print("[py2spark] predict omitido (datos de prueba):", _e_ml)',
-        f"    {tgt} = {df_hint}",
+        f"    {tgt} = _test",
     ]
     return "\n".join(lines), set()
 
@@ -258,6 +301,48 @@ def snippet_score(recv_name, out_targets):
         f"    {tgt} = None",
     ]
     return "\n".join(lines), set()
+
+
+def snippet_metric(out_targets, metric="accuracy", df_pred="_bnx_pred"):
+    """accuracy_score(y_test, y_pred) -> MulticlassClassificationEvaluator.
+
+    Evalua el DataFrame de predicciones (col 'prediction' + labelCol). Usa el
+    DataFrame de predicciones guardado por el .predict() (`_bnx_pred`)."""
+    tgt = out_targets[0] if out_targets else "_metric"
+    lines = [
+        f"# MLlib: {metric} con MulticlassClassificationEvaluator (equivalente de sklearn).",
+        f'_lc = globals().get("_label_col", "label")',
+        f'_pred_df = globals().get("{df_pred}")',
+        f"try:",
+        f'    _ev = MulticlassClassificationEvaluator(labelCol=_lc, '
+        f'predictionCol="prediction", metricName="{metric}")',
+        f"    {tgt} = _ev.evaluate(_pred_df)",
+        f"except Exception as _e_ml:",
+        f'    print("[py2spark] evaluacion omitida (datos de prueba):", _e_ml)',
+        f"    {tgt} = None",
+    ]
+    return "\n".join(lines), {"evaluator"}
+
+
+def snippet_classification_report(df_pred="_bnx_pred"):
+    """classification_report(y_test, y_pred) -> metricas MLlib + preds.show().
+
+    Calcula accuracy, f1, weightedPrecision, weightedRecall con
+    MulticlassClassificationEvaluator y muestra una muestra de predicciones."""
+    lines = [
+        "# MLlib: reporte de clasificacion = accuracy/f1/weightedPrecision/weightedRecall.",
+        '_lc = globals().get("_label_col", "label")',
+        f'_pred_df = globals().get("{df_pred}")',
+        "try:",
+        "    for _mn in ('accuracy', 'f1', 'weightedPrecision', 'weightedRecall'):",
+        "        _ev = MulticlassClassificationEvaluator(labelCol=_lc, "
+        'predictionCol="prediction", metricName=_mn)',
+        '        print(f"{_mn}: {_ev.evaluate(_pred_df):.4f}")',
+        "    _pred_df.select(_lc, 'prediction', 'probability').show(10, truncate=False)",
+        "except Exception as _e_ml:",
+        '    print("[py2spark] reporte omitido (datos de prueba):", _e_ml)',
+    ]
+    return "\n".join(lines), {"evaluator"}
 
 
 def snippet_get_dummies(call, out_target, df_hint="df"):
