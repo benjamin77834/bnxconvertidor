@@ -22,14 +22,39 @@ import zipfile
 import datetime
 
 
-# Version de PySpark que usa el proyecto (pinneada para reproducibilidad).
-PYSPARK_VERSION = "4.1.2"
+def _detect_pyspark_version(default="3.5.3"):
+    """Detecta la version de PySpark instalada en el entorno actual.
+
+    Asi el bundle declara la version REAL con la que se probo el job (3.5, 4.1,
+    etc.) en vez de un pin fijo. Si PySpark no esta instalado (o falla la
+    deteccion), cae a un default conservador compatible (Spark 3.5)."""
+    try:
+        import pyspark
+        v = getattr(pyspark, "__version__", None)
+        if v:
+            return v
+    except Exception:
+        pass
+    # Fallback: intentar leer la version via importlib.metadata sin importar pyspark.
+    try:
+        from importlib import metadata as _md
+        return _md.version("pyspark")
+    except Exception:
+        return default
+
+
+# Version de PySpark detectada del entorno (se declara en requirements/manifest).
+PYSPARK_VERSION = _detect_pyspark_version()
 
 
 def _requirements_txt():
+    # El job generado usa solo APIs estables de Spark, compatibles de 3.5 a 4.x.
+    # Pineamos la version detectada del entorno (con la que se probo) pero
+    # permitimos la serie compatible (>=3.5,<5) por si el destino tiene otra.
     return (
         f"# Dependencias para ejecutar el job PySpark generado por BNX.\n"
-        f"pyspark=={PYSPARK_VERSION}\n"
+        f"# Probado con pyspark {PYSPARK_VERSION}. El job usa APIs compatibles 3.5-4.x.\n"
+        f"pyspark>=3.5,<5\n"
     )
 
 

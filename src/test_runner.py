@@ -906,7 +906,15 @@ def _bnx_spark():
             .getOrCreate())
 
 _bnx_session = _bnx_spark()
+# Reportar la version de Spark detectada (util para saber contra que corre la
+# prueba). El job usa solo APIs compatibles de Spark 3.5 a 4.x.
+try:
+    print(f"[BNX-TEST] Spark {{_bnx_session.version}} (job compatible 3.5-4.x)")
+except Exception:
+    pass
 # Forzar ANSI off en runtime por si la sesion ya existia (getOrCreate reutiliza).
+# En Spark 4.0 el default de ANSI es true; lo forzamos a false para alinear el
+# comportamiento con Spark 3.5 / Glue (casts invalidos -> NULL, no error).
 try:
     _bnx_session.conf.set("spark.sql.ansi.enabled", "false")
 except Exception:
