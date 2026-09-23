@@ -465,8 +465,8 @@ export default function HistoryPage({ theme }) {
             'Codegen Glue', 'Codegen Spark', 'Codegen Flink', 'Codegen Step Functions',
             'Codegen Terraform', 'Codegen Airflow', 'Codegen Python/Pandas',
             'Motor de refactorizacion', 'Motor OCR', 'Motor de accuracy',
-            'Data Redactada (datos sinteticos)', 'Ejecutor de prueba PySpark',
-            'Validacion de equivalencia de datos',
+            'Data Sintética (datos sinteticos)', 'Ejecutor de prueba PySpark',
+            'Validacion de equivalencia de datos', 'py2spark (Python/pandas + ML)',
             'Consola en vivo (SSE)', 'Esquema real + join compartido', 'Enviar a AWS (pipeline)',
             'UI React (9 tabs)', 'API FastAPI + Lambda', 'CLI batch', 'Packaging portable',
           ].map(comp => (

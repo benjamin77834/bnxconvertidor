@@ -301,7 +301,7 @@ const MECHANISMS = [
     category: '🖥️ Prueba Local — Características e Insumos',
     items: [
       { name: 'Qué es', desc: 'Ejecuta el PySpark generado en tu propia máquina con datos sintéticos redactados, sin subir nada a AWS. Sirve para validar que el código traducido corre y produce resultados antes de despachar a Glue. Es independiente de permisos de S3/IAM/SCP de la cuenta AWS.' },
-      { name: 'Insumo 1 — Código PySpark', desc: 'El código generado por el Compiler (target Spark). Se carga automáticamente al entrar a Data Redactada si ya compilaste un grafo. Es lo único imprescindible para correr la prueba.' },
+      { name: 'Insumo 1 — Código PySpark', desc: 'El código generado por el Compiler (target Spark). Se carga automáticamente al entrar a Data Sintética si ya compilaste un grafo. Es lo único imprescindible para correr la prueba.' },
       { name: 'Insumo 2 — Datos sintéticos', desc: 'Datasets de entrada generados desde el esquema del grafo (o definidos a mano en modo Manual). Con PII enmascarada y tipos respetados. Reemplazan las lecturas S3 reales por DataFrames en memoria.' },
       { name: 'Insumo 3 — Nombre del grafo (opcional)', desc: 'Se toma del grafo compilado (AI_JOBNAME/PLAN_NAME) para nombrar el reporte. Si no hay, cae al Job Name configurado.' },
       { name: 'Requisito de entorno', desc: 'Python 3 con PySpark instalado en la máquina que corre el backend (pip install pyspark) y Java para Spark. No requiere credenciales AWS, ni pandas, ni conexión a internet.' },
@@ -315,7 +315,7 @@ const MECHANISMS = [
     ]
   },
   {
-    category: '🔁 Ciclo de Prueba (Data Redactada → AWS)',
+    category: '🔁 Ciclo de Prueba (Data Sintética → AWS)',
     items: [
       { name: '1. Grafo → Esquema real', desc: 'Al compilar, se extrae el record format real del .mp GDE (record string(N) campo; ... end;) por vértice. Las columnas que el pipeline usa aguas abajo (join keys, sort keys, campos in. de reformats) se propagan hacia los SOURCE trazando los edges. Así cada SOURCE conoce sus columnas reales (numero_de_cliente, cta_num, etc.).' },
       { name: '2. Datos Redactados', desc: 'Genera datos sintéticos por nodo: tipos respetados (string/decimal/date/integer), PII enmascarada por nombre de campo (nombre→X****, cuenta→ACCT****, tarjeta→****-****, email, ssn/rfc, etc.). Separa datasets de ENTRADA (lo que el job lee) y SALIDA (lo que produce). Modo desde grafo o manual (tabla editable de columnas).' },
@@ -715,10 +715,10 @@ const COMPONENTS = [
   { id: 'AMPLIFY', label: '☁️ AWS Amplify\n(Static Hosting)', x: 1120, y: 100, group: 'deploy', desc: 'Hosting del React build. CDN, dominio custom, auto-deploy desde Git' },
   { id: 'LAMBDA_DEPLOY', label: '⚡ Lambda URL\n(Serverless API)', x: 1120, y: 250, group: 'deploy', desc: 'Function URL pública. 256MB, Python 3.11, ~$5/mes' },
 
-  // Ciclo de prueba: Data Redactada → Prueba local → AWS
-  { id: 'DATAGEN', label: '🧪 Data Redactada\n(datagen.py)', x: 660, y: 560, group: 'datagen', desc: 'Infiere el esquema real del grafo (record format del .mp + propagación de columnas por edges) y genera datos sintéticos con PII enmascarada. Separa entrada (in.) y salida (out.). Valores de join compartidos para que los joins emparejen.' },
+  // Ciclo de prueba: Data Sintética → Prueba local → AWS
+  { id: 'DATAGEN', label: '🧪 Data Sintética\n(datagen.py)', x: 660, y: 560, group: 'datagen', desc: 'Infiere el esquema real del grafo (record format del .mp + propagación de columnas por edges) y genera datos sintéticos con PII enmascarada. Separa entrada (in.) y salida (out.). Valores de join compartidos para que los joins emparejen.' },
   { id: 'TEST_RUNNER', label: '▶️ Test Runner (LOCAL)\n(test_runner.py)', x: 900, y: 500, group: 'datagen', desc: 'PRUEBA LOCAL. Insumos: código PySpark del Compiler + datos sintéticos (+ nombre del grafo opcional). Requiere Python3 con PySpark y Java; NO requiere credenciales AWS. Corre en subproceso Spark local[1] con timeout, reemplaza lecturas S3 por DataFrames en memoria, neutraliza escrituras/shell, tolera nodos None y joins con clave ausente. Salidas: consola en vivo (SSE), estadísticas entrada/salida, fidelidad de datos, descripción del grafo, reporte .txt y un CSV por tabla de salida.' },
-  { id: 'DATAGEN_UI', label: '🧪 Data Redactada UI\n(DataGenPage.jsx)', x: 900, y: 580, group: 'datagen', desc: 'Pestaña que carga el grafo del Compiler, genera datos (auto o manual), corre la prueba local con consola en vivo, y despacha a AWS.' },
+  { id: 'DATAGEN_UI', label: '🧪 Data Sintética UI\n(DataGenPage.jsx)', x: 900, y: 580, group: 'datagen', desc: 'Pestaña que carga el grafo del Compiler, genera datos (auto o manual), corre la prueba local con consola en vivo, y despacha a AWS.' },
   { id: 'AWS_SELFCONTAINED', label: '☁️ Código Autocontenido\n(build_aws_selfcontained_code)', x: 900, y: 660, group: 'datagen', desc: 'Empaqueta el PySpark con los datos sintéticos embebidos: lecturas S3 → DataFrames inline, escrituras S3 reales. Autocontenido para correr en AWS Glue sin dependencias de datos externos.' },
   { id: 'AWS_PIPELINE', label: '🚀 Pipeline AWS Glue\n(/pipeline Lambda)', x: 1120, y: 620, group: 'datagen', desc: 'Sube el código autocontenido a S3, crea/actualiza el Glue job, lo ejecuta y hace polling del estado. El resultado se escribe a S3. Reusa el pipeline existente sin credenciales locales.' },
 ]
@@ -773,7 +773,7 @@ const GROUP_COLOR = {
 const GROUP_LABEL = {
   input: 'Input Files', parser: 'Parsers', core: 'Core Engine',
   codegen: 'Code Generation', api: 'API Layer', ui: 'UI (React)', deploy: 'AWS Deploy',
-  datagen: 'Ciclo de Prueba (Data Redactada → AWS)',
+  datagen: 'Ciclo de Prueba (Data Sintética → AWS)',
 }
 
 function buildArch(theme) {

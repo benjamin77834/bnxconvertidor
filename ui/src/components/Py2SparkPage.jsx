@@ -169,7 +169,7 @@ j.to_parquet("salida")`
               <div style={{ display: 'flex', gap: 8 }}>
                 <button onClick={download} style={btn(t, 'ghost')}>📥 Descargar</button>
                 <button onClick={sendToDataGen} title="Genera datos sintéticos y ejecuta este PySpark localmente"
-                  style={btn(t, 'accent')}>🧪 A Data Redactada</button>
+                  style={btn(t, 'accent')}>🧪 A Data Sintética</button>
               </div>
             )}
           </div>

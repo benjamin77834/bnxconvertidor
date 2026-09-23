@@ -129,7 +129,7 @@ const RISKS = [
 
 const CURRENT_EFFORTS = [
   { task: 'Parser GDE nativo (formato serializado)', status: 'done', impact: 'Ya parsea .mp reales del banco' },
-  { task: 'Data Redactada (datos sinteticos + PII masking)', status: 'done', impact: 'Probar sin datos reales del banco' },
+  { task: 'Data Sintética (datos sinteticos + PII masking)', status: 'done', impact: 'Probar sin datos reales del banco' },
   { task: 'Ejecutor de prueba PySpark local', status: 'done', impact: 'Valida el codigo ejecutandolo, no solo leyendolo' },
   { task: 'Correccion masiva del generador (barrido 36 grafos)', status: 'done', impact: '35/36 grafos ejecutan y producen salidas' },
   { task: 'Optimizador de performance (reglas, sin IA)', status: 'done', impact: 'cache/broadcast/coalesce + benchmark' },

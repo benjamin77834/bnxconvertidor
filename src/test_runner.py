@@ -41,11 +41,19 @@ def _resolve_python():
     env_py = os.environ.get("BNX_PYTHON")
     if env_py and os.path.isfile(env_py):
         return env_py
-    for cand in (
+    # Candidatos por SO: en Windows el venv usa Scripts\python.exe; en
+    # Mac/Linux usa bin/python. Probamos ambos para que funcione en los dos.
+    cands = (
+        # Unix (Mac/Linux)
         os.path.join(_PROJECT_ROOT, ".venv", "bin", "python"),
         os.path.join(_PROJECT_ROOT, ".venv", "bin", "python3"),
         os.path.join(_PROJECT_ROOT, "venv", "bin", "python"),
-    ):
+        # Windows
+        os.path.join(_PROJECT_ROOT, ".venv", "Scripts", "python.exe"),
+        os.path.join(_PROJECT_ROOT, ".venv", "Scripts", "python3.exe"),
+        os.path.join(_PROJECT_ROOT, "venv", "Scripts", "python.exe"),
+    )
+    for cand in cands:
         if os.path.isfile(cand):
             return cand
     return sys.executable
@@ -1641,6 +1649,24 @@ def run_pyspark_test(pyspark_code, datasets, timeout=120, job_name=None,
         summary = f"Timeout tras {timeout}s — el job tardó demasiado"
     else:
         summary = "Falló la ejecución — revisa el error abajo"
+        # Hints especificos de Windows: errores tipicos de PySpark/entorno que
+        # confunden porque el mensaje crudo no dice que es un problema de setup.
+        _err = (stderr or "") + (stdout or "")
+        if "No module named" in _err and ("pyspark" in _err or "numpy" in _err):
+            summary = ("Falta PySpark/numpy en el Python que ejecuta la prueba. "
+                       "Instala dependencias en el venv o define BNX_PYTHON con el "
+                       "Python correcto (en Windows: .venv\\Scripts\\python.exe).")
+        elif "winutils" in _err.lower() or "HADOOP_HOME" in _err or "hadoop binary" in _err.lower():
+            summary = ("Spark en Windows necesita winutils.exe: descarga winutils "
+                       "para tu version de Hadoop, ponlo en C:\\hadoop\\bin y define "
+                       "HADOOP_HOME=C:\\hadoop. Es un requisito del entorno, no del codigo.")
+        elif "JAVA_HOME" in _err or ("java" in _err.lower() and "not found" in _err.lower()):
+            summary = ("No se encontro Java. Spark requiere Java 8/11/17: instala un "
+                       "JDK y define JAVA_HOME.")
+        elif "Python worker" in _err and "crashed" in _err.lower():
+            summary = ("El worker de Python de Spark fallo: en Windows suele ser por "
+                       "PYSPARK_PYTHON apuntando a un Python sin pyspark. Usa el venv "
+                       "del proyecto (.venv\\Scripts\\python.exe) o define BNX_PYTHON.")
 
     reads_l = [{"var": r[0], "node": r[1], "rows": int(r[2])} for r in reads]
     writes_l = []

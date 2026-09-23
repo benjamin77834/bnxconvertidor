@@ -112,6 +112,7 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
   const [awsLogs, setAwsLogs] = useState([])
   const [awsStatus, setAwsStatus] = useState('') // '', 'running', 'ok', 'error'
   const awsPollRef = useRef(null)
+  const extDataRef = useRef(null)  // input file oculto para datos externos
   const [awsBucket, setAwsBucket] = useState('datalake-bnx-scripts-dev')
   const [awsRegion] = useState('us-east-1')
   const [awsRole] = useState('arn:aws:iam::107094296911:role/datalake-glue-role-dev')
@@ -171,7 +172,7 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
     const inputs = datasets.filter(d => d.io === 'input')
     const outputs = datasets.filter(d => d.io !== 'input')
     let h = ''
-    h += `<h1>BNX — Reporte de Data Redactada</h1>`
+    h += `<h1>BNX — Reporte de Data Sintética</h1>`
     h += `<p class="sub">Grafo: ${esc(graphName || nodeName || 'sin nombre')} · Generado: ${esc(now)}</p>`
 
     // Descripcion del grafo
@@ -302,7 +303,7 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
       pre { background: #f5f5f5; border: 1px solid #ddd; padding: 8px; font-size: 10px; white-space: pre-wrap; word-break: break-word; }
       @page { margin: 14mm; }
     `
-    return `<!doctype html><html><head><meta charset="utf-8"><title>BNX — Reporte Data Redactada</title><style>${styles}</style></head><body>${h}</body></html>`
+    return `<!doctype html><html><head><meta charset="utf-8"><title>BNX — Reporte Data Sintética</title><style>${styles}</style></head><body>${h}</body></html>`
   }
 
   const exportReportPDF = () => {
@@ -586,6 +587,91 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
   }
 
   // -------------------------------------------------------------------------
+  // Cargar DATOS EXTERNOS reales para un dataset de entrada. En vez de usar los
+  // datos sinteticos generados, la persona sube un CSV/JSON propio y esos datos
+  // alimentan la prueba para ese nodo. Util para probar con muestras reales.
+  // -------------------------------------------------------------------------
+  const _parseCsv = (text) => {
+    // Parser CSV simple (comas, comillas dobles). Suficiente para datos de
+    // prueba; el harness reparsea igual con el modulo csv de Python.
+    const lines = text.replace(/\r\n/g, '\n').split('\n').filter(l => l.length > 0)
+    if (!lines.length) return { headers: [], rows: [] }
+    const splitLine = (ln) => {
+      const out = []; let cur = ''; let inq = false
+      for (let i = 0; i < ln.length; i++) {
+        const ch = ln[i]
+        if (inq) {
+          if (ch === '"' && ln[i + 1] === '"') { cur += '"'; i++ }
+          else if (ch === '"') inq = false
+          else cur += ch
+        } else {
+          if (ch === '"') inq = true
+          else if (ch === ',') { out.push(cur); cur = '' }
+          else cur += ch
+        }
+      }
+      out.push(cur)
+      return out
+    }
+    const headers = splitLine(lines[0]).map(h => h.trim())
+    const rows = lines.slice(1).map(ln => {
+      const vals = splitLine(ln)
+      const obj = {}
+      headers.forEach((h, i) => { obj[h] = vals[i] !== undefined ? vals[i] : null })
+      return obj
+    })
+    return { headers, rows }
+  }
+
+  const loadExternalData = (file, targetNode) => {
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      try {
+        const text = String(reader.result || '')
+        let headers = []
+        let rows = []
+        if (file.name.toLowerCase().endsWith('.json')) {
+          const parsed = JSON.parse(text)
+          rows = Array.isArray(parsed) ? parsed : (parsed.rows || parsed.data || [])
+          headers = rows.length ? Object.keys(rows[0]) : []
+        } else {
+          const p = _parseCsv(text)
+          headers = p.headers; rows = p.rows
+        }
+        if (!headers.length || !rows.length) {
+          setError('El archivo externo no tiene filas/columnas legibles (CSV o JSON de objetos).')
+          return
+        }
+        // Reconstruir el dataset del nodo con los datos externos reales.
+        const columns = headers.map(h => ({ name: h, type: 'string', pii: null }))
+        const content = [headers.join(',')].concat(
+          rows.map(r => headers.map(h => {
+            const v = r[h] == null ? '' : String(r[h])
+            return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v
+          }).join(','))
+        ).join('\n') + '\n'
+        const newDs = {
+          node: targetNode, node_type: 'SOURCE', io: 'input',
+          format: 'csv', content, columns, rows, external: true,
+        }
+        setResult(prev => {
+          const base = prev && prev.datasets ? prev : { mode: 'external', schema: [], datasets: [] }
+          const datasets = [...(base.datasets || [])]
+          const idx = datasets.findIndex(d => d.node === targetNode && d.io === 'input')
+          if (idx >= 0) datasets[idx] = newDs
+          else datasets.push(newDs)
+          return { ...base, datasets }
+        })
+        setError('')
+      } catch (e) {
+        setError('No se pudo leer el archivo externo: ' + e.message)
+      }
+    }
+    reader.readAsText(file)
+  }
+
+  // -------------------------------------------------------------------------
   // Generar
   // -------------------------------------------------------------------------
   const generate = async () => {
@@ -664,7 +750,7 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
         <div>
-          <h2 style={{ margin: 0, fontSize: 22, color: t.text || '#e2e8f0' }}>🧪 Data Redactada</h2>
+          <h2 style={{ margin: 0, fontSize: 22, color: t.text || '#e2e8f0' }}>🧪 Data Sintética</h2>
           {graphName && (
             <div style={{ margin: '4px 0 0', fontSize: 13, fontWeight: 600 }}>
               <span style={{ color: t.dim || '#64748b' }}>Grafo: </span>
@@ -880,6 +966,33 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
                   : 'Datos que el job produce (resultado esperado).'}
               </span>
               <div style={{ flex: 1 }} />
+              {ds.io === 'input' && (
+                <>
+                  <input
+                    ref={extDataRef}
+                    type="file"
+                    accept=".csv,.json"
+                    style={{ display: 'none' }}
+                    onChange={(e) => {
+                      const f = e.target.files && e.target.files[0]
+                      if (f) loadExternalData(f, ds.node)
+                      e.target.value = ''  // permite re-subir el mismo archivo
+                    }}
+                  />
+                  <button
+                    onClick={() => extDataRef.current && extDataRef.current.click()}
+                    title="Sube un CSV/JSON con datos reales para este nodo de entrada. Reemplaza los datos sintéticos en la prueba."
+                    style={{ ...btn(false), fontSize: 11 }}
+                  >
+                    📎 Cargar datos externos
+                  </button>
+                </>
+              )}
+              {ds.external && (
+                <span style={{ fontSize: 10, color: '#22c55e', fontWeight: 600 }}>
+                  ● datos externos cargados
+                </span>
+              )}
               <button onClick={() => importSchemaToManual(ds.columns, ds.node)} style={{ ...btn(false), fontSize: 11 }}>
                 ✏️ Editar este esquema manualmente
               </button>
@@ -1456,7 +1569,7 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
       )}
 
       {/* Guia de comandos de terminal para Data Redactada / ejecucion PySpark. */}
-      <TerminalGuide theme={t} title="Guía de comandos (terminal) — Data Redactada / PySpark" sections={[
+      <TerminalGuide theme={t} title="Guía de comandos (terminal) — Data Sintética / PySpark" sections={[
         {
           label: 'Generar datos sintéticos desde un grafo (.mp) por línea de comando',
           cmd: `curl -s -X POST ${(typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8081')}/datagen \\\n  -H "Content-Type: application/json" \\\n  -d '{"mp": "<contenido .mp>", "n_rows": 20, "format": "csv"}'`,
