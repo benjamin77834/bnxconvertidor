@@ -267,6 +267,34 @@ const TIMELINE = [
     tags: ['equivalence', 'test', 'api', 'pyspark'],
     color: '#14b8a6',
   },
+  {
+    date: '19 Sep 2026',
+    title: 'Dia 46: py2spark (Python/pandas + ML -> PySpark 3)',
+    desc: 'Nueva capacidad aparte del pipeline Ab Initio: convertir Python (pandas + scikit-learn) a PySpark 3. Libreria src/py2spark/ con converter.py (AST pandas->PySpark: read_csv, filtros, groupby, merge, sort_values, agg, fillna, rename, drop), mllib.py (sklearn->pyspark.ml), schema.py (infiere esquema de entrada) y CLI (py2spark convert). GUI: pestaña Py->Spark con ejemplos, envio a Data Redactada y descarga de extension VS Code. 5 ejemplos ML + guia de comandos. Lo no traducible 1:1 se marca con TODO honesto. 84 tests.',
+    tags: ['py2spark', 'pandas', 'ml', 'ui'],
+    color: '#6366f1',
+  },
+  {
+    date: '19 Sep 2026',
+    title: 'Dia 47: py2spark ejecuta de verdad en Data Redactada',
+    desc: 'Cerramos uno a uno los errores reales al correr los ejemplos ML en el harness local (siempre verificando ok=True). Datos ML sinteticos: df.sample(n)->sample(fraction,seed).limit(n); .astype->cast; pd.DataFrame(dict/arrays/escalares)->createDataFrame con esquema correcto; np.where->F.when().otherwise(); np.random.*->funciones de columna. Frameworks sin equivalente (XGBoost, LightGBM, Stacking, PyTorch, joblib, sklearn.metrics)->TODO honesto. Harness MLlib tolerante (crea features/label faltantes, castea boolean en sum, ajusta k de KMeans). El server reconvierte el Python original en cada prueba (nunca PySpark viejo cacheado) + start_server.sh de arranque limpio. MLlib de clasificacion real con StringIndexer/VectorAssembler/randomSplit/Evaluators. 111 tests.',
+    tags: ['py2spark', 'ml', 'test', 'fix'],
+    color: '#6366f1',
+  },
+  {
+    date: '19 Sep 2026',
+    title: 'Dia 48: Compatibilidad Spark 3.5 (detectada, no pinneada)',
+    desc: 'El QA pregunto si funciona con Spark 3.5. Auditamos todo el codigo generado (Ab Initio->Spark/Glue y py2spark->MLlib): no usa ninguna API exclusiva de Spark 4.0 — todas las funciones F.*, APIs de DataFrame y clases de pyspark.ml existen desde 3.x. En vez de fijar version, export_bundle.py DETECTA la version instalada en runtime y declara requirement flexible (pyspark>=3.5,<5); el harness reporta la version de Spark. Forzamos ansi.enabled=false (default en 3.5, cambio a true en 4.0) para alinear el comportamiento local con 3.5.',
+    tags: ['spark', 'compat', 'bundle'],
+    color: '#8b5cf6',
+  },
+  {
+    date: '21 Sep 2026',
+    title: 'Dia 49: Correo del QA - defectos del parser .mp nativo',
+    desc: 'El QA reporto 10 grafos con defectos. Causa raiz comun: el parser del .mp nativo (formato repositorio EME) buscaba aristas XXGedge que NO existen (usan XXGflow + puertos iport/oport). Reescribimos src/mp_parser.py con ingenieria inversa del formato. Incorrect flow: reconstruimos edges reales via flow->oport/iport->vertice con to_port; ademas nombres duplicados (12 Reformat) colapsaban a un nodo creando ciclos falsos -> desambiguados por objId (0 ciclos). Create Data->SOURCE (por prototype_path). Dedup key: extraida del param key del Dedup_Sorted -> dropDuplicates con key real. Lookup files: Lookup_File.mdc registrados como SOURCE. Flows to sub-graph: resolvemos bindings de puertos + capturamos XXGtvertex (Unload DB). Barrido Spark 58/58, Glue 58/58, 111 tests.',
+    tags: ['parser', 'abinitio', 'fix', 'qa'],
+    color: '#ef4444',
+  },
 ]
 
 const STATS = [

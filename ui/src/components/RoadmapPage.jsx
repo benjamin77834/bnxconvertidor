@@ -10,9 +10,10 @@ const ROADMAP_DATA = {
         tasks: [
           { task: 'Completar parser formato serializado Ab Initio (.mp nativo GDE)', status: 'done' },
           { task: 'Resolver mapeo de edges (ports -> flows -> vertices)', status: 'done' },
-          { task: 'Validar con 3+ grafos reales del banco (barrido 36 grafos, 35/36 ok)', status: 'done' },
+          { task: 'Validar con grafos reales del banco (barrido 58 grafos, 58/58 compilan)', status: 'done' },
           { task: 'Generar job.py con edges correctos y DAG completo', status: 'done' },
-          { task: 'Documentar limitaciones del parser (bajo-mediano ok, >100 nodos pendiente)', status: 'in-progress' },
+          { task: 'Defectos QA: dedup key, lookup files, Create Data->SOURCE, subgrafos (bindings)', status: 'done' },
+          { task: 'Expansion recursiva de subgrafos DB muy anidados (scan/Unload auxiliares)', status: 'in-progress' },
         ],
       },
       {
@@ -29,12 +30,12 @@ const ROADMAP_DATA = {
       {
         label: 'Semana 3-4: Testing Formal',
         tasks: [
-          { task: 'Unit tests para cada parser (mp, xfr, dml, pset, plan, cobol)', status: 'pending' },
-          { task: 'Unit tests para cada codegen (glue, spark, flink, airflow)', status: 'pending' },
+          { task: 'Suite pytest (111 tests: py2spark, schema, CLI, ML) + barrido de biblioteca', status: 'done' },
+          { task: 'Unit tests para cada codegen (glue, spark, flink, airflow)', status: 'in-progress' },
           { task: 'Integration tests: .mp real -> job.py -> ejecucion + equivalencia de datos vs referencia', status: 'done' },
-          { task: 'Test con grafos del banco (barrido 36 grafos, 35/36 ok)', status: 'done' },
+          { task: 'Test con grafos del banco (barrido 58 grafos, 58/58 compilan)', status: 'done' },
           { task: 'Documentar casos de prueba en formato banco', status: 'pending' },
-          { task: 'Configurar pytest + coverage report (formalizar el barrido)', status: 'in-progress' },
+          { task: 'Coverage report formal (medir % de cobertura)', status: 'in-progress' },
         ],
       },
     ],
