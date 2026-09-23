@@ -78,11 +78,14 @@ def _parse_native_abinitio(content):
     edges = []
     params = {}
     node_map = {}          # objId (str) -> node info {id,name,type}
+    node_by_nid = {}       # nid -> dict del nodo (para adjuntar params por vertice)
+    current_node = None    # ultimo nodo vertice visto (para asociarle key/keep/...)
     # Mapas para reconstruir los edges por puertos.
     oport2vertex = {}      # oportId -> vertexObjId
     iport2vertex = {}      # iportId -> vertexObjId
     flow_src = {}          # flowId -> oportId  (origen)
     flow_dst = {}          # flowId -> (iportId, ordinal)  (destino + puerto in)
+    proto_of = {}          # instanceObjId -> prototypeObjId (XXGobject_proto_object)
 
     def _last_two_ids(ln):
         # captura los dos ids finales '...}A|B|}' de las lineas de relacion.
@@ -95,6 +98,12 @@ def _parse_native_abinitio(content):
             continue
 
         # --- Relaciones puerto<->vertice y flow<->puerto (edges por puertos) ---
+        # Cualquiera de estas lineas marca el fin del bloque de parametros del
+        # vertice actual (los params de un vertice van justo despues de su linea).
+        if any(t in line for t in ("XXGvertex_oport_oport", "XXGvertex_iport_iport",
+                                    "XXGoport_dst_flow", "XXGiport_src_flow",
+                                    "XXGflow", "XXGiport", "XXGoport")):
+            current_node = None
         if "XXGvertex_oport_oport" in line:
             vtx, oport = _last_two_ids(line)
             if vtx and oport:
@@ -104,6 +113,14 @@ def _parse_native_abinitio(content):
             vtx, iport = _last_two_ids(line)
             if vtx and iport:
                 iport2vertex[iport] = vtx
+            continue
+        # proto_object: '...}<prototypeId>|<instanceId>|}' — el mismo componente
+        # aparece como prototipo (con params: key/keep) e instancia (con puertos).
+        # Guardamos instance->prototype para FUSIONAR sus params despues.
+        if "XXGobject_proto_object" in line:
+            proto_id, inst_id = _last_two_ids(line)
+            if proto_id and inst_id:
+                proto_of[inst_id] = proto_id
             continue
         if "XXGoport_dst_flow" in line:
             oport, flow = _last_two_ids(line)
@@ -151,12 +168,17 @@ def _parse_native_abinitio(content):
 
             nid = normalize_id(comp_name)
 
-            # Handle duplicate names
-            if nid in node_map:
+            # Desambiguar nombres duplicados: MUCHOS componentes comparten nombre
+            # (12 'Reformat', varios 'copy'...). Antes se comparaba contra node_map
+            # (indexado por objId) y nunca detectaba el choque -> todos colapsaban
+            # al mismo nid, creando self-loops y ciclos falsos. Usamos el set de
+            # nids ya usados y sufijamos con el objId para que cada componente sea
+            # un nodo unico.
+            if nid in node_by_nid:
                 nid = f"{nid}_{vid}"
 
             node_map[vid] = {"id": nid, "name": comp_name, "type": ntype}
-            nodes.append({
+            _node = {
                 "id": nid,
                 "name": comp_name,
                 "type": ntype,
@@ -167,7 +189,12 @@ def _parse_native_abinitio(content):
                 # tipo real sin re-parsear.
                 "prototype": proto,
                 "mpname": mpname,
-            })
+            }
+            nodes.append(_node)
+            node_by_nid[nid] = _node
+            # Este pasa a ser el vertice "actual": los XXparameter que siguen
+            # (key, keep, select, ...) pertenecen a el hasta el proximo vertice.
+            current_node = _node
             continue
 
         # Compat: si el archivo trae aristas directas XXGedge, usarlas tambien.
@@ -181,11 +208,87 @@ def _parse_native_abinitio(content):
                 })
             continue
 
-        # Parse parameters del grafo: {id|XXparameter|name|value|...}
+        # Parse parameters: {id|XXparameter|name|value|...}
         m = re.match(r'\{[^|]*\|XXparameter\|([^|]+)\|([^|]*)\|', line)
         if m:
-            params[m.group(1).strip()] = m.group(2).strip()
+            pname = m.group(1).strip()
+            pval = m.group(2).strip()
+            # Si pertenece a un vertice (hay current_node), capturar los
+            # parametros relevantes del componente (key de dedup/sort, keep...).
+            if current_node is not None and pname in (
+                "key", "keep", "select", "dedup_key", "sorted-input"
+            ):
+                # La key de Ab Initio viene como '\{campo1; campo2\}': limpiar
+                # backslashes de escape y separar por ';'/','/espacio.
+                if pname in ("key", "dedup_key"):
+                    raw = pval.replace("\\{", "").replace("\\}", "") \
+                              .replace("{", "").replace("}", "").strip()
+                    keys = [k.strip() for k in re.split(r"[;,\s]+", raw) if k.strip()]
+                    if keys:
+                        current_node["dedup_keys"] = keys
+                        current_node["key_cols"] = keys
+                else:
+                    current_node[pname] = pval
+            else:
+                # Parametro a nivel de grafo (INPUT_FILE, OUTPUT_PATH, etc.).
+                params[pname] = pval
             continue
+
+    # --- Fusionar prototipo <-> instancia ---
+    # El mismo componente aparece 2 veces (prototipo con params key/keep, e
+    # instancia con puertos). proto_of mapea instancia->prototipo. PERO los flows
+    # pueden conectar a CUALQUIERA de los dos vertices (via sus puertos), asi que
+    # no podemos asumir cual eliminar. Estrategia:
+    #  1) determinar que vertices participan realmente en algun flow (tienen edge)
+    #  2) fusionar los params en AMBOS (bidireccional) para no perder la key
+    #  3) eliminar el vertice del par que NO tiene ningun flow (huerfano)
+    _connected = set()  # objIds de vertices que participan en algun flow
+    for _flow, _op in flow_src.items():
+        _v = oport2vertex.get(_op)
+        if _v:
+            _connected.add(_v)
+    for _flow, (_ip, _o) in flow_dst.items():
+        _v = iport2vertex.get(_ip)
+        if _v:
+            _connected.add(_v)
+
+    _drop_ids = set()
+    for inst_id, proto_id in proto_of.items():
+        a_info = node_map.get(inst_id)
+        b_info = node_map.get(proto_id)
+        if not a_info or not b_info:
+            continue
+        a_node = node_by_nid.get(a_info["id"])
+        b_node = node_by_nid.get(b_info["id"])
+        if not a_node or not b_node:
+            continue
+        # Fusion bidireccional de params relevantes (no perder la dedup key).
+        for _f in ("dedup_keys", "key_cols", "keep", "select", "prototype"):
+            if a_node.get(_f) and not b_node.get(_f):
+                b_node[_f] = a_node[_f]
+            elif b_node.get(_f) and not a_node.get(_f):
+                a_node[_f] = b_node[_f]
+        # Tipo mas especifico (Dedup_Sorted->DEDUP) para ambos.
+        for src, dst, si, di in ((a_node, b_node, a_info, b_info),
+                                  (b_node, a_node, b_info, a_info)):
+            if src.get("type") and src["type"] not in ("TRANSFORM",) \
+                    and dst.get("type") in (None, "TRANSFORM"):
+                dst["type"] = src["type"]
+                di["type"] = src["type"]
+        # Eliminar el que NO participa en ningun flow (el huerfano del par).
+        inst_connected = inst_id in _connected
+        proto_connected = proto_id in _connected
+        if inst_connected and not proto_connected:
+            _drop_ids.add(b_info["id"])   # sobra el prototipo
+        elif proto_connected and not inst_connected:
+            _drop_ids.add(a_info["id"])   # sobra la instancia
+        elif not inst_connected and not proto_connected:
+            # Ninguno conectado: conservar uno (la instancia) y soltar el otro.
+            _drop_ids.add(b_info["id"])
+        # Si AMBOS estan conectados, no eliminar (son nodos distintos reales).
+
+    if _drop_ids:
+        nodes = [n for n in nodes if n["id"] not in _drop_ids]
 
     # --- Reconstruir edges por la cadena flow -> puerto -> vertice ---
     # Para cada flow que tenga origen (oport) y destino (iport) resueltos a

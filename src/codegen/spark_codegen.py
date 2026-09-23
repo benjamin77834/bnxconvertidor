@@ -2709,8 +2709,16 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                 f.write(f'# [-] DEDUP: {log_name}\n')
                 if parents:
                     src = f'{parents[0]}_df'
-                    dk = rule.get("dedup_keys", ["id"]) if rule else ["id"]
-                    ob = rule.get("order_by") if rule else None
+                    # Prioridad de la dedup key: (1) xfr_rules, (2) la extraida del
+                    # .mp nativo (node.dedup_keys), (3) default ['id'].
+                    dk = None
+                    if rule and rule.get("dedup_keys"):
+                        dk = rule.get("dedup_keys")
+                    elif getattr(node, "dedup_keys", None):
+                        dk = node.dedup_keys
+                    else:
+                        dk = ["id"]
+                    ob = (rule.get("order_by") if rule else None) or getattr(node, "order_by", None)
                     ks = ", ".join(f'"{k}"' for k in dk)
                     if ob:
                         f.write(f'_w_{var_id} = Window.partitionBy({ks}).orderBy(col("{ob}").desc())\n')
