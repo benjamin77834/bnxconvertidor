@@ -26,6 +26,7 @@ import ast
 import re
 
 from . import mllib as _mllib
+from ._unparse import unparse as _unparse
 
 
 # --------- utilidades de deteccion ---------
@@ -385,7 +386,7 @@ class PandasToSparkTransformer(ast.NodeTransformer):
         dead = self._refs_dead_var(node.value)
         if dead is not None:
             try:
-                orig = ast.unparse(node)
+                orig = _unparse(node)
             except Exception:
                 orig = "<statement>"
             self._kill_targets(node)
@@ -430,7 +431,7 @@ class PandasToSparkTransformer(ast.NodeTransformer):
                 return ast.Assign(targets=node.targets, value=base)
             # .target / .feature_names / .DESCR / .target_names: sin equivalente.
             try:
-                orig = ast.unparse(node)
+                orig = _unparse(node)
             except Exception:
                 orig = "<statement>"
             self.diag.unsup(
@@ -450,7 +451,7 @@ class PandasToSparkTransformer(ast.NodeTransformer):
         idx_attr = _uses_pandas_index(node.value)
         if idx_attr is not None:
             try:
-                orig = ast.unparse(node)
+                orig = _unparse(node)
             except Exception:
                 orig = "<statement>"
             self.diag.unsup(
@@ -512,7 +513,7 @@ class PandasToSparkTransformer(ast.NodeTransformer):
         dead = self._refs_dead_var(node.value)
         if dead is not None:
             try:
-                orig = ast.unparse(node)
+                orig = _unparse(node)
             except Exception:
                 orig = "<statement>"
             return self._emit_comment([
@@ -524,7 +525,7 @@ class PandasToSparkTransformer(ast.NodeTransformer):
         ml_fn = self._calls_ml_function(node.value)
         if ml_fn is not None:
             try:
-                orig = ast.unparse(node)
+                orig = _unparse(node)
             except Exception:
                 orig = "<statement>"
             self.diag.unsup(
@@ -538,7 +539,7 @@ class PandasToSparkTransformer(ast.NodeTransformer):
         idx_attr = _uses_pandas_index(node.value)
         if idx_attr is not None:
             try:
-                orig = ast.unparse(node)
+                orig = _unparse(node)
             except Exception:
                 orig = "<statement>"
             self.diag.unsup(
@@ -740,7 +741,7 @@ class PandasToSparkTransformer(ast.NodeTransformer):
                            "mean_squared_error", "mean_absolute_error", "r2_score"))
         if is_ext_ml_ctor and called and (called[:1].isupper() or is_metric_fn):
             try:
-                orig = ast.unparse(node)
+                orig = _unparse(node)
             except Exception:
                 orig = "<statement>"
             hint = _MLLIB_HINT.get(called)
@@ -1432,7 +1433,7 @@ def convert_code(source, add_preamble=True):
     ast.fix_missing_locations(new_tree)
 
     try:
-        body_code = ast.unparse(new_tree)
+        body_code = _unparse(new_tree)
     except Exception as e:  # pragma: no cover - unparse muy raro que falle
         return {
             "ok": False,
