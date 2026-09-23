@@ -86,6 +86,8 @@ def _parse_native_abinitio(content):
     flow_src = {}          # flowId -> oportId  (origen)
     flow_dst = {}          # flowId -> (iportId, ordinal)  (destino + puerto in)
     proto_of = {}          # instanceObjId -> prototypeObjId (XXGobject_proto_object)
+    port_binding = {}      # portId(externo) <-> portId(interno) de subgrafos
+    vertex_name = {}       # objId -> nombre visible (de XXGgraph_vertex_vertex)
 
     def _last_two_ids(ln):
         # captura los dos ids finales '...}A|B|}' de las lineas de relacion.
@@ -114,6 +116,23 @@ def _parse_native_abinitio(content):
             if vtx and iport:
                 iport2vertex[iport] = vtx
             continue
+        # Bindings de puertos entre niveles (subgrafo <-> padre): un puerto
+        # externo del subgrafo se "enlaza" a un puerto interno. Cuando un flow
+        # apunta a un puerto binding, hay que seguir el enlace hasta el puerto
+        # real del componente. Guardamos el enlace en ambos sentidos.
+        if "XXGoport_binding_oport" in line or "XXGiport_binding_iport" in line:
+            a_port, b_port = _last_two_ids(line)
+            if a_port and b_port:
+                port_binding[a_port] = b_port
+                port_binding[b_port] = a_port
+            continue
+        # Nombre visible del componente: XXGgraph_vertex_vertex|..|{Nombre|}graph|objId|
+        if "XXGgraph_vertex_vertex" in line:
+            nm = re.search(r'\{([^|{}]+)\|\}', line)
+            _g, obj = _last_two_ids(line)
+            if nm and obj:
+                vertex_name[obj] = nm.group(1).strip()
+            continue
         # proto_object: '...}<prototypeId>|<instanceId>|}' — el mismo componente
         # aparece como prototipo (con params: key/keep) e instancia (con puertos).
         # Guardamos instance->prototype para FUSIONAR sus params despues.
@@ -136,8 +155,9 @@ def _parse_native_abinitio(content):
                 flow_dst[flow] = (iport, ordinal)
             continue
 
-        # Parse vertex de PROCESO o de DATASET (fvertex): mismo objId en idx 2.
-        m = re.match(r'\{[^|]*\|XXG[pf]vertex\|(\d+)\|', line)
+        # Parse vertex de PROCESO (pvertex), DATASET (fvertex) o TABLA DB
+        # (tvertex: Input_Table/Unload de Teradata/Oracle). Mismo objId en idx 2.
+        m = re.match(r'\{[^|]*\|XXG[pft]vertex\|(\d+)\|', line)
         if m:
             vid = m.group(1)
             # El TIPO real del componente esta en el 'mpname' o en el
@@ -315,13 +335,24 @@ def _parse_native_abinitio(content):
     # Para cada flow que tenga origen (oport) y destino (iport) resueltos a
     # vertices reales, emitimos una arista con el ordinal del puerto de entrada
     # (to_port) para que el DAG ordene bien los padres de un JOIN/MERGE.
+    def _resolve_vtx(port, port2vtx):
+        # Resuelve el vertice de un puerto; si el puerto es un binding de
+        # subgrafo, sigue el enlace hasta el puerto real del componente.
+        v = port2vtx.get(port)
+        if v is not None:
+            return v
+        bound = port_binding.get(port)
+        if bound is not None:
+            return port2vtx.get(bound) or iport2vertex.get(bound) or oport2vertex.get(bound)
+        return None
+
     for flow_id, oport in flow_src.items():
         dst = flow_dst.get(flow_id)
         if not dst:
             continue
         iport, ordinal = dst
-        src_vtx = oport2vertex.get(oport)
-        dst_vtx = iport2vertex.get(iport)
+        src_vtx = _resolve_vtx(oport, oport2vertex)
+        dst_vtx = _resolve_vtx(iport, iport2vertex)
         if src_vtx in node_map and dst_vtx in node_map:
             edges.append({
                 "from": node_map[src_vtx]["id"],
@@ -337,7 +368,8 @@ def _parse_native_abinitio(content):
             _n["is_lookup_file"] = True
             _n["type"] = "SOURCE"
 
-    return {"nodes": nodes, "edges": edges, "subgraphs": {}, "abinitio_params": params}
+    return {"nodes": nodes, "edges": edges, "subgraphs": {},
+            "abinitio_params": params, "vertex_names": vertex_name}
 
 
 def parse_mp_ast(file_path):
