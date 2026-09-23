@@ -12,11 +12,13 @@
 
 import ast
 
+from ._unparse import unparse as _unparse
+
 
 def _lit(node):
     """Representa un nodo AST simple como texto Python (literal/nombre)."""
     try:
-        return ast.unparse(node)
+        return _unparse(node)
     except Exception:
         return "None"
 
@@ -350,7 +352,7 @@ def snippet_get_dummies(call, out_target, df_hint="df"):
     cols = _kw(call, "columns")
     col_list = []
     if isinstance(cols, ast.List):
-        col_list = [ast.unparse(e) for e in cols.elts]
+        col_list = [_unparse(e) for e in cols.elts]
     tgt = out_target or df_hint
     lines = ["# MLlib: one-hot = StringIndexer + OneHotEncoder por columna categorica"]
     if col_list:
