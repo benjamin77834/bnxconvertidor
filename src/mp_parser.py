@@ -216,7 +216,9 @@ def _parse_native_abinitio(content):
             # Si pertenece a un vertice (hay current_node), capturar los
             # parametros relevantes del componente (key de dedup/sort, keep...).
             if current_node is not None and pname in (
-                "key", "keep", "select", "dedup_key", "sorted-input"
+                "key", "keep", "select", "dedup_key", "sorted-input",
+                "!prototype_path", "prototype_path", "mpname", "URL", "Layout",
+                "file", "path"
             ):
                 # La key de Ab Initio viene como '\{campo1; campo2\}': limpiar
                 # backslashes de escape y separar por ';'/','/espacio.
@@ -227,6 +229,25 @@ def _parse_native_abinitio(content):
                     if keys:
                         current_node["dedup_keys"] = keys
                         current_node["key_cols"] = keys
+                elif pname in ("!prototype_path", "prototype_path"):
+                    # El prototipo puede venir en linea aparte: reclasificar el
+                    # nodo (p.ej. Lookup_File.mdc -> SOURCE, Dedup_Sorted -> DEDUP).
+                    _proto = pval.split("/")[-1]
+                    if _proto.lower().endswith((".mpc", ".mdc")):
+                        _proto = _proto[:-4]
+                    if not current_node.get("prototype"):
+                        current_node["prototype"] = _proto
+                        _t = _map_abinitio_type(_proto)
+                        # Reclasificar solo si el tipo actual era el generico.
+                        if current_node.get("type") in (None, "TRANSFORM"):
+                            current_node["type"] = _t
+                        # Marcar los Lookup_File como fuentes de lookup.
+                        if "lookup" in _proto.lower():
+                            current_node["is_lookup_file"] = True
+                elif pname in ("URL", "Layout", "file", "path"):
+                    # Ruta del dataset (source/sink/lookup file).
+                    if not current_node.get("data_path"):
+                        current_node["data_path"] = pval
                 else:
                     current_node[pname] = pval
             else:
@@ -307,6 +328,14 @@ def _parse_native_abinitio(content):
                 "to": node_map[dst_vtx]["id"],
                 "to_port": ordinal,
             })
+
+    # Marcar los Lookup_File como fuentes de lookup (SOURCE) por su prototipo.
+    # Se hace al FINAL (tras la fusion prototipo/instancia) para que el flag
+    # quede en el nodo que realmente sobrevive.
+    for _n in nodes:
+        if "lookup" in (_n.get("prototype") or "").lower():
+            _n["is_lookup_file"] = True
+            _n["type"] = "SOURCE"
 
     return {"nodes": nodes, "edges": edges, "subgraphs": {}, "abinitio_params": params}
 

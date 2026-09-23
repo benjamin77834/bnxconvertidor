@@ -17,6 +17,7 @@ class Node:
         self.keep = None
         self.prototype = None
         self.mpname = None
+        self.is_lookup_file = False
 
 class DAG:
     def __init__(self, nodes_list, edges_list, exclude_edges=None):
@@ -31,7 +32,8 @@ class DAG:
                     node_obj.db_source = n["db_source"]
                 if "data_path" in n:
                     node_obj.data_path = n["data_path"]
-                for _f in ("dedup_keys", "key_cols", "keep", "prototype", "mpname"):
+                for _f in ("dedup_keys", "key_cols", "keep", "prototype",
+                           "mpname", "is_lookup_file"):
                     if n.get(_f) is not None:
                         setattr(node_obj, _f, n[_f])
 
