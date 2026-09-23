@@ -954,35 +954,26 @@ class PandasToSparkTransformer(ast.NodeTransformer):
                 return _make([ast.List(elts=rows, ctx=ast.Load())],
                              [ast.keyword(arg="schema", value=schema)])
 
-            # Valores no literales (arrays/expresiones): zip en runtime + conversion
-            # de escalares numpy (np.int64/np.float64) a tipos Python nativos, que
-            # Spark SI sabe inferir. Genera:
-            #   [tuple((_v.item() if hasattr(_v,'item') else _v) for _v in _r)
-            #    for _r in zip(<v1>, <v2>, ...)]
-            zip_call = ast.Call(func=ast.Name("zip", ast.Load()), args=value_exprs, keywords=[])
-            inner = ast.GeneratorExp(
-                elt=ast.IfExp(
-                    test=ast.Call(func=ast.Name("hasattr", ast.Load()),
-                                  args=[ast.Name("_v", ast.Load()), ast.Constant("item")],
-                                  keywords=[]),
-                    body=ast.Call(func=ast.Attribute(value=ast.Name("_v", ast.Load()),
-                                                     attr="item", ctx=ast.Load()),
-                                  args=[], keywords=[]),
-                    orelse=ast.Name("_v", ast.Load()),
-                ),
-                generators=[ast.comprehension(
-                    target=ast.Name("_v", ast.Store()),
-                    iter=ast.Name("_r", ast.Load()), ifs=[], is_async=0)],
+            # Valores no literales (arrays/expresiones o Columns de Spark tras
+            # traducir np.random.*/np.where): delegamos al helper de runtime
+            # _py2spark_df, que sabe distinguir:
+            #   - Column de Spark (tiene ._jc): usa spark.range(N).withColumn(col, C)
+            #     para MATERIALIZAR valores reales por fila (F.rand() etc.).
+            #   - secuencia Python/numpy: transpone por posicion y convierte
+            #     escalares numpy a nativos.
+            # Antes generabamos un zip(<columnas>) inline, pero un F.Column NO es
+            # iterable en Python -> 'Column is not iterable'. El helper lo evita.
+            self.needs_rows_helper = True
+            dict_arg = ast.Dict(
+                keys=[ast.Constant(c) for c in col_names],
+                values=value_exprs,
             )
-            comp = ast.ListComp(
-                elt=ast.Call(func=ast.Name("tuple", ast.Load()), args=[inner], keywords=[]),
-                generators=[ast.comprehension(
-                    target=ast.Name("_r", ast.Store()), iter=zip_call, ifs=[], is_async=0)],
-            )
-            self.diag.warn("pd.DataFrame({col: <array>}) -> spark.createDataFrame(zip(...), schema): "
-                           "las columnas se combinan por posicion y se convierten escalares "
-                           "numpy a tipos Python; revisa tipos.")
-            return _make([comp], [ast.keyword(arg="schema", value=schema)])
+            self.diag.warn("pd.DataFrame({col: <array/Column>}) -> _py2spark_df({...}): "
+                           "materializa filas en runtime (spark.range+withColumn si son "
+                           "columnas Spark; transpone si son secuencias). Revisa tipos.")
+            return ast.Call(
+                func=ast.Name("_py2spark_df", ast.Load()),
+                args=[dict_arg, schema], keywords=[])
 
         # Caso lista/tupla de ESCALARES: envolver cada uno en (v,) y dar columna.
         if isinstance(data, (ast.List, ast.Tuple)) and data.elts and \
@@ -1382,11 +1373,27 @@ def _py2spark_df(data, schema=None, _n_rows=100):
         return it() if callable(it) else v
     if isinstance(data, dict):
         cols = list(data.keys())
-        # Column de Spark presente -> construir con spark.range + withColumn.
+        # Column de Spark presente -> materializar filas con spark.range + withColumn.
+        # Las columnas Spark (F.rand()...) se evaluan por fila; las secuencias
+        # literales (listas/arrays numpy) se materializan por posicion de fila via
+        # un mapa element_at sobre un array literal (NO F.lit(secuencia), que
+        # colapsaria el array a un escalar constante).
         if any(hasattr(v, "_jc") for v in data.values()):
-            _rng = spark.range(_n_rows)
+            # nro de filas = longitud de las secuencias presentes (si las hay);
+            # si solo hay columnas Spark, usar _n_rows.
+            _lens = [len(v) for v in data.values()
+                     if not hasattr(v, "_jc") and hasattr(v, "__len__")]
+            _rows = min(_lens) if _lens else _n_rows
+            _rng = spark.range(_rows)
+            _idx = (F.col("id") + 1).cast("int")  # 1-based para element_at
             for _c, _v in data.items():
-                _rng = _rng.withColumn(_c, _v if hasattr(_v, "_jc") else F.lit(_v))
+                if hasattr(_v, "_jc"):
+                    _rng = _rng.withColumn(_c, _v)
+                elif hasattr(_v, "__len__") and not isinstance(_v, (str, bytes)):
+                    _arr = F.array(*[F.lit(_n(_x)) for _x in _v])
+                    _rng = _rng.withColumn(_c, F.element_at(_arr, _idx))
+                else:
+                    _rng = _rng.withColumn(_c, F.lit(_n(_v)))
             return _rng.select(*cols)
         vals = [list(v) for v in data.values()]
         m = min((len(c) for c in vals), default=0)

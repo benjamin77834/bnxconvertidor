@@ -344,8 +344,10 @@ def test_pd_dataframe_variable_dict():
 
 def test_pd_dataframe_dict_of_arrays():
     # pd.DataFrame({"a": np.random.randint(...), "b": ...}) : valores NO literales.
-    # Debe transponer con zip en runtime + nombrar columnas (no dejar dict crudo,
-    # que Spark interpreta como columna '_1'). Y convertir escalares numpy.
+    # Se delega al helper de runtime _py2spark_df, que MATERIALIZA filas reales:
+    # si los valores son columnas de Spark (F.rand()...) usa spark.range+withColumn;
+    # si son secuencias/arrays las transpone. NO debe usar zip(<columnas>) inline,
+    # porque un F.Column no es iterable en Python ('Column is not iterable').
     r = _conv(
         'import pandas as pd\n'
         'import numpy as np\n'
@@ -353,11 +355,15 @@ def test_pd_dataframe_dict_of_arrays():
         '"visitas": np.random.randint(0, 10, 100)})\n'
         'df["compra"] = (df["sueldo"] > 2500).astype(int)\n'
     )
-    assert "zip(" in r["code"]
-    assert "schema=['sueldo', 'visitas']" in r["code"]
-    assert ".item()" in r["code"]  # conversion numpy -> Python nativo
-    # el dict crudo NO debe quedar como argumento de createDataFrame
+    # delega al helper de runtime, con los nombres de columna preservados
+    assert "_py2spark_df(" in r["code"]
+    assert "'sueldo', 'visitas'" in r["code"]
+    # el dict crudo NO debe quedar como argumento de createDataFrame (Spark lo
+    # interpretaria como columna '_1'); y NO debe hacer zip de columnas Spark.
     assert "createDataFrame({" not in r["code"]
+    assert "zip(F." not in r["code"]
+    # el helper debe estar incluido en el preambulo
+    assert "def _py2spark_df(" in r["code"]
 
 
 def test_np_where_to_when_otherwise():
