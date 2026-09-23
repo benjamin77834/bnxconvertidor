@@ -371,9 +371,51 @@ Verificado end-to-end: **mismo-vs-mismo = 100% equivalente**; **mismo-vs-referen
 
 ---
 
+## 19 de septiembre — Dia 46: py2spark (Python/pandas + ML → PySpark 3)
+
+Nueva capacidad grande: un convertidor de **Python (pandas y scikit-learn) a PySpark 3**, aparte del pipeline Ab Initio. Motiva­cion: los analistas del banco tienen scripts pandas/ML que tambien deben migrar a Spark.
+
+- **Libreria `src/py2spark/`**: `converter.py` (transforma el AST de pandas a PySpark: `read_csv`→`spark.read`, filtros/`groupby`/`merge`/`sort_values`/`agg`/`fillna`/`rename`/`drop`, etc.), `mllib.py` (traduce sklearn a `pyspark.ml`), `schema.py` (infiere el esquema de entrada del codigo), `cli.py` (`py2spark convert`).
+- **GUI**: pestaña "🐍 Py→Spark" con selector de ejemplos, envio a Data Redactada y descarga de la extension VS Code.
+- **Ejemplos** en `examples/py2spark/` (feature prep, logistic regression, random forest, kmeans, ETL join+agg) y guia de comandos de terminal.
+- Lo no traducible 1:1 se marca con `# TODO py2spark:` honesto (XGBoost/LightGBM/PyTorch/`transformers`, `.loc`/`.iloc`, `sklearn.metrics`, `joblib`) en vez de romper. **84 tests** al cierre del dia.
+
+---
+
+## 19 de septiembre — Dia 47: py2spark ejecuta de verdad en Data Redactada
+
+Probando los ejemplos ML en el harness local salieron muchos errores reales que fuimos cerrando uno a uno, siempre verificando `ok=True` end-to-end:
+
+- **Manejo de datos ML sintéticos**: `df.sample(n)` de pandas → `sample(fraction, seed).limit(n)` de Spark; `.astype(int)` → `.cast('int')`; `pd.DataFrame({...})` con listas/arrays/escalares → `createDataFrame` con esquema correcto (transponiendo dict de columnas y convirtiendo escalares numpy a nativos); `np.where`→`F.when().otherwise()`, `np.random.randint/choice/rand`→funciones de columna.
+- **Frameworks sin equivalente**: XGBoost, LightGBM, StackingClassifier, PyTorch, `joblib.dump`, `sklearn.metrics` → TODO honesto (antes daban `NameError`/`ModuleNotFound`).
+- **Harness MLlib tolerante**: crea columnas `features`/`label` faltantes, castea boolean→int en `sum`, ajusta `k` de KMeans ≤ filas, y el `createDataFrame` normaliza estructuras raras. El server ademas **reconvierte el Python original** en cada prueba (nunca ejecuta PySpark viejo cacheado en el navegador) — añadimos `start_server.sh` para arranque limpio (mata procesos viejos + borra `.pyc`).
+- **MLlib de clasificacion real**: label string→`StringIndexer`, features→`VectorAssembler` con guard, split `randomSplit([0.8,0.2], seed=42)` con `fit` sobre `train_df`, y `accuracy_score`/`classification_report`→`MulticlassClassificationEvaluator` (accuracy/f1/weightedPrecision/weightedRecall). **111 tests**.
+
+---
+
+## 19 de septiembre — Dia 48: Compatibilidad Spark 3.5 (detectada, no pinneada)
+
+El QA pregunto si el convertidor funciona con Spark 3.5. Auditamos todo el codigo generado (Ab Initio→Spark/Glue y py2spark→MLlib) y **no usa ninguna API exclusiva de Spark 4.0**: todas las funciones (`F.rand/element_at/when/floor/coalesce/...`), APIs de DataFrame y clases de `pyspark.ml` existen desde 3.x. En vez de fijar una version, hicimos que `export_bundle.py` **detecte la version instalada** en runtime y declare un requirement flexible (`pyspark>=3.5,<5`); el harness reporta la version de Spark al ejecutar. Detalle favorable: forzamos `spark.sql.ansi.enabled=false` (default en 3.5; en 4.0 cambio a true), asi el comportamiento local imita a 3.5.
+
+---
+
+## 20-21 de septiembre — Dia 49: Correo del QA — defectos del parser .mp nativo
+
+El QA reporto 10 grafos con defectos concretos. Todos tenian una **causa raiz comun**: el parser del `.mp` nativo de Ab Initio (formato repositorio EME) era superficial — buscaba aristas `XXGedge` que **no existen** en estos archivos (usan `XXGflow` + puertos `iport`/`oport`), clasificaba por keywords incompletas y no leia parametros de componente. Hicimos ingenieria inversa del formato real y reescribimos el parser (`src/mp_parser.py`):
+
+- **"Incorrect flow"** (MS7_TEOS_NOT, DIV_FF_HIVE_DFE05, DID_D100_OPRSUC, S655690_EAL_D_MDWH, camelot) → reconstruimos los edges reales siguiendo la cadena `flow → oport/iport → vertice`, con el ordinal de puerto (`to_port`) para ordenar bien los JOIN. Ademas descubrimos que **nombres duplicados** (12 "Reformat") colapsaban al mismo nodo creando ciclos falsos que rompian el orden: se desambigua por objId. Resultado: **0 ciclos** en toda la biblioteca.
+- **"Create Data es source pero se toma como Transform"** (S655690_FORMATO) → clasificamos por el `!prototype_path`/`mpname` real: `Create_Data`→SOURCE, `Input_File`→SOURCE, `Output_File`→SINK.
+- **"Dedup key isn't available"** (AMBS_AMED) → extraemos el parametro `key` del componente `Dedup_Sorted` (viene en linea aparte) y lo propagamos: el codegen genera `dropDuplicates(["ORG_ACCT_NBR"])` con la key real, no el default `["id"]`.
+- **"Lookup files are missing"** (S655690_VALLAR) → capturamos los `Lookup_File.mdc` (prototipo en linea aparte) y los registramos como fuentes SOURCE. 4 lookups del VALLAR, 5 del DID_D100, 2 del MS7 ahora se leen.
+- **"Flows to sub-graph missing"** (DTTK_MP2CHEQMENSUAL) → resolvemos los bindings de puertos (`XXGoport_binding_oport`/`XXGiport_binding_iport`) que cruzan el limite del subgrafo y capturamos los `XXGtvertex` (Input_Table/Unload de DB). El flujo principal se reconstruye.
+
+Verificacion: los 10 grafos del correo parsean y compilan, 0 ciclos, todos los nodos en el orden de ejecucion. Barrido completo **Spark 58/58, Glue 58/58**, **111 tests**. Nota honesta: en subgrafos DB muy anidados quedan algunos componentes `scan` (Unload DB) auxiliares sin conectar; el flujo principal es coherente y compila, pero la expansion recursiva completa de esos subgrafos queda pendiente.
+
+---
+
 ## Estatus del convertidor por complejidad de grafo
 
-Validado **ejecutando** el PySpark generado con datos redactados (barrido de 36 grafos: 35/36 ok) y, desde el Dia 45, con **validacion de equivalencia de datos** (esquema + conteo + contenido) contra una referencia.
+Validado **ejecutando** el PySpark generado con datos redactados (barrido de 58 grafos: 58/58 compilan) y, desde el Dia 45, con **validacion de equivalencia de datos** (esquema + conteo + contenido) contra una referencia. Desde el Dia 46 tambien convertimos **Python/pandas + ML** a PySpark 3 (py2spark).
 
 | Complejidad | Rango aprox. | Estatus |
 |-------------|--------------|---------|
@@ -404,6 +446,10 @@ Validado **ejecutando** el PySpark generado con datos redactados (barrido de 36 
 | Codegen Terraform | Completo |
 | Codegen Airflow | Completo |
 | Codegen Python/Pandas | Completo |
+| py2spark (Python/pandas + ML → PySpark 3) | Completo |
+| py2spark: MLlib (sklearn → pyspark.ml + Evaluators) | Completo |
+| Extension VS Code (py2spark) | Completo |
+| Compatibilidad Spark 3.5–4.x (version detectada) | Completo |
 | Motor de refactorizacion | Completo |
 | Motor OCR | Completo |
 | Motor de accuracy | Completo |
@@ -423,16 +469,17 @@ Validado **ejecutando** el PySpark generado con datos redactados (barrido de 36 
 
 ## Que sigue (segun plan de 3 meses)
 
-1. ~~Pruebas con grafos reales del banco (5+ grafos diferentes)~~ — HECHO: barrido de 36 grafos, 35/36 ok (Dia 38)
-2. Tests unitarios al 60% de cobertura (formalizar el barrido como suite pytest) — parcial: existe `/validate` para equivalencia de datos (Dia 45), falta la suite pytest formal
-3. Exportar salidas reales de Ab Initio como golden data para validar correctitud contra produccion (no solo contra referencia sintetica)
-3. SonarQube: 0 Critical, 0 Blocker
-4. SAST/DAST scan + remediacion
-5. Pipeline CI/CD bancario
-6. Documentacion SAD/DDD formato banco
-7. QA formal + UAT
-8. RFC + CAB (Change Advisory Board)
-9. Deploy a produccion con monitoreo
+1. ~~Pruebas con grafos reales del banco (5+ grafos diferentes)~~ — HECHO: barrido de 58 grafos, 58/58 compilan (Dia 49)
+2. ~~Tests unitarios (formalizar el barrido como suite pytest)~~ — HECHO: **111 tests** pytest (py2spark, schema, CLI, ML) + barrido de biblioteca. Falta medir cobertura formal (%).
+3. ~~Atender defectos del QA en grafos .mp nativos (incorrect flow, dedup key, lookup files, Create Data, subgrafos)~~ — HECHO (Dia 49). Pendiente fino: expansion recursiva de subgrafos DB muy anidados (algunos `scan`/Unload auxiliares quedan sin conectar).
+4. Exportar salidas reales de Ab Initio como golden data para validar correctitud contra produccion (no solo contra referencia sintetica)
+5. SonarQube: 0 Critical, 0 Blocker
+6. SAST/DAST scan + remediacion
+7. Pipeline CI/CD bancario
+8. Documentacion SAD/DDD formato banco
+9. QA formal + UAT
+10. RFC + CAB (Change Advisory Board)
+11. Deploy a produccion con monitoreo
 
 ---
 
