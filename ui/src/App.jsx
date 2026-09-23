@@ -607,7 +607,7 @@ export default function App() {
             { id: 'pipeline', label: '🧪 Pipeline' },
             { id: 'grafos', label: '📁 Grafos' },
             { id: 'py2spark', label: '🐍 Py→Spark' },
-            { id: 'datagen', label: '🧪 Data Redactada' },
+            { id: 'datagen', label: '🧪 Data Sintética' },
             { id: 'history', label: '📜 History' },
           ].map(tab => (
             <button key={tab.id}
@@ -1017,7 +1017,7 @@ export default function App() {
                     </div>
                   ))}
                   <div style={{ fontSize: 14, color: '#22c55e', marginTop: 4 }}>
-                    Ahora ve a 🧪 Data Redactada para comparar tiempos original vs optimizado.
+                    Ahora ve a 🧪 Data Sintética para comparar tiempos original vs optimizado.
                   </div>
                 </div>
               )}
