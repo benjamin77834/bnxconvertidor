@@ -381,113 +381,106 @@ def fetch_vendor_files(cache_dir=None, python_version="3.8"):
     return _wheels()
 
 
-def build_job_bundle_zip(job_code, run_test_code, job_name, inputs, outputs,
-                         vendor_files=None):
-    """Construye el job_bundle.zip (bytes).
-
-    Incluye el job crudo (produccion), el harness de prueba, requirements,
-    setup.sh (monta el ambiente completo), run.sh (ejecuta), README y, si se
-    pasan vendor_files, los paquetes para instalacion OFFLINE en vendor/.
-    """
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("job.py", job_code or "# (job vacio)\n")
-        z.writestr("run_test.py", run_test_code or "# (script de prueba vacio)\n")
-        z.writestr("requirements.txt", _requirements_txt())
-        # setup.sh y run.sh con permisos de ejecucion (bit 0o755 en external_attr).
-        for fname, content in (
-            ("setup.sh", _setup_sh(job_name)),
-            ("run.sh", _run_sh("run_test.py", job_name)),
-        ):
-            info = zipfile.ZipInfo(fname)
-            info.external_attr = 0o755 << 16
-            z.writestr(info, content)
-        z.writestr("README.md", _readme_md(job_name, inputs, outputs))
-        # Paquetes para instalacion offline (vendor/). Ya comprimidos (zip de un
-        # .tar.gz/.whl no gana nada), los guardamos con ZIP_STORED para no gastar
-        # CPU re-comprimiendo ~317 MB.
-        for fpath in (vendor_files or []):
-            try:
-                with open(fpath, "rb") as fh:
-                    data = fh.read()
-            except OSError:
-                continue
-            info = zipfile.ZipInfo("vendor/" + os.path.basename(fpath))
-            info.compress_type = zipfile.ZIP_STORED
-            z.writestr(info, data)
-    return buf.getvalue()
+def _add_job_files(z, prefix, job_code, run_test_code, job_name, inputs, outputs,
+                   vendor_files=None):
+    """Escribe en el ZIP 'z' los archivos del job bajo 'prefix' (p.ej. 'job_bundle/').
+    Incluye el job, el harness, requirements, setup.sh, run.sh, README y, si se
+    pasan vendor_files, los paquetes para instalacion OFFLINE en vendor/."""
+    z.writestr(prefix + "job.py", job_code or "# (job vacio)\n")
+    z.writestr(prefix + "run_test.py", run_test_code or "# (script de prueba vacio)\n")
+    z.writestr(prefix + "requirements.txt", _requirements_txt())
+    for fname, content in (
+        ("setup.sh", _setup_sh(job_name)),
+        ("run.sh", _run_sh("run_test.py", job_name)),
+    ):
+        info = zipfile.ZipInfo(prefix + fname)
+        info.external_attr = 0o755 << 16  # ejecutable
+        z.writestr(info, content)
+    z.writestr(prefix + "README.md", _readme_md(job_name, inputs, outputs))
+    # Paquetes para instalacion offline (vendor/). Guardados con ZIP_STORED
+    # porque un .whl ya esta comprimido (no gana nada re-comprimir ~317 MB).
+    for fpath in (vendor_files or []):
+        try:
+            with open(fpath, "rb") as fh:
+                data = fh.read()
+        except OSError:
+            continue
+        info = zipfile.ZipInfo(prefix + "vendor/" + os.path.basename(fpath))
+        info.compress_type = zipfile.ZIP_STORED
+        z.writestr(info, data)
 
 
-def build_data_bundle_zip(inputs, outputs):
-    """Construye el data_bundle.zip (bytes) con:
-      data/input/<nodo>.<fmt>   -> datos sinteticos de ENTRADA
-      data/output/<var>.csv     -> datos de SALIDA (resultado real del job)
-      manifest.json
-    """
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        for d in inputs:
-            fmt = d.get("format", "csv")
-            fname = f"data/input/{_safe_name(d.get('node'))}.{fmt}"
-            content = d.get("content", "")
-            z.writestr(fname, content if isinstance(content, (bytes, str)) else "")
-        for d in outputs:
-            fname = f"data/output/{_safe_name(d.get('node'))}.csv"
-            content = d.get("content", "")
-            z.writestr(fname, content if isinstance(content, (bytes, str)) else "")
-        if not outputs:
-            # Deja la carpeta presente aunque no haya salidas capturadas.
-            z.writestr("data/output/.gitkeep", "")
-        if not inputs:
-            # Avisar explicitamente por que no hay datos (en vez de carpeta vacia).
-            z.writestr("data/LEEME.txt", (
-                "No se generaron datos sinteticos de ENTRADA para este grafo.\n\n"
-                "Causas tipicas:\n"
-                "  - El grafo no declara un esquema inferible en sus nodos SOURCE\n"
-                "    (sin .dml/.xfr que describan columnas, o formato .mp simplificado).\n"
-                "  - Se exporto sin un grafo .mp valido cargado.\n\n"
-                "Que hacer:\n"
-                "  - Carga el .mp (y .xfr/.dml si los tienes) en la pestana Data\n"
-                "    Sintetica, pulsa 'Generar datos' y confirma que aparecen columnas\n"
-                "    por nodo; luego vuelve a exportar el bundle.\n"
-                "  - O coloca tus propios CSV en data/input/ con el nombre de cada\n"
-                "    fuente y corre ./run.sh.\n"
-            ))
-        z.writestr("manifest.json", _manifest_json("bundle", inputs, outputs))
-    return buf.getvalue()
+def _add_data_files(z, prefix, inputs, outputs):
+    """Escribe en el ZIP 'z' los datos bajo 'prefix' (p.ej. 'data_bundle/'):
+    data/input/<nodo>.<fmt>, data/output/<var>.csv y manifest.json."""
+    for d in inputs:
+        fmt = d.get("format", "csv")
+        fname = prefix + f"data/input/{_safe_name(d.get('node'))}.{fmt}"
+        content = d.get("content", "")
+        z.writestr(fname, content if isinstance(content, (bytes, str)) else "")
+    for d in outputs:
+        fname = prefix + f"data/output/{_safe_name(d.get('node'))}.csv"
+        content = d.get("content", "")
+        z.writestr(fname, content if isinstance(content, (bytes, str)) else "")
+    if not outputs:
+        z.writestr(prefix + "data/output/.gitkeep", "")
+    if not inputs:
+        z.writestr(prefix + "data/LEEME.txt", (
+            "No se generaron datos sinteticos de ENTRADA para este grafo.\n\n"
+            "Causas tipicas:\n"
+            "  - El grafo no declara un esquema inferible en sus nodos SOURCE\n"
+            "    (sin .dml/.xfr que describan columnas, o formato .mp simplificado).\n"
+            "  - Se exporto sin un grafo .mp valido cargado.\n\n"
+            "Que hacer:\n"
+            "  - Carga el .mp (y .xfr/.dml si los tienes) en la pestana Data\n"
+            "    Sintetica, pulsa 'Generar datos' y confirma que aparecen columnas\n"
+            "    por nodo; luego vuelve a exportar el bundle.\n"
+            "  - O coloca tus propios CSV en data/input/ con el nombre de cada\n"
+            "    fuente y corre ./run.sh.\n"
+        ))
+    z.writestr(prefix + "manifest.json", _manifest_json("bundle", inputs, outputs))
 
 
 def build_export_bundle(job_code, run_test_code, job_name, inputs, outputs=None,
                         include_vendor=True):
-    """Construye el ZIP contenedor final (bytes): job_bundle.zip + data_bundle.zip + README.
+    """Construye el ZIP de exportacion (bytes). UN SOLO zip PLANO (sin zips
+    anidados) con carpetas job_bundle/ y data_bundle/.
 
-    inputs:  datasets de ENTRADA (fuentes SOURCE) con 'content' CSV.
-    outputs: datasets de SALIDA (resultado real del job) con 'content' CSV.
-             Puede ser None/[] si no se capturaron salidas.
-    include_vendor: si True, empaqueta los paquetes (PySpark+py4j) en vendor/
-             para que el destino Linux instale OFFLINE (sin internet). Son
-             Python puro, compatibles con cualquier Linux y Python 3.8-3.14.
+    IMPORTANTE: antes se anidaban dos .zip dentro de un contenedor .zip. La
+    Utilidad de Compresion de macOS falla al abrir ese anidamiento ('Error 0 -
+    Error no definido'), sobre todo con el wheel grande de PySpark almacenado.
+    Un unico zip plano lo abre cualquier descompresor (macOS incluido) de un
+    doble clic, y PySpark sigue viajando dentro en job_bundle/vendor/.
+
+    include_vendor: si True, empaqueta PySpark+py4j en job_bundle/vendor/ para
+             instalacion OFFLINE en Linux (wheels py2.py3-none-any, compatibles
+             con cualquier Linux y Python 3.8-3.14).
     """
     outputs = outputs or []
     safe_job = _safe_name(job_name)
     vendor_files = fetch_vendor_files() if include_vendor else []
-    job_zip = build_job_bundle_zip(job_code, run_test_code, job_name, inputs,
-                                   outputs, vendor_files=vendor_files)
-    data_zip = build_data_bundle_zip(inputs, outputs)
 
     buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("job_bundle.zip", job_zip)
-        z.writestr("data_bundle.zip", data_zip)
-        z.writestr("README.md", (
-            f"# BNX export — {job_name}\n\n"
-            f"Este paquete contiene DOS zips:\n\n"
-            f"- `job_bundle.zip`: el job PySpark + como montar el ambiente en Linux "
-            f"(setup.sh crea el venv con toda la arquitectura, run.sh ejecuta).\n"
-            f"- `data_bundle.zip`: datos sinteticos de ENTRADA (data/input) y la "
-            f"SALIDA real del job (data/output) para comparar.\n\n"
-            f"Descomprime AMBOS en la misma carpeta padre (quedaran como "
-            f"`job_bundle/` y `data_bundle/`), luego entra a `job_bundle/` y "
-            f"ejecuta `./setup.sh` y despues `./run.sh`. Ver job_bundle/README.md.\n"
+    # allowZip64=True: necesario cuando se incluye el wheel de PySpark (~317 MB).
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as z:
+        _add_job_files(z, "job_bundle/", job_code, run_test_code, job_name,
+                       inputs, outputs, vendor_files=vendor_files)
+        _add_data_files(z, "data_bundle/", inputs, outputs)
+        offline = "SI (incluye PySpark en job_bundle/vendor/)" if vendor_files \
+            else "NO (setup.sh instala por internet)"
+        z.writestr("LEEME.txt", (
+            f"BNX export - {job_name}\n"
+            f"=========================================\n\n"
+            f"Instalacion offline: {offline}\n\n"
+            f"Estructura:\n"
+            f"  job_bundle/   el job PySpark + setup.sh (monta el ambiente) + run.sh\n"
+            f"  data_bundle/  data/input (entrada sintetica) y data/output (salida real)\n\n"
+            f"Pasos en Linux:\n"
+            f"  1. Descomprime este zip (en macOS: doble clic o 'unzip').\n"
+            f"  2. cd job_bundle\n"
+            f"  3. ./setup.sh    (crea el venv e instala PySpark; offline si hay vendor/)\n"
+            f"  4. ./run.sh      (ejecuta el job con los datos de entrada)\n\n"
+            f"Nota: data_bundle/ queda como carpeta hermana de job_bundle/, que es\n"
+            f"donde setup.sh/run.sh esperan los datos por defecto.\n"
         ))
     return buf.getvalue(), f"{safe_job}_export.zip"
