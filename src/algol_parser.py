@@ -207,20 +207,52 @@ def _parse_joins(lines):
 
 
 def _parse_computes(lines):
-    """Acumuladores: total := total + campo;  -> agregacion SUM(campo)."""
+    """Aritmetica por procedimiento.
+
+    - Acumulador puro:  total := total + campo;  -> agregacion SUM(campo).
+    - Aritmetica avanzada: z := (a + b) * c - d / e;  -> columna calculada.
+      Se guarda en ['arith'] = [(target, expr_sql)] por procedimiento.
+    """
     computes = {}
+    arith = {}
     for proc, body in _split_procs(lines):
-        for line in body:
-            m = re.search(
-                r"([A-Za-z][\w-]*)\s*:=\s*([A-Za-z][\w-]*)\s*\+\s*([A-Za-z][\w-]*)",
-                line, re.I)
-            if m:
-                target = _norm(m.group(1)).lower()
-                a, b = _norm(m.group(2)).lower(), _norm(m.group(3)).lower()
-                # el sumando que NO es el propio acumulador es la fuente.
-                source = b if a == target else a
-                computes.setdefault(proc, {"type": "sum", "source": source, "target": target})
+        for raw in body:
+            line = raw.strip().rstrip(";")
+            m = re.match(r"([A-Za-z][\w-]*)\s*:=\s*(.+)$", line)
+            if not m:
+                continue
+            target = _norm(m.group(1)).lower()
+            rhs = m.group(2).strip()
+
+            # Acumulador puro: target := target + x  (o  x + target).
+            acc = re.fullmatch(r"\s*([A-Za-z][\w-]*)\s*\+\s*([A-Za-z][\w-]*)\s*", rhs)
+            if acc:
+                a, b = _norm(acc.group(1)).lower(), _norm(acc.group(2)).lower()
+                if target in (a, b):
+                    source = b if a == target else a
+                    computes.setdefault(proc, {"type": "sum", "source": source, "target": target})
+                    continue
+
+            # Aritmetica general: solo si contiene un operador (+ - * /) y no es
+            # una simple asignacion de identificador o un contador := n.
+            if re.search(r"[+\-*/]", rhs) and re.search(r"[A-Za-z]", rhs):
+                arith.setdefault(proc, []).append((target, _norm_arith(rhs)))
+
+    for proc, exprs in arith.items():
+        computes.setdefault(proc, {})
+        computes[proc]["arith"] = exprs
     return computes
+
+
+def _norm_arith(expr):
+    """Normaliza una expresion aritmetica ALGOL a nombres de columna SQL:
+    identificadores a lower/'-'->'_'; conserva + - * / ( ) y numeros."""
+    def repl(m):
+        tok = m.group(0)
+        if re.fullmatch(r"\d+(\.\d+)?", tok):
+            return tok
+        return tok.replace("-", "_").lower()
+    return re.sub(r"[A-Za-z0-9_][\w-]*", repl, expr).strip()
 
 
 def algol_to_graph(parsed):
@@ -322,8 +354,12 @@ def algol_to_graph(parsed):
         elif proc in computes:
             c = computes[proc]
             xfr.append(f"{proc}:")
-            xfr.append(f"  group_by {c['source']}")
-            xfr.append(f"  select SUM({c['source']}) as {c['target']}")
+            if c.get("arith"):
+                items = ["*"] + [f"{expr} as {target}" for (target, expr) in c["arith"]]
+                xfr.append(f"  select {', '.join(items)}")
+            elif "source" in c and "target" in c:
+                xfr.append(f"  group_by {c['source']}")
+                xfr.append(f"  select SUM({c['source']}) as {c['target']}")
             xfr.append("")
 
     # --- .dml ---

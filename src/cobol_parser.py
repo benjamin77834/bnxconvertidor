@@ -167,8 +167,19 @@ def _parse_joins(lines):
 
 
 def _parse_computes(lines):
-    """Extract ADD/COMPUTE statements ? aggregation logic."""
+    """Extrae logica aritmetica por parrafo.
+
+    - 'ADD x TO y' (sin GIVING, y acumula) -> agregacion SUM(x) (como antes).
+    - Aritmetica avanzada -> expresiones de columna (withColumn), que capturamos
+      en 'arith' por parrafo (lista de (target, expr_sql)):
+        COMPUTE z = (a + b) * c - d / e
+        ADD a b TO c GIVING z
+        SUBTRACT a FROM b GIVING z
+        MULTIPLY a BY b GIVING z
+        DIVIDE a INTO b GIVING z   /  DIVIDE a BY b GIVING z
+    Devuelve {parrafo: {...sum...}} y adjunta ['arith'] = [(target, expr)]."""
     computes = {}
+    arith = {}
     current_para = None
 
     for line in lines:
@@ -176,25 +187,110 @@ def _parse_computes(lines):
         if m_para:
             current_para = m_para.group(1).replace("-", "_").lower()
             continue
+        if not current_para:
+            continue
 
-        if current_para:
-            m_add = re.match(r"\s+ADD\s+([\w-]+)\s+TO\s+([\w-]+)", line, re.I)
-            if m_add:
-                src = m_add.group(1).replace("-", "_").lower()
-                dst = m_add.group(2).replace("-", "_").lower()
-                computes[current_para] = {"type": "sum", "source": src, "target": dst}
+        expr = _cobol_arith_expr(line)
+        if expr:
+            arith.setdefault(current_para, []).append(expr)
+            continue
 
+        # ADD x TO y (acumulador puro) -> SUM. Solo si no es un ADD ... GIVING.
+        m_add = re.match(r"\s+ADD\s+([\w-]+)\s+TO\s+([\w-]+)\s*\.?\s*$", line, re.I)
+        if m_add:
+            src = m_add.group(1).replace("-", "_").lower()
+            dst = m_add.group(2).replace("-", "_").lower()
+            computes[current_para] = {"type": "sum", "source": src, "target": dst}
+
+    # Adjuntar la aritmetica avanzada a la estructura devuelta.
+    for para, exprs in arith.items():
+        computes.setdefault(para, {})
+        computes[para]["arith"] = exprs
     return computes
+
+
+def _f(name):
+    return name.replace("-", "_").lower()
+
+
+def _cobol_arith_expr(line):
+    """Si la linea es una operacion aritmetica COBOL, devuelve (target, expr_sql).
+    expr_sql usa nombres de columna (lower, '-'->'_'). None si no aplica."""
+    s = line.strip().rstrip(".")
+
+    # COMPUTE z = <expr>
+    m = re.match(r"COMPUTE\s+([\w-]+)\s*=\s*(.+)$", s, re.I)
+    if m:
+        target = _f(m.group(1))
+        expr = _norm_arith(m.group(2))
+        return (target, expr)
+
+    # ADD a [b c ...] TO d GIVING z   -> z = a + b + ... + d
+    m = re.match(r"ADD\s+(.+?)\s+TO\s+([\w-]+)\s+GIVING\s+([\w-]+)$", s, re.I)
+    if m:
+        terms = [_f(t) for t in re.split(r"\s+", m.group(1).strip())]
+        terms.append(_f(m.group(2)))
+        return (_f(m.group(3)), " + ".join(terms))
+
+    # ADD a b ... GIVING z   -> z = a + b + ...
+    m = re.match(r"ADD\s+(.+?)\s+GIVING\s+([\w-]+)$", s, re.I)
+    if m:
+        terms = [_f(t) for t in re.split(r"\s+", m.group(1).strip())]
+        return (_f(m.group(2)), " + ".join(terms))
+
+    # SUBTRACT a [b ...] FROM c GIVING z  -> z = c - a - b - ...
+    m = re.match(r"SUBTRACT\s+(.+?)\s+FROM\s+([\w-]+)\s+GIVING\s+([\w-]+)$", s, re.I)
+    if m:
+        subs = [_f(t) for t in re.split(r"\s+", m.group(1).strip())]
+        base = _f(m.group(2))
+        return (_f(m.group(3)), base + "".join(f" - {t}" for t in subs))
+
+    # MULTIPLY a BY b GIVING z  -> z = a * b
+    m = re.match(r"MULTIPLY\s+([\w-]+)\s+BY\s+([\w-]+)\s+GIVING\s+([\w-]+)$", s, re.I)
+    if m:
+        return (_f(m.group(3)), f"{_f(m.group(1))} * {_f(m.group(2))}")
+
+    # DIVIDE a INTO b GIVING z  -> z = b / a ;  DIVIDE a BY b GIVING z -> z = a / b
+    m = re.match(r"DIVIDE\s+([\w-]+)\s+INTO\s+([\w-]+)\s+GIVING\s+([\w-]+)$", s, re.I)
+    if m:
+        return (_f(m.group(3)), f"{_f(m.group(2))} / {_f(m.group(1))}")
+    m = re.match(r"DIVIDE\s+([\w-]+)\s+BY\s+([\w-]+)\s+GIVING\s+([\w-]+)$", s, re.I)
+    if m:
+        return (_f(m.group(3)), f"{_f(m.group(1))} / {_f(m.group(2))}")
+
+    return None
+
+
+def _norm_arith(expr):
+    """Normaliza una expresion aritmetica a nombres de columna SQL-friendly:
+    identificadores a lower/'-'->'_'; conserva operadores + - * / ( ) y numeros.
+    COBOL usa ** para potencia -> SQL usa power(), pero lo dejamos como * * raro;
+    aqui mapeamos ** a 'power' solo si aparece de forma simple."""
+    # Reemplazar identificadores (letras/digitos/guion) por su forma de columna.
+    def repl(m):
+        tok = m.group(0)
+        if re.fullmatch(r"\d+(\.\d+)?", tok):
+            return tok  # numero
+        return tok.replace("-", "_").lower()
+    out = re.sub(r"[A-Za-z0-9_][\w-]*", repl, expr)
+    return out.strip()
 
 
 def cobol_to_graph(parsed):
     """Convert parsed COBOL to .mp, .xfr, .dml content strings."""
     files = parsed["files"]
     fields = parsed["fields"]
-    procedures = parsed["procedures"]
+    procedures = list(parsed["procedures"])
     filters = parsed["filters"]
     joins = parsed["joins"]
     computes = parsed["computes"]
+
+    # Incluir tambien los parrafos QUE TIENEN LOGICA aunque no se invoquen por
+    # PERFORM (COBOL batch suele ejecutar parrafos en secuencia). Asi no se
+    # pierden filtros/joins/aritmetica cuando no hay PERFORM explicito.
+    for extra in list(filters.keys()) + list(joins.keys()) + list(computes.keys()):
+        if extra not in procedures:
+            procedures.append(extra)
 
     # Classify files as input/output
     input_files = {}
@@ -226,15 +322,14 @@ def cobol_to_graph(parsed):
     mp_lines.append("SUBGRAPH Process {")
     proc_nodes = []
     for proc in procedures:
-        if proc.startswith("read_") or proc.startswith("write_"):
+        if proc.startswith("read_") or proc.startswith("write_") or proc.startswith(("open_", "close_")):
             continue
-        if proc.startswith("filter_"):
-            mp_lines.append(f"  NODE {proc} : TRANSFORM")
-            proc_nodes.append(proc)
-        elif proc.startswith("join_"):
+        if proc in joins or proc.startswith("join_"):
             mp_lines.append(f"  NODE {proc} : JOIN")
             proc_nodes.append(proc)
-        elif proc.startswith("compute_") or proc.startswith("detect_"):
+        elif (proc in filters or proc in computes
+              or proc.startswith(("filter_", "compute_", "detect_", "valid"))):
+            # filtros, aritmetica (compute/arith) y validaciones -> TRANSFORM.
             mp_lines.append(f"  NODE {proc} : TRANSFORM")
             proc_nodes.append(proc)
     mp_lines.append("}")
@@ -295,8 +390,14 @@ def cobol_to_graph(parsed):
         elif proc in computes:
             c = computes[proc]
             xfr_lines.append(f"{proc}:")
-            xfr_lines.append(f"  group_by {c['source']}")
-            xfr_lines.append(f"  select SUM({c['source']}) as {c['target']}")
+            if c.get("arith"):
+                # Aritmetica avanzada -> columnas calculadas (select con alias).
+                # El codegen de Spark emite withColumn(target, expr(...)) por item.
+                items = ["*"] + [f"{expr} as {target}" for (target, expr) in c["arith"]]
+                xfr_lines.append(f"  select {', '.join(items)}")
+            elif "source" in c and "target" in c:
+                xfr_lines.append(f"  group_by {c['source']}")
+                xfr_lines.append(f"  select SUM({c['source']}) as {c['target']}")
             xfr_lines.append("")
         elif proc.startswith("detect_") and proc in filters:
             xfr_lines.append(f"{proc}:")
