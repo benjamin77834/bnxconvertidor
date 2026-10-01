@@ -684,7 +684,17 @@ export default function App() {
             setShowEditor(true)
             setEditorTab(g.xfr ? 'xfr' : 'mp')
             setPage('compiler')
-            // Auto-compile after loading from Grafos
+            // Caso COBOL/ALGOL: ya viene el resultado convertido (y optimizado).
+            // Mostrarlo directo (con el PySpark refactorizado si existe) en vez de
+            // re-compilar el .mp, para que se vea el codigo optimizado.
+            if (g.result) {
+              const res = { ...g.result }
+              if (res.optimized_code) res.code = res.optimized_code
+              setResult(res)
+              setCodeOpen(true)
+              return
+            }
+            // Grafo normal: auto-compilar tras cargar.
             setTimeout(() => {
               const compileBtn = document.querySelector('[data-compile-btn]')
               if (compileBtn) compileBtn.click()

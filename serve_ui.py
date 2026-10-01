@@ -1968,6 +1968,29 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             traceback.print_exc()
             self._json_response(500, {"error": str(e)})
 
+    def _attach_optimized(self, result, target):
+        """Pasa el PySpark generado por el optimizador (cache/broadcast/coalesce)
+        y adjunta el resultado al dict 'result' SIN perder el codigo original:
+          - result['optimized_code']: codigo refactorizado/optimizado
+          - result['optimizations']: lista de cambios aplicados
+          - result['optimization_summary']: conteo por regla
+        Solo aplica a PySpark (target 'spark'); para otros targets no hace nada.
+        Es best-effort: si falla, deja el result intacto."""
+        try:
+            if target != "spark":
+                return
+            code = result.get("code") or ""
+            if not code.strip():
+                return
+            opt = optimize_pyspark(code, include_coalesce=True)
+            if opt and opt.get("code"):
+                result["optimized_code"] = opt["code"]
+                result["optimizations"] = opt.get("changes", [])
+                result["optimization_summary"] = opt.get("summary", {})
+                result["optimization_count"] = opt.get("total_changes", 0)
+        except Exception as e:
+            print(f"  [cobol/algol] optimizacion omitida: {e}")
+
     def _handle_cobol(self):
         """Convierte COBOL (.cbl) directo a PySpark (u otro target).
 
@@ -2021,6 +2044,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             result["generated_xfr"] = graph["xfr"]
             result["generated_dml"] = graph["dml"]
             result["target"] = target
+            # 4) Refactor/optimizacion del PySpark generado (cache/broadcast/coalesce).
+            self._attach_optimized(result, target)
             self._json_response(200, result)
 
         except Exception as e:
@@ -2082,6 +2107,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             result["generated_xfr"] = graph["xfr"]
             result["generated_dml"] = graph["dml"]
             result["target"] = target
+            # Refactor/optimizacion del PySpark generado (cache/broadcast/coalesce).
+            self._attach_optimized(result, target)
             self._json_response(200, result)
 
         except Exception as e:
