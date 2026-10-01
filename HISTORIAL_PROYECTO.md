@@ -423,8 +423,15 @@ Dos frentes: que py2spark funcione en el Windows del banco (Python 3.8) y que el
 - **Dependencias empaquetadas para offline**: un venv no es portable (atado a un SO y una version de Python), asi que empaquetamos los **wheels** (`py2.py3-none-any`, compatibles con cualquier Linux y Python 3.8-3.14) en `job_bundle/vendor/`. PySpark en PyPI solo es sdist, asi que lo construimos a wheel una vez y lo cacheamos en el server (`.bnx_vendor_cache/`, fuera de git). `setup.sh` instala **sin internet** (`pip install --no-index --find-links vendor`). Verificado: install offline desde el vendor del bundle → `import pyspark` OK.
 - **Dos botones separados** en Data Sintetica: **Bundle ligero** (pocos KB, instala por internet en destino) y **Bundle offline** (~300 MB, incluye PySpark en vendor/, para Linux sin acceso a PyPI). El endpoint acepta `include_vendor`.
 - **Fix de descarga grande**: `_binary_response` enviaba 300+ MB en un solo `write` → `OSError: [Errno 55] No buffer space available` (macOS) y descarga incompleta. Ahora escribe en bloques de 1 MB con reintento. Verificado descargando el bundle de 321 MB completo.
+- **Bundle PLANO (fix "Error 0" de macOS)**: antes se anidaban `job_bundle.zip` + `data_bundle.zip` dentro de un contenedor `.zip`; la Utilidad de Compresion de macOS fallaba al abrirlo (`Error 0 - Error no definido`). Ahora es UN unico zip plano con carpetas `job_bundle/` y `data_bundle/` (`allowZip64`), que cualquier descompresor abre de un doble clic. PySpark sigue viajando dentro en `job_bundle/vendor/`.
+- **PySpark 3.5.6 (cubre Python 3.8–3.12)**: la 3.5.3 fallaba en Python 3.12 (`RecursionError` en cloudpickle). Subimos el vendor a 3.5.6, que soporta 3.12. Ademas `run.sh` exporta `PYSPARK_PYTHON`/`PYSPARK_DRIVER_PYTHON` al Python del venv para evitar `PYTHON_VERSION_MISMATCH` (worker vs driver). Verificado end-to-end en Python 3.11 y 3.12: `./setup.sh && ./run.sh` corre el job y produce salida.
+- **COBOL → PySpark directo en la GUI**: el endpoint `/cobol` existia solo en FastAPI/Lambda; se añadio a `serve_ui.py` (`_handle_cobol`) con target `spark` por defecto. El boton COBOL de la GUI ahora funciona contra el server local. 4 .cbl de ejemplo (incl. EBCDIC) → PySpark valido.
+- **Conversor ALGOL (Unisys) → PySpark**: nuevo `src/algol_parser.py` (`parse_algol` + `algol_to_graph`), endpoint `/algol` y boton en la GUI. Detecta FILE, RECORD/campos (EBCDIC/REAL/INTEGER), PROCEDURE, IF (filtros), IF campo=campo (joins) y acumuladores `:=+`. Mismo pipeline `.mp/.xfr/.dml` → codegen Spark.
+- **COBOL/ALGOL de muestra en la seccion Grafos**: `bnx_library/COBOL_Samples/` (5) y `bnx_library/ALGOL_Samples/` (2), cargables desde la pestaña Grafos con botones "COBOL → PySpark" / "ALGOL → PySpark" (`convertLegacy`: download + endpoint).
+- **Refactor/optimizacion del PySpark generado**: tras convertir COBOL/ALGOL, el codigo pasa por `optimize_pyspark` (cache en reusos costosos, broadcast en joins, coalesce en escritura). La GUI muestra el PySpark optimizado.
+- **Aritmetica avanzada en COBOL y ALGOL**: `COMPUTE z = (a+b)*c-d/e`, `ADD/SUBTRACT/MULTIPLY/DIVIDE ... GIVING` (COBOL) y `z := (a+b)*c-d/e` (ALGOL) se traducen a columnas calculadas (`withColumn(z, expr(...))`) preservando precedencia; los acumuladores (`ADD x TO y`, `total := total + x`) siguen siendo `SUM`. Ademas, parrafos COBOL con logica sin `PERFORM` ya entran como nodos.
 
-Verificacion: bundle real de `EMPLOYMENT_ABS_SUPP_01.mp` con 1 fuente de entrada + 2 salidas reales; install offline OK; **111 tests**.
+Verificacion: bundle real de `EMPLOYMENT_ABS_SUPP_01.mp` con 1 fuente de entrada + 2 salidas reales; install offline OK y job corriendo end-to-end en Python 3.11/3.12; COBOL/ALGOL (incl. aritmetica) → PySpark valido y ejecutado; **111 tests**.
 
 ---
 
@@ -450,7 +457,8 @@ Validado **ejecutando** el PySpark generado con datos redactados (barrido de 58 
 | Parser MP (GDE nativo) | Completo |
 | Parser XFR | Completo |
 | Parser DML | Completo |
-| Parser COBOL | Completo |
+| Parser COBOL (+ aritmetica avanzada) | Completo |
+| Parser ALGOL (Unisys MCP, + aritmetica avanzada) | Completo |
 | Parser PLAN/PSET | Completo |
 | DAG Builder + Mega-DAG | Completo |
 | Validador semantico | Completo |

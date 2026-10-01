@@ -142,6 +142,8 @@ const CURRENT_EFFORTS = [
   { task: 'Package 7z para transferencia', status: 'done', impact: 'Mover codigo a servidor seguro' },
   { task: 'py2spark en Windows: fallback de ast.unparse (Python 3.8) + fix Column is not iterable', status: 'done', impact: 'La conversion Python->PySpark funciona en el Windows del banco' },
   { task: 'Bundle Linux: ambiente completo (setup.sh) + datos entrada/salida + offline con PySpark en vendor/', status: 'done', impact: 'Descomprimir y correr en Linux sin internet (dos botones: ligero y offline)' },
+  { task: 'COBOL -> PySpark en la GUI + conversor ALGOL (Unisys) + muestras en Grafos', status: 'done', impact: 'Migra legacy de mainframe IBM (COBOL) y Unisys (ALGOL) a PySpark con un boton' },
+  { task: 'Aritmetica avanzada COBOL/ALGOL (COMPUTE, GIVING, := con expresiones) -> withColumn', status: 'done', impact: 'La logica de calculo del batch legacy se traduce fielmente, no se pierde' },
 ]
 
 // Estatus de conversion por complejidad de grafo. Honesto: bajo/medio validado,
