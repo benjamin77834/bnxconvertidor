@@ -845,15 +845,71 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 output_dir="./_bnx_work/output", master="local[*]",
             )
 
-            # 4) Armar el ZIP contenedor y devolverlo como descarga.
+            # 4) Capturar los datos de SALIDA reales: ejecutar el job sobre los
+            #    datos de entrada sinteticos y recoger los CSV que escribe el
+            #    harness (downloads). Asi la salida del bundle es coherente con la
+            #    entrada (es lo que el job realmente produce). Si la ejecucion
+            #    falla, seguimos sin salidas (el bundle sigue siendo util).
+            outputs = self._capture_output_datasets(job_code, datasets)
+
+            # 5) Armar el ZIP contenedor y devolverlo como descarga.
             bundle_bytes, filename = build_export_bundle(
-                job_code, run_test_code, job_name, datasets
+                job_code, run_test_code, job_name, datasets, outputs
             )
             self._binary_response(bundle_bytes, filename)
         except Exception as e:
             import traceback
             traceback.print_exc()
             self._json_response(500, {"error": str(e)})
+
+    def _capture_output_datasets(self, job_code, input_datasets):
+        """Ejecuta el job sobre los datos de entrada sinteticos y devuelve los
+        datasets de SALIDA (resultado real) con su CSV, para empaquetarlos en el
+        bundle. Devuelve [] si la ejecucion falla o no hay PySpark local."""
+        try:
+            from src.test_runner import run_pyspark_test
+        except Exception:
+            return []
+        try:
+            result = run_pyspark_test(job_code, input_datasets, timeout=180)
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            return []
+        if not result or not result.get("ok"):
+            # La ejecucion fallo: el bundle se entrega solo con datos de entrada.
+            return []
+        outputs = []
+        # 'downloads' trae {name, path} de cada CSV escrito por los SINKs. Leemos
+        # su contenido para embeberlo en data/output del data_bundle.
+        for dl in (result.get("downloads") or []):
+            path = dl.get("path")
+            name = dl.get("name") or ""
+            if not path or not os.path.isfile(path):
+                continue
+            # Excluir el reporte de texto (no es un dataset de salida).
+            if name.lower().startswith("reporte_") or path.lower().endswith(".txt"):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                    content = fh.read()
+            except OSError:
+                continue
+            # Derivar nombre de nodo (sin extension) y conteo de columnas/filas.
+            node = os.path.splitext(os.path.basename(path))[0]
+            lines = [ln for ln in content.splitlines() if ln.strip() != ""]
+            n_cols = len(lines[0].split(",")) if lines else 0
+            n_rows = max(len(lines) - 1, 0)  # menos el header
+            outputs.append({
+                "node": node,
+                "node_type": "SINK",
+                "io": "output",
+                "format": "csv",
+                "content": content,
+                "columns": n_cols,
+                "rows": n_rows,
+            })
+        return outputs
 
     def _synthetic_datasets_for_graph(self, mp_content, xfr_content, dml_content):
         """Infiere el esquema del grafo y genera datasets sinteticos por nodo.
