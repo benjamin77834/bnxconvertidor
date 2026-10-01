@@ -413,6 +413,21 @@ Verificacion: los 10 grafos del correo parsean y compilan, 0 ciclos, todos los n
 
 ---
 
+## 1 de octubre — Dia 50: Bundle para Linux (ambiente + datos entrada/salida) y fixes de Windows
+
+Dos frentes: que py2spark funcione en el Windows del banco (Python 3.8) y que el bundle de exportacion deje todo listo para correr en Linux.
+
+- **py2spark en Windows (Python 3.8)**: el error `module 'ast' has no attribute 'unparse'` rompia toda la conversion (`ast.unparse` solo existe desde 3.9). Nuevo modulo `src/py2spark/_unparse.py` con un unparse en cascada: nativo (3.9+) → `astor` si esta → `_MiniUnparser` propio con manejo de precedencia de operadores (para que `((a) & (b)).cast('int')` no se serialice mal). Verificado simulando 3.8.
+- **Fix `Column is not iterable`**: `pd.DataFrame({col: np.random.randint(...)})` generaba un `zip` sobre columnas Spark (no iterables). Ahora delega al helper de runtime `_py2spark_df`, que materializa filas reales (`spark.range().withColumn()` para columnas aleatorias; `element_at` sobre array literal para secuencias). Soporta dict mixto secuencia+columna.
+- **Bundle de exportacion rediseñado** (`src/export_bundle.py`): el `data_bundle` ahora trae datos de **ENTRADA** (`data/input`, sinteticos) y **SALIDA** (`data/output`, el resultado REAL del job ejecutado sobre esa entrada — el server corre `run_pyspark_test` y recoge los CSV de los SINK). `setup.sh` monta TODA la arquitectura en Linux (venv + deps + carpetas); `run.sh` ejecuta.
+- **Dependencias empaquetadas para offline**: un venv no es portable (atado a un SO y una version de Python), asi que empaquetamos los **wheels** (`py2.py3-none-any`, compatibles con cualquier Linux y Python 3.8-3.14) en `job_bundle/vendor/`. PySpark en PyPI solo es sdist, asi que lo construimos a wheel una vez y lo cacheamos en el server (`.bnx_vendor_cache/`, fuera de git). `setup.sh` instala **sin internet** (`pip install --no-index --find-links vendor`). Verificado: install offline desde el vendor del bundle → `import pyspark` OK.
+- **Dos botones separados** en Data Sintetica: **Bundle ligero** (pocos KB, instala por internet en destino) y **Bundle offline** (~300 MB, incluye PySpark en vendor/, para Linux sin acceso a PyPI). El endpoint acepta `include_vendor`.
+- **Fix de descarga grande**: `_binary_response` enviaba 300+ MB en un solo `write` → `OSError: [Errno 55] No buffer space available` (macOS) y descarga incompleta. Ahora escribe en bloques de 1 MB con reintento. Verificado descargando el bundle de 321 MB completo.
+
+Verificacion: bundle real de `EMPLOYMENT_ABS_SUPP_01.mp` con 1 fuente de entrada + 2 salidas reales; install offline OK; **111 tests**.
+
+---
+
 ## Estatus del convertidor por complejidad de grafo
 
 Validado **ejecutando** el PySpark generado con datos redactados (barrido de 58 grafos: 58/58 compilan) y, desde el Dia 45, con **validacion de equivalencia de datos** (esquema + conteo + contenido) contra una referencia. Desde el Dia 46 tambien convertimos **Python/pandas + ML** a PySpark 3 (py2spark).
@@ -453,8 +468,9 @@ Validado **ejecutando** el PySpark generado con datos redactados (barrido de 58 
 | Motor de refactorizacion | Completo |
 | Motor OCR | Completo |
 | Motor de accuracy | Completo |
-| Data Redactada (datos sinteticos + PII masking) | Completo |
+| Data Sintetica (datos sinteticos + PII masking) | Completo |
 | Ejecutor de prueba PySpark local | Completo |
+| Bundle de exportacion Linux (ligero + offline con vendor) | Completo |
 | Validacion de equivalencia de datos (vs referencia) | Completo |
 | Optimizador de performance (reglas, sin IA) | Completo |
 | Benchmark original vs optimizado (simula nube) | Completo |

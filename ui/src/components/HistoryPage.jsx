@@ -295,10 +295,17 @@ const TIMELINE = [
     tags: ['parser', 'abinitio', 'fix', 'qa'],
     color: '#ef4444',
   },
+  {
+    date: '1 Oct 2026',
+    title: 'Dia 50: Bundle Linux (ambiente + datos entrada/salida) y fixes Windows',
+    desc: 'py2spark en Windows (Python 3.8): el error "module ast has no attribute unparse" rompia la conversion (ast.unparse es 3.9+). Nuevo _unparse.py con unparse en cascada (nativo->astor->MiniUnparser propio con precedencia de operadores). Fix "Column is not iterable": pd.DataFrame({col: np.random...}) ahora materializa filas con _py2spark_df (spark.range+withColumn / element_at), no zip sobre columnas. Bundle de exportacion rediseñado: data/input (entrada sintetica) + data/output (SALIDA real del job ejecutado). setup.sh monta el ambiente completo (venv+deps+carpetas) en Linux. Dependencias empaquetadas como wheels py2.py3-none-any en vendor/ (PySpark construido a wheel y cacheado) para instalar OFFLINE sin internet (compatible Python 3.8-3.14). Dos botones: bundle ligero (KB, instala por internet) y bundle offline (~300MB, +PySpark). Fix de descarga grande: _binary_response envia por chunks (Errno 55 en macOS). Verificado: install offline OK, 111 tests.',
+    tags: ['bundle', 'linux', 'offline', 'py2spark', 'windows'],
+    color: '#0ea5e9',
+  },
 ]
 
 const STATS = [
-  { label: 'Dias de desarrollo', value: '45', color: '#6366f1' },
+  { label: 'Dias de desarrollo', value: '50', color: '#6366f1' },
   { label: 'Commits', value: '158+', color: '#22c55e' },
   { label: 'Componentes', value: '27+', color: '#f59e0b' },
   { label: 'Parsers', value: '6', color: '#a855f7' },

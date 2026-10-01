@@ -807,6 +807,19 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length)
         content_type = self.headers.get("Content-Type", "")
+        # Flag include_vendor: si True (default), empaqueta PySpark en vendor/ para
+        # instalacion offline (bundle pesado ~300MB). Si False, bundle ligero que
+        # instala por internet en destino. Se lee del body JSON o del query string.
+        include_vendor = True
+        try:
+            if "/export/bundle?" in self.path and "vendor=0" in self.path:
+                include_vendor = False
+            elif content_type.startswith("application/json"):
+                _bj = json.loads(body.decode("utf-8", errors="replace"))
+                if isinstance(_bj, dict) and "include_vendor" in _bj:
+                    include_vendor = bool(_bj.get("include_vendor"))
+        except Exception:
+            pass
         try:
             try:
                 mp_content, xfr_content, dml_content, pset_content, _target, _mp_filename = \
@@ -854,7 +867,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
 
             # 5) Armar el ZIP contenedor y devolverlo como descarga.
             bundle_bytes, filename = build_export_bundle(
-                job_code, run_test_code, job_name, datasets, outputs
+                job_code, run_test_code, job_name, datasets, outputs,
+                include_vendor=include_vendor,
             )
             self._binary_response(bundle_bytes, filename)
         except Exception as e:

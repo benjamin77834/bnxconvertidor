@@ -140,6 +140,8 @@ const CURRENT_EFFORTS = [
   { task: 'Correctitud del generador (fecha :, let/lookup, Create_Data) + accuracy honesto', status: 'done', impact: 'S655690 de 69% a 98.6%; el score ya no subvalora el DML embebido' },
   { task: 'Validacion de equivalencia de datos (generado vs referencia)', status: 'done', impact: 'Prueba correctitud semantica: esquema+conteo+contenido, no solo que compile' },
   { task: 'Package 7z para transferencia', status: 'done', impact: 'Mover codigo a servidor seguro' },
+  { task: 'py2spark en Windows: fallback de ast.unparse (Python 3.8) + fix Column is not iterable', status: 'done', impact: 'La conversion Python->PySpark funciona en el Windows del banco' },
+  { task: 'Bundle Linux: ambiente completo (setup.sh) + datos entrada/salida + offline con PySpark en vendor/', status: 'done', impact: 'Descomprimir y correr en Linux sin internet (dos botones: ligero y offline)' },
 ]
 
 // Estatus de conversion por complejidad de grafo. Honesto: bajo/medio validado,
