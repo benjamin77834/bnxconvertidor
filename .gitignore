@@ -54,3 +54,7 @@ bnx_library/Repo_Git/
 
 # .vsix generado on-demand por /download/vsix (no versionar)
 vscode-extension/*.vsix
+
+# Cache de dependencias para el bundle de exportacion (PySpark sdist ~303MB).
+# Se regenera con pip download; no debe entrar al repo.
+.bnx_vendor_cache/
