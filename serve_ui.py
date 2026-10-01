@@ -180,7 +180,13 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._json_response(200, {"status": "ok", "version": "V54"})
             return
 
-        # Descarga del addon de VS Code (.vsix) generado on-demand.
+        # Descarga de addons de VS Code (.vsix) generados on-demand.
+        # /download/vsix            -> py2spark (Python -> PySpark)
+        # /download/vsix/optimizer  -> BNX PySpark Optimizer
+        if path in ("/download/vsix/optimizer", "/api/download/vsix/optimizer"):
+            self._handle_download_vsix(ext_dir="vscode-extension-optimizer",
+                                       filename="pyspark-optimizer.vsix")
+            return
         if path == "/download/vsix" or path == "/api/download/vsix":
             self._handle_download_vsix()
             return
@@ -638,17 +644,19 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             except Exception:
                 pass
 
-    def _handle_download_vsix(self):
-        """Genera y sirve el .vsix de la extension de VS Code (py2spark).
+    def _handle_download_vsix(self, ext_dir="vscode-extension", filename="py2spark.vsix"):
+        """Genera y sirve un .vsix de extension de VS Code on-demand.
 
-        El .vsix se construye on-demand con vscode-extension/build_vsix.py (no
-        depende de vsce/npm). Asi el usuario descarga el addon directo del portal.
+        ext_dir: carpeta de la extension (vscode-extension = py2spark;
+        vscode-extension-optimizer = BNX PySpark Optimizer). El .vsix se construye
+        con build_vsix.py (no depende de vsce/npm), asi el usuario descarga el
+        addon directo del portal.
         """
         try:
-            ext_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vscode-extension")
+            ext_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), ext_dir)
             builder_path = os.path.join(ext_dir, "build_vsix.py")
             if not os.path.isfile(builder_path):
-                self._json_response(404, {"error": "Extension no disponible (falta vscode-extension)."})
+                self._json_response(404, {"error": "Extension no disponible (falta la carpeta de la extension)."})
                 return
             # Importar el builder por ruta y construir el .vsix en un temporal.
             import importlib.util
@@ -665,7 +673,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             except OSError:
                 pass
             self._binary_response(
-                data, "py2spark.vsix",
+                data, filename,
                 content_type="application/vsix",
             )
         except Exception as e:
