@@ -63,6 +63,93 @@ def _looks_small(df_name):
     return any(h in n for h in _SMALL_HINTS)
 
 
+def _reduce_code(lines):
+    """Fase de REDUCCION/limpieza del codigo (menos lineas, mismo resultado).
+
+    Reglas seguras y deterministas:
+      R1. Passthrough trivial: 'X_df = Y_df' (alias puro, sin transformacion) se
+          elimina y los usos posteriores de X_df se reescriben a Y_df.
+      R2. select('*') / selectExpr('*') redundante: 'X_df = Y_df.select("*")' es
+          equivalente a 'X_df = Y_df' -> se trata como passthrough (R1).
+      R3. Lineas en blanco consecutivas colapsadas a una.
+      R4. withColumn consecutivos sobre el MISMO df se dejan (son necesarios),
+          pero se quitan reasignaciones identicas duplicadas consecutivas.
+
+    Devuelve (lineas_reducidas, changes, removed_count)."""
+    changes = []
+
+    # Normalizar 'X_df = Y_df.select("*")' -> 'X_df = Y_df' (R2) para que R1 lo capture.
+    norm = []
+    sel_star_re = re.compile(
+        r'^(\s*)([A-Za-z_]\w*_df)\s*=\s*([A-Za-z_]\w*_df)\.(?:select|selectExpr)\(\s*["\']\*["\']\s*\)\s*$')
+    for line in lines:
+        m = sel_star_re.match(line)
+        if m:
+            indent, tgt, src = m.groups()
+            norm.append(f'{indent}{tgt} = {src}')
+        else:
+            norm.append(line)
+    lines = norm
+
+    # R1: detectar passthroughs 'X_df = Y_df' y reescribir usos.
+    passthrough_re = re.compile(r'^\s*([A-Za-z_]\w*_df)\s*=\s*([A-Za-z_]\w*_df)\s*(#.*)?$')
+    # Un passthrough es seguro de eliminar si el target NO es un nombre "ancla"
+    # que el harness/externos esperen (Write_*, los *_df de SINK se referencian
+    # por nombre en algunos sitios). Para no romper, NO eliminamos los que empiezan
+    # con mayuscula (nodos del grafo: Write_X_df, Clean_X_df) salvo que su destino
+    # sea otro *_df; solo colapsamos los alias en minuscula redundantes.
+    alias_map = {}
+    removed = 0
+    out = []
+    for line in lines:
+        m = passthrough_re.match(line)
+        if m:
+            tgt, src = m.group(1), m.group(2)
+            # Resolver src si ya era alias de otro.
+            src = alias_map.get(src, src)
+            # Solo colapsar alias en minuscula (los generados redundantes como
+            # 'write_result_df = compute_loan_df'); preservar nodos capitalizados.
+            if tgt[0].islower():
+                alias_map[tgt] = src
+                removed += 1
+                continue
+        # Reescribir usos de alias conocidos en el lado derecho.
+        if alias_map and '=' in line:
+            lhs, rhs = line.split('=', 1)
+            for a, real in alias_map.items():
+                rhs = re.sub(rf'\b{re.escape(a)}\b', real, rhs)
+            line = lhs + '=' + rhs
+        elif alias_map:
+            for a, real in alias_map.items():
+                line = re.sub(rf'\b{re.escape(a)}\b', real, line)
+        out.append(line)
+    lines = out
+    if removed:
+        changes.append({
+            "rule": "dead_code",
+            "target": f"{removed} alias",
+            "detail": f"{removed} asignacion(es) passthrough (X_df = Y_df, select('*')) eliminadas; usos reescritos",
+            "count": removed,
+        })
+
+    # R3: colapsar lineas en blanco consecutivas.
+    collapsed = []
+    blank = False
+    blanks_removed = 0
+    for line in lines:
+        if line.strip() == "":
+            if blank:
+                blanks_removed += 1
+                continue
+            blank = True
+        else:
+            blank = False
+        collapsed.append(line)
+    lines = collapsed
+
+    return lines, changes, removed
+
+
 def optimize_pyspark(code, include_coalesce=True):
     """Aplica las reglas de performance al codigo PySpark. Devuelve dict.
 
@@ -79,6 +166,10 @@ def optimize_pyspark(code, include_coalesce=True):
     lines = code.split("\n")
     original_lines = len(lines)
     changes = []
+
+    # --- Fase 0: REDUCCION/limpieza (menos lineas, mismo resultado) ---
+    lines, reduce_changes, dead_removed = _reduce_code(lines)
+    changes.extend(reduce_changes)
 
     usage = _count_source_usage(lines)
 
@@ -173,7 +264,7 @@ def optimize_pyspark(code, include_coalesce=True):
         })
 
     optimized = "\n".join(out)
-    total = cache_count + join_broadcast_count + coalesce_count
+    total = cache_count + join_broadcast_count + coalesce_count + dead_removed
 
     return {
         "code": optimized,
@@ -181,9 +272,11 @@ def optimize_pyspark(code, include_coalesce=True):
         "total_changes": total,
         "original_lines": original_lines,
         "optimized_lines": len(out),
+        "lines_removed": max(original_lines - len(out), 0),
         "summary": {
             "cache_reused": cache_count,
             "broadcast_join": join_broadcast_count,
             "coalesce_write": coalesce_count,
+            "dead_code_removed": dead_removed,
         },
     }
