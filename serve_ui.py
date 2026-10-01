@@ -94,6 +94,7 @@ from src.py2spark import convert_code as py2spark_convert
 from src.py2spark import infer_input_schema as py2spark_infer_schema
 from src.perf_optimizer import optimize_pyspark
 from src.export_bundle import build_export_bundle
+from src.cobol_parser import parse_cobol, cobol_to_graph
 from src.datagen import (
     infer_schema_from_graph,
     build_synthetic_data,
@@ -161,6 +162,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_validate()
         elif "/py2spark" in path:
             self._handle_py2spark()
+        elif "/cobol" in path:
+            self._handle_cobol()
         elif "/compile" in path or "/api" in path:
             self._handle_compile()
         else:
@@ -1955,6 +1958,72 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             import traceback
             traceback.print_exc()
             self._json_response(500, {"error": str(e)})
+
+    def _handle_cobol(self):
+        """Convierte COBOL (.cbl) directo a PySpark (u otro target).
+
+        Flujo: parse_cobol -> cobol_to_graph (.mp/.xfr/.dml) -> _compile_graph.
+        Por DEFECTO target='spark' (PySpark puro, COBOL -> PySpark directo).
+        Acepta el COBOL por multipart (campo/archivo 'cobol') o por JSON
+        ({"cobol": "..."}). Opcional 'target' (spark|glue|flink).
+        Devuelve el mismo shape que /compile mas los .mp/.xfr/.dml generados.
+        """
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        content_type = self.headers.get("Content-Type", "")
+
+        cobol_path = None
+        try:
+            cobol_src = ""
+            target = "spark"  # COBOL -> PySpark directo por defecto
+            if "multipart/form-data" in content_type:
+                fields, file_parts = parse_multipart(body, content_type)
+                if "cobol" in file_parts:
+                    cobol_src = file_parts["cobol"].decode("utf-8", errors="replace")
+                else:
+                    cobol_src = fields.get("cobol", "") or ""
+                target = (fields.get("target", "") or "spark").lower()
+            else:
+                try:
+                    data = json.loads(body.decode("utf-8", errors="replace"))
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    self._json_response(400, {"error": "Invalid request format"})
+                    return
+                cobol_src = data.get("cobol", "") or data.get("code", "") or ""
+                target = (data.get("target", "") or "spark").lower()
+
+            if not cobol_src.strip():
+                self._json_response(400, {"error": "Se requiere codigo COBOL (campo 'cobol')."})
+                return
+
+            # 1) COBOL -> grafo (.mp/.xfr/.dml). parse_cobol lee de un archivo.
+            cobol_path = self._save_temp(cobol_src, ".cbl")
+            parsed = parse_cobol(cobol_path)
+            graph = cobol_to_graph(parsed)
+
+            # 2) grafo -> codigo del target (spark por defecto -> PySpark directo).
+            compiled = self._compile_graph(
+                graph["mp"], graph["xfr"], graph["dml"], target=target
+            )
+
+            # 3) Respuesta: codigo + grafo generado (para inspeccion/descarga).
+            result = dict(compiled)
+            result["generated_mp"] = graph["mp"]
+            result["generated_xfr"] = graph["xfr"]
+            result["generated_dml"] = graph["dml"]
+            result["target"] = target
+            self._json_response(200, result)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": str(e)})
+        finally:
+            if cobol_path:
+                try:
+                    os.unlink(cobol_path)
+                except OSError:
+                    pass
 
     def _save_temp(self, content, suffix):
         if isinstance(content, bytes):
