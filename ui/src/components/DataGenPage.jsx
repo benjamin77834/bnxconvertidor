@@ -1148,26 +1148,48 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
             </div>
           </div>
 
-          {/* Aviso: que incluye el bundle de exportacion (Linux) */}
-          {hasCompilerGraph && (
+          {/* Instrucciones del bundle de exportacion (Linux) */}
+          {hasCompilerGraph && (() => {
+            const code = { background: t.bg || '#0f1117', padding: '1px 6px', borderRadius: 4,
+              fontFamily: 'monospace', fontSize: 11, color: '#38bdf8' }
+            return (
             <div style={{
-              background: '#10b98112', borderRadius: 8, padding: '10px 12px',
-              border: '1px solid #10b98133', display: 'flex', flexDirection: 'column', gap: 4,
+              background: '#10b98112', borderRadius: 8, padding: '12px 14px',
+              border: '1px solid #10b98133', display: 'flex', flexDirection: 'column', gap: 8,
             }}>
-              <span style={{ fontSize: 12, fontWeight: 700, color: '#10b981' }}>
-                📦 Dos formas de exportar el bundle (Linux)
+              <span style={{ fontSize: 13, fontWeight: 700, color: '#10b981' }}>
+                📦 Cómo probar el bundle en Linux (datos sintéticos de entrada y salida)
               </span>
-              <span style={{ fontSize: 11, color: t.dim || '#64748b', lineHeight: 1.5 }}>
-                <b>Bundle ligero</b> (pocos KB): <code>setup.sh</code> instala PySpark por internet
-                en el destino. <b>Bundle offline</b> (~300 MB): incluye PySpark en <code>vendor/</code>,
-                así <code>setup.sh</code> instala sin internet (para Linux sin acceso a PyPI).
-                Ambos traen los datos en <code>data/input/</code> (sintéticos de entrada) y{' '}
-                <code>data/output/</code> (la salida real del job, para comparar). En el destino:
-                descomprime los dos zips en la misma carpeta, entra a <code>job_bundle/</code> y corre{' '}
-                <code>./setup.sh</code> y luego <code>./run.sh</code>.
-              </span>
+
+              <div style={{ fontSize: 11.5, color: t.text || '#e2e8f0', lineHeight: 1.6 }}>
+                <b style={{ color: '#10b981' }}>Dos opciones de descarga:</b>
+                <div style={{ paddingLeft: 10 }}>
+                  • <b>📦 Bundle ligero</b> (pocos KB): el destino instala PySpark por internet.<br/>
+                  • <b>📦 Bundle offline</b> (~300 MB): incluye PySpark; instala <b>sin internet</b> (Linux cerrado).
+                </div>
+              </div>
+
+              <div style={{ fontSize: 11.5, color: t.text || '#e2e8f0', lineHeight: 1.6 }}>
+                <b style={{ color: '#10b981' }}>Pasos en el servidor Linux:</b>
+                <div style={{ paddingLeft: 10 }}>
+                  1. Descomprime el <code style={code}>.zip</code> (doble clic o <code style={code}>unzip bnx_*_export.zip</code>).<br/>
+                  2. <code style={code}>cd job_bundle</code><br/>
+                  3. <code style={code}>chmod +x setup.sh run.sh</code><br/>
+                  4. <code style={code}>./setup.sh</code> — crea el venv, instala PySpark y arma las carpetas (una vez).<br/>
+                  5. <code style={code}>./run.sh</code> — ejecuta el job con los datos sintéticos y escribe la salida.
+                </div>
+              </div>
+
+              <div style={{ fontSize: 11, color: t.dim || '#64748b', lineHeight: 1.6 }}>
+                <b style={{ color: '#f59e0b' }}>Requisitos del destino:</b> Python <b>3.8–3.12</b> (<code style={code}>python3</code>)
+                y un <b>JDK 8/11/17</b> con <code style={code}>java</code> en el PATH (lo necesita Spark; <code style={code}>setup.sh</code> lo verifica).
+                Los datos vienen en <code style={code}>data_bundle/data/input/</code> (entrada sintética) y{' '}
+                <code style={code}>data_bundle/data/output/</code> (salida real del job, para comparar). Las escrituras de tu
+                corrida quedan en <code style={code}>job_bundle/_bnx_work/output/</code>.
+              </div>
             </div>
-          )}
+            )
+          })()}
 
           {/* Config de la EC2 interna (URL privada de DataLab) */}
           {showEc2Config && (
