@@ -164,6 +164,12 @@ fi
 # shellcheck disable=SC1091
 source .venv/bin/activate
 
+# Driver Y workers de Spark con el MISMO Python del venv. Sin esto, Spark lanza
+# los workers con el python3 del sistema y falla con PYTHON_VERSION_MISMATCH si
+# ese python3 tiene otra version minor que el venv.
+export PYSPARK_PYTHON="$HERE/.venv/bin/python"
+export PYSPARK_DRIVER_PYTHON="$HERE/.venv/bin/python"
+
 # Carpeta con los CSV de entrada. Por defecto la que preparo setup.sh (./data/input);
 # cae al data_bundle hermano si no existe. Se puede sobreescribir con BNX_DATA_DIR.
 if [ -d "$HERE/data/input" ]; then
@@ -287,7 +293,10 @@ def _safe_name(name):
 # compatible 3.5-4.x del lado del job) que PyPI distribuye con requires_python
 # >=3.8. El paquete es Python puro (sdist), portable a cualquier Linux y a
 # Python 3.8 hasta 3.14; el unico binario nativo que necesita es Java (destino).
-VENDOR_PYSPARK = "pyspark==3.5.3"
+# PySpark 3.5.6: ultima de la serie 3.5 (LTS compatible 3.5-4.x del lado del job)
+# y, a diferencia de 3.5.3, incluye un cloudpickle que SI soporta Python 3.12
+# (3.5.3 fallaba con RecursionError al serializar en 3.12). Cubre Python 3.8-3.12.
+VENDOR_PYSPARK = "pyspark==3.5.6"
 VENDOR_PY4J = "py4j==0.10.9.7"
 
 # Cache de dependencias en el server para no re-descargar los ~317 MB de PySpark
