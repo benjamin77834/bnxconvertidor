@@ -498,14 +498,15 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
   // data_bundle.zip (data/input: CSV sinteticos de entrada; data/output: salida
   // REAL del job sobre esa entrada; + manifest). setup.sh monta el ambiente
   // completo (venv + deps + carpetas) en el destino Linux.
-  const [exporting, setExporting] = useState(false)
-  const exportBundle = async () => {
-    setExporting(true)
+  // exporting: null | 'light' | 'full'  -> indica que boton esta trabajando.
+  const [exporting, setExporting] = useState(null)
+  const exportBundle = async (includeVendor) => {
+    setExporting(includeVendor ? 'full' : 'light')
     try {
       const res = await fetch(EXPORT_BUNDLE_URL, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mp: graphMp, xfr: graphXfr, dml: (dml || ''),
-          job_name: (graphName || awsJobName) }),
+          job_name: (graphName || awsJobName), include_vendor: includeVendor }),
       })
       if (!res.ok) {
         let msg = `Error ${res.status}`
@@ -528,7 +529,7 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
     } catch (e) {
       alert('No se pudo exportar el bundle: ' + e.message)
     } finally {
-      setExporting(false)
+      setExporting(null)
     }
   }
 
@@ -1109,17 +1110,29 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
                 }}
               >⚙️</button>
               <button
-                onClick={exportBundle}
-                disabled={exporting || !hasCompilerGraph}
-                title="Descarga un ZIP para Linux: setup.sh monta el ambiente completo (crea el venv, instala PySpark y arma las carpetas) y el data_bundle trae los datos sintéticos de ENTRADA (data/input) y la SALIDA real del job (data/output) para comparar. Luego ./setup.sh y ./run.sh"
+                onClick={() => exportBundle(false)}
+                disabled={!!exporting || !hasCompilerGraph}
+                title="Bundle LIGERO para Linux (pocos KB): job.py + run_test.py + setup.sh + datos de ENTRADA (data/input) y SALIDA real (data/output). setup.sh crea el venv e instala PySpark por INTERNET en el destino. Rápido de descargar."
                 style={{
-                  padding: '10px 18px', borderRadius: 8,
-                  cursor: (exporting || !hasCompilerGraph) ? 'not-allowed' : 'pointer',
+                  padding: '10px 16px', borderRadius: 8,
+                  cursor: (!!exporting || !hasCompilerGraph) ? 'not-allowed' : 'pointer',
                   background: !hasCompilerGraph ? (t.border || '#334155') : '#10b981',
                   color: '#fff', border: 'none', fontSize: 14, fontWeight: 700,
                   opacity: exporting ? 0.6 : 1,
                 }}
-              >{exporting ? '⏳ Empaquetando...' : '📦 Exportar bundle (Linux)'}</button>
+              >{exporting === 'light' ? '⏳ Empaquetando...' : '📦 Bundle ligero (Linux)'}</button>
+              <button
+                onClick={() => exportBundle(true)}
+                disabled={!!exporting || !hasCompilerGraph}
+                title="Bundle COMPLETO OFFLINE para Linux (~300 MB): igual que el ligero pero incluye PySpark + py4j en vendor/, así setup.sh instala SIN internet. Para entornos Linux sin acceso a PyPI. La primera descarga tarda unos minutos."
+                style={{
+                  padding: '10px 16px', borderRadius: 8,
+                  cursor: (!!exporting || !hasCompilerGraph) ? 'not-allowed' : 'pointer',
+                  background: !hasCompilerGraph ? (t.border || '#334155') : '#0ea5e9',
+                  color: '#fff', border: 'none', fontSize: 14, fontWeight: 700,
+                  opacity: exporting ? 0.6 : 1,
+                }}
+              >{exporting === 'full' ? '⏳ Empaquetando (~300MB)...' : '📦 Bundle offline (Linux +PySpark)'}</button>
               <button
                 onClick={comparePerf}
                 disabled={running || comparing || !hasCode || !isPySpark}
@@ -1142,14 +1155,16 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
               border: '1px solid #10b98133', display: 'flex', flexDirection: 'column', gap: 4,
             }}>
               <span style={{ fontSize: 12, fontWeight: 700, color: '#10b981' }}>
-                📦 El bundle (Linux) ahora monta el ambiente y trae entrada + salida
+                📦 Dos formas de exportar el bundle (Linux)
               </span>
               <span style={{ fontSize: 11, color: t.dim || '#64748b', lineHeight: 1.5 }}>
-                Descomprime <code>job_bundle.zip</code> y <code>data_bundle.zip</code> en la misma
-                carpeta, entra a <code>job_bundle/</code> y corre <code>./setup.sh</code> (crea el venv,
-                instala PySpark y arma las carpetas) y luego <code>./run.sh</code>. Los datos vienen en{' '}
-                <code>data/input/</code> (sintéticos de entrada) y <code>data/output/</code>{' '}
-                (la salida real del job sobre esa entrada, para comparar).
+                <b>Bundle ligero</b> (pocos KB): <code>setup.sh</code> instala PySpark por internet
+                en el destino. <b>Bundle offline</b> (~300 MB): incluye PySpark en <code>vendor/</code>,
+                así <code>setup.sh</code> instala sin internet (para Linux sin acceso a PyPI).
+                Ambos traen los datos en <code>data/input/</code> (sintéticos de entrada) y{' '}
+                <code>data/output/</code> (la salida real del job, para comparar). En el destino:
+                descomprime los dos zips en la misma carpeta, entra a <code>job_bundle/</code> y corre{' '}
+                <code>./setup.sh</code> y luego <code>./run.sh</code>.
               </span>
             </div>
           )}
