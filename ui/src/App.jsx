@@ -906,7 +906,7 @@ export default function App() {
           {/* COBOL upload */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <span style={{ fontSize: 14, color: t.muted, textTransform: 'uppercase', letterSpacing: 1 }}>COBOL Migration</span>
-            <span style={{ fontSize: 12, color: t.dim }}>Sube un .cbl y se convierte a grafo automáticamente</span>
+            <span style={{ fontSize: 12, color: t.dim }}>Sube un .cbl y se convierte directo al target ({target.toUpperCase()}). Detecta FILE SECTION, PROCEDURE DIVISION, PIC/COMP-3.</span>
             <button
               style={{
                 padding: '8px 16px', borderRadius: 8, cursor: 'pointer',
@@ -914,7 +914,7 @@ export default function App() {
                 color: t.muted, fontSize: 13,
               }}
               onClick={() => cobolRef.current.click()}
-            >📋 Upload .cbl file</button>
+            >📋 Convertir .cbl → {target === 'spark' ? 'PySpark' : target.toUpperCase()}</button>
             <input ref={cobolRef} type="file" accept=".cbl,.cob,.cobol" hidden
               onChange={(e) => { if (e.target.files[0]) compileCobol(e.target.files[0]); e.target.value = '' }}
             />
