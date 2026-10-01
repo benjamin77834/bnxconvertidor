@@ -1960,14 +1960,38 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(json.dumps(data, default=str).encode())
 
     def _binary_response(self, data_bytes, filename, content_type="application/zip"):
-        """Devuelve un archivo binario descargable (p.ej. el ZIP del bundle)."""
+        """Devuelve un archivo binario descargable (p.ej. el ZIP del bundle).
+
+        Escribe en chunks: un write unico de cientos de MB falla en macOS con
+        'OSError: [Errno 55] No buffer space available' porque el socket no puede
+        mandarlo todo de golpe. Troceamos y reintentamos ante buffer lleno."""
+        import time
         self.send_response(200)
         self._cors_headers()
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.send_header("Content-Length", str(len(data_bytes)))
         self.end_headers()
-        self.wfile.write(data_bytes)
+
+        view = memoryview(data_bytes)
+        total = len(view)
+        chunk = 1 << 20  # 1 MB por escritura
+        sent = 0
+        while sent < total:
+            end = min(sent + chunk, total)
+            try:
+                self.wfile.write(view[sent:end])
+                sent = end
+            except BlockingIOError:
+                # Buffer del socket lleno: esperar un instante y reintentar.
+                time.sleep(0.01)
+            except OSError as e:
+                # Errno 55 (ENOBUFS) en macOS: reducir el chunk y reintentar.
+                if getattr(e, "errno", None) in (55, 11, 35) and chunk > 65536:
+                    chunk //= 2
+                    time.sleep(0.01)
+                    continue
+                raise
 
     def _cors_headers(self):
         self.send_header("Access-Control-Allow-Origin", "*")
