@@ -148,6 +148,46 @@ export default function GrafosPage({ theme, onLoadToCompiler }) {
     setSelectedProject(null); setFiles([]); setSelectedFile(null); fetchProjects()
   }
 
+  // Convierte un archivo legacy (COBOL .cbl / ALGOL .alg) directo a PySpark.
+  // Descarga su contenido y lo manda al endpoint /cobol o /algol; el resultado
+  // (codigo + grafo generado) se carga en el Compiler.
+  const convertLegacy = async (f, kind) => {
+    if (!selectedProject || !f) return
+    setCompiling(true)
+    try {
+      const form = new FormData()
+      form.append('action', 'download')
+      form.append('project', selectedProject.name)
+      form.append('file', f.name)
+      const dl = await fetch(LIBRARY_URL, { method: 'POST', body: form })
+      const data = await dl.json()
+      const src = data.content || ''
+      if (!src) { alert('No se pudo leer el archivo.'); return }
+      const endpoint = LIBRARY_URL.replace('/library', '/' + kind) // /cobol | /algol
+      const res = await fetch(endpoint, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [kind]: src, target: 'spark' }),
+      })
+      const result = await res.json()
+      if (result.error) { alert('No se pudo convertir: ' + result.error); return }
+      // Cargar el grafo generado + codigo en el Compiler.
+      if (onLoadToCompiler) {
+        onLoadToCompiler({
+          mp: result.generated_mp || '',
+          xfr: result.generated_xfr || '',
+          dml: result.generated_dml || '',
+          name: f.name.replace(/\.(cbl|cob|cobol|alg|algol)$/i, ''),
+          code: result.code || '',
+          result,
+        })
+      }
+    } catch (e) {
+      alert('Error al convertir: ' + e.message)
+    } finally {
+      setCompiling(false)
+    }
+  }
+
   const downloadFile = (f) => {
     if (!selectedProject) return
     const form = new FormData(); form.append('action', 'download'); form.append('project', selectedProject.name); form.append('file', f?.name || selectedFile?.name)
@@ -180,6 +220,8 @@ export default function GrafosPage({ theme, onLoadToCompiler }) {
     if (name.endsWith('.mp')) return '📄'
     if (name.endsWith('.xfr')) return '🔄'
     if (name.endsWith('.pset')) return '⚙️'
+    if (/\.(cbl|cob|cobol)$/i.test(name)) return '📋'
+    if (/\.(alg|algol)$/i.test(name)) return '🧮'
     if (name.endsWith('.plan')) return '📋'
     if (name.endsWith('.dml')) return '🗂️'
     return '📎'
@@ -299,6 +341,12 @@ export default function GrafosPage({ theme, onLoadToCompiler }) {
                   <button onClick={() => downloadFile(selectedFile)} style={{ padding: '4px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer', background: 'transparent', border: `1px solid ${t.border || '#334155'}`, color: t.muted || '#94a3b8' }}>📥</button>
                   {selectedFile.name.endsWith('.mp') && (
                     <button onClick={() => onLoadToCompiler && onLoadToCompiler({ mp: fileContent, xfr: '', name: selectedFile.name.replace('.mp', '') })} style={{ padding: '4px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer', background: '#22c55e', color: '#000', border: 'none', fontWeight: 600 }}>🚀 Compilar</button>
+                  )}
+                  {/\.(cbl|cob|cobol)$/i.test(selectedFile.name) && (
+                    <button onClick={() => convertLegacy(selectedFile, 'cobol')} disabled={compiling} style={{ padding: '4px 8px', borderRadius: 4, fontSize: 10, cursor: compiling ? 'not-allowed' : 'pointer', background: '#a855f7', color: '#fff', border: 'none', fontWeight: 600 }}>{compiling ? '⏳...' : '📋 COBOL → PySpark'}</button>
+                  )}
+                  {/\.(alg|algol)$/i.test(selectedFile.name) && (
+                    <button onClick={() => convertLegacy(selectedFile, 'algol')} disabled={compiling} style={{ padding: '4px 8px', borderRadius: 4, fontSize: 10, cursor: compiling ? 'not-allowed' : 'pointer', background: '#0ea5e9', color: '#fff', border: 'none', fontWeight: 600 }}>{compiling ? '⏳...' : '🧮 ALGOL → PySpark'}</button>
                   )}
                 </div>
               </div>

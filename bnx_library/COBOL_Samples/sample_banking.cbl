@@ -1,0 +1,120 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. DAILY-BATCH-PROCESS.
+       AUTHOR. BNX-MIGRATION.
+
+       ENVIRONMENT DIVISION.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT CUSTOMER-FILE ASSIGN TO 'CUSTFILE'
+               ORGANIZATION IS SEQUENTIAL.
+           SELECT TRANSACTION-FILE ASSIGN TO 'TXFILE'
+               ORGANIZATION IS SEQUENTIAL.
+           SELECT ACCOUNT-FILE ASSIGN TO 'ACCTFILE'
+               ORGANIZATION IS SEQUENTIAL.
+           SELECT REPORT-FILE ASSIGN TO 'RPTFILE'
+               ORGANIZATION IS SEQUENTIAL.
+           SELECT ERROR-FILE ASSIGN TO 'ERRFILE'
+               ORGANIZATION IS SEQUENTIAL.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD CUSTOMER-FILE.
+       01 CUSTOMER-RECORD.
+           05 CUST-ID            PIC X(10).
+           05 CUST-NAME          PIC X(30).
+           05 CUST-REGION        PIC X(10).
+           05 CUST-SEGMENT       PIC X(10).
+           05 CUST-BALANCE       PIC 9(10)V99.
+           05 CUST-STATUS        PIC X(1).
+
+       FD TRANSACTION-FILE.
+       01 TRANSACTION-RECORD.
+           05 TX-ID              PIC X(12).
+           05 TX-CUST-ID         PIC X(10).
+           05 TX-AMOUNT          PIC S9(10)V99.
+           05 TX-TYPE            PIC X(3).
+           05 TX-DATE            PIC X(10).
+           05 TX-STATUS          PIC X(1).
+
+       FD ACCOUNT-FILE.
+       01 ACCOUNT-RECORD.
+           05 ACCT-ID            PIC X(10).
+           05 ACCT-CUST-ID       PIC X(10).
+           05 ACCT-TYPE          PIC X(3).
+           05 ACCT-BALANCE       PIC S9(12)V99.
+           05 ACCT-CURRENCY      PIC X(3).
+
+       FD REPORT-FILE.
+       01 REPORT-RECORD          PIC X(200).
+
+       FD ERROR-FILE.
+       01 ERROR-RECORD            PIC X(200).
+
+       WORKING-STORAGE SECTION.
+       01 WS-TOTAL-AMOUNT        PIC S9(12)V99 VALUE 0.
+       01 WS-TX-COUNT            PIC 9(8) VALUE 0.
+       01 WS-ERROR-COUNT         PIC 9(8) VALUE 0.
+       01 WS-EOF-CUST            PIC X VALUE 'N'.
+       01 WS-EOF-TX              PIC X VALUE 'N'.
+
+       PROCEDURE DIVISION.
+       MAIN-PROCESS.
+           OPEN INPUT CUSTOMER-FILE
+                      TRANSACTION-FILE
+                      ACCOUNT-FILE
+           OPEN OUTPUT REPORT-FILE
+                       ERROR-FILE
+
+           PERFORM READ-CUSTOMERS
+           PERFORM READ-TRANSACTIONS
+           PERFORM FILTER-ACTIVE-CUSTOMERS
+           PERFORM FILTER-VALID-TRANSACTIONS
+           PERFORM JOIN-CUSTOMER-TX
+           PERFORM COMPUTE-TOTALS
+           PERFORM WRITE-REPORT
+           PERFORM WRITE-ERRORS
+
+           CLOSE CUSTOMER-FILE
+                 TRANSACTION-FILE
+                 ACCOUNT-FILE
+                 REPORT-FILE
+                 ERROR-FILE
+           STOP RUN.
+
+       READ-CUSTOMERS.
+           READ CUSTOMER-FILE INTO CUSTOMER-RECORD
+               AT END SET WS-EOF-CUST TO 'Y'.
+
+       READ-TRANSACTIONS.
+           READ TRANSACTION-FILE INTO TRANSACTION-RECORD
+               AT END SET WS-EOF-TX TO 'Y'.
+
+       FILTER-ACTIVE-CUSTOMERS.
+           IF CUST-STATUS = 'A'
+               CONTINUE
+           ELSE
+               MOVE SPACES TO CUSTOMER-RECORD
+           END-IF.
+
+       FILTER-VALID-TRANSACTIONS.
+           IF TX-AMOUNT > 0 AND TX-STATUS = 'S'
+               CONTINUE
+           ELSE
+               ADD 1 TO WS-ERROR-COUNT
+               WRITE ERROR-RECORD FROM TRANSACTION-RECORD
+           END-IF.
+
+       JOIN-CUSTOMER-TX.
+           IF TX-CUST-ID = CUST-ID
+               CONTINUE
+           END-IF.
+
+       COMPUTE-TOTALS.
+           ADD TX-AMOUNT TO WS-TOTAL-AMOUNT
+           ADD 1 TO WS-TX-COUNT.
+
+       WRITE-REPORT.
+           WRITE REPORT-RECORD FROM CUSTOMER-RECORD.
+
+       WRITE-ERRORS.
+           WRITE ERROR-RECORD FROM TRANSACTION-RECORD.

@@ -112,6 +112,7 @@ export default function App() {
   }, [])
   const dagRef                  = useRef(null)
   const cobolRef                = useRef(null)
+  const algolRef                = useRef(null)
   const planRef                 = useRef(null)
   const psetRef                 = useRef(null)
   const [psetFile, setPsetFile] = useState(null)
@@ -164,7 +165,7 @@ export default function App() {
     setPsetFile(null)
     setPlanXfrFile(null)
     // Limpiar inputs de archivo (para poder re-subir el mismo nombre).
-    ;[cobolRef, planRef, psetRef, planXfrRef, mpFilesRef, refactorRef].forEach(r => {
+    ;[cobolRef, algolRef, planRef, psetRef, planXfrRef, mpFilesRef, refactorRef].forEach(r => {
       if (r && r.current) { try { r.current.value = '' } catch { /* ignore */ } }
     })
   }
@@ -300,6 +301,21 @@ export default function App() {
     form.append('target', target)
     try {
       const res = await fetch(COMPILE_URL.replace('/compile', '/cobol'), { method: 'POST', body: form })
+      const data = await res.json()
+      setResult(data)
+      if (data.code) setCodeOpen(true)
+    } catch (e) {
+      setResult({ errors: [`Network error: ${e.message}`], warnings: [], nodes: [], edges: [] })
+    } finally { setLoading(false) }
+  }
+
+  const compileAlgol = async (file) => {
+    setLoading(true)
+    const form = new FormData()
+    form.append('algol', file)
+    form.append('target', target)
+    try {
+      const res = await fetch(COMPILE_URL.replace('/compile', '/algol'), { method: 'POST', body: form })
       const data = await res.json()
       setResult(data)
       if (data.code) setCodeOpen(true)
@@ -917,6 +933,23 @@ export default function App() {
             >📋 Convertir .cbl → {target === 'spark' ? 'PySpark' : target.toUpperCase()}</button>
             <input ref={cobolRef} type="file" accept=".cbl,.cob,.cobol" hidden
               onChange={(e) => { if (e.target.files[0]) compileCobol(e.target.files[0]); e.target.value = '' }}
+            />
+          </div>
+
+          {/* ALGOL upload (mainframe Unisys MCP) */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <span style={{ fontSize: 14, color: t.muted, textTransform: 'uppercase', letterSpacing: 1 }}>ALGOL Migration</span>
+            <span style={{ fontSize: 12, color: t.dim }}>Sube un .alg (Unisys MCP) y se convierte directo al target ({target.toUpperCase()}). Detecta FILE, RECORD/campos, PROCEDURE, IF, acumuladores.</span>
+            <button
+              style={{
+                padding: '8px 16px', borderRadius: 8, cursor: 'pointer',
+                background: t.card, border: `1px dashed ${t.border}`,
+                color: t.muted, fontSize: 13,
+              }}
+              onClick={() => algolRef.current.click()}
+            >🧮 Convertir .alg → {target === 'spark' ? 'PySpark' : target.toUpperCase()}</button>
+            <input ref={algolRef} type="file" accept=".alg,.algol" hidden
+              onChange={(e) => { if (e.target.files[0]) compileAlgol(e.target.files[0]); e.target.value = '' }}
             />
           </div>
 

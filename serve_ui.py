@@ -95,6 +95,7 @@ from src.py2spark import infer_input_schema as py2spark_infer_schema
 from src.perf_optimizer import optimize_pyspark
 from src.export_bundle import build_export_bundle
 from src.cobol_parser import parse_cobol, cobol_to_graph
+from src.algol_parser import parse_algol, algol_to_graph
 from src.datagen import (
     infer_schema_from_graph,
     build_synthetic_data,
@@ -164,6 +165,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_py2spark()
         elif "/cobol" in path:
             self._handle_cobol()
+        elif "/algol" in path:
+            self._handle_algol()
         elif "/compile" in path or "/api" in path:
             self._handle_compile()
         else:
@@ -307,8 +310,14 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 for d in sorted(os.listdir(root)):
                     dp = os.path.join(root, d)
                     if os.path.isdir(dp) and d != "_flat":
-                        mp_count = len(_glob.glob(os.path.join(dp, "*.mp")))
-                        projects.append({"name": d, "graphs": mp_count})
+                        # Contar grafos .mp y tambien fuentes legacy .cbl/.alg, para
+                        # que proyectos de solo COBOL/ALGOL aparezcan en la lista.
+                        count = (len(_glob.glob(os.path.join(dp, "*.mp")))
+                                 + len(_glob.glob(os.path.join(dp, "*.cbl")))
+                                 + len(_glob.glob(os.path.join(dp, "*.cob")))
+                                 + len(_glob.glob(os.path.join(dp, "*.alg")))
+                                 + len(_glob.glob(os.path.join(dp, "*.algol"))))
+                        projects.append({"name": d, "graphs": count})
                 self._json_response(200, {"projects": projects})
                 return
 
@@ -2022,6 +2031,67 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             if cobol_path:
                 try:
                     os.unlink(cobol_path)
+                except OSError:
+                    pass
+
+    def _handle_algol(self):
+        """Convierte ALGOL (Unisys MCP/.alg) directo a PySpark (u otro target).
+
+        Flujo: parse_algol -> algol_to_graph (.mp/.xfr/.dml) -> _compile_graph.
+        Por DEFECTO target='spark' (ALGOL -> PySpark directo). Acepta el ALGOL por
+        multipart (campo/archivo 'algol') o por JSON ({"algol": "..."}). Opcional
+        'target'. Devuelve el mismo shape que /compile mas los .mp/.xfr/.dml."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        content_type = self.headers.get("Content-Type", "")
+
+        algol_path = None
+        try:
+            algol_src = ""
+            target = "spark"  # ALGOL -> PySpark directo por defecto
+            if "multipart/form-data" in content_type:
+                fields, file_parts = parse_multipart(body, content_type)
+                if "algol" in file_parts:
+                    algol_src = file_parts["algol"].decode("utf-8", errors="replace")
+                else:
+                    algol_src = fields.get("algol", "") or ""
+                target = (fields.get("target", "") or "spark").lower()
+            else:
+                try:
+                    data = json.loads(body.decode("utf-8", errors="replace"))
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    self._json_response(400, {"error": "Invalid request format"})
+                    return
+                algol_src = data.get("algol", "") or data.get("code", "") or ""
+                target = (data.get("target", "") or "spark").lower()
+
+            if not algol_src.strip():
+                self._json_response(400, {"error": "Se requiere codigo ALGOL (campo 'algol')."})
+                return
+
+            algol_path = self._save_temp(algol_src, ".alg")
+            parsed = parse_algol(algol_path)
+            graph = algol_to_graph(parsed)
+
+            compiled = self._compile_graph(
+                graph["mp"], graph["xfr"], graph["dml"], target=target
+            )
+
+            result = dict(compiled)
+            result["generated_mp"] = graph["mp"]
+            result["generated_xfr"] = graph["xfr"]
+            result["generated_dml"] = graph["dml"]
+            result["target"] = target
+            self._json_response(200, result)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": str(e)})
+        finally:
+            if algol_path:
+                try:
+                    os.unlink(algol_path)
                 except OSError:
                     pass
 
