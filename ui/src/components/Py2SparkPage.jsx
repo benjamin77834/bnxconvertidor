@@ -107,11 +107,18 @@ j.to_parquet("salida")`
             (<code>py2spark convert</code>) y la extensión de VS Code.
           </p>
         </div>
-        <a href={COMPILE_URL.replace('/compile', '/download/vsix')} download="py2spark.vsix"
-          title="Descarga la extensión de VS Code (py2spark.vsix) para convertir Python a PySpark desde el editor"
-          style={{ ...btn(t, 'accent'), textDecoration: 'none', flexShrink: 0 }}>
-          🧩 Extensión VS Code (.vsix)
-        </a>
+        <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+          <a href={COMPILE_URL.replace('/compile', '/download/vsix')} download="py2spark.vsix"
+            title="Descarga la extensión de VS Code (py2spark.vsix) para convertir Python a PySpark desde el editor"
+            style={{ ...btn(t, 'accent'), textDecoration: 'none' }}>
+            🧩 Extensión VS Code (.vsix)
+          </a>
+          <a href={COMPILE_URL.replace('/compile', '/download/vsix/optimizer')} download="pyspark-optimizer.vsix"
+            title="Descarga la extensión 'BNX PySpark Optimizer' (.vsix): optimiza y REDUCE código PySpark desde el editor (cache/broadcast/coalesce + limpieza)"
+            style={{ ...btn(t, 'secondary'), textDecoration: 'none' }}>
+            ⚡ Optimizer VS Code (.vsix)
+          </a>
+        </div>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
@@ -252,6 +259,7 @@ function btn(t, kind, disabled) {
   }
   if (kind === 'primary') return { ...base, background: disabled ? (t.border || '#334155') : (t.accent || '#6366f1'), color: '#fff' }
   if (kind === 'accent') return { ...base, background: '#14b8a620', border: '1px solid #14b8a640', color: '#2dd4bf' }
+  if (kind === 'secondary') return { ...base, background: '#f59e0b20', border: '1px solid #f59e0b40', color: '#fbbf24' }
   // ghost
   return { ...base, background: 'transparent', border: `1px solid ${t.border || '#334155'}`, color: t.muted || '#94a3b8' }
 }
