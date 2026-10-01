@@ -1923,6 +1923,15 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 mp_content, xfr_content, dml_content, pset_content, target,
                 mp_filename=mp_filename,
             )
+            # Aplicar optimizacion + reduccion de codigo al PySpark generado.
+            # Para target 'spark' adjuntamos optimized_code/optimizations SIN pisar
+            # el 'code' original. Si el request pide optimize=true, ademas sustituimos
+            # el 'code' por el optimizado (compilar ya optimizado).
+            apply_opt = self._wants_optimize(body, content_type)
+            self._attach_optimized(result, target)
+            if apply_opt and result.get("optimized_code"):
+                result["code"] = result["optimized_code"]
+                result["optimized_applied"] = True
             self._json_response(200, result)
 
         except Exception as e:
@@ -1930,6 +1939,20 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             err_msg = str(e)
             traceback.print_exc()
             self._json_response(500, {"error": err_msg})
+
+    def _wants_optimize(self, body, content_type):
+        """True si el request de /compile pide aplicar la optimizacion al 'code'
+        (campo/param 'optimize' = 1/true/yes). Tolerante a multipart y JSON."""
+        try:
+            if content_type.startswith("application/json"):
+                data = json.loads(body.decode("utf-8", errors="replace"))
+                return str(data.get("optimize", "")).lower() in ("1", "true", "yes")
+            if "multipart/form-data" in content_type:
+                fields, _ = parse_multipart(body, content_type)
+                return str(fields.get("optimize", "")).lower() in ("1", "true", "yes")
+        except Exception:
+            pass
+        return False
 
     def _handle_py2spark(self):
         """Convierte codigo Python (pandas) a PySpark 3 usando la libreria py2spark.

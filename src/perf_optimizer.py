@@ -132,6 +132,54 @@ def _reduce_code(lines):
             "count": removed,
         })
 
+    # R5: eliminar asignaciones IDENTICAS duplicadas consecutivas (ruido del codegen).
+    dedup = []
+    dup_removed = 0
+    prev_code = None
+    for line in lines:
+        s = line.strip()
+        if s and not s.startswith('#') and '=' in s and s == prev_code:
+            dup_removed += 1
+            continue
+        if s and not s.startswith('#'):
+            prev_code = s
+        dedup.append(line)
+    lines = dedup
+    if dup_removed:
+        changes.append({
+            "rule": "dead_code",
+            "target": f"{dup_removed} duplicada(s)",
+            "detail": f"{dup_removed} linea(s) de asignacion identicas consecutivas eliminadas",
+            "count": dup_removed,
+        })
+        removed += dup_removed
+
+    # R6: eliminar imports NO usados. Solo imports simples y seguros; nunca
+    # tocamos 'from pyspark...' con wildcard (import *) ni SparkSession/functions
+    # que casi siempre se usan de forma indirecta.
+    _PROTECTED_IMPORT = ('import *', 'SparkSession', 'functions as F',
+                         'from pyspark.sql import', 'SparkContext', 'GlueContext')
+    body = "\n".join(l for l in lines if not _is_import_line(l))
+    imports_removed = 0
+    kept = []
+    for line in lines:
+        name = _imported_name(line)
+        if name and not any(p in line for p in _PROTECTED_IMPORT):
+            # usado como palabra en el cuerpo (fuera de la propia linea import)?
+            if not re.search(rf'\b{re.escape(name)}\b', body):
+                imports_removed += 1
+                continue
+        kept.append(line)
+    lines = kept
+    if imports_removed:
+        changes.append({
+            "rule": "dead_code",
+            "target": f"{imports_removed} import(s)",
+            "detail": f"{imports_removed} import(s) no usado(s) eliminado(s)",
+            "count": imports_removed,
+        })
+        removed += imports_removed
+
     # R3: colapsar lineas en blanco consecutivas.
     collapsed = []
     blank = False
@@ -148,6 +196,31 @@ def _reduce_code(lines):
     lines = collapsed
 
     return lines, changes, removed
+
+
+def _is_import_line(line):
+    s = line.strip()
+    return s.startswith("import ") or s.startswith("from ")
+
+
+def _imported_name(line):
+    """Devuelve el nombre LOCAL que introduce un import simple, o None si no es
+    un import de un unico simbolo seguro de analizar.
+      import os                 -> 'os'
+      import numpy as np        -> 'np'
+      from x import y           -> 'y'
+      from x import y as z      -> 'z'
+    Devuelve None para imports multiples (coma) o wildcard (no se tocan)."""
+    s = line.strip()
+    if "," in s or "*" in s:
+        return None
+    m = re.match(r'^import\s+([\w.]+)(?:\s+as\s+(\w+))?\s*$', s)
+    if m:
+        return m.group(2) or m.group(1).split('.')[0]
+    m = re.match(r'^from\s+[\w.]+\s+import\s+(\w+)(?:\s+as\s+(\w+))?\s*$', s)
+    if m:
+        return m.group(2) or m.group(1)
+    return None
 
 
 def optimize_pyspark(code, include_coalesce=True):
