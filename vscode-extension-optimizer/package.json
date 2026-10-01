@@ -1,0 +1,70 @@
+{
+  "name": "pyspark-optimizer",
+  "displayName": "BNX PySpark Optimizer",
+  "description": "Optimiza codigo PySpark por reglas de performance (cache, broadcast join, coalesce) usando el motor del portal BNX.",
+  "version": "0.1.0",
+  "publisher": "bnx",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Other",
+    "Programming Languages"
+  ],
+  "keywords": [
+    "pyspark",
+    "spark",
+    "optimize",
+    "performance",
+    "etl"
+  ],
+  "activationEvents": [],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "psparkOptimizer.optimizeSelection",
+        "title": "PySpark Optimizer: Optimizar selección"
+      },
+      {
+        "command": "psparkOptimizer.optimizeFile",
+        "title": "PySpark Optimizer: Optimizar archivo"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "psparkOptimizer.optimizeSelection",
+          "when": "editorLangId == python",
+          "group": "1_modification"
+        },
+        {
+          "command": "psparkOptimizer.optimizeFile",
+          "when": "editorLangId == python",
+          "group": "1_modification"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "PySpark Optimizer",
+      "properties": {
+        "psparkOptimizer.serverUrl": {
+          "type": "string",
+          "default": "http://localhost:8081",
+          "description": "URL base del portal BNX que expone el endpoint /optimize."
+        },
+        "psparkOptimizer.openInNewEditor": {
+          "type": "boolean",
+          "default": true,
+          "description": "Abrir el PySpark optimizado en un editor nuevo (en vez de reemplazar la selección)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "package": "vsce package --allow-missing-repository -o pyspark-optimizer.vsix"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^2.15.0"
+  }
+}
