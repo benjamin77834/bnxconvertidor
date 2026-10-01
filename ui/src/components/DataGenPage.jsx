@@ -494,8 +494,10 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
   }
 
   // Exporta un ZIP descargable para PROBAR el job en Linux: contiene
-  // job_bundle.zip (job.py + run_test.py + requirements + run.sh) y
-  // data_bundle.zip (CSV sinteticos por nodo SOURCE + manifest).
+  // job_bundle.zip (job.py + run_test.py + requirements + setup.sh + run.sh) y
+  // data_bundle.zip (data/input: CSV sinteticos de entrada; data/output: salida
+  // REAL del job sobre esa entrada; + manifest). setup.sh monta el ambiente
+  // completo (venv + deps + carpetas) en el destino Linux.
   const [exporting, setExporting] = useState(false)
   const exportBundle = async () => {
     setExporting(true)
@@ -1109,7 +1111,7 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
               <button
                 onClick={exportBundle}
                 disabled={exporting || !hasCompilerGraph}
-                title="Descarga un ZIP con el job PySpark + venv on-demand (run.sh) y otro con los datos de prueba, listo para correr en Linux"
+                title="Descarga un ZIP para Linux: setup.sh monta el ambiente completo (crea el venv, instala PySpark y arma las carpetas) y el data_bundle trae los datos sintéticos de ENTRADA (data/input) y la SALIDA real del job (data/output) para comparar. Luego ./setup.sh y ./run.sh"
                 style={{
                   padding: '10px 18px', borderRadius: 8,
                   cursor: (exporting || !hasCompilerGraph) ? 'not-allowed' : 'pointer',
@@ -1132,6 +1134,25 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
               >{comparing ? '⏳ Comparando...' : '⚡ Comparar performance'}</button>
             </div>
           </div>
+
+          {/* Aviso: que incluye el bundle de exportacion (Linux) */}
+          {hasCompilerGraph && (
+            <div style={{
+              background: '#10b98112', borderRadius: 8, padding: '10px 12px',
+              border: '1px solid #10b98133', display: 'flex', flexDirection: 'column', gap: 4,
+            }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: '#10b981' }}>
+                📦 El bundle (Linux) ahora monta el ambiente y trae entrada + salida
+              </span>
+              <span style={{ fontSize: 11, color: t.dim || '#64748b', lineHeight: 1.5 }}>
+                Descomprime <code>job_bundle.zip</code> y <code>data_bundle.zip</code> en la misma
+                carpeta, entra a <code>job_bundle/</code> y corre <code>./setup.sh</code> (crea el venv,
+                instala PySpark y arma las carpetas) y luego <code>./run.sh</code>. Los datos vienen en{' '}
+                <code>data/input/</code> (sintéticos de entrada) y <code>data/output/</code>{' '}
+                (la salida real del job sobre esa entrada, para comparar).
+              </span>
+            </div>
+          )}
 
           {/* Config de la EC2 interna (URL privada de DataLab) */}
           {showEc2Config && (
