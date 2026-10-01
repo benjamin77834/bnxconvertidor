@@ -302,13 +302,20 @@ const TIMELINE = [
     tags: ['bundle', 'linux', 'offline', 'py2spark', 'windows'],
     color: '#0ea5e9',
   },
+  {
+    date: '1 Oct 2026',
+    title: 'Dia 51: Legacy a PySpark - COBOL y ALGOL en la GUI + aritmetica avanzada',
+    desc: 'COBOL -> PySpark directo: el endpoint /cobol se añadio a serve_ui (antes solo FastAPI/Lambda); el boton de la GUI ya funciona local. Nuevo conversor ALGOL (Unisys MCP): src/algol_parser.py (parse_algol + algol_to_graph), endpoint /algol y boton. Detecta FILE, RECORD/campos EBCDIC/REAL/INTEGER, PROCEDURE, IF (filtros), IF campo=campo (joins), acumuladores. COBOL/ALGOL de muestra en la pestaña Grafos (COBOL_Samples x5, ALGOL_Samples x2) con botones COBOL->PySpark / ALGOL->PySpark. El PySpark generado se refactoriza con optimize_pyspark (cache/broadcast/coalesce). Aritmetica avanzada: COMPUTE / ADD-SUBTRACT-MULTIPLY-DIVIDE..GIVING (COBOL) y := con (a+b)*c-d/e (ALGOL) -> columnas calculadas withColumn(expr) con precedencia; acumuladores siguen SUM. Bundle plano (fix Error 0 de macOS por zips anidados) y PySpark 3.5.6 (cubre Python 3.8-3.12). Verificado: COBOL/ALGOL -> PySpark valido y ejecutado, 111 tests.',
+    tags: ['cobol', 'algol', 'legacy', 'pyspark', 'arithmetic'],
+    color: '#a855f7',
+  },
 ]
 
 const STATS = [
-  { label: 'Dias de desarrollo', value: '50', color: '#6366f1' },
-  { label: 'Commits', value: '158+', color: '#22c55e' },
-  { label: 'Componentes', value: '27+', color: '#f59e0b' },
-  { label: 'Parsers', value: '6', color: '#a855f7' },
+  { label: 'Dias de desarrollo', value: '51', color: '#6366f1' },
+  { label: 'Commits', value: '165+', color: '#22c55e' },
+  { label: 'Componentes', value: '28+', color: '#f59e0b' },
+  { label: 'Parsers', value: '7', color: '#a855f7' },
   { label: 'Code Generators', value: '7', color: '#ec4899' },
   { label: 'Paginas UI', value: '10', color: '#06b6d4' },
 ]
