@@ -16,6 +16,11 @@ export default function ModelFrameworkPage({ theme }) {
   const [error, setError] = useState('')
   const [examples, setExamples] = useState([])
   const [selected, setSelected] = useState('')
+  const [mode, setMode] = useState('example')   // 'example' | 'upload'
+  const [upYaml, setUpYaml] = useState('')       // contenido del .yml subido
+  const [upCsv, setUpCsv] = useState('')         // contenido del .csv subido
+  const [upYamlName, setUpYamlName] = useState('')
+  const [upCsvName, setUpCsvName] = useState('')
 
   // Cargar los ejemplos disponibles (config YAML + dataset) al montar.
   useEffect(() => {
@@ -29,11 +34,24 @@ export default function ModelFrameworkPage({ theme }) {
       .catch(() => {})
   }, [])
 
+  const readFile = (file, setContent, setName) => {
+    const reader = new FileReader()
+    reader.onload = () => { setContent(reader.result || ''); setName(file.name) }
+    reader.readAsText(file)
+  }
+
   const run = async () => {
     setRunning(true); setError(''); setResult(null)
     try {
-      const ex = examples.find(e => e.id === selected)
-      const body = ex ? { yaml: ex.yaml, csv: ex.csv, train: true } : {}
+      let body
+      if (mode === 'upload') {
+        if (!upYaml.trim()) { setError('Sube un archivo de configuración .yml.'); return }
+        if (!upCsv.trim()) { setError('Sube un dataset .csv.'); return }
+        body = { yaml: upYaml, csv: upCsv, train: true }
+      } else {
+        const ex = examples.find(e => e.id === selected)
+        body = ex ? { yaml: ex.yaml, csv: ex.csv, train: true } : {}
+      }
       const res = await fetch(MODEL_RUN_URL, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -70,28 +88,61 @@ export default function ModelFrameworkPage({ theme }) {
             parte del framework.
           </p>
         </div>
-        <div style={{ display: 'flex', gap: 8, flexShrink: 0, alignItems: 'center' }}>
-          {examples.length > 0 && (
-            <select value={selected} onChange={e => setSelected(e.target.value)}
-              title="Ejemplo de modelo a operacionalizar"
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, flexShrink: 0, alignItems: 'flex-end' }}>
+          {/* Toggle: ejemplo vs subir archivos */}
+          <div style={{ display: 'flex', gap: 4 }}>
+            {['example', 'upload'].map(m => (
+              <button key={m} onClick={() => setMode(m)}
+                style={{
+                  padding: '5px 10px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                  background: mode === m ? '#8b5cf620' : 'transparent',
+                  border: `1px solid ${mode === m ? '#8b5cf6' : (t.border || '#334155')}`,
+                  color: mode === m ? '#a78bfa' : (t.muted || '#94a3b8'), fontWeight: mode === m ? 600 : 400,
+                }}>{m === 'example' ? '📚 Ejemplo' : '📤 Subir archivos'}</button>
+            ))}
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {mode === 'example' && examples.length > 0 && (
+              <select value={selected} onChange={e => setSelected(e.target.value)}
+                title="Ejemplo de modelo a operacionalizar"
+                style={{
+                  padding: '9px 10px', borderRadius: 8, fontSize: 13,
+                  background: t.card || '#1e2433', color: t.text || '#e2e8f0',
+                  border: `1px solid ${t.border || '#334155'}`,
+                }}>
+                {examples.map(ex => (
+                  <option key={ex.id} value={ex.id}>{ex.name} ({ex.features.length} features)</option>
+                ))}
+              </select>
+            )}
+            {mode === 'upload' && (
+              <div style={{ display: 'flex', gap: 6 }}>
+                <label style={{ padding: '8px 10px', borderRadius: 8, fontSize: 12, cursor: 'pointer',
+                  background: 'transparent', border: `1px solid ${upYaml ? '#22c55e60' : (t.border || '#334155')}`,
+                  color: upYaml ? '#22c55e' : (t.muted || '#94a3b8') }}>
+                  {upYamlName ? `📄 ${upYamlName}` : '📄 config .yml'}
+                  <input type="file" accept=".yml,.yaml" hidden
+                    onChange={e => { if (e.target.files[0]) readFile(e.target.files[0], setUpYaml, setUpYamlName); e.target.value = '' }} />
+                </label>
+                <label style={{ padding: '8px 10px', borderRadius: 8, fontSize: 12, cursor: 'pointer',
+                  background: 'transparent', border: `1px solid ${upCsv ? '#22c55e60' : (t.border || '#334155')}`,
+                  color: upCsv ? '#22c55e' : (t.muted || '#94a3b8') }}>
+                  {upCsvName ? `🗃️ ${upCsvName}` : '🗃️ dataset .csv'}
+                  <input type="file" accept=".csv" hidden
+                    onChange={e => { if (e.target.files[0]) readFile(e.target.files[0], setUpCsv, setUpCsvName); e.target.value = '' }} />
+                </label>
+              </div>
+            )}
+            <button onClick={run} disabled={running}
               style={{
-                padding: '9px 10px', borderRadius: 8, fontSize: 13,
-                background: t.card || '#1e2433', color: t.text || '#e2e8f0',
-                border: `1px solid ${t.border || '#334155'}`,
+                padding: '10px 18px', borderRadius: 8,
+                cursor: running ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 700,
+                background: running ? (t.border || '#334155') : '#8b5cf6', color: '#fff', border: 'none',
               }}>
-              {examples.map(ex => (
-                <option key={ex.id} value={ex.id}>{ex.name} ({ex.features.length} features)</option>
-              ))}
-            </select>
-          )}
-          <button onClick={run} disabled={running}
-            style={{
-              padding: '10px 18px', borderRadius: 8,
-              cursor: running ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 700,
-              background: running ? (t.border || '#334155') : '#8b5cf6', color: '#fff', border: 'none',
-            }}>
-            {running ? '⏳ Ejecutando pipeline…' : '▶️ Ejecutar framework'}
-          </button>
+              {running ? '⏳ Ejecutando pipeline…' : '▶️ Ejecutar framework'}
+            </button>
+          </div>
         </div>
       </div>
 
