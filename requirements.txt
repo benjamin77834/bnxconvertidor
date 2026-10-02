@@ -19,3 +19,10 @@ boto3>=1.28
 # - dataclasses (data structures)
 # - datetime (timestamps)
 # - io, base64 (Lambda handler)
+
+# Framework de Modelos (seccion "Modelos" / operacionalizacion). Requerido solo
+# para el endpoint /model/run. Si no se usan modelos, no hace falta instalarlos.
+pyyaml>=6,<7
+cryptography>=42
+xgboost>=2,<4
+scikit-learn>=1.3

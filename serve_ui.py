@@ -167,6 +167,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_cobol()
         elif "/algol" in path:
             self._handle_algol()
+        elif "/model/run" in path:
+            self._handle_model_run()
         elif "/compile" in path or "/api" in path:
             self._handle_compile()
         else:
@@ -2152,6 +2154,83 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                     os.unlink(algol_path)
                 except OSError:
                     pass
+
+    def _handle_model_run(self):
+        """Ejecuta el Framework de Modelos (operacionalizacion) y devuelve el
+        resultado: pipeline, manifest (SHA-256 + cifrado + firma Ed25519), audit,
+        codigo generado, PMML, correos y 'deployable'. Ademas corre la DEMO de
+        integridad (altera el codigo -> rechazo por hash mismatch -> restaura).
+
+        Body JSON (todo opcional):
+          {"yaml": "<config>", "csv": "<dataset>", "train": true}
+        Si no se envia nada, usa el modelo/datos de ejemplo (riesgo crediticio).
+        """
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        content_type = self.headers.get("Content-Type", "")
+
+        yaml_src = csv_src = None
+        train = True
+        try:
+            if content_type.startswith("application/json") and body.strip():
+                data = json.loads(body.decode("utf-8", errors="replace"))
+                yaml_src = data.get("yaml") or None
+                csv_src = data.get("csv") or None
+                if "train" in data:
+                    train = bool(data.get("train"))
+        except Exception:
+            pass
+
+        try:
+            from src.model_framework import run_framework, verify_manifest
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {
+                "error": "Framework de Modelos no disponible: "
+                         f"{type(e).__name__}: {e}. Instala pyyaml, cryptography, "
+                         "xgboost y scikit-learn en el venv."})
+            return
+
+        work_dir = None
+        try:
+            import tempfile
+            work_dir = tempfile.mkdtemp(prefix="bnx_modelfw_")
+            result = run_framework(config_yaml=yaml_src, data_csv=csv_src,
+                                   work_dir=work_dir, train_model=train)
+
+            # DEMO de control de integridad: alterar el codigo generado, verificar
+            # (debe RECHAZAR por hash mismatch) y restaurar (vuelve a deployable).
+            try:
+                import os as _os
+                from pathlib import Path as _P
+                wd = _P(result["work_dir"])
+                mp = wd / "generated" / "execution_manifest.json"
+                pk = wd / "secrets" / "demo_ed25519_public.pem"
+                code = wd / "generated" / "generated_score.py"
+                original = code.read_text(encoding="utf-8")
+                code.write_text(original + "\n# cambio no autorizado (demo)\n", encoding="utf-8")
+                tampered = verify_manifest(str(mp), str(pk))
+                code.write_text(original, encoding="utf-8")
+                restored = verify_manifest(str(mp), str(pk))
+                result["integrity_demo"] = {
+                    "tampered": tampered,       # deployable False + error hash mismatch
+                    "restored": restored,       # deployable True
+                }
+            except Exception as e:
+                result["integrity_demo"] = {"error": f"{type(e).__name__}: {e}"}
+
+            # No devolvemos work_dir real al cliente (ruta interna); lo limpiamos.
+            result.pop("work_dir", None)
+            self._json_response(200, result)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": f"{type(e).__name__}: {e}"})
+        finally:
+            if work_dir and os.path.isdir(work_dir):
+                import shutil
+                shutil.rmtree(work_dir, ignore_errors=True)
 
     def _save_temp(self, content, suffix):
         if isinstance(content, bytes):
