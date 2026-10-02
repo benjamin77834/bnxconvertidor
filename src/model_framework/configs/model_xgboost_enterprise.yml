@@ -1,0 +1,44 @@
+framework:
+  name: model-framework
+  version: "0.3.0"
+model:
+  name: credit_risk
+  version: "2.0"
+artifact:
+  native_path: "artifacts/credit_risk_xgboost.json"
+  pmml_path: "artifacts/credit_risk_xgboost.pmml"
+data:
+  input_file: "examples/data/input_credit_risk.csv"
+features: [income, age, debt_ratio]
+algorithm:
+  type: xgboost
+  scoring_engine: jpmml
+reusable_libraries:
+  repository: central-library-repository
+  runtime_profile: model-runtime
+  version: "1.4.0"
+  dependencies:
+    - {name: framework-core, version: "0.3.0"}
+    - {name: business-features, version: "2.4.1"}
+    - {name: business-validation, version: "1.8.0"}
+pipeline:
+  - data_validation
+  - preparation
+  - feature_engineering
+  - score
+  - evaluation
+  - package
+validation:
+  max_absolute_error: 0.000001
+notifications:
+  enabled: true
+  mode: file
+  recipient: model-control@example.com
+security:
+  encrypt_generated_code: true
+  encryption_key_file: secrets/demo_fernet.key
+  signing_private_key_file: secrets/demo_ed25519_private.pem
+  signing_public_key_file: secrets/demo_ed25519_public.pem
+deployment:
+  immutable_artifact: true
+  verify_before_deploy: true

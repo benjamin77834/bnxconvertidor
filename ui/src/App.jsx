@@ -13,6 +13,7 @@ import HistoryPage from './components/HistoryPage'
 import PipelinePage from './components/PipelinePage'
 import GraphLibrary from './components/GraphLibrary'
 import GrafosPage from './components/GrafosPage'
+import ModelFrameworkPage from './components/ModelFrameworkPage'
 import DataGenPage from './components/DataGenPage'
 import CostEstimateCard from './components/CostEstimateCard'
 import Py2SparkPage from './components/Py2SparkPage'
@@ -624,6 +625,7 @@ export default function App() {
             { id: 'grafos', label: '📁 Grafos' },
             { id: 'py2spark', label: '🐍 Py→Spark' },
             { id: 'datagen', label: '🧪 Data Sintética' },
+            { id: 'models', label: '🔐 Modelos' },
             { id: 'history', label: '📜 History' },
           ].map(tab => (
             <button key={tab.id}
@@ -719,6 +721,8 @@ export default function App() {
             pythonSource={py2sparkCode ? py2sparkSource : ''}
             graphName={py2sparkCode ? 'py2spark_job' : (result?.graph_name || '')}
             graphDescription={py2sparkCode ? 'Job PySpark generado desde Python (pandas) con py2spark.' : (result?.description || '')} />
+        ) : page === 'models' ? (
+          <ModelFrameworkPage theme={t} />
         ) : page === 'designer' ? (
           <DesignerPage theme={t} />
         ) : page === 'ocr' ? (
