@@ -435,9 +435,24 @@ Verificacion: bundle real de `EMPLOYMENT_ABS_SUPP_01.mp` con 1 fuente de entrada
 
 ---
 
+## 1 de octubre — Dia 51: Legacy COBOL/ALGOL en la GUI, optimizador que reduce codigo y 2ª extension VS Code
+
+- **COBOL → PySpark directo en la GUI**: el endpoint `/cobol` se añadio a `serve_ui.py` (antes solo en FastAPI/Lambda); el boton COBOL ya funciona contra el server local. Target `spark` por defecto.
+- **Conversor ALGOL (Unisys MCP) → PySpark**: nuevo `src/algol_parser.py` (`parse_algol` + `algol_to_graph`), endpoint `/algol` y boton en la GUI. Detecta FILE, RECORD/campos (EBCDIC/REAL/INTEGER), PROCEDURE, IF (filtros/joins) y acumuladores.
+- **COBOL/ALGOL de muestra en la pestaña Grafos**: `bnx_library/COBOL_Samples/` (5) y `ALGOL_Samples/` (2), con botones "COBOL → PySpark" / "ALGOL → PySpark" (`convertLegacy`: download + endpoint).
+- **Aritmetica avanzada** en ambos parsers: `COMPUTE`, `ADD/SUBTRACT/MULTIPLY/DIVIDE ... GIVING` (COBOL) y `:=` con `(a+b)*c-d/e` (ALGOL) → columnas calculadas `withColumn(expr)` con precedencia; los acumuladores siguen `SUM`. Ademas, parrafos COBOL con logica sin `PERFORM` ya entran como nodos.
+- **Optimizador que REDUCE codigo (no solo performance)**: `src/perf_optimizer.py` suma una fase `_reduce_code` previa — elimina passthroughs (`x_df = y_df`), `select('*')` redundante, asignaciones duplicadas consecutivas e imports no usados (conservando `SparkSession`/`functions`/wildcard). La respuesta incluye `lines_removed` y `summary.dead_code_removed`. Ejemplo 11→7 lineas.
+- **2ª extension VS Code — "BNX PySpark Optimizer"** (`vscode-extension-optimizer/`): llama a `/optimize` (cache en reusos costosos, broadcast join, coalesce, + reduccion). Comandos "Optimizar seleccion/archivo". Descargable del portal en `GET /download/vsix/optimizer` y con boton en la pestaña Py→Spark. El PySpark generado desde COBOL/ALGOL tambien pasa por este optimizador.
+- **Optimizacion opcional en `/compile`**: adjunta `optimized_code`/`optimizations` (target spark) sin pisar el original; con `optimize=true` el `code` sale ya optimizado y reducido.
+- **Fix de Python en el bundle Linux**: en muchos Linux `python3` apunta al 3.6 del sistema y PySpark 3.5.6 exige ≥3.8 (fallaba con `pyspark requires Python '>=3.8'` → `ModuleNotFoundError: pyspark`). `setup.sh` ahora **autodetecta** un Python ≥3.8 (prueba python3.12…3.8), respeta `PYTHON=...` y da un error claro si no hay. Verificado end-to-end con Python 3.9 (bundle descargado por HTTP): `setup.sh` instala offline y `run.sh` ejecuta el job.
+
+Verificacion: 4 .cbl (incl. EBCDIC) y 2 .alg → PySpark valido y ejecutado; aritmetica avanzada traducida y corrida; optimizador reduce lineas y optimiza; ambas extensiones `.vsix` descargan del portal; bundle offline corre con Python 3.9; **111 tests**.
+
+---
+
 ## Estatus del convertidor por complejidad de grafo
 
-Validado **ejecutando** el PySpark generado con datos redactados (barrido de 58 grafos: 58/58 compilan) y, desde el Dia 45, con **validacion de equivalencia de datos** (esquema + conteo + contenido) contra una referencia. Desde el Dia 46 tambien convertimos **Python/pandas + ML** a PySpark 3 (py2spark).
+Validado **ejecutando** el PySpark generado con datos redactados (barrido de 58 grafos: 58/58 compilan) y, desde el Dia 45, con **validacion de equivalencia de datos** (esquema + conteo + contenido) contra una referencia. Desde el Dia 46 tambien convertimos **Python/pandas + ML** a PySpark 3 (py2spark). Desde el Dia 51 tambien **COBOL** (IBM) y **ALGOL** (Unisys) a PySpark, con optimizador que ademas reduce codigo.
 
 | Complejidad | Rango aprox. | Estatus |
 |-------------|--------------|---------|
@@ -480,7 +495,8 @@ Validado **ejecutando** el PySpark generado con datos redactados (barrido de 58 
 | Ejecutor de prueba PySpark local | Completo |
 | Bundle de exportacion Linux (ligero + offline con vendor) | Completo |
 | Validacion de equivalencia de datos (vs referencia) | Completo |
-| Optimizador de performance (reglas, sin IA) | Completo |
+| Optimizador de performance + reduccion de codigo (reglas, sin IA) | Completo |
+| Extensiones VS Code (.vsix): py2spark y PySpark Optimizer | Completo |
 | Benchmark original vs optimizado (simula nube) | Completo |
 | UI React | Completo |
 | API FastAPI + Lambda | Completo |
