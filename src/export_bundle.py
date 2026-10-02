@@ -397,10 +397,13 @@ def _build_series(cache_dir, serie):
     return sorted(glob.glob(os.path.join(sdir, "*.whl")))
 
 
-def fetch_vendor_files(cache_dir=None):
-    """Prepara (y cachea) los wheels de TODAS las series de PySpark para cubrir
-    Python 3.8-3.14. Devuelve un dict {serie_dir: [rutas .whl]} para empaquetar
-    cada serie en vendor/<serie_dir>/ dentro del bundle.
+def fetch_vendor_files(cache_dir=None, only_series=None):
+    """Prepara (y cachea) los wheels de las series de PySpark. Devuelve un dict
+    {serie_dir: [rutas .whl]} para empaquetar cada serie en vendor/<serie_dir>/.
+
+    only_series: lista de 'dir' de serie a incluir (p.ej. ['py38-311']). Si es
+    None, incluye TODAS (cubre Python 3.8-3.14). Permite bundles mas ligeros
+    cuando se conoce la version de Python del destino.
 
     No construye venvs (no son portables). Empaqueta wheels py2.py3-none-any
     (Python puro, cualquier Linux). setup.sh elige la serie segun el Python del
@@ -409,10 +412,23 @@ def fetch_vendor_files(cache_dir=None):
     os.makedirs(cache_dir, exist_ok=True)
     out = {}
     for serie in VENDOR_SERIES:
+        if only_series and serie["dir"] not in only_series:
+            continue
         whls = _build_series(cache_dir, serie)
         if whls:
             out[serie["dir"]] = whls
     return out
+
+
+# Mapeo del parametro 'py_target' del endpoint a las series a incluir.
+#   "all"       -> ambas (Python 3.8-3.14)
+#   "py38-311"  -> solo PySpark 3.5.6 (Python 3.8-3.11, incluye 3.9)
+#   "py312plus" -> solo PySpark 4.0.0 (Python 3.12+)
+PY_TARGET_SERIES = {
+    "all": None,
+    "py38-311": ["py38-311"],
+    "py312plus": ["py312plus"],
+}
 
 
 def _add_job_files(z, prefix, job_code, run_test_code, job_name, inputs, outputs,
@@ -478,7 +494,7 @@ def _add_data_files(z, prefix, inputs, outputs):
 
 
 def build_export_bundle(job_code, run_test_code, job_name, inputs, outputs=None,
-                        include_vendor=True):
+                        include_vendor=True, py_target="all"):
     """Construye el ZIP de exportacion (bytes). UN SOLO zip PLANO (sin zips
     anidados) con carpetas job_bundle/ y data_bundle/.
 
@@ -489,12 +505,16 @@ def build_export_bundle(job_code, run_test_code, job_name, inputs, outputs=None,
     doble clic, y PySpark sigue viajando dentro en job_bundle/vendor/.
 
     include_vendor: si True, empaqueta PySpark+py4j en job_bundle/vendor/ para
-             instalacion OFFLINE en Linux (wheels py2.py3-none-any, compatibles
-             con cualquier Linux y Python 3.8-3.14).
+             instalacion OFFLINE en Linux (wheels py2.py3-none-any).
+    py_target: que serie(s) de PySpark empaquetar (bundle mas ligero):
+             'all'       -> ambas (Python 3.8-3.14, ~760 MB)
+             'py38-311'  -> solo PySpark 3.5.6 (Python 3.8-3.11, incluye 3.9; ~320 MB)
+             'py312plus' -> solo PySpark 4.0.0 (Python 3.12+; ~440 MB)
     """
     outputs = outputs or []
     safe_job = _safe_name(job_name)
-    vendor_series = fetch_vendor_files() if include_vendor else {}
+    only = PY_TARGET_SERIES.get(py_target, None)
+    vendor_series = fetch_vendor_files(only_series=only) if include_vendor else {}
 
     buf = io.BytesIO()
     # allowZip64=True: necesario cuando se incluye el wheel de PySpark (~317 MB).
@@ -520,4 +540,5 @@ def build_export_bundle(job_code, run_test_code, job_name, inputs, outputs=None,
             f"Nota: data_bundle/ queda como carpeta hermana de job_bundle/, que es\n"
             f"donde setup.sh/run.sh esperan los datos por defecto.\n"
         ))
-    return buf.getvalue(), f"{safe_job}_export.zip"
+    suffix = "" if (not include_vendor or py_target == "all") else f"_{py_target}"
+    return buf.getvalue(), f"{safe_job}_export{suffix}.zip"

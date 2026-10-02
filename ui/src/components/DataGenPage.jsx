@@ -500,13 +500,16 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
   // completo (venv + deps + carpetas) en el destino Linux.
   // exporting: null | 'light' | 'full'  -> indica que boton esta trabajando.
   const [exporting, setExporting] = useState(null)
-  const exportBundle = async (includeVendor) => {
-    setExporting(includeVendor ? 'full' : 'light')
+  // kind: 'light' (internet) | 'all' | 'py38-311' | 'py312plus' (offline por serie)
+  const exportBundle = async (kind) => {
+    setExporting(kind)
+    const includeVendor = kind !== 'light'
     try {
       const res = await fetch(EXPORT_BUNDLE_URL, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mp: graphMp, xfr: graphXfr, dml: (dml || ''),
-          job_name: (graphName || awsJobName), include_vendor: includeVendor }),
+          job_name: (graphName || awsJobName), include_vendor: includeVendor,
+          py_target: includeVendor ? kind : 'all' }),
       })
       if (!res.ok) {
         let msg = `Error ${res.status}`
@@ -1110,29 +1113,53 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
                 }}
               >⚙️</button>
               <button
-                onClick={() => exportBundle(false)}
+                onClick={() => exportBundle('light')}
                 disabled={!!exporting || !hasCompilerGraph}
-                title="Bundle LIGERO para Linux (pocos KB): job.py + run_test.py + setup.sh + datos de ENTRADA (data/input) y SALIDA real (data/output). setup.sh crea el venv e instala PySpark por INTERNET en el destino. Rápido de descargar."
+                title="Bundle LIGERO (pocos KB): job + setup.sh + datos entrada/salida. setup.sh instala PySpark por INTERNET en el destino. Rápido de descargar."
                 style={{
-                  padding: '10px 16px', borderRadius: 8,
+                  padding: '10px 14px', borderRadius: 8,
                   cursor: (!!exporting || !hasCompilerGraph) ? 'not-allowed' : 'pointer',
                   background: !hasCompilerGraph ? (t.border || '#334155') : '#10b981',
-                  color: '#fff', border: 'none', fontSize: 14, fontWeight: 700,
+                  color: '#fff', border: 'none', fontSize: 13, fontWeight: 700,
                   opacity: exporting ? 0.6 : 1,
                 }}
-              >{exporting === 'light' ? '⏳ Empaquetando...' : '📦 Bundle ligero (Linux)'}</button>
+              >{exporting === 'light' ? '⏳...' : '📦 Ligero (internet)'}</button>
               <button
-                onClick={() => exportBundle(true)}
+                onClick={() => exportBundle('py38-311')}
                 disabled={!!exporting || !hasCompilerGraph}
-                title="Bundle COMPLETO OFFLINE para Linux (~300 MB): igual que el ligero pero incluye PySpark + py4j en vendor/, así setup.sh instala SIN internet. Para entornos Linux sin acceso a PyPI. La primera descarga tarda unos minutos."
+                title="Bundle OFFLINE para Python 3.8–3.11 (incluye 3.9) con PySpark 3.5.6 en vendor/ (~320 MB). Instala SIN internet. Para Linux con Python 3.8 a 3.11."
                 style={{
-                  padding: '10px 16px', borderRadius: 8,
+                  padding: '10px 14px', borderRadius: 8,
                   cursor: (!!exporting || !hasCompilerGraph) ? 'not-allowed' : 'pointer',
                   background: !hasCompilerGraph ? (t.border || '#334155') : '#0ea5e9',
-                  color: '#fff', border: 'none', fontSize: 14, fontWeight: 700,
+                  color: '#fff', border: 'none', fontSize: 13, fontWeight: 700,
                   opacity: exporting ? 0.6 : 1,
                 }}
-              >{exporting === 'full' ? '⏳ Empaquetando (~300MB)...' : '📦 Bundle offline (Linux +PySpark)'}</button>
+              >{exporting === 'py38-311' ? '⏳ (~320MB)...' : '📦 Offline 3.8–3.11'}</button>
+              <button
+                onClick={() => exportBundle('py312plus')}
+                disabled={!!exporting || !hasCompilerGraph}
+                title="Bundle OFFLINE para Python 3.12+ con PySpark 4.0.0 en vendor/ (~440 MB). Instala SIN internet. Para Linux con Python 3.12, 3.13 o 3.14."
+                style={{
+                  padding: '10px 14px', borderRadius: 8,
+                  cursor: (!!exporting || !hasCompilerGraph) ? 'not-allowed' : 'pointer',
+                  background: !hasCompilerGraph ? (t.border || '#334155') : '#6366f1',
+                  color: '#fff', border: 'none', fontSize: 13, fontWeight: 700,
+                  opacity: exporting ? 0.6 : 1,
+                }}
+              >{exporting === 'py312plus' ? '⏳ (~440MB)...' : '📦 Offline 3.12+'}</button>
+              <button
+                onClick={() => exportBundle('all')}
+                disabled={!!exporting || !hasCompilerGraph}
+                title="Bundle OFFLINE con AMBAS series de PySpark (3.5.6 y 4.0.0), cubre Python 3.8–3.14 (~760 MB). setup.sh elige segun el Python del destino."
+                style={{
+                  padding: '10px 14px', borderRadius: 8,
+                  cursor: (!!exporting || !hasCompilerGraph) ? 'not-allowed' : 'pointer',
+                  background: !hasCompilerGraph ? (t.border || '#334155') : '#8b5cf6',
+                  color: '#fff', border: 'none', fontSize: 13, fontWeight: 700,
+                  opacity: exporting ? 0.6 : 1,
+                }}
+              >{exporting === 'all' ? '⏳ (~760MB)...' : '📦 Offline (todas)'}</button>
               <button
                 onClick={comparePerf}
                 disabled={running || comparing || !hasCode || !isPySpark}
@@ -1162,10 +1189,12 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
               </span>
 
               <div style={{ fontSize: 11.5, color: t.text || '#e2e8f0', lineHeight: 1.6 }}>
-                <b style={{ color: '#10b981' }}>Dos opciones de descarga:</b>
+                <b style={{ color: '#10b981' }}>Opciones de descarga:</b>
                 <div style={{ paddingLeft: 10 }}>
-                  • <b>📦 Bundle ligero</b> (pocos KB): el destino instala PySpark por internet.<br/>
-                  • <b>📦 Bundle offline</b> (~300 MB): incluye PySpark; instala <b>sin internet</b> (Linux cerrado).
+                  • <b>📦 Ligero</b> (pocos KB): el destino instala PySpark por internet.<br/>
+                  • <b>📦 Offline 3.8–3.11</b> (~320 MB): PySpark 3.5.6 incluido; sin internet (incluye Python 3.9).<br/>
+                  • <b>📦 Offline 3.12+</b> (~440 MB): PySpark 4.0.0 incluido; sin internet.<br/>
+                  • <b>📦 Offline (todas)</b> (~760 MB): ambas series, cubre Python 3.8–3.14; setup.sh elige según el Python del destino.
                 </div>
               </div>
 
