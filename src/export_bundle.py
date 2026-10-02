@@ -94,8 +94,35 @@ if ! command -v java >/dev/null 2>&1; then
 fi
 java -version || true
 
-PYBIN="${{PYTHON:-python3}}"
-echo "[BNX] 2/4 Usando Python: $($PYBIN --version 2>&1)"
+# 2/4 Seleccionar un Python >= 3.8 (PySpark lo exige). En muchos Linux 'python3'
+# apunta al 3.6 del sistema; aqui autodetectamos un interprete 3.8+ entre los
+# instalados. Se puede forzar con PYTHON=/ruta/a/python ./setup.sh
+echo "[BNX] 2/4 Seleccionando Python >= 3.8 ..."
+
+_py_ok() {{  # $1 = binario; devuelve 0 si es Python >= 3.8
+  "$1" -c 'import sys; sys.exit(0 if sys.version_info[:2] >= (3,8) else 1)' >/dev/null 2>&1
+}}
+
+PYBIN=""
+if [ -n "${{PYTHON:-}}" ]; then
+  # Respetar el que el usuario fuerce (si cumple).
+  if _py_ok "$PYTHON"; then PYBIN="$PYTHON"; else
+    echo "[BNX][ERROR] PYTHON=$PYTHON no es Python >= 3.8."; exit 1
+  fi
+else
+  # Probar candidatos comunes en orden (de mas nuevo a mas viejo).
+  for c in python3.12 python3.11 python3.10 python3.9 python3.8 python3 python; do
+    if command -v "$c" >/dev/null 2>&1 && _py_ok "$c"; then PYBIN="$c"; break; fi
+  done
+fi
+
+if [ -z "$PYBIN" ]; then
+  echo "[BNX][ERROR] No se encontro Python >= 3.8 (PySpark lo requiere)."
+  echo "            Este Linux parece tener solo Python antiguo (p.ej. 3.6)."
+  echo "            Instala/activa Python 3.8+ o indicalo:  PYTHON=python3.9 ./setup.sh"
+  exit 1
+fi
+echo "[BNX]     Usando Python: $($PYBIN --version 2>&1)  ($PYBIN)"
 
 echo "[BNX] 3/4 Creando entorno virtual .venv e instalando dependencias..."
 if [ ! -d ".venv" ]; then
