@@ -515,11 +515,15 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
     setExporting(kind)
     const includeVendor = kind !== 'light'
     try {
+      // Pedimos al server que PREPARE el bundle (lo guarda en disco) y nos de un
+      // token de descarga. Luego navegamos a la URL GET -> el navegador descarga
+      // por streaming SIN cargar 320-760MB como blob en memoria (eso impedia la
+      // descarga de bundles grandes).
       const res = await fetch(EXPORT_BUNDLE_URL, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mp: graphMp, xfr: graphXfr, dml: (dml || ''),
           job_name: (graphName || awsJobName), include_vendor: includeVendor,
-          py_target: includeVendor ? kind : 'all' }),
+          py_target: includeVendor ? kind : 'all', prepare: true }),
       })
       if (!res.ok) {
         let msg = `Error ${res.status}`
@@ -527,18 +531,19 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
         alert('No se pudo exportar el bundle: ' + msg)
         return
       }
-      const blob = await res.blob()
-      // Nombre de archivo desde Content-Disposition, con fallback.
-      let fname = 'bnx_export.zip'
-      const cd = res.headers.get('Content-Disposition') || ''
-      const m = cd.match(/filename="?([^"]+)"?/)
-      if (m) fname = m[1]
-      const url = URL.createObjectURL(blob)
+      const data = await res.json()
+      if (data.error || !data.download_url) {
+        alert('No se pudo exportar el bundle: ' + (data.error || 'respuesta inválida'))
+        return
+      }
+      // Descarga nativa por GET (streaming). Base: mismo origen que el endpoint.
+      const base = EXPORT_BUNDLE_URL.replace('/export/bundle', '')
+      const dlUrl = base + data.download_url
       const a = document.createElement('a')
-      a.href = url; a.download = fname
+      a.href = dlUrl
+      a.download = data.filename || 'bnx_export.zip'
       document.body.appendChild(a); a.click()
       document.body.removeChild(a)
-      URL.revokeObjectURL(url)
     } catch (e) {
       alert('No se pudo exportar el bundle: ' + e.message)
     } finally {
