@@ -125,8 +125,15 @@ def run_framework(config_yaml=None, data_csv=None, work_dir=None, train_model=Tr
         pmml.write_text("<!-- Approved PMML artifact: produced by enterprise converter -->\n",
                         encoding="utf-8")
 
+        # Job PySpark de SCORING: ademas del PMML (scoring JPMML/JVM), generamos
+        # un job PySpark real que escala el scoring del modelo en Spark. Carga el
+        # modelo XGBoost exportado y aplica predict_proba via pandas_udf.
+        pyspark_code = _generate_pyspark_scoring(config, model_path)
+        pyspark_job = out / "generated_score_pyspark.py"
+        pyspark_job.write_text(pyspark_code, encoding="utf-8")
+
         files = {"configuration": cfg_path, "model": model_path, "pmml": pmml,
-                 "generated_code": code}
+                 "generated_code": code, "generated_pyspark": pyspark_job}
         runtime = {"profile": config["reusable_libraries"]["runtime_profile"],
                    "version": config["reusable_libraries"]["version"],
                    "dependencies": config["reusable_libraries"]["dependencies"]}
@@ -154,6 +161,7 @@ def run_framework(config_yaml=None, data_csv=None, work_dir=None, train_model=Tr
             "manifest": manifest,
             "audit": _read_jsonl(out / "audit.jsonl"),
             "generated_code": code.read_text(encoding="utf-8"),
+            "generated_pyspark": pyspark_job.read_text(encoding="utf-8"),
             "pmml": pmml.read_text(encoding="utf-8"),
             "emails": emails,
             "metrics": metrics,
@@ -166,6 +174,68 @@ def run_framework(config_yaml=None, data_csv=None, work_dir=None, train_model=Tr
         if created_tmp and work_dir and os.path.isdir(work_dir):
             # Mantener para una posible verificacion posterior; el caller limpia.
             pass
+
+
+def _generate_pyspark_scoring(config, model_path):
+    """Genera un job PySpark de SCORING real para el modelo operacionalizado.
+
+    Carga el modelo XGBoost exportado y aplica predict_proba por particion con un
+    pandas_udf (escalable en Spark). Parametrizado por las features del config.
+    Es el equivalente 'PySpark' del artefacto PMML: ambos sirven para scorear,
+    uno via JPMML/JVM y este via Spark + XGBoost.
+    """
+    features = config.get("features", [])
+    model_name = config.get("model", {}).get("name", "model")
+    model_file = os.path.basename(str(model_path))
+    feats_repr = ", ".join(repr(f) for f in features)
+    return f'''# -*- coding: utf-8 -*-
+# ============================================================
+# Job PySpark de SCORING — generado por el Framework de Modelos (BNX)
+# Modelo: {model_name}
+# Equivalente PySpark del artefacto PMML. Escala el scoring en Spark cargando el
+# modelo XGBoost aprobado y aplicando predict_proba por particion (pandas_udf).
+# SWITCH POINT: en produccion, sustituir la carga/predict por la libreria
+# corporativa de scoring aprobada (o delegar a JPMML con el PMML del paquete).
+# ============================================================
+import os
+import pandas as pd
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import pandas_udf
+from pyspark.sql.types import DoubleType
+
+FEATURES = [{feats_repr}]
+MODEL_FILE = os.environ.get("BNX_MODEL_FILE", "{model_file}")
+INPUT = os.environ.get("BNX_INPUT", "input.csv")
+OUTPUT = os.environ.get("BNX_OUTPUT", "scored_output")
+
+spark = SparkSession.builder.appName("{model_name}_scoring").getOrCreate()
+
+# Modelo cargado una vez por worker (broadcast implicito via closure perezoso).
+_model = {{"m": None}}
+def _get_model():
+    if _model["m"] is None:
+        import xgboost as xgb
+        m = xgb.XGBClassifier()
+        m.load_model(MODEL_FILE)
+        _model["m"] = m
+    return _model["m"]
+
+@pandas_udf(DoubleType())
+def score_udf(*cols):
+    X = pd.concat(cols, axis=1)
+    X.columns = FEATURES
+    proba = _get_model().predict_proba(X)[:, 1]
+    return pd.Series(proba)
+
+def main():
+    df = spark.read.option("header", True).option("inferSchema", True).csv(INPUT)
+    scored = df.withColumn("score", score_udf(*[df[f] for f in FEATURES]))
+    scored.write.mode("overwrite").option("header", True).csv(OUTPUT)
+    print("[OK] Scoring PySpark completado. Filas:", scored.count())
+
+if __name__ == "__main__":
+    main()
+'''
 
 
 def verify_manifest(manifest_path, public_key_path):
