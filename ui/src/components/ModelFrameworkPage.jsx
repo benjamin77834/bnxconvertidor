@@ -21,6 +21,7 @@ export default function ModelFrameworkPage({ theme }) {
   const [upCsv, setUpCsv] = useState('')         // contenido del .csv subido
   const [upYamlName, setUpYamlName] = useState('')
   const [upCsvName, setUpCsvName] = useState('')
+  const [showHelp, setShowHelp] = useState(false)   // panel "¿Qué hace esto?"
 
   // Cargar los ejemplos disponibles (config YAML + dataset) al montar.
   useEffect(() => {
@@ -144,6 +145,65 @@ export default function ModelFrameworkPage({ theme }) {
             </button>
           </div>
         </div>
+      </div>
+
+      {/* Documentacion colapsable: "¿Que hace esto?" (visible pero discreta) */}
+      <div style={{ ...card, marginBottom: 16, padding: 0, overflow: 'hidden' }}>
+        <button onClick={() => setShowHelp(v => !v)}
+          style={{
+            width: '100%', textAlign: 'left', padding: '12px 16px', cursor: 'pointer',
+            background: 'transparent', border: 'none', color: t.text || '#e2e8f0',
+            fontSize: 14, fontWeight: 600, display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          }}>
+          <span>❓ ¿Qué hace esta sección? (documentación)</span>
+          <span style={{ color: t.dim }}>{showHelp ? '▲ ocultar' : '▼ mostrar'}</span>
+        </button>
+        {showHelp && (
+          <div style={{ padding: '0 16px 16px', fontSize: 13, color: t.muted || '#94a3b8', lineHeight: 1.65 }}>
+            <p style={{ marginTop: 0 }}>
+              <b style={{ color: t.text }}>En una frase:</b> es un sello de calidad y seguridad automatizado para
+              modelos. Entra un modelo entrenado (entregado por negocio) y sale un paquete estandarizado,
+              cifrado, firmado y verificable, con auditoría completa — y si algo se altera, se rechaza solo.
+            </p>
+
+            <p style={{ color: t.text, fontWeight: 600, marginBottom: 4 }}>El problema que resuelve</p>
+            <p style={{ marginTop: 0 }}>
+              Entre “tengo un modelo que funciona” y “está en producción de forma segura y auditable” hay muchos
+              pasos de control que normalmente se hacen a mano. Esta sección los automatiza y estandariza.
+            </p>
+
+            <p style={{ color: t.text, fontWeight: 600, marginBottom: 4 }}>Qué hace, paso a paso</p>
+            <ol style={{ margin: '0 0 8px', paddingLeft: 20 }}>
+              <li><b>Lee una configuración (YAML)</b> que describe el modelo, sus variables y qué pasos ejecutar.</li>
+              <li><b>Ejecuta un pipeline</b> de 6 etapas: data_validation → preparation → feature_engineering → score → evaluation → package.</li>
+              <li><b>Genera los entregables</b>: código de scoring, artefacto <b>PMML</b> (JPMML/JVM) y un <b>job PySpark</b> (scoring a escala en Spark).</li>
+              <li><b>Aplica 3 controles de seguridad</b> (abajo).</li>
+              <li><b>Verifica antes de desplegar</b>: si firma y hashes cuadran → <code>deployable: True</code>.</li>
+              <li><b>Deja rastro</b>: audit log (quién, qué etapa, cuándo, resultado) y correos de control.</li>
+            </ol>
+
+            <p style={{ color: t.text, fontWeight: 600, marginBottom: 4 }}>Los 3 controles de seguridad</p>
+            <ul style={{ margin: '0 0 8px', paddingLeft: 20 }}>
+              <li><b>SHA-256 (integridad)</b>: huella de cada archivo; si cambia un carácter, cambia la huella.</li>
+              <li><b>Cifrado Fernet (confidencialidad)</b>: cifra el código generado para que no se lea sin la llave.</li>
+              <li><b>Firma Ed25519 (autenticidad)</b>: firma el manifiesto; garantiza que lo emitió quien dice y nadie lo alteró.</li>
+            </ul>
+
+            <p style={{ color: t.text, fontWeight: 600, marginBottom: 4 }}>La demo que verás al ejecutar</p>
+            <p style={{ marginTop: 0 }}>
+              El sistema verifica el paquete (deployable=True), luego <b>altera a propósito</b> el código
+              (simula manipulación) → la verificación lo <b>rechaza por “Hash mismatch”</b> → lo <b>restaura</b> →
+              vuelve a deployable=True. Demuestra que ningún archivo modificado llega a producción sin detectarse.
+            </p>
+
+            <p style={{ marginBottom: 0, fontSize: 12, color: t.dim, fontStyle: 'italic' }}>
+              Nota: es un MVP demo. El modelo se entrena con XGBoost solo para simular el que entregaría negocio
+              (el entrenamiento no es parte del framework). La firma y verificación sí son criptografía real
+              (Ed25519 / Fernet / SHA-256). Hay “switch points” marcados para reemplazar el código demo por las
+              librerías corporativas reales.
+            </p>
+          </div>
+        )}
       </div>
 
       {error && (
