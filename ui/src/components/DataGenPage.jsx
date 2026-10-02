@@ -498,8 +498,18 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
   // data_bundle.zip (data/input: CSV sinteticos de entrada; data/output: salida
   // REAL del job sobre esa entrada; + manifest). setup.sh monta el ambiente
   // completo (venv + deps + carpetas) en el destino Linux.
-  // exporting: null | 'light' | 'full'  -> indica que boton esta trabajando.
+  // exporting: null | 'light' | 'py38-311' | 'py312plus' | 'all'  -> boton activo.
   const [exporting, setExporting] = useState(null)
+  // Version de Python del server, para recomendar que bundle offline bajar.
+  const [health, setHealth] = useState(null)
+  useEffect(() => {
+    fetch(COMPILE_URL.replace('/compile', '/api/health'))
+      .then(r => r.json()).then(setHealth).catch(() => {})
+  }, [])
+  // Serie offline recomendada segun el Python del convertidor.
+  const recommended = health && typeof health.python_minor === 'number'
+    ? (health.python_minor >= 12 ? 'py312plus' : 'py38-311')
+    : null
   // kind: 'light' (internet) | 'all' | 'py38-311' | 'py312plus' (offline por serie)
   const exportBundle = async (kind) => {
     setExporting(kind)
@@ -1134,8 +1144,10 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
                   background: !hasCompilerGraph ? (t.border || '#334155') : '#0ea5e9',
                   color: '#fff', border: 'none', fontSize: 13, fontWeight: 700,
                   opacity: exporting ? 0.6 : 1,
+                  outline: recommended === 'py38-311' ? '2px solid #fbbf24' : 'none',
+                  outlineOffset: 2,
                 }}
-              >{exporting === 'py38-311' ? '⏳ (~320MB)...' : '📦 Offline 3.8–3.11'}</button>
+              >{exporting === 'py38-311' ? '⏳ (~320MB)...' : (recommended === 'py38-311' ? '⭐ Offline 3.8–3.11' : '📦 Offline 3.8–3.11')}</button>
               <button
                 onClick={() => exportBundle('py312plus')}
                 disabled={!!exporting || !hasCompilerGraph}
@@ -1146,8 +1158,10 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
                   background: !hasCompilerGraph ? (t.border || '#334155') : '#6366f1',
                   color: '#fff', border: 'none', fontSize: 13, fontWeight: 700,
                   opacity: exporting ? 0.6 : 1,
+                  outline: recommended === 'py312plus' ? '2px solid #fbbf24' : 'none',
+                  outlineOffset: 2,
                 }}
-              >{exporting === 'py312plus' ? '⏳ (~440MB)...' : '📦 Offline 3.12+'}</button>
+              >{exporting === 'py312plus' ? '⏳ (~440MB)...' : (recommended === 'py312plus' ? '⭐ Offline 3.12+' : '📦 Offline 3.12+')}</button>
               <button
                 onClick={() => exportBundle('all')}
                 disabled={!!exporting || !hasCompilerGraph}
@@ -1188,6 +1202,17 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
                 📦 Cómo probar el bundle en Linux (datos sintéticos de entrada y salida)
               </span>
 
+              {health && health.python_version && (
+                <div style={{ fontSize: 12, color: t.text || '#e2e8f0',
+                  background: '#fbbf2415', border: '1px solid #fbbf2440', borderRadius: 6, padding: '6px 10px' }}>
+                  🐍 El convertidor corre con <b>Python {health.python_version}</b>. Recomendado:{' '}
+                  <b style={{ color: '#fbbf24' }}>
+                    {recommended === 'py312plus' ? '⭐ Offline 3.12+' : '⭐ Offline 3.8–3.11'}
+                  </b>
+                  {' '}(para un Linux de destino con esa versión). Si el destino usa otra versión, elige la suya.
+                </div>
+              )}
+
               <div style={{ fontSize: 11.5, color: t.text || '#e2e8f0', lineHeight: 1.6 }}>
                 <b style={{ color: '#10b981' }}>Opciones de descarga:</b>
                 <div style={{ paddingLeft: 10 }}>
@@ -1219,6 +1244,19 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
             </div>
             )
           })()}
+
+          {/* Si NO hay grafo compilado, los botones de bundle estan deshabilitados:
+              avisar por que y como habilitarlos. */}
+          {!hasCompilerGraph && (
+            <div style={{
+              background: '#f59e0b12', borderRadius: 8, padding: '10px 14px',
+              border: '1px solid #f59e0b40', fontSize: 12, color: t.text || '#e2e8f0', lineHeight: 1.5,
+            }}>
+              ⚠️ Los botones de <b>exportar bundle</b> están deshabilitados porque no hay un grafo
+              compilado. Compila un grafo en la pestaña <b>🔧 Compiler</b> (o Grafos), vuelve aquí y
+              podrás descargar el bundle para Linux.
+            </div>
+          )}
 
           {/* Config de la EC2 interna (URL privada de DataLab) */}
           {showEc2Config && (
