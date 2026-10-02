@@ -309,12 +309,19 @@ const TIMELINE = [
     tags: ['cobol', 'algol', 'legacy', 'pyspark', 'arithmetic'],
     color: '#a855f7',
   },
+  {
+    date: '1 Oct 2026',
+    title: 'Dia 52: Optimizador que reduce codigo, 2ª extension VS Code y fix Python en el bundle',
+    desc: 'El optimizador ahora REDUCE codigo ademas de optimizar performance: elimina passthroughs (x_df = y_df), select(\"*\") redundante, asignaciones duplicadas e imports no usados (conserva SparkSession/functions). Nueva extension VS Code "BNX PySpark Optimizer" (vscode-extension-optimizer) que llama a /optimize desde el editor; descargable en /download/vsix/optimizer y con boton en Py->Spark. /compile aplica la optimizacion opcionalmente (optimize=true -> code ya optimizado+reducido). Fix del bundle Linux: setup.sh autodetecta Python >=3.8 (muchos Linux tienen python3=3.6 y PySpark 3.5.6 exige 3.8+); verificado end-to-end con Python 3.9. 111 tests.',
+    tags: ['optimizer', 'vsix', 'pyspark', 'bundle', 'python'],
+    color: '#f59e0b',
+  },
 ]
 
 const STATS = [
-  { label: 'Dias de desarrollo', value: '51', color: '#6366f1' },
-  { label: 'Commits', value: '165+', color: '#22c55e' },
-  { label: 'Componentes', value: '28+', color: '#f59e0b' },
+  { label: 'Dias de desarrollo', value: '52', color: '#6366f1' },
+  { label: 'Commits', value: '172+', color: '#22c55e' },
+  { label: 'Componentes', value: '30+', color: '#f59e0b' },
   { label: 'Parsers', value: '7', color: '#a855f7' },
   { label: 'Code Generators', value: '7', color: '#ec4899' },
   { label: 'Paginas UI', value: '10', color: '#06b6d4' },
