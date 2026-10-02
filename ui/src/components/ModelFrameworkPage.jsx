@@ -83,9 +83,9 @@ export default function ModelFrameworkPage({ theme }) {
           <h2 style={{ margin: 0, fontSize: 22, color: t.text || '#e2e8f0' }}>🔐 Modelos (Operacionalización)</h2>
           <p style={{ margin: '4px 0 0', fontSize: 13, color: t.muted || '#94a3b8', maxWidth: 720, lineHeight: 1.5 }}>
             Toma un modelo entregado por negocio y produce un paquete estandarizado y verificable:
-            pipeline declarativo (YAML) → código + PMML → <b>SHA-256</b> (integridad) + <b>cifrado</b> (confidencialidad)
-            + <b>firma Ed25519</b> (autenticidad) → <b>VERIFY</b> antes de desplegar. El entrenamiento no forma
-            parte del framework.
+            pipeline declarativo (YAML) → código + <b>PMML y job PySpark</b> → <b>SHA-256</b> (integridad)
+            + <b>cifrado</b> (confidencialidad) + <b>firma Ed25519</b> (autenticidad) → <b>VERIFY</b> antes de
+            desplegar. El entrenamiento no forma parte del framework.
           </p>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, flexShrink: 0, alignItems: 'flex-end' }}>
@@ -227,9 +227,19 @@ export default function ModelFrameworkPage({ theme }) {
 
           {/* PMML */}
           <div style={card}>
-            <h3 style={{ margin: '0 0 8px', fontSize: 14, color: t.text }}>📦 Artifact PMML</h3>
+            <h3 style={{ margin: '0 0 8px', fontSize: 14, color: t.text }}>📦 Artifact PMML (scoring JPMML/JVM)</h3>
             <pre style={mono}>{result.pmml}</pre>
           </div>
+
+          {/* Job PySpark de scoring */}
+          {result.generated_pyspark && (
+            <div style={{ ...card, gridColumn: '1 / -1' }}>
+              <h3 style={{ margin: '0 0 8px', fontSize: 14, color: t.text }}>
+                🐍 Job PySpark de scoring (equivalente al PMML, escala en Spark)
+              </h3>
+              <pre style={{ ...mono, maxHeight: 340 }}>{result.generated_pyspark}</pre>
+            </div>
+          )}
         </div>
       )}
 
