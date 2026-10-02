@@ -198,6 +198,11 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_py2spark_examples()
             return
 
+        # Ejemplos (config YAML + dataset) de la seccion Modelos.
+        if path == "/model/examples" or path == "/api/model/examples":
+            self._handle_model_examples()
+            return
+
         # Descarga de resultados de la prueba LOCAL (CSV generados por el runner).
         if path == "/download" or path == "/api/download":
             self._handle_download()
@@ -2231,6 +2236,44 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             if work_dir and os.path.isdir(work_dir):
                 import shutil
                 shutil.rmtree(work_dir, ignore_errors=True)
+
+    def _handle_model_examples(self):
+        """Lista los ejemplos (config YAML + dataset CSV) disponibles para la
+        seccion Modelos. Empareja cada config de src/model_framework/configs con
+        su dataset por el 'data.input_file' declarado. Devuelve:
+          {"examples": [{"id","name","model","features","yaml","csv"}]}"""
+        import glob as _glob
+        base = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "src", "model_framework")
+        cfg_dir = os.path.join(base, "configs")
+        examples = []
+        for cfg_path in sorted(_glob.glob(os.path.join(cfg_dir, "*.yml"))):
+            try:
+                yaml_src = open(cfg_path, encoding="utf-8").read()
+                # Parse ligero sin depender de pyyaml para el listado.
+                import re as _re
+                def _grab(pat, default=""):
+                    m = _re.search(pat, yaml_src)
+                    return m.group(1).strip() if m else default
+                # Nombre del MODELO (bloque 'model:', no 'framework:').
+                model_name = _grab(r'model:\s*\n\s*name:\s*([\w-]+)', "modelo")
+                input_file = _grab(r'input_file:\s*"?([^"\n]+)"?')
+                feats = _grab(r'features:\s*\[([^\]]*)\]')
+                csv_src = ""
+                if input_file:
+                    csv_path = os.path.join(base, input_file)
+                    if os.path.isfile(csv_path):
+                        csv_src = open(csv_path, encoding="utf-8").read()
+                examples.append({
+                    "id": os.path.splitext(os.path.basename(cfg_path))[0],
+                    "name": model_name,
+                    "features": [f.strip() for f in feats.split(",") if f.strip()],
+                    "yaml": yaml_src,
+                    "csv": csv_src,
+                })
+            except Exception as e:
+                print(f"  [model/examples] omitido {cfg_path}: {e}")
+        self._json_response(200, {"examples": examples})
 
     def _save_temp(self, content, suffix):
         if isinstance(content, bytes):
