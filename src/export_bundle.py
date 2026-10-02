@@ -55,17 +55,16 @@ PYSPARK_VERSION = _detect_pyspark_version()
 
 
 def _requirements_txt():
-    # El job generado usa solo APIs estables de Spark, compatibles de 3.5 a 4.x.
-    # Pineamos la version detectada del entorno (con la que se probo) pero
-    # permitimos la serie compatible (>=3.5,<5) por si el destino tiene otra.
-    # En modo OFFLINE (vendor/) se instala la version empaquetada (3.5.3), que
-    # el job soporta (usa APIs compatibles 3.5-4.x). En modo internet, permite la
-    # serie compatible por si el destino prefiere otra.
+    # Fallback por INTERNET (si no hay vendor/ para la version de Python). El job
+    # usa APIs estables compatibles 3.5-4.x; dejamos que pip elija la version de
+    # PySpark compatible con el Python del destino (3.8-3.14). En modo OFFLINE,
+    # setup.sh instala desde vendor/py38-311 (PySpark 3.5.6) o vendor/py312plus
+    # (PySpark 4.0.0) segun la version de Python detectada.
     return (
-        f"# Dependencias para ejecutar el job PySpark generado por BNX.\n"
-        f"# Offline: se instala pyspark 3.5.3 (empaquetado en vendor/).\n"
-        f"# Internet: se permite la serie compatible 3.5-4.x.\n"
-        f"pyspark>=3.5,<5\n"
+        "# Dependencias para ejecutar el job PySpark generado por BNX.\n"
+        "# Offline: setup.sh instala la serie de vendor/ segun la version de Python.\n"
+        "# Internet (fallback): pip elige la PySpark compatible con tu Python.\n"
+        "pyspark>=3.5,<5\n"
     )
 
 
@@ -131,16 +130,25 @@ fi
 # shellcheck disable=SC1091
 source .venv/bin/activate
 
-# Si el bundle trae los paquetes en vendor/ (wheels), instalamos OFFLINE (sin
-# internet). Los wheels de PySpark/py4j son 'py2.py3-none-any': sirven en
-# cualquier Linux y en Python 3.8 a 3.14. Si no hay vendor/, caemos a internet.
-if [ -d "vendor" ] && ls vendor/*.whl >/dev/null 2>&1; then
-  echo "[BNX]     Instalacion OFFLINE desde vendor/ (sin internet)."
-  # Primero pip/setuptools/wheel desde vendor (por si el venv viene minimo), luego pyspark.
-  python -m pip install --no-index --find-links vendor pip setuptools wheel >/dev/null 2>&1 || true
-  python -m pip install --no-index --find-links vendor pyspark py4j
+# Instalacion de PySpark. El bundle trae wheels OFFLINE en vendor/ organizados por
+# rango de Python (vendor/py38-311 y vendor/py312plus). Elegimos la carpeta segun
+# la MINOR del Python del venv, asi cubrimos Python 3.8 a 3.14 sin tema de version.
+PYMINOR="$(python -c 'import sys; print(sys.version_info[1])')"
+VENDOR_DIR=""
+if [ "$PYMINOR" -ge 12 ] 2>/dev/null && [ -d "vendor/py312plus" ]; then
+  VENDOR_DIR="vendor/py312plus"
+elif [ -d "vendor/py38-311" ]; then
+  VENDOR_DIR="vendor/py38-311"
+elif [ -d "vendor/py312plus" ]; then
+  VENDOR_DIR="vendor/py312plus"
+fi
+
+if [ -n "$VENDOR_DIR" ] && ls "$VENDOR_DIR"/*.whl >/dev/null 2>&1; then
+  echo "[BNX]     Instalacion OFFLINE desde $VENDOR_DIR (Python 3.$PYMINOR, sin internet)."
+  python -m pip install --no-index --find-links "$VENDOR_DIR" pip setuptools wheel >/dev/null 2>&1 || true
+  python -m pip install --no-index --find-links "$VENDOR_DIR" pyspark py4j
 else
-  echo "[BNX]     vendor/ no encontrado; instalando desde internet (pip)."
+  echo "[BNX]     vendor/ no encontrado o sin wheels para Python 3.$PYMINOR; instalando desde internet (pip)."
   python -m pip install --upgrade pip >/dev/null
   python -m pip install -r requirements.txt
 fi
@@ -235,10 +243,11 @@ Job: **{job_name}**
   las alimenta con los CSV de entrada, y reporta las escrituras. No necesita
   S3 ni bases de datos.
 - `requirements.txt` — dependencias (PySpark {PYSPARK_VERSION}).
-- `vendor/` — **los paquetes de PySpark + py4j incluidos en el bundle** (sdist
-  Python puro). Permiten instalar SIN internet. Compatibles con cualquier Linux
-  y Python 3.8 a 3.14. (Si por tamano se exporto sin vendor/, setup.sh usa pip
-  por internet.)
+- `vendor/` — **los paquetes de PySpark + py4j incluidos en el bundle**, en DOS
+  series por rango de Python para cubrir 3.8-3.14 sin tema de version:
+  `vendor/py38-311/` (PySpark 3.5.6) y `vendor/py312plus/` (PySpark 4.0.0).
+  setup.sh elige la serie segun la version de Python detectada e instala SIN
+  internet. (Si se exporto sin vendor/, setup.sh usa pip por internet.)
 - `setup.sh` — **monta el ambiente completo** (crea venv, instala deps desde
   vendor/ offline, verifica Java y prepara la arquitectura de carpetas).
   Ejecutalo UNA vez.
@@ -316,96 +325,68 @@ def _safe_name(name):
     return re.sub(r'[^A-Za-z0-9_.-]', '_', str(name or "node"))
 
 
-# Version de PySpark a empaquetar en vendor/. Se usa la ultima serie 3.5 (LTS
-# compatible 3.5-4.x del lado del job) que PyPI distribuye con requires_python
-# >=3.8. El paquete es Python puro (sdist), portable a cualquier Linux y a
-# Python 3.8 hasta 3.14; el unico binario nativo que necesita es Java (destino).
-# PySpark 3.5.6: ultima de la serie 3.5 (LTS compatible 3.5-4.x del lado del job)
-# y, a diferencia de 3.5.3, incluye un cloudpickle que SI soporta Python 3.12
-# (3.5.3 fallaba con RecursionError al serializar en 3.12). Cubre Python 3.8-3.12.
-VENDOR_PYSPARK = "pyspark==3.5.6"
-VENDOR_PY4J = "py4j==0.10.9.7"
+# Para cubrir TODO el rango Python 3.8-3.14 empaquetamos DOS series de PySpark en
+# vendor/, en subcarpetas por rango de Python; setup.sh elige segun la version:
+#   vendor/py38-311/  -> PySpark 3.5.6 (serie 3.5, soporta Python 3.8-3.11)
+#   vendor/py312plus/ -> PySpark 4.0.0 (serie 4.0, soporta Python 3.9-3.13/3.14)
+# Los .whl de PySpark/py4j son 'py2.py3-none-any' (Python puro, cualquier Linux);
+# el unico binario nativo que necesita es Java (en el destino). Asi, caiga en el
+# Python que caiga el Linux del banco, se instala el PySpark compatible.
+VENDOR_SERIES = [
+    {"dir": "py38-311", "pyspark": "pyspark==3.5.6", "py4j": "py4j==0.10.9.7",
+     "download_py": "3.8", "min": (3, 8), "max": (3, 11)},
+    {"dir": "py312plus", "pyspark": "pyspark==4.0.0", "py4j": "py4j==0.10.9.9",
+     "download_py": "3.12", "min": (3, 12), "max": (3, 14)},
+]
 
-# Cache de dependencias en el server para no re-descargar los ~317 MB de PySpark
-# en cada exportacion. Vive fuera de git (raiz del proyecto).
+# Cache de dependencias en el server para no re-descargar/reconstruir en cada
+# exportacion. Vive fuera de git (raiz del proyecto).
 _VENDOR_CACHE_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".bnx_vendor_cache"
 )
 
+def _build_series(cache_dir, serie):
+    """Prepara los wheels de UNA serie de PySpark en cache_dir/<serie.dir>/:
+    PySpark (sdist->wheel), py4j y setuptools/wheel/pip. Idempotente (reusa cache).
+    Devuelve la lista de .whl de esa serie (o [] si falla)."""
+    import subprocess, sys, glob
+    sdir = os.path.join(cache_dir, serie["dir"])
+    os.makedirs(sdir, exist_ok=True)
+    dpy = serie["download_py"]
 
-def fetch_vendor_files(cache_dir=None, python_version="3.8"):
-    """Prepara (y cachea) los WHEELS a empaquetar en vendor/ para instalacion
-    OFFLINE en el destino Linux. Devuelve lista de rutas de archivo.
-
-    Estrategia:
-    - NO construye un venv (un venv no es portable entre SO ni versiones de
-      Python). Empaqueta los PAQUETES como wheels 'py2.py3-none-any', que son
-      Python puro y sirven en cualquier Linux y en Python 3.8 a 3.14.
-    - PySpark en PyPI solo se publica como sdist (.tar.gz, requiere build). Para
-      que el destino NO tenga que compilar ni tener internet, aqui construimos
-      el sdist a wheel UNA vez (pip wheel) y cacheamos ese .whl.
-    - Incluye setuptools/wheel/pip como respaldo de build offline.
-    - Cachea en el server: si ya estan los .whl, no vuelve a bajar/construir.
-
-    Devuelve [] si pip no esta disponible o todo falla (el bundle se entrega sin
-    vendor/, cayendo a instalacion por internet en el destino)."""
-    import subprocess
-    import sys
-    import glob
-    cache_dir = cache_dir or _VENDOR_CACHE_DIR
-    os.makedirs(cache_dir, exist_ok=True)
-
-    def _wheels():
-        files = []
-        for pat in ("pyspark-*.whl", "py4j-*.whl", "setuptools-*.whl",
-                    "wheel-*.whl", "pip-*.whl"):
-            files.extend(glob.glob(os.path.join(cache_dir, pat)))
-        return sorted(set(files))
-
-    have_pyspark_whl = bool(glob.glob(os.path.join(cache_dir, "pyspark-*.whl")))
-    have_py4j_whl = bool(glob.glob(os.path.join(cache_dir, "py4j-*.whl")))
-
-    # 1) Herramientas de build/instalacion offline (setuptools/wheel/pip).
-    if not glob.glob(os.path.join(cache_dir, "setuptools-*.whl")):
+    # setuptools/wheel/pip (respaldo de build offline en destino).
+    if not glob.glob(os.path.join(sdir, "setuptools-*.whl")):
         try:
             subprocess.run(
                 [sys.executable, "-m", "pip", "download", "setuptools", "wheel", "pip",
-                 "--only-binary=:all:", "--python-version", python_version,
+                 "--only-binary=:all:", "--python-version", dpy,
                  "--implementation", "py", "--abi", "none", "--platform", "any",
-                 "-d", cache_dir],
-                check=True, capture_output=True, text=True, timeout=600,
-            )
+                 "-d", sdir],
+                check=True, capture_output=True, text=True, timeout=600)
         except Exception:
             pass
-
-    # 2) py4j (ya es wheel universal en PyPI).
-    if not have_py4j_whl:
+    # py4j (wheel universal).
+    if not glob.glob(os.path.join(sdir, "py4j-*.whl")):
         try:
             subprocess.run(
-                [sys.executable, "-m", "pip", "download", VENDOR_PY4J,
-                 "--only-binary=:all:", "--no-deps", "-d", cache_dir],
-                check=True, capture_output=True, text=True, timeout=600,
-            )
+                [sys.executable, "-m", "pip", "download", serie["py4j"],
+                 "--only-binary=:all:", "--no-deps", "-d", sdir],
+                check=True, capture_output=True, text=True, timeout=600)
         except Exception:
             pass
-
-    # 3) PySpark: bajar sdist y construir el wheel una vez (si no esta cacheado).
-    if not have_pyspark_whl:
+    # PySpark: bajar sdist y construir el wheel una vez.
+    if not glob.glob(os.path.join(sdir, "pyspark-*.whl")):
         try:
             subprocess.run(
-                [sys.executable, "-m", "pip", "download", VENDOR_PYSPARK,
+                [sys.executable, "-m", "pip", "download", serie["pyspark"],
                  "--no-deps", "--no-binary=pyspark",
-                 "--python-version", python_version, "-d", cache_dir],
-                check=True, capture_output=True, text=True, timeout=1800,
-            )
-            sdists = glob.glob(os.path.join(cache_dir, "pyspark-*.tar.gz"))
+                 "--python-version", dpy, "-d", sdir],
+                check=True, capture_output=True, text=True, timeout=2400)
+            sdists = glob.glob(os.path.join(sdir, "pyspark-*.tar.gz"))
             if sdists:
                 subprocess.run(
-                    [sys.executable, "-m", "pip", "wheel", sdists[0],
-                     "--no-deps", "-w", cache_dir],
-                    check=True, capture_output=True, text=True, timeout=1800,
-                )
-                # El sdist pesado ya no hace falta: dejamos solo el .whl.
+                    [sys.executable, "-m", "pip", "wheel", sdists[0], "--no-deps", "-w", sdir],
+                    check=True, capture_output=True, text=True, timeout=2400)
                 for s in sdists:
                     try:
                         os.remove(s)
@@ -413,15 +394,33 @@ def fetch_vendor_files(cache_dir=None, python_version="3.8"):
                         pass
         except Exception:
             pass
+    return sorted(glob.glob(os.path.join(sdir, "*.whl")))
 
-    return _wheels()
+
+def fetch_vendor_files(cache_dir=None):
+    """Prepara (y cachea) los wheels de TODAS las series de PySpark para cubrir
+    Python 3.8-3.14. Devuelve un dict {serie_dir: [rutas .whl]} para empaquetar
+    cada serie en vendor/<serie_dir>/ dentro del bundle.
+
+    No construye venvs (no son portables). Empaqueta wheels py2.py3-none-any
+    (Python puro, cualquier Linux). setup.sh elige la serie segun el Python del
+    destino. Si pip falla, devuelve {} y el bundle cae a instalacion por internet."""
+    cache_dir = cache_dir or _VENDOR_CACHE_DIR
+    os.makedirs(cache_dir, exist_ok=True)
+    out = {}
+    for serie in VENDOR_SERIES:
+        whls = _build_series(cache_dir, serie)
+        if whls:
+            out[serie["dir"]] = whls
+    return out
 
 
 def _add_job_files(z, prefix, job_code, run_test_code, job_name, inputs, outputs,
-                   vendor_files=None):
+                   vendor_series=None):
     """Escribe en el ZIP 'z' los archivos del job bajo 'prefix' (p.ej. 'job_bundle/').
     Incluye el job, el harness, requirements, setup.sh, run.sh, README y, si se
-    pasan vendor_files, los paquetes para instalacion OFFLINE en vendor/."""
+    pasa vendor_series (dict {serie_dir: [whls]}), los paquetes de cada serie en
+    vendor/<serie_dir>/ para instalacion OFFLINE segun la version de Python."""
     z.writestr(prefix + "job.py", job_code or "# (job vacio)\n")
     z.writestr(prefix + "run_test.py", run_test_code or "# (script de prueba vacio)\n")
     z.writestr(prefix + "requirements.txt", _requirements_txt())
@@ -433,17 +432,18 @@ def _add_job_files(z, prefix, job_code, run_test_code, job_name, inputs, outputs
         info.external_attr = 0o755 << 16  # ejecutable
         z.writestr(info, content)
     z.writestr(prefix + "README.md", _readme_md(job_name, inputs, outputs))
-    # Paquetes para instalacion offline (vendor/). Guardados con ZIP_STORED
-    # porque un .whl ya esta comprimido (no gana nada re-comprimir ~317 MB).
-    for fpath in (vendor_files or []):
-        try:
-            with open(fpath, "rb") as fh:
-                data = fh.read()
-        except OSError:
-            continue
-        info = zipfile.ZipInfo(prefix + "vendor/" + os.path.basename(fpath))
-        info.compress_type = zipfile.ZIP_STORED
-        z.writestr(info, data)
+    # Paquetes para instalacion offline, por serie en vendor/<serie_dir>/.
+    # ZIP_STORED porque un .whl ya esta comprimido (no gana nada recomprimir).
+    for serie_dir, whls in (vendor_series or {}).items():
+        for fpath in whls:
+            try:
+                with open(fpath, "rb") as fh:
+                    data = fh.read()
+            except OSError:
+                continue
+            info = zipfile.ZipInfo(prefix + f"vendor/{serie_dir}/" + os.path.basename(fpath))
+            info.compress_type = zipfile.ZIP_STORED
+            z.writestr(info, data)
 
 
 def _add_data_files(z, prefix, inputs, outputs):
@@ -494,16 +494,17 @@ def build_export_bundle(job_code, run_test_code, job_name, inputs, outputs=None,
     """
     outputs = outputs or []
     safe_job = _safe_name(job_name)
-    vendor_files = fetch_vendor_files() if include_vendor else []
+    vendor_series = fetch_vendor_files() if include_vendor else {}
 
     buf = io.BytesIO()
     # allowZip64=True: necesario cuando se incluye el wheel de PySpark (~317 MB).
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as z:
         _add_job_files(z, "job_bundle/", job_code, run_test_code, job_name,
-                       inputs, outputs, vendor_files=vendor_files)
+                       inputs, outputs, vendor_series=vendor_series)
         _add_data_files(z, "data_bundle/", inputs, outputs)
-        offline = "SI (incluye PySpark en job_bundle/vendor/)" if vendor_files \
-            else "NO (setup.sh instala por internet)"
+        series_txt = ", ".join(sorted(vendor_series.keys())) if vendor_series else ""
+        offline = (f"SI (PySpark offline por version de Python: {series_txt})"
+                   if vendor_series else "NO (setup.sh instala por internet)")
         z.writestr("LEEME.txt", (
             f"BNX export - {job_name}\n"
             f"=========================================\n\n"
