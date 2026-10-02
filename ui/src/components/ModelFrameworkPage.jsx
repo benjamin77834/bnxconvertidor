@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { COMPILE_URL } from '../config'
 
 // Framework de Modelos (operacionalizacion): toma un modelo entregado por negocio
@@ -7,19 +7,36 @@ import { COMPILE_URL } from '../config'
 // Llama al endpoint /model/run del portal. El entrenamiento NO es parte del
 // framework: el modelo demo solo simula el artefacto entregado por negocio.
 const MODEL_RUN_URL = COMPILE_URL.replace('/compile', '/model/run')
+const MODEL_EXAMPLES_URL = COMPILE_URL.replace('/compile', '/model/examples')
 
 export default function ModelFrameworkPage({ theme }) {
   const t = theme || {}
   const [running, setRunning] = useState(false)
   const [result, setResult] = useState(null)
   const [error, setError] = useState('')
+  const [examples, setExamples] = useState([])
+  const [selected, setSelected] = useState('')
+
+  // Cargar los ejemplos disponibles (config YAML + dataset) al montar.
+  useEffect(() => {
+    fetch(MODEL_EXAMPLES_URL)
+      .then(r => r.json())
+      .then(d => {
+        const list = d.examples || []
+        setExamples(list)
+        if (list.length) setSelected(list[0].id)
+      })
+      .catch(() => {})
+  }, [])
 
   const run = async () => {
     setRunning(true); setError(''); setResult(null)
     try {
+      const ex = examples.find(e => e.id === selected)
+      const body = ex ? { yaml: ex.yaml, csv: ex.csv, train: true } : {}
       const res = await fetch(MODEL_RUN_URL, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
+        body: JSON.stringify(body),
       })
       const data = await res.json()
       if (data.error) { setError(data.error); return }
@@ -53,14 +70,29 @@ export default function ModelFrameworkPage({ theme }) {
             parte del framework.
           </p>
         </div>
-        <button onClick={run} disabled={running}
-          style={{
-            padding: '10px 18px', borderRadius: 8, flexShrink: 0,
-            cursor: running ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 700,
-            background: running ? (t.border || '#334155') : '#8b5cf6', color: '#fff', border: 'none',
-          }}>
-          {running ? '⏳ Ejecutando pipeline…' : '▶️ Ejecutar framework (demo)'}
-        </button>
+        <div style={{ display: 'flex', gap: 8, flexShrink: 0, alignItems: 'center' }}>
+          {examples.length > 0 && (
+            <select value={selected} onChange={e => setSelected(e.target.value)}
+              title="Ejemplo de modelo a operacionalizar"
+              style={{
+                padding: '9px 10px', borderRadius: 8, fontSize: 13,
+                background: t.card || '#1e2433', color: t.text || '#e2e8f0',
+                border: `1px solid ${t.border || '#334155'}`,
+              }}>
+              {examples.map(ex => (
+                <option key={ex.id} value={ex.id}>{ex.name} ({ex.features.length} features)</option>
+              ))}
+            </select>
+          )}
+          <button onClick={run} disabled={running}
+            style={{
+              padding: '10px 18px', borderRadius: 8,
+              cursor: running ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 700,
+              background: running ? (t.border || '#334155') : '#8b5cf6', color: '#fff', border: 'none',
+            }}>
+            {running ? '⏳ Ejecutando pipeline…' : '▶️ Ejecutar framework'}
+          </button>
+        </div>
       </div>
 
       {error && (
