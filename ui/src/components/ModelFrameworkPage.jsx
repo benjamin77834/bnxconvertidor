@@ -22,6 +22,9 @@ export default function ModelFrameworkPage({ theme }) {
   const [upYamlName, setUpYamlName] = useState('')
   const [upCsvName, setUpCsvName] = useState('')
   const [showHelp, setShowHelp] = useState(false)   // panel "¿Qué hace esto?"
+  const [edYaml, setEdYaml] = useState('')          // editor: YAML
+  const [edCsv, setEdCsv] = useState('')            // editor: CSV
+  const [edDirty, setEdDirty] = useState(false)     // el editor fue tocado
 
   // Cargar los ejemplos disponibles (config YAML + dataset) al montar.
   useEffect(() => {
@@ -34,6 +37,17 @@ export default function ModelFrameworkPage({ theme }) {
       })
       .catch(() => {})
   }, [])
+
+  // Al entrar al Editor (o cambiar de ejemplo sin haberlo tocado), precargar el
+  // ejemplo seleccionado como punto de partida editable.
+  const loadExampleIntoEditor = (id) => {
+    const ex = examples.find(e => e.id === (id || selected))
+    if (ex) { setEdYaml(ex.yaml || ''); setEdCsv(ex.csv || ''); setEdDirty(false) }
+  }
+  useEffect(() => {
+    if (mode === 'editor' && !edDirty) loadExampleIntoEditor()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, selected, examples])
 
   const readFile = (file, setContent, setName) => {
     const reader = new FileReader()
@@ -49,6 +63,10 @@ export default function ModelFrameworkPage({ theme }) {
         if (!upYaml.trim()) { setError('Sube un archivo de configuración .yml.'); return }
         if (!upCsv.trim()) { setError('Sube un dataset .csv.'); return }
         body = { yaml: upYaml, csv: upCsv, train: true }
+      } else if (mode === 'editor') {
+        if (!edYaml.trim()) { setError('El YAML del editor está vacío.'); return }
+        if (!edCsv.trim()) { setError('El CSV del editor está vacío.'); return }
+        body = { yaml: edYaml, csv: edCsv, train: true }
       } else {
         const ex = examples.find(e => e.id === selected)
         body = ex ? { yaml: ex.yaml, csv: ex.csv, train: true } : {}
@@ -90,16 +108,16 @@ export default function ModelFrameworkPage({ theme }) {
           </p>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, flexShrink: 0, alignItems: 'flex-end' }}>
-          {/* Toggle: ejemplo vs subir archivos */}
+          {/* Toggle: ejemplo / editor / subir archivos */}
           <div style={{ display: 'flex', gap: 4 }}>
-            {['example', 'upload'].map(m => (
+            {[['example', '📚 Ejemplo'], ['editor', '✏️ Editor'], ['upload', '📤 Subir archivos']].map(([m, label]) => (
               <button key={m} onClick={() => setMode(m)}
                 style={{
                   padding: '5px 10px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
                   background: mode === m ? '#8b5cf620' : 'transparent',
                   border: `1px solid ${mode === m ? '#8b5cf6' : (t.border || '#334155')}`,
                   color: mode === m ? '#a78bfa' : (t.muted || '#94a3b8'), fontWeight: mode === m ? 600 : 400,
-                }}>{m === 'example' ? '📚 Ejemplo' : '📤 Subir archivos'}</button>
+                }}>{label}</button>
             ))}
           </div>
 
@@ -146,6 +164,58 @@ export default function ModelFrameworkPage({ theme }) {
           </div>
         </div>
       </div>
+
+      {/* Editor de YAML + CSV (modo 'editor') */}
+      {mode === 'editor' && (
+        <div style={{ ...card, marginBottom: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: t.text || '#e2e8f0' }}>
+              ✏️ Editor de configuración y datos
+            </span>
+            <button onClick={() => loadExampleIntoEditor()}
+              title="Recargar el ejemplo seleccionado como punto de partida"
+              style={{ padding: '4px 10px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
+                background: 'transparent', border: `1px solid ${t.border || '#334155'}`, color: t.muted }}>
+              ↺ Cargar ejemplo "{examples.find(e => e.id === selected)?.name || selected}"
+            </button>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div>
+              <label style={{ fontSize: 11, color: t.dim, display: 'block', marginBottom: 4 }}>
+                config.yml — describe modelo, features y pipeline
+              </label>
+              <textarea value={edYaml}
+                onChange={e => { setEdYaml(e.target.value); setEdDirty(true) }}
+                spellCheck={false}
+                style={{
+                  width: '100%', minHeight: 300, padding: 10, borderRadius: 8, resize: 'vertical',
+                  fontFamily: 'monospace', fontSize: 12, lineHeight: 1.5, outline: 'none',
+                  background: t.codeBg || '#081220', color: '#a3e635',
+                  border: '1px solid #8b5cf630',
+                }} />
+            </div>
+            <div>
+              <label style={{ fontSize: 11, color: t.dim, display: 'block', marginBottom: 4 }}>
+                dataset.csv — columnas de features + columna objetivo "default"
+              </label>
+              <textarea value={edCsv}
+                onChange={e => { setEdCsv(e.target.value); setEdDirty(true) }}
+                spellCheck={false}
+                style={{
+                  width: '100%', minHeight: 300, padding: 10, borderRadius: 8, resize: 'vertical',
+                  fontFamily: 'monospace', fontSize: 12, lineHeight: 1.5, outline: 'none',
+                  background: t.codeBg || '#081220', color: '#38bdf8',
+                  border: '1px solid #8b5cf630',
+                }} />
+            </div>
+          </div>
+          <p style={{ fontSize: 11, color: t.dim, margin: '8px 0 0' }}>
+            Edita el YAML y el CSV y pulsa <b>Ejecutar framework</b>. El CSV necesita la columna
+            objetivo <code>default</code> (0/1) y las columnas listadas en <code>features</code>.
+            Parte de un ejemplo con el botón de arriba y modifícalo.
+          </p>
+        </div>
+      )}
 
       {/* Documentacion colapsable: "¿Que hace esto?" (visible pero discreta) */}
       <div style={{ ...card, marginBottom: 16, padding: 0, overflow: 'hidden' }}>
