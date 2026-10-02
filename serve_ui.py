@@ -177,9 +177,17 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
 
-        # API health check
+        # API health check (incluye la version de Python que corre el server, para
+        # que la GUI avise que bundle offline conviene segun el Python del destino).
         if path == "/api/health":
-            self._json_response(200, {"status": "ok", "version": "V54"})
+            import platform as _plat
+            vi = sys.version_info
+            self._json_response(200, {
+                "status": "ok", "version": "V54",
+                "python_version": f"{vi.major}.{vi.minor}.{vi.micro}",
+                "python_minor": vi.minor,
+                "platform": _plat.system(),
+            })
             return
 
         # Descarga de addons de VS Code (.vsix) generados on-demand.

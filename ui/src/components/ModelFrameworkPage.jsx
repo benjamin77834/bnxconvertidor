@@ -25,6 +25,7 @@ export default function ModelFrameworkPage({ theme }) {
   const [edYaml, setEdYaml] = useState('')          // editor: YAML
   const [edCsv, setEdCsv] = useState('')            // editor: CSV
   const [edDirty, setEdDirty] = useState(false)     // el editor fue tocado
+  const [health, setHealth] = useState(null)        // version de Python del server
 
   // Cargar los ejemplos disponibles (config YAML + dataset) al montar.
   useEffect(() => {
@@ -35,6 +36,11 @@ export default function ModelFrameworkPage({ theme }) {
         setExamples(list)
         if (list.length) setSelected(list[0].id)
       })
+      .catch(() => {})
+    // Version de Python que corre el convertidor (server).
+    fetch(COMPILE_URL.replace('/compile', '/api/health'))
+      .then(r => r.json())
+      .then(h => setHealth(h))
       .catch(() => {})
   }, [])
 
@@ -164,6 +170,26 @@ export default function ModelFrameworkPage({ theme }) {
           </div>
         </div>
       </div>
+
+      {/* Notificacion: version de Python que corre el convertidor (server) */}
+      {health && health.python_version && (
+        <div style={{
+          ...card, marginBottom: 16, padding: '10px 14px',
+          display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+          background: '#0ea5e912', borderColor: '#0ea5e933',
+        }}>
+          <span style={{ fontSize: 13, color: t.text || '#e2e8f0' }}>
+            🐍 El convertidor corre con <b>Python {health.python_version}</b>
+            {health.platform ? ` (${health.platform})` : ''}.
+          </span>
+          <span style={{ fontSize: 12, color: t.dim || '#64748b' }}>
+            {health.python_minor >= 12
+              ? 'Para el bundle offline usa la serie Python 3.12+ (PySpark 4.0).'
+              : 'Para el bundle offline usa la serie Python 3.8–3.11 (PySpark 3.5.6).'}
+            {' '}El job PySpark que genera el framework corre en esta misma versión.
+          </span>
+        </div>
+      )}
 
       {/* Editor de YAML + CSV (modo 'editor') */}
       {mode === 'editor' && (
