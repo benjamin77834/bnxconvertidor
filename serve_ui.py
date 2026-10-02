@@ -201,6 +201,12 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_download_vsix()
             return
 
+        # Descarga por streaming de un bundle ya preparado (token). Para archivos
+        # grandes (offline ~320-760MB): el navegador descarga nativo, sin blob.
+        if path == "/export/download" or path == "/api/export/download":
+            self._handle_export_download()
+            return
+
         # Ejemplos de codigo ML (pandas) para la seccion Py->Spark.
         if path == "/py2spark/examples" or path == "/api/py2spark/examples":
             self._handle_py2spark_examples()
@@ -848,6 +854,10 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         include_vendor = True
         # py_target: que serie(s) de PySpark empaquetar (all | py38-311 | py312plus).
         py_target = "all"
+        # prepare: si True, guardamos el zip en disco y devolvemos un token para
+        # descargarlo por GET (streaming). Evita cargar 320-760MB como blob en el
+        # navegador (que es lo que impide la descarga de bundles grandes).
+        prepare = False
         try:
             if "/export/bundle?" in self.path and "vendor=0" in self.path:
                 include_vendor = False
@@ -858,6 +868,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                         include_vendor = bool(_bj.get("include_vendor"))
                     if _bj.get("py_target") in ("all", "py38-311", "py312plus"):
                         py_target = _bj["py_target"]
+                    prepare = bool(_bj.get("prepare"))
         except Exception:
             pass
         try:
@@ -905,16 +916,92 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             #    falla, seguimos sin salidas (el bundle sigue siendo util).
             outputs = self._capture_output_datasets(job_code, datasets)
 
-            # 5) Armar el ZIP contenedor y devolverlo como descarga.
+            # 5) Armar el ZIP contenedor.
             bundle_bytes, filename = build_export_bundle(
                 job_code, run_test_code, job_name, datasets, outputs,
                 include_vendor=include_vendor, py_target=py_target,
             )
-            self._binary_response(bundle_bytes, filename)
+            if prepare:
+                # Guardar en disco y devolver un token; la GUI descarga por GET
+                # (streaming nativo del navegador, sin cargar el blob en memoria).
+                import uuid as _uuid
+                tmpdir = os.path.join(tempfile.gettempdir(), "bnx_bundles")
+                os.makedirs(tmpdir, exist_ok=True)
+                token = _uuid.uuid4().hex
+                with open(os.path.join(tmpdir, token + ".zip"), "wb") as fh:
+                    fh.write(bundle_bytes)
+                # Guardar el nombre deseado junto al token.
+                with open(os.path.join(tmpdir, token + ".name"), "w", encoding="utf-8") as fh:
+                    fh.write(filename)
+                self._json_response(200, {
+                    "ok": True, "token": token, "filename": filename,
+                    "size": len(bundle_bytes),
+                    "download_url": f"/export/download?token={token}",
+                })
+            else:
+                self._binary_response(bundle_bytes, filename)
         except Exception as e:
             import traceback
             traceback.print_exc()
             self._json_response(500, {"error": str(e)})
+
+    def _handle_export_download(self):
+        """Sirve por STREAMING un bundle preparado (token) y lo borra tras enviar.
+        Lee ?token=<hex>. Descarga nativa del navegador, sin blob en memoria."""
+        from urllib.parse import urlparse as _up, parse_qs as _pq
+        qs = _pq(_up(self.path).query)
+        token = (qs.get("token", [""])[0] or "").strip()
+        # Sanitizar: solo hex (evita path traversal).
+        if not token or not re.fullmatch(r"[0-9a-f]{8,64}", token):
+            self._json_response(400, {"error": "token invalido"})
+            return
+        tmpdir = os.path.join(tempfile.gettempdir(), "bnx_bundles")
+        zip_path = os.path.join(tmpdir, token + ".zip")
+        name_path = os.path.join(tmpdir, token + ".name")
+        if not os.path.isfile(zip_path):
+            self._json_response(404, {"error": "bundle no encontrado o expirado"})
+            return
+        filename = "bnx_export.zip"
+        try:
+            if os.path.isfile(name_path):
+                filename = open(name_path, encoding="utf-8").read().strip() or filename
+        except OSError:
+            pass
+        size = os.path.getsize(zip_path)
+        self.send_response(200)
+        self._cors_headers()
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(size))
+        self.end_headers()
+        # Enviar en bloques (streaming), con reintento ante buffer lleno (macOS).
+        import time as _t
+        try:
+            with open(zip_path, "rb") as fh:
+                chunk = 1 << 20
+                while True:
+                    data = fh.read(chunk)
+                    if not data:
+                        break
+                    sent = 0
+                    view = memoryview(data)
+                    while sent < len(view):
+                        try:
+                            self.wfile.write(view[sent:])
+                            sent = len(view)
+                        except BlockingIOError:
+                            _t.sleep(0.01)
+                        except OSError as e:
+                            if getattr(e, "errno", None) in (55, 11, 35):
+                                _t.sleep(0.01); continue
+                            raise
+        finally:
+            # Limpieza: el bundle es de un solo uso.
+            for p in (zip_path, name_path):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
 
     def _capture_output_datasets(self, job_code, input_datasets):
         """Ejecuta el job sobre los datos de entrada sinteticos y devuelve los
