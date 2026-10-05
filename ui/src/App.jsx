@@ -14,6 +14,7 @@ import PipelinePage from './components/PipelinePage'
 import GraphLibrary from './components/GraphLibrary'
 import GrafosPage from './components/GrafosPage'
 import ModelFrameworkPage from './components/ModelFrameworkPage'
+import CodeQualityPanel from './components/CodeQualityPanel'
 import DataGenPage from './components/DataGenPage'
 import CostEstimateCard from './components/CostEstimateCard'
 import Py2SparkPage from './components/Py2SparkPage'
@@ -1546,11 +1547,20 @@ export default function App() {
                     }}>{result.code.slice(0, 600)}...{'\n\n'}# ... ({result.code.split('\n').length - 15} líneas más)</pre>
                   </div>
                 ) : (
-                  <pre style={{
-                    padding: 16, fontSize: 14, color: t.muted,
-                    fontFamily: 'monospace', whiteSpace: 'pre', overflowY: 'auto',
-                    flex: 1, lineHeight: 1.6, margin: 0,
-                  }}>{result.code}</pre>
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflowY: 'auto' }}>
+                    {/* Analizar/editar calidad del codigo Spark generado (solo target spark) */}
+                    {target === 'spark' && !result.refactor && (
+                      <div style={{ padding: '8px 16px 0' }}>
+                        <CodeQualityPanel theme={t} code={result.code}
+                          onApply={(c) => setResult(prev => ({ ...prev, code: c }))} />
+                      </div>
+                    )}
+                    <pre style={{
+                      padding: 16, fontSize: 14, color: t.muted,
+                      fontFamily: 'monospace', whiteSpace: 'pre', overflowY: 'auto',
+                      flex: 1, lineHeight: 1.6, margin: 0,
+                    }}>{result.code}</pre>
+                  </div>
                 )
               )}
             </div>
