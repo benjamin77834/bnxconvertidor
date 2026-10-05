@@ -517,7 +517,7 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
   const [showAnalysis, setShowAnalysis] = useState(false)
   const ANALYZE_URL = COMPILE_URL.replace(/\/compile$/, '/analyze')
   const analyzeQuality = async () => {
-    if (!(compiledCode || '').trim()) { alert('No hay código compilado para analizar.'); return }
+    if (!(compiledCode || '').trim()) { alert('No hay código para analizar. Llega aquí desde Compiler, COBOL, ALGOL o Py→Spark.'); return }
     setAnalyzing(true)
     try {
       const res = await fetch(ANALYZE_URL, {
@@ -1221,7 +1221,7 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
               <button
                 onClick={analyzeQuality}
                 disabled={analyzing || !hasCode}
-                title="Analiza la calidad del código (estilo Sonar) y marca en naranja las líneas con recomendaciones. NO modifica el código."
+                title="Analiza la calidad (estilo Sonar) de CUALQUIER código que llegue aquí (Compiler, COBOL, ALGOL o Py→Spark) y marca en naranja las líneas con recomendaciones. NO modifica el código."
                 style={{
                   padding: '10px 18px', borderRadius: 8,
                   cursor: (analyzing || !hasCode) ? 'not-allowed' : 'pointer',
