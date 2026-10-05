@@ -169,6 +169,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_algol()
         elif "/model/run" in path:
             self._handle_model_run()
+        elif "/analyze" in path:
+            self._handle_analyze()
         elif "/compile" in path or "/api" in path:
             self._handle_compile()
         else:
@@ -2336,6 +2338,31 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             if work_dir and os.path.isdir(work_dir):
                 import shutil
                 shutil.rmtree(work_dir, ignore_errors=True)
+
+    def _handle_analyze(self):
+        """Analisis de calidad (estilo Sonar) del codigo, SOLO RECOMENDACIONES.
+        No modifica nada. Body JSON {"code": "<pyspark>"}. Devuelve
+        {ok, findings:[{rule,category,severity,line,message}], summary}.
+        Cero dependencias obligatorias (usa ast de la stdlib)."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        try:
+            data = json.loads(body.decode("utf-8", errors="replace"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._json_response(400, {"error": "Invalid JSON body"})
+            return
+        code = data.get("code", "") or ""
+        if not code.strip():
+            self._json_response(400, {"error": "Falta 'code' para analizar."})
+            return
+        try:
+            from src.code_review import review_code
+            result = review_code(code)
+            self._json_response(200, result)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": f"{type(e).__name__}: {e}"})
 
     def _handle_model_examples(self):
         """Lista los ejemplos (config YAML + dataset CSV) disponibles para la

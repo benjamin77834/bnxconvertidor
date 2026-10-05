@@ -510,6 +510,33 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
   const recommended = health && typeof health.python_minor === 'number'
     ? (health.python_minor >= 12 ? 'py312plus' : 'py38-311')
     : null
+
+  // --- Analisis de calidad (estilo Sonar): SOLO RECOMENDACIONES, no cambia nada ---
+  const [analysis, setAnalysis] = useState(null)   // {findings, summary} o null
+  const [analyzing, setAnalyzing] = useState(false)
+  const [showAnalysis, setShowAnalysis] = useState(false)
+  const ANALYZE_URL = COMPILE_URL.replace(/\/compile$/, '/analyze')
+  const analyzeQuality = async () => {
+    if (!(compiledCode || '').trim()) { alert('No hay código compilado para analizar.'); return }
+    setAnalyzing(true)
+    try {
+      const res = await fetch(ANALYZE_URL, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: compiledCode }),
+      })
+      const data = await res.json()
+      if (data.error) { alert('No se pudo analizar: ' + data.error); return }
+      setAnalysis(data)
+      setShowAnalysis(true)
+    } catch (e) {
+      alert('No se pudo analizar: ' + e.message)
+    } finally { setAnalyzing(false) }
+  }
+  // Mapa linea -> hallazgos, para resaltar en naranja.
+  const findingsByLine = {}
+  if (analysis) for (const f of (analysis.findings || [])) {
+    (findingsByLine[f.line] = findingsByLine[f.line] || []).push(f)
+  }
   // kind: 'light' (internet) | 'all' | 'py38-311' | 'py312plus' (offline por serie)
   const exportBundle = async (kind) => {
     setExporting(kind)
@@ -1191,8 +1218,87 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
                   opacity: comparing ? 0.6 : 1,
                 }}
               >{comparing ? '⏳ Comparando...' : '⚡ Comparar performance'}</button>
+              <button
+                onClick={analyzeQuality}
+                disabled={analyzing || !hasCode}
+                title="Analiza la calidad del código (estilo Sonar) y marca en naranja las líneas con recomendaciones. NO modifica el código."
+                style={{
+                  padding: '10px 18px', borderRadius: 8,
+                  cursor: (analyzing || !hasCode) ? 'not-allowed' : 'pointer',
+                  background: !hasCode ? (t.border || '#334155') : '#f97316',
+                  color: '#fff', border: 'none', fontSize: 14, fontWeight: 700,
+                  opacity: analyzing ? 0.6 : 1,
+                }}
+              >{analyzing ? '⏳ Analizando...' : '🟠 Analizar calidad'}</button>
             </div>
           </div>
+
+          {/* Panel de analisis de calidad (recomendaciones, en naranja) */}
+          {showAnalysis && analysis && (() => {
+            const sv = { critical: '#ef4444', major: '#f97316', minor: '#f59e0b', info: '#64748b' }
+            const s = analysis.summary || {}
+            const lines = (compiledCode || '').split('\n')
+            return (
+              <div style={{
+                background: '#f9731610', borderRadius: 8, padding: '12px 14px',
+                border: '1px solid #f9731640', display: 'flex', flexDirection: 'column', gap: 10,
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: '#fb923c' }}>
+                    🟠 Recomendaciones de calidad (no se modifica el código) —{' '}
+                    {s.total || 0} hallazgo(s): {s.critical || 0} críticos, {s.major || 0} mayores,
+                    {' '}{s.minor || 0} menores, {s.info || 0} info
+                  </span>
+                  <button onClick={() => setShowAnalysis(false)}
+                    style={{ padding: '3px 8px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
+                      background: 'transparent', border: `1px solid ${t.border || '#334155'}`, color: t.dim }}>
+                    ✕ cerrar
+                  </button>
+                </div>
+
+                {(analysis.findings || []).length === 0 && (
+                  <div style={{ fontSize: 12, color: '#22c55e' }}>✅ Sin recomendaciones: el código se ve limpio.</div>
+                )}
+
+                {/* Lista de recomendaciones */}
+                {(analysis.findings || []).length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 3, maxHeight: 180, overflow: 'auto' }}>
+                    {analysis.findings.map((f, i) => (
+                      <div key={i} style={{ fontSize: 11.5, color: t.text || '#e2e8f0', lineHeight: 1.5 }}>
+                        <span style={{ color: sv[f.severity] || '#f59e0b', fontWeight: 700 }}>●</span>{' '}
+                        <b>L{f.line}</b> <span style={{ color: t.dim }}>[{f.category}/{f.severity}]</span> {f.message}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Codigo con las lineas de recomendacion resaltadas en naranja */}
+                <pre style={{
+                  margin: 0, padding: 10, borderRadius: 6, maxHeight: 320, overflow: 'auto',
+                  background: t.codeBg || '#081220', fontFamily: 'monospace', fontSize: 11, lineHeight: 1.5,
+                  border: '1px solid #33415530',
+                }}>
+                  {lines.map((ln, idx) => {
+                    const n = idx + 1
+                    const hits = findingsByLine[n]
+                    const hl = Boolean(hits)
+                    return (
+                      <div key={n} title={hl ? hits.map(h => h.message).join('\n') : ''}
+                        style={{
+                          display: 'flex', gap: 8, whiteSpace: 'pre',
+                          background: hl ? '#f9731625' : 'transparent',
+                          borderLeft: hl ? '3px solid #f97316' : '3px solid transparent',
+                          paddingLeft: 4,
+                        }}>
+                        <span style={{ color: hl ? '#fb923c' : (t.dim || '#475569'), minWidth: 34, textAlign: 'right', userSelect: 'none' }}>{n}</span>
+                        <span style={{ color: hl ? '#fdba74' : (t.muted || '#94a3b8') }}>{ln || ' '}</span>
+                      </div>
+                    )
+                  })}
+                </pre>
+              </div>
+            )
+          })()}
 
           {/* Instrucciones del bundle de exportacion (Linux) */}
           {hasCompilerGraph && (() => {
