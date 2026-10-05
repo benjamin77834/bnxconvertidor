@@ -144,6 +144,9 @@ const CURRENT_EFFORTS = [
   { task: 'Bundle Linux: ambiente completo (setup.sh) + datos entrada/salida + offline con PySpark en vendor/', status: 'done', impact: 'Descomprimir y correr en Linux sin internet (dos botones: ligero y offline)' },
   { task: 'COBOL -> PySpark en la GUI + conversor ALGOL (Unisys) + muestras en Grafos', status: 'done', impact: 'Migra legacy de mainframe IBM (COBOL) y Unisys (ALGOL) a PySpark con un boton' },
   { task: 'Aritmetica avanzada COBOL/ALGOL (COMPUTE, GIVING, := con expresiones) -> withColumn', status: 'done', impact: 'La logica de calculo del batch legacy se traduce fielmente, no se pierde' },
+  { task: 'Seccion Modelos: operacionalizacion (PMML+PySpark, SHA-256+cifrado+firma Ed25519, VERIFY)', status: 'done', impact: 'Empaqueta modelos de negocio en paquetes verificables y seguros, listos para desplegar' },
+  { task: 'Bundles offline multi-Python 3.8-3.14 (2 series PySpark + autodeteccion en setup.sh)', status: 'done', impact: 'El bundle instala el PySpark correcto sea cual sea el Python del Linux destino' },
+  { task: 'Analisis de calidad estilo Sonar en Data Sintetica (recomendaciones, sin cambios)', status: 'done', impact: 'Detecta code smells / seguridad / performance en el PySpark generado antes de desplegar' },
 ]
 
 // Estatus de conversion por complejidad de grafo. Honesto: bajo/medio validado,

@@ -316,15 +316,22 @@ const TIMELINE = [
     tags: ['optimizer', 'vsix', 'pyspark', 'bundle', 'python'],
     color: '#f59e0b',
   },
+  {
+    date: '2 Oct 2026',
+    title: 'Dia 53: Seccion Modelos, bundles multi-Python y analisis de calidad',
+    desc: 'Nueva seccion "Modelos" (operacionalizacion): integra el Framework MVP enterprise del notebook. Toma un modelo de negocio y produce un paquete verificable: pipeline YAML -> codigo + PMML + job PySpark -> SHA-256 + cifrado Fernet + firma Ed25519 -> VERIFY (deployable). Demo de integridad: altera el codigo -> rechazo por hash mismatch -> restaura. GUI con 3 modos (Ejemplo / Editor YAML+CSV / Subir), 3 ejemplos (credit_risk, fraud, churn) y doc colapsable. Bundles offline multi-Python 3.8-3.14: dos series de PySpark (3.5.6 para 3.8-3.11, 4.0.0 para 3.12+); setup.sh autodetecta y elige; descargas separadas (ligero/3.8-3.11/3.12+/todas) con recomendacion segun el Python del server. Fix de descarga de bundles grandes: streaming por token en vez de blob en memoria. Analisis de calidad estilo Sonar (src/code_review.py, cero deps): boton en Data Sintetica que marca en naranja recomendaciones (collect/toPandas, except desnudo, secretos hardcodeados, etc.) SIN modificar el codigo. 111 tests.',
+    tags: ['modelos', 'pmml', 'security', 'sonar', 'bundle', 'python'],
+    color: '#8b5cf6',
+  },
 ]
 
 const STATS = [
-  { label: 'Dias de desarrollo', value: '52', color: '#6366f1' },
-  { label: 'Commits', value: '172+', color: '#22c55e' },
-  { label: 'Componentes', value: '30+', color: '#f59e0b' },
+  { label: 'Dias de desarrollo', value: '53', color: '#6366f1' },
+  { label: 'Commits', value: '185+', color: '#22c55e' },
+  { label: 'Componentes', value: '33+', color: '#f59e0b' },
   { label: 'Parsers', value: '7', color: '#a855f7' },
   { label: 'Code Generators', value: '7', color: '#ec4899' },
-  { label: 'Paginas UI', value: '10', color: '#06b6d4' },
+  { label: 'Paginas UI', value: '11', color: '#06b6d4' },
 ]
 
 const TAG_COLORS = {
