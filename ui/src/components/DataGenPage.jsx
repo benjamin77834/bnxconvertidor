@@ -455,11 +455,14 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
 
     const inputs = (result?.datasets || []).filter(d => d.io === 'input')
     const datasets = inputs.length ? inputs : (result?.datasets || [])
-    // Enviamos tambien el grafo (mp/xfr) para que el servidor REGENERE el PySpark
-    // fresco y la prueba nunca use codigo viejo cacheado en el navegador.
-    const payload = { code: compiledCode, mp: graphMp, xfr: graphXfr, datasets,
-                      python_source: pythonSource || '',
-                      timeout: runTimeout, job_name: (graphName || awsJobName) }
+    // Si el usuario EDITO el codigo, mandamos SOLO ese codigo (sin mp/xfr) para
+    // que el server lo use tal cual y NO lo regenere desde el grafo (eso pisaria
+    // la edicion). Si no edito, mandamos tambien mp/xfr y el server regenera fresco.
+    const payload = codeEdited
+      ? { code: effectiveCode, datasets, timeout: runTimeout, job_name: (graphName || awsJobName) }
+      : { code: compiledCode, mp: graphMp, xfr: graphXfr, datasets,
+          python_source: pythonSource || '',
+          timeout: runTimeout, job_name: (graphName || awsJobName) }
     testRunner.startTest({
       streamUrl,
       payload,
@@ -511,18 +514,39 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
     ? (health.python_minor >= 12 ? 'py312plus' : 'py38-311')
     : null
 
+  // --- Editor del codigo que viene del Compiler (editable + re-correr/re-analizar) ---
+  // editedCode arranca vacio; cuando el usuario edita, prevalece sobre compiledCode.
+  const [editedCode, setEditedCode] = useState('')
+  const [codeEdited, setCodeEdited] = useState(false)
+  const [showCodeEditor, setShowCodeEditor] = useState(false)
+  // Codigo EFECTIVO que usan ejecutar/analizar/exportar: el editado si lo hay.
+  const effectiveCode = codeEdited ? editedCode : (compiledCode || '')
+  const startEditing = () => {
+    if (!codeEdited) setEditedCode(compiledCode || '')
+    setShowCodeEditor(true)
+  }
+  const resetEdited = () => {
+    setEditedCode(compiledCode || ''); setCodeEdited(false); setAnalysis(null)
+  }
+  // Si cambia el codigo del Compiler (nuevo grafo), descartar la edicion previa
+  // para no mezclar un codigo editado viejo con el nuevo del Compiler.
+  useEffect(() => {
+    setEditedCode(''); setCodeEdited(false); setAnalysis(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [compiledCode])
+
   // --- Analisis de calidad (estilo Sonar): SOLO RECOMENDACIONES, no cambia nada ---
   const [analysis, setAnalysis] = useState(null)   // {findings, summary} o null
   const [analyzing, setAnalyzing] = useState(false)
   const [showAnalysis, setShowAnalysis] = useState(false)
   const ANALYZE_URL = COMPILE_URL.replace(/\/compile$/, '/analyze')
   const analyzeQuality = async () => {
-    if (!(compiledCode || '').trim()) { alert('No hay código para analizar. Llega aquí desde Compiler, COBOL, ALGOL o Py→Spark.'); return }
+    if (!(effectiveCode || '').trim()) { alert('No hay código para analizar. Llega aquí desde Compiler, COBOL, ALGOL o Py→Spark.'); return }
     setAnalyzing(true)
     try {
       const res = await fetch(ANALYZE_URL, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: compiledCode }),
+        body: JSON.stringify({ code: effectiveCode }),
       })
       const data = await res.json()
       if (data.error) { alert('No se pudo analizar: ' + data.error); return }
@@ -838,9 +862,54 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
         color: hasCode ? '#22c55e' : '#f59e0b',
       }}>
         {hasCode
-          ? `✅ Código del Compiler cargado: ${compiledCode.split('\n').length} líneas · target=${compiledTarget || '?'}`
+          ? `✅ Código del Compiler cargado: ${(effectiveCode || '').split('\n').length} líneas · target=${compiledTarget || '?'}${codeEdited ? ' · ✏️ EDITADO' : ''}`
           : '⚠️ No llegó código del Compiler. Compila un grafo (target Spark) en la pestaña Compiler y volvé aquí.'}
       </div>
+
+      {/* Editor del codigo del Compiler: editable + re-correr/re-analizar */}
+      {hasCode && (
+        <div style={{ ...card, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: t.text || '#e2e8f0' }}>
+              📝 Código PySpark {codeEdited ? <span style={{ color: '#f97316' }}>(editado — se usará este al ejecutar/analizar)</span>
+                : <span style={{ color: t.dim }}>(del Compiler)</span>}
+            </span>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button onClick={() => (showCodeEditor ? setShowCodeEditor(false) : startEditing())}
+                style={{ padding: '5px 10px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                  background: showCodeEditor ? '#f9731620' : 'transparent',
+                  border: `1px solid ${showCodeEditor ? '#f97316' : (t.border || '#334155')}`,
+                  color: showCodeEditor ? '#fb923c' : (t.muted || '#94a3b8') }}>
+                {showCodeEditor ? '▲ Ocultar editor' : '✏️ Editar código'}
+              </button>
+              {codeEdited && (
+                <button onClick={resetEdited} title="Descartar la edición y volver al código original del Compiler"
+                  style={{ padding: '5px 10px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                    background: 'transparent', border: `1px solid ${t.border || '#334155'}`, color: t.dim }}>
+                  ↺ Restaurar original
+                </button>
+              )}
+            </div>
+          </div>
+          {showCodeEditor && (
+            <>
+              <textarea value={editedCode}
+                onChange={e => { setEditedCode(e.target.value); setCodeEdited(true); setAnalysis(null) }}
+                spellCheck={false}
+                style={{
+                  width: '100%', minHeight: 260, padding: 10, borderRadius: 8, resize: 'vertical',
+                  fontFamily: 'monospace', fontSize: 12, lineHeight: 1.5, outline: 'none',
+                  background: t.codeBg || '#081220', color: '#e2e8f0',
+                  border: `1px solid ${codeEdited ? '#f9731660' : (t.border || '#334155')}`,
+                }} />
+              <p style={{ fontSize: 11, color: t.dim || '#64748b', margin: 0 }}>
+                Edita el PySpark y vuelve a pulsar <b>Ejecutar</b> o <b>🟠 Analizar calidad</b>: usarán este código
+                editado (no se regenera desde el grafo). <b>↺ Restaurar original</b> vuelve al del Compiler.
+              </p>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Selector de modo */}
       <div style={{ display: 'flex', gap: 8 }}>
@@ -1237,7 +1306,7 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
           {showAnalysis && analysis && (() => {
             const sv = { critical: '#ef4444', major: '#f97316', minor: '#f59e0b', info: '#64748b' }
             const s = analysis.summary || {}
-            const lines = (compiledCode || '').split('\n')
+            const lines = (effectiveCode || '').split('\n')
             return (
               <div style={{
                 background: '#f9731610', borderRadius: 8, padding: '12px 14px',
