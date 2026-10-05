@@ -450,6 +450,22 @@ Verificacion: 4 .cbl (incl. EBCDIC) y 2 .alg → PySpark valido y ejecutado; ari
 
 ---
 
+## 2 de octubre — Dia 52: Seccion Modelos (operacionalizacion), bundles multi-Python y analisis de calidad
+
+Dia grande: integramos un framework nuevo, cubrimos todo el rango de Python en los bundles y añadimos analisis de calidad del codigo generado.
+
+- **Nueva seccion "🔐 Modelos" (operacionalizacion)**: integra el *Framework de Modelos MVP enterprise* (del notebook de Colab) como seccion nativa. Toma un modelo entregado por negocio y produce un paquete estandarizado y verificable: pipeline declarativo (YAML) → codigo + **PMML y job PySpark** → SHA-256 (integridad) + cifrado Fernet (confidencialidad) + firma Ed25519 (autenticidad) → VERIFY (`deployable`). Codigo real en `src/model_framework/` (orchestrator, catalog, components, audit, security, manifest, deployer) + `runner.py` que ejecuta en work_dir aislado. Endpoint `/model/run`. El entrenamiento NO es parte del framework (XGBoost solo simula el artefacto de negocio).
+- **Demo de integridad**: al ejecutar, el sistema altera el codigo (→ rechazo por *hash mismatch*) y lo restaura (→ deployable), demostrando que ningun artefacto modificado llega a produccion.
+- **PMML + PySpark**: ademas del PMML (scoring JPMML/JVM) se genera un job PySpark de scoring (pandas_udf) que entra al manifest con su hash y queda cubierto por la firma.
+- **GUI de Modelos**: 3 modos (📚 Ejemplo, ✏️ Editor de YAML+CSV en vivo, 📤 Subir archivos), 3 ejemplos (credit_risk, fraud_detection, customer_churn), panel de documentacion colapsable "¿Que hace esto?", y notificacion de la version de Python del server.
+- **Bundles offline multi-Python (3.8–3.14)**: se empaquetan DOS series de PySpark por rango de Python — `vendor/py38-311` (PySpark 3.5.6) y `vendor/py312plus` (PySpark 4.0.0). `setup.sh` autodetecta un Python ≥3.8 y elige la serie segun su minor. Descargas separadas: **Ligero** (internet), **Offline 3.8–3.11** (~320MB), **Offline 3.12+** (~440MB), **Offline todas** (~760MB). La GUI recomienda y resalta (⭐) la serie segun el Python del convertidor (`/api/health`).
+- **Fix de descarga de bundles grandes**: la GUI cargaba el zip (320–760MB) como blob en memoria del navegador y no bajaba. Ahora `/export/bundle?prepare` guarda el zip en disco y devuelve un token; la GUI navega a `/export/download?token=...` y el navegador descarga NATIVO por streaming.
+- **Analisis de calidad (estilo Sonar), SOLO RECOMENDACIONES**: nuevo `src/code_review.py` CERO dependencias (usa `ast` de la stdlib; pyflakes opcional). Endpoint `/analyze`. Boton "🟠 Analizar calidad" en Data Sintetica (donde convergen Compiler, COBOL, ALGOL y Py→Spark): detecta code smells / bugs / seguridad / performance (collect/toPandas, count repetido, except desnudo/silencioso, == None, print, credenciales hardcodeadas, lineas largas, TODO) y marca en NARANJA las lineas con recomendaciones sobre el propio codigo. No modifica nada.
+
+Verificacion: pipeline de Modelos deployable=True con firma Ed25519 valida y demo tampered→rechazo/restored→deployable; 3 ejemplos + editor + upload; bundle offline instala PySpark correcto en Python 3.9 (3.5.6) y 3.12 (4.0.0) via setup.sh; descarga por streaming de 321MB; /analyze marca lineas correctas en PySpark de Compiler y py2spark; **111 tests**.
+
+---
+
 ## Estatus del convertidor por complejidad de grafo
 
 Validado **ejecutando** el PySpark generado con datos redactados (barrido de 58 grafos: 58/58 compilan) y, desde el Dia 45, con **validacion de equivalencia de datos** (esquema + conteo + contenido) contra una referencia. Desde el Dia 46 tambien convertimos **Python/pandas + ML** a PySpark 3 (py2spark). Desde el Dia 51 tambien **COBOL** (IBM) y **ALGOL** (Unisys) a PySpark, con optimizador que ademas reduce codigo.
@@ -496,7 +512,10 @@ Validado **ejecutando** el PySpark generado con datos redactados (barrido de 58 
 | Bundle de exportacion Linux (ligero + offline con vendor) | Completo |
 | Validacion de equivalencia de datos (vs referencia) | Completo |
 | Optimizador de performance + reduccion de codigo (reglas, sin IA) | Completo |
+| Analisis de calidad estilo Sonar (recomendaciones, sin cambios) | Completo |
 | Extensiones VS Code (.vsix): py2spark y PySpark Optimizer | Completo |
+| Seccion Modelos (operacionalizacion: PMML+PySpark, hash+cifrado+firma) | Completo |
+| Bundles offline multi-Python 3.8-3.14 (2 series PySpark + autodeteccion) | Completo |
 | Benchmark original vs optimizado (simula nube) | Completo |
 | UI React | Completo |
 | API FastAPI + Lambda | Completo |
