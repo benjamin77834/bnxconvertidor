@@ -597,6 +597,81 @@ def _redact_pii(category, rng, row_idx):
     return "REDACTED"
 
 
+def mask_real_value(category, value):
+    """Enmascara un valor REAL (que llego de una fuente externa: Cloudera/Teradata)
+    segun su categoria PII, SIN revelar el dato original pero preservando algo de
+    estructura util para pruebas (longitud, ultimos digitos, dominio).
+
+    A diferencia de _redact_pii (que INVENTA un valor sintetico), esta funcion
+    transforma el valor real recibido. El dato original NUNCA se devuelve ni se
+    guarda: solo su version enmascarada. Es irreversible (no es cifrado)."""
+    import hashlib
+    if value is None:
+        return None
+    s = str(value)
+    if s == "" or s.lower() in ("nan", "none", "null"):
+        return s
+
+    if category == "name":
+        # Iniciales + asteriscos por palabra: "Juan Perez" -> "J*** P****"
+        parts = s.split()
+        return " ".join((p[0] + "*" * max(len(p) - 1, 1)) for p in parts if p) or "****"
+    if category == "email":
+        # Oculta el usuario, conserva el dominio: "juan@banco.com" -> "****@banco.com"
+        if "@" in s:
+            dom = s.split("@", 1)[1]
+            return "****@" + dom
+        return "****"
+    if category == "phone":
+        d = re.sub(r"\D", "", s)
+        return ("*" * max(len(d) - 4, 0)) + d[-4:] if len(d) >= 4 else "****"
+    if category == "card":
+        d = re.sub(r"\D", "", s)
+        return "**** **** **** " + d[-4:] if len(d) >= 4 else "****"
+    if category == "account":
+        d = re.sub(r"\W", "", s)
+        return "ACCT****" + d[-4:] if len(d) >= 4 else "ACCT****"
+    if category == "ssn":
+        d = re.sub(r"\D", "", s)
+        return "***-**-" + d[-4:] if len(d) >= 4 else "***-**-****"
+    if category == "address":
+        return "*** REDACTED ***"
+    if category == "dob":
+        # Conserva solo el anio si lo detecta.
+        m = re.search(r"(19|20)\d{2}", s)
+        return (m.group(0) + "-**-**") if m else "****-**-**"
+    if category == "id":
+        d = re.sub(r"\W", "", s)
+        return "ID****" + d[-4:] if len(d) >= 4 else "ID****"
+    # Categoria desconocida pero marcada PII: hash corto estable (no reversible),
+    # conserva unicidad para joins/conteos sin revelar el valor.
+    h = hashlib.sha256(s.encode("utf-8")).hexdigest()[:8]
+    return "REDACTED_" + h
+
+
+def mask_records(records, columns=None):
+    """Aplica mask_real_value a cada campo PII de una lista de dicts (filas reales).
+    columns: lista opcional [{name, pii}] con la categoria PII por columna; si no
+    se da, se detecta por nombre con detect_pii. Devuelve filas enmascaradas.
+    El dato real no se conserva en ningun lado: se reemplaza in-place por la copia."""
+    # Mapa columna -> categoria PII.
+    pii_by_col = {}
+    if columns:
+        for c in columns:
+            cat = c.get("pii")
+            if cat is None:
+                cat = detect_pii(c.get("name", ""))
+            pii_by_col[c.get("name")] = cat
+    out = []
+    for row in records:
+        masked = {}
+        for k, v in row.items():
+            cat = pii_by_col.get(k) if columns else detect_pii(k)
+            masked[k] = mask_real_value(cat, v) if cat else v
+        out.append(masked)
+    return out
+
+
 def _join_key_pool(col_name, size=8):
     """Pool determinístico de valores para una clave de join.
     El mismo nombre de columna produce SIEMPRE el mismo pool, así distintas

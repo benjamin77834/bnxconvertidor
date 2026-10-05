@@ -101,6 +101,7 @@ from src.datagen import (
     build_synthetic_data,
     detect_pii,
     normalize_type,
+    mask_records,
 )
 from src.test_runner import (
     run_pyspark_test,
@@ -171,6 +172,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_model_run()
         elif "/analyze" in path:
             self._handle_analyze()
+        elif "/datasource/fetch" in path:
+            self._handle_datasource_fetch()
         elif "/compile" in path or "/api" in path:
             self._handle_compile()
         else:
@@ -2358,6 +2361,41 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         try:
             from src.code_review import review_code
             result = review_code(code)
+            self._json_response(200, result)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": f"{type(e).__name__}: {e}"})
+
+    def _handle_datasource_fetch(self):
+        """Trae datos de una fuente externa (Cloudera/Hive/Impala, Teradata) para
+        pruebas PUNTUALES en Data Sintetica. CLAVE: las filas se ENMASCARAN con la
+        libreria de PII ANTES de devolverse — el dato real nunca sale de aqui.
+
+        Body JSON:
+          {"source_type":"teradata|hive|impala","conn":{url|host|port|database|user|password},
+           "table":"...", "query":"...", "limit":50, "driver_jar":"/ruta/driver.jar",
+           "columns":[{"name","pii"}]}
+        Respuesta: {ok, n, columns, rows} con rows ya ENMASCARADAS."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        try:
+            data = json.loads(body.decode("utf-8", errors="replace"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._json_response(400, {"error": "Invalid JSON body"})
+            return
+        try:
+            from src.datasource import fetch_masked
+            result = fetch_masked(
+                source_type=(data.get("source_type") or "jdbc"),
+                conn=data.get("conn") or {},
+                query=data.get("query"), table=data.get("table"),
+                limit=data.get("limit", 50),
+                driver_jar=data.get("driver_jar"),
+                columns=data.get("columns"),
+                timeout=int(data.get("timeout", 180)),
+            )
+            # Nunca devolvemos el password ni datos crudos; result ya viene enmascarado.
             self._json_response(200, result)
         except Exception as e:
             import traceback
