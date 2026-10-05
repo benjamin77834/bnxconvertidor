@@ -528,6 +528,23 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
   const resetEdited = () => {
     setEditedCode(compiledCode || ''); setCodeEdited(false); setAnalysis(null)
   }
+  // Ref al textarea del analisis, para saltar a una linea al hacer clic en un hallazgo.
+  const analysisTextareaRef = useRef(null)
+  const jumpToLine = (lineNo) => {
+    const ta = analysisTextareaRef.current
+    if (!ta) return
+    const text = ta.value || ''
+    const linesArr = text.split('\n')
+    // offset de inicio de la linea (1-indexed).
+    let pos = 0
+    for (let i = 0; i < Math.min(lineNo - 1, linesArr.length); i++) pos += linesArr[i].length + 1
+    const end = pos + (linesArr[lineNo - 1] ? linesArr[lineNo - 1].length : 0)
+    ta.focus()
+    try { ta.setSelectionRange(pos, end) } catch { /* ignore */ }
+    // scroll aproximado: altura de linea ~ scrollHeight / nro lineas.
+    const lineH = ta.scrollHeight / Math.max(linesArr.length, 1)
+    ta.scrollTop = Math.max(0, (lineNo - 3) * lineH)
+  }
   // Si cambia el codigo del Compiler (nuevo grafo), descartar la edicion previa
   // para no mezclar un codigo editado viejo con el nuevo del Compiler.
   useEffect(() => {
@@ -1354,7 +1371,7 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
                           </div>
                         ))}
                       </div>
-                      <textarea value={editedCode || effectiveCode}
+                      <textarea ref={analysisTextareaRef} value={editedCode || effectiveCode}
                         onChange={e => { setEditedCode(e.target.value); setCodeEdited(true) }}
                         spellCheck={false}
                         style={{
@@ -1374,10 +1391,14 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
                       {(analysis.findings || []).length === 0
                         ? <div style={{ fontSize: 12, color: '#22c55e' }}>✅ Sin recomendaciones: el código se ve limpio.</div>
                         : analysis.findings.map((f, i) => (
-                          <div key={i} style={{ fontSize: 11.5, color: t.text || '#e2e8f0', lineHeight: 1.45,
-                            borderLeft: `3px solid ${sv[f.severity] || '#f59e0b'}`, paddingLeft: 8 }}>
+                          <div key={i} onClick={() => jumpToLine(f.line)}
+                            title="Ir a esta línea en el editor"
+                            style={{ fontSize: 11.5, color: t.text || '#e2e8f0', lineHeight: 1.45, cursor: 'pointer',
+                              borderLeft: `3px solid ${sv[f.severity] || '#f59e0b'}`, paddingLeft: 8, borderRadius: 3 }}
+                            onMouseEnter={e => { e.currentTarget.style.background = '#f9731615' }}
+                            onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}>
                             <div>
-                              <span style={{ color: sv[f.severity] || '#f59e0b', fontWeight: 700 }}>L{f.line}</span>{' '}
+                              <span style={{ color: sv[f.severity] || '#f59e0b', fontWeight: 700 }}>↪ L{f.line}</span>{' '}
                               <span style={{ color: t.dim, fontSize: 10 }}>[{f.category}/{f.severity}]</span>
                             </div>
                             <div style={{ color: t.muted || '#94a3b8' }}>{f.message}</div>
