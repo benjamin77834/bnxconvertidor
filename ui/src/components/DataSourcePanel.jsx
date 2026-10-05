@@ -77,15 +77,15 @@ export default function DataSourcePanel({ theme, onImport }) {
 
   return (
     <div style={{
-      background: t.card || '#1e2433', borderRadius: 10, padding: 0, overflow: 'hidden',
-      border: `1px solid ${t.border || '#334155'}`,
+      background: '#0ea5e912', borderRadius: 10, padding: 0, overflow: 'hidden',
+      border: '1px solid #0ea5e955',
     }}>
       <button onClick={() => setOpen(v => !v)}
-        style={{ width: '100%', textAlign: 'left', padding: '10px 14px', cursor: 'pointer',
-          background: 'transparent', border: 'none', color: t.text || '#e2e8f0',
-          fontSize: 13, fontWeight: 600, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        style={{ width: '100%', textAlign: 'left', padding: '12px 14px', cursor: 'pointer',
+          background: 'transparent', border: 'none', color: '#38bdf8',
+          fontSize: 14, fontWeight: 700, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <span>🛢️ Traer datos de Cloudera / Teradata (enmascarados por PII)</span>
-        <span style={{ color: t.dim }}>{open ? '▲' : '▼'}</span>
+        <span style={{ fontSize: 12, color: '#38bdf8' }}>{open ? '▲ ocultar' : '▼ abrir conexión'}</span>
       </button>
 
       {open && (
