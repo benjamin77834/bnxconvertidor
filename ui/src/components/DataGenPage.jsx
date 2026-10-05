@@ -1302,7 +1302,8 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
             </div>
           </div>
 
-          {/* Panel de analisis de calidad (recomendaciones, en naranja) */}
+          {/* Panel de analisis: DOBLE PANTALLA — izq editor (editable, lineas en
+              naranja), der lista de recomendaciones/errores. Editas y re-analizas. */}
           {showAnalysis && analysis && (() => {
             const sv = { critical: '#ef4444', major: '#f97316', minor: '#f59e0b', info: '#64748b' }
             const s = analysis.summary || {}
@@ -1312,59 +1313,79 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
                 background: '#f9731610', borderRadius: 8, padding: '12px 14px',
                 border: '1px solid #f9731640', display: 'flex', flexDirection: 'column', gap: 10,
               }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
                   <span style={{ fontSize: 13, fontWeight: 700, color: '#fb923c' }}>
-                    🟠 Recomendaciones de calidad (no se modifica el código) —{' '}
+                    🟠 Análisis de calidad (editor ↔ recomendaciones) —{' '}
                     {s.total || 0} hallazgo(s): {s.critical || 0} críticos, {s.major || 0} mayores,
                     {' '}{s.minor || 0} menores, {s.info || 0} info
                   </span>
-                  <button onClick={() => setShowAnalysis(false)}
-                    style={{ padding: '3px 8px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
-                      background: 'transparent', border: `1px solid ${t.border || '#334155'}`, color: t.dim }}>
-                    ✕ cerrar
-                  </button>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button onClick={analyzeQuality} disabled={analyzing}
+                      title="Volver a analizar con el código editado"
+                      style={{ padding: '4px 10px', borderRadius: 6, fontSize: 11, cursor: analyzing ? 'wait' : 'pointer',
+                        background: '#f9731620', border: '1px solid #f97316', color: '#fb923c', fontWeight: 600 }}>
+                      {analyzing ? '⏳...' : '🔄 Re-analizar'}
+                    </button>
+                    <button onClick={() => setShowAnalysis(false)}
+                      style={{ padding: '4px 8px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
+                        background: 'transparent', border: `1px solid ${t.border || '#334155'}`, color: t.dim }}>
+                      ✕ cerrar
+                    </button>
+                  </div>
                 </div>
 
-                {(analysis.findings || []).length === 0 && (
-                  <div style={{ fontSize: 12, color: '#22c55e' }}>✅ Sin recomendaciones: el código se ve limpio.</div>
-                )}
-
-                {/* Lista de recomendaciones */}
-                {(analysis.findings || []).length > 0 && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 3, maxHeight: 180, overflow: 'auto' }}>
-                    {analysis.findings.map((f, i) => (
-                      <div key={i} style={{ fontSize: 11.5, color: t.text || '#e2e8f0', lineHeight: 1.5 }}>
-                        <span style={{ color: sv[f.severity] || '#f59e0b', fontWeight: 700 }}>●</span>{' '}
-                        <b>L{f.line}</b> <span style={{ color: t.dim }}>[{f.category}/{f.severity}]</span> {f.message}
+                {/* DOBLE PANTALLA */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                  {/* IZQUIERDA: editor con lineas marcadas en naranja (fondo detras del textarea) */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <span style={{ fontSize: 11, color: t.dim }}>
+                      Código {codeEdited ? '(editado)' : '(del Compiler)'} — edita y pulsa 🔄 Re-analizar
+                    </span>
+                    <div style={{ position: 'relative', border: '1px solid #f9731640', borderRadius: 6, overflow: 'hidden' }}>
+                      {/* capa de resaltado por linea (naranja) detras del textarea */}
+                      <div aria-hidden style={{
+                        position: 'absolute', inset: 0, margin: 0, padding: '10px 10px 10px 44px',
+                        fontFamily: 'monospace', fontSize: 11.5, lineHeight: '1.5', whiteSpace: 'pre',
+                        pointerEvents: 'none', overflow: 'hidden', color: 'transparent',
+                      }}>
+                        {lines.map((ln, idx) => (
+                          <div key={idx} style={{ background: findingsByLine[idx + 1] ? '#f9731630' : 'transparent' }}>
+                            {ln || ' '}
+                          </div>
+                        ))}
                       </div>
-                    ))}
-                  </div>
-                )}
-
-                {/* Codigo con las lineas de recomendacion resaltadas en naranja */}
-                <pre style={{
-                  margin: 0, padding: 10, borderRadius: 6, maxHeight: 320, overflow: 'auto',
-                  background: t.codeBg || '#081220', fontFamily: 'monospace', fontSize: 11, lineHeight: 1.5,
-                  border: '1px solid #33415530',
-                }}>
-                  {lines.map((ln, idx) => {
-                    const n = idx + 1
-                    const hits = findingsByLine[n]
-                    const hl = Boolean(hits)
-                    return (
-                      <div key={n} title={hl ? hits.map(h => h.message).join('\n') : ''}
+                      <textarea value={editedCode || effectiveCode}
+                        onChange={e => { setEditedCode(e.target.value); setCodeEdited(true) }}
+                        spellCheck={false}
                         style={{
-                          display: 'flex', gap: 8, whiteSpace: 'pre',
-                          background: hl ? '#f9731625' : 'transparent',
-                          borderLeft: hl ? '3px solid #f97316' : '3px solid transparent',
-                          paddingLeft: 4,
-                        }}>
-                        <span style={{ color: hl ? '#fb923c' : (t.dim || '#475569'), minWidth: 34, textAlign: 'right', userSelect: 'none' }}>{n}</span>
-                        <span style={{ color: hl ? '#fdba74' : (t.muted || '#94a3b8') }}>{ln || ' '}</span>
-                      </div>
-                    )
-                  })}
-                </pre>
+                          position: 'relative', width: '100%', minHeight: 340, resize: 'vertical',
+                          padding: '10px 10px 10px 44px', margin: 0, border: 'none', outline: 'none',
+                          background: 'transparent', color: t.text || '#e2e8f0',
+                          fontFamily: 'monospace', fontSize: 11.5, lineHeight: '1.5', whiteSpace: 'pre',
+                        }} />
+                    </div>
+                  </div>
+
+                  {/* DERECHA: lista de recomendaciones/errores (clic enfoca nada, solo lista) */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <span style={{ fontSize: 11, color: t.dim }}>Recomendaciones / errores (no modifica el código)</span>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 340, overflow: 'auto',
+                      border: '1px solid #33415530', borderRadius: 6, padding: 8, background: t.codeBg || '#081220' }}>
+                      {(analysis.findings || []).length === 0
+                        ? <div style={{ fontSize: 12, color: '#22c55e' }}>✅ Sin recomendaciones: el código se ve limpio.</div>
+                        : analysis.findings.map((f, i) => (
+                          <div key={i} style={{ fontSize: 11.5, color: t.text || '#e2e8f0', lineHeight: 1.45,
+                            borderLeft: `3px solid ${sv[f.severity] || '#f59e0b'}`, paddingLeft: 8 }}>
+                            <div>
+                              <span style={{ color: sv[f.severity] || '#f59e0b', fontWeight: 700 }}>L{f.line}</span>{' '}
+                              <span style={{ color: t.dim, fontSize: 10 }}>[{f.category}/{f.severity}]</span>
+                            </div>
+                            <div style={{ color: t.muted || '#94a3b8' }}>{f.message}</div>
+                          </div>
+                        ))}
+                    </div>
+                  </div>
+                </div>
               </div>
             )
           })()}
