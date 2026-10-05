@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { COMPILE_URL, PIPELINE_URL, PIPELINE_STATUS_URL } from '../config'
 import CostEstimateCard from './CostEstimateCard'
+import DataSourcePanel from './DataSourcePanel'
 import TerminalGuide from './TerminalGuide'
 import { metricsFromResult, estimateGraphCost } from '../costEstimator'
 import * as testRunner from '../testRunnerStore'
@@ -528,6 +529,20 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
   const resetEdited = () => {
     setEditedCode(compiledCode || ''); setCodeEdited(false); setAnalysis(null)
   }
+
+  // Inyecta un dataset de entrada (p.ej. datos reales ENMASCARADOS de Cloudera/
+  // Teradata) en result.datasets, para que la prueba lo use como fuente.
+  const importExternalDataset = (newDs) => {
+    setResult(prev => {
+      const base = prev && prev.datasets ? prev : { mode: 'external', schema: [], datasets: [] }
+      const datasets = [...(base.datasets || [])]
+      const idx = datasets.findIndex(d => d.node === newDs.node && d.io === 'input')
+      if (idx >= 0) datasets[idx] = newDs
+      else datasets.push(newDs)
+      return { ...base, datasets }
+    })
+    setError('')
+  }
   // Ref al textarea del analisis, para saltar a una linea al hacer clic en un hallazgo.
   const analysisTextareaRef = useRef(null)
   const jumpToLine = (lineNo) => {
@@ -882,6 +897,9 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
           ? `✅ Código del Compiler cargado: ${(effectiveCode || '').split('\n').length} líneas · target=${compiledTarget || '?'}${codeEdited ? ' · ✏️ EDITADO' : ''}`
           : '⚠️ No llegó código del Compiler. Compila un grafo (target Spark) en la pestaña Compiler y volvé aquí.'}
       </div>
+
+      {/* Traer datos reales de Cloudera/Teradata ENMASCARADOS para la prueba */}
+      <DataSourcePanel theme={t} onImport={importExternalDataset} />
 
       {/* Editor del codigo del Compiler: editable + re-correr/re-analizar */}
       {hasCode && (
