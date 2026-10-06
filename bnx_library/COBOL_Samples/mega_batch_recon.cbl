@@ -1,0 +1,229 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. MEGA-BATCH-RECON.
+       AUTHOR. BNX-MIGRATION.
+
+       ENVIRONMENT DIVISION.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT CUSTOMER-FILE ASSIGN TO 'CUSTFILE'
+               ORGANIZATION IS SEQUENTIAL.
+           SELECT ACCOUNT-FILE ASSIGN TO 'ACCTFILE'
+               ORGANIZATION IS SEQUENTIAL.
+           SELECT TXN-FILE ASSIGN TO 'TXNFILE'
+               ORGANIZATION IS SEQUENTIAL.
+           SELECT CARD-FILE ASSIGN TO 'CARDFILE'
+               ORGANIZATION IS SEQUENTIAL.
+           SELECT REPORT-FILE ASSIGN TO 'RPTFILE'
+               ORGANIZATION IS SEQUENTIAL.
+           SELECT REJECT-FILE ASSIGN TO 'REJFILE'
+               ORGANIZATION IS SEQUENTIAL.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD CUSTOMER-FILE.
+       01 CUST-RECORD.
+           05 CUST-FIELD01   PIC X(20).
+           05 CUST-FIELD02   PIC X(20).
+           05 CUST-FIELD03   PIC 9(10)V99.
+           05 CUST-FIELD04   PIC X(20).
+           05 CUST-FIELD05   PIC X(20).
+           05 CUST-FIELD06   PIC 9(8).
+           05 CUST-FIELD07   PIC X(20).
+           05 CUST-FIELD08   PIC X(20).
+           05 CUST-FIELD09   PIC 9(10)V99.
+           05 CUST-FIELD10   PIC X(20).
+           05 CUST-FIELD11   PIC X(20).
+           05 CUST-FIELD12   PIC 9(8).
+           05 CUST-FIELD13   PIC X(20).
+           05 CUST-FIELD14   PIC X(20).
+           05 CUST-FIELD15   PIC 9(10)V99.
+           05 CUST-FIELD16   PIC X(20).
+           05 CUST-FIELD17   PIC X(20).
+           05 CUST-FIELD18   PIC 9(8).
+           05 CUST-FIELD19   PIC X(20).
+           05 CUST-FIELD20   PIC X(20).
+           05 CUST-FIELD21   PIC 9(10)V99.
+           05 CUST-FIELD22   PIC X(20).
+       FD ACCOUNT-FILE.
+       01 ACCT-RECORD.
+           05 ACCT-FIELD01   PIC X(20).
+           05 ACCT-FIELD02   PIC X(20).
+           05 ACCT-FIELD03   PIC 9(10)V99.
+           05 ACCT-FIELD04   PIC X(20).
+           05 ACCT-FIELD05   PIC X(20).
+           05 ACCT-FIELD06   PIC 9(8).
+           05 ACCT-FIELD07   PIC X(20).
+           05 ACCT-FIELD08   PIC X(20).
+           05 ACCT-FIELD09   PIC 9(10)V99.
+           05 ACCT-FIELD10   PIC X(20).
+           05 ACCT-FIELD11   PIC X(20).
+           05 ACCT-FIELD12   PIC 9(8).
+           05 ACCT-FIELD13   PIC X(20).
+           05 ACCT-FIELD14   PIC X(20).
+           05 ACCT-FIELD15   PIC 9(10)V99.
+           05 ACCT-FIELD16   PIC X(20).
+           05 ACCT-FIELD17   PIC X(20).
+           05 ACCT-FIELD18   PIC 9(8).
+           05 ACCT-FIELD19   PIC X(20).
+           05 ACCT-FIELD20   PIC X(20).
+       FD TXN-FILE.
+       01 TXN-RECORD.
+           05 TXN-FIELD01   PIC X(20).
+           05 TXN-FIELD02   PIC X(20).
+           05 TXN-FIELD03   PIC 9(10)V99.
+           05 TXN-FIELD04   PIC X(20).
+           05 TXN-FIELD05   PIC X(20).
+           05 TXN-FIELD06   PIC 9(8).
+           05 TXN-FIELD07   PIC X(20).
+           05 TXN-FIELD08   PIC X(20).
+           05 TXN-FIELD09   PIC 9(10)V99.
+           05 TXN-FIELD10   PIC X(20).
+           05 TXN-FIELD11   PIC X(20).
+           05 TXN-FIELD12   PIC 9(8).
+           05 TXN-FIELD13   PIC X(20).
+           05 TXN-FIELD14   PIC X(20).
+           05 TXN-FIELD15   PIC 9(10)V99.
+           05 TXN-FIELD16   PIC X(20).
+           05 TXN-FIELD17   PIC X(20).
+           05 TXN-FIELD18   PIC 9(8).
+           05 TXN-FIELD19   PIC X(20).
+           05 TXN-FIELD20   PIC X(20).
+           05 TXN-FIELD21   PIC 9(10)V99.
+           05 TXN-FIELD22   PIC X(20).
+           05 TXN-FIELD23   PIC X(20).
+           05 TXN-FIELD24   PIC 9(8).
+       FD CARD-FILE.
+       01 CARD-RECORD.
+           05 CARD-FIELD01   PIC X(20).
+           05 CARD-FIELD02   PIC X(20).
+           05 CARD-FIELD03   PIC 9(10)V99.
+           05 CARD-FIELD04   PIC X(20).
+           05 CARD-FIELD05   PIC X(20).
+           05 CARD-FIELD06   PIC 9(8).
+           05 CARD-FIELD07   PIC X(20).
+           05 CARD-FIELD08   PIC X(20).
+           05 CARD-FIELD09   PIC 9(10)V99.
+           05 CARD-FIELD10   PIC X(20).
+           05 CARD-FIELD11   PIC X(20).
+           05 CARD-FIELD12   PIC 9(8).
+           05 CARD-FIELD13   PIC X(20).
+           05 CARD-FIELD14   PIC X(20).
+           05 CARD-FIELD15   PIC 9(10)V99.
+           05 CARD-FIELD16   PIC X(20).
+           05 CARD-FIELD17   PIC X(20).
+           05 CARD-FIELD18   PIC 9(8).
+       FD REPORT-FILE.
+       01 REPORT-RECORD           PIC X(300).
+       FD REJECT-FILE.
+       01 REJECT-RECORD           PIC X(300).
+
+       WORKING-STORAGE SECTION.
+       01 WS-ACCUM01            PIC S9(12)V99 VALUE 0.
+       01 WS-ACCUM02            PIC S9(12)V99 VALUE 0.
+       01 WS-ACCUM03            PIC S9(12)V99 VALUE 0.
+       01 WS-ACCUM04            PIC S9(12)V99 VALUE 0.
+       01 WS-ACCUM05            PIC S9(12)V99 VALUE 0.
+       01 WS-ACCUM06            PIC S9(12)V99 VALUE 0.
+       01 WS-ACCUM07            PIC S9(12)V99 VALUE 0.
+       01 WS-ACCUM08            PIC S9(12)V99 VALUE 0.
+       01 WS-ACCUM09            PIC S9(12)V99 VALUE 0.
+       01 WS-ACCUM10            PIC S9(12)V99 VALUE 0.
+       01 WS-EOF                  PIC X VALUE 'N'.
+
+       PROCEDURE DIVISION.
+       MAIN-PROCESS.
+           PERFORM READ-CUSTOMERS
+           PERFORM READ-ACCOUNTS
+           PERFORM READ-TXN
+           PERFORM READ-CARDS
+           PERFORM FILTER-ACTIVE-CUST
+           PERFORM FILTER-VALID-TXN
+           PERFORM FILTER-OPEN-ACCT
+           PERFORM FILTER-ACTIVE-CARD
+           PERFORM JOIN-CUST-ACCT
+           PERFORM JOIN-ACCT-TXN
+           PERFORM JOIN-CARD-TXN
+           PERFORM COMPUTE-BALANCE
+           PERFORM COMPUTE-FEES
+           PERFORM COMPUTE-INTEREST
+           PERFORM COMPUTE-TOTALS
+           PERFORM DETECT-FRAUD
+           PERFORM WRITE-REPORT
+           PERFORM WRITE-REJECTS
+           STOP RUN.
+
+       READ-CUSTOMERS.
+           READ CUSTOMER-FILE INTO CUST-RECORD
+               AT END SET WS-EOF TO 'Y'.
+
+       READ-ACCOUNTS.
+           READ ACCOUNT-FILE INTO ACCT-RECORD
+               AT END SET WS-EOF TO 'Y'.
+
+       READ-TXN.
+           READ TXN-FILE INTO TXN-RECORD
+               AT END SET WS-EOF TO 'Y'.
+
+       READ-CARDS.
+           READ CARD-FILE INTO CARD-RECORD
+               AT END SET WS-EOF TO 'Y'.
+
+       FILTER-ACTIVE-CUST.
+           IF CUST-FIELD01 = 'A'
+               CONTINUE
+           END-IF.
+
+       FILTER-VALID-TXN.
+           IF TXN-FIELD03 > 0 AND TXN-FIELD05 = 'S'
+               CONTINUE
+           END-IF.
+
+       FILTER-OPEN-ACCT.
+           IF ACCT-FIELD02 = 'O'
+               CONTINUE
+           END-IF.
+
+       FILTER-ACTIVE-CARD.
+           IF CARD-FIELD02 = 'A'
+               CONTINUE
+           END-IF.
+
+       JOIN-CUST-ACCT.
+           IF ACCT-FIELD01 = CUST-FIELD01
+               CONTINUE
+           END-IF.
+
+       JOIN-ACCT-TXN.
+           IF TXN-FIELD02 = ACCT-FIELD01
+               CONTINUE
+           END-IF.
+
+       JOIN-CARD-TXN.
+           IF CARD-FIELD01 = TXN-FIELD02
+               CONTINUE
+           END-IF.
+
+       COMPUTE-BALANCE.
+           COMPUTE WS-ACCUM01 = ACCT-FIELD04 + TXN-FIELD03.
+
+       COMPUTE-FEES.
+           MULTIPLY TXN-FIELD03 BY CARD-FIELD05 GIVING WS-ACCUM02.
+
+       COMPUTE-INTEREST.
+           COMPUTE WS-ACCUM03 = WS-ACCUM01 * ACCT-FIELD06 / 100.
+
+       COMPUTE-TOTALS.
+           ADD TXN-FIELD03 TO WS-ACCUM04
+           ADD 1 TO WS-ACCUM05.
+
+       DETECT-FRAUD.
+           IF TXN-FIELD03 > 10000 AND CARD-FIELD08 = 'F'
+               CONTINUE
+           END-IF.
+
+       WRITE-REPORT.
+           WRITE REPORT-RECORD FROM CUST-RECORD.
+
+       WRITE-REJECTS.
+           WRITE REJECT-RECORD FROM TXN-RECORD.
+

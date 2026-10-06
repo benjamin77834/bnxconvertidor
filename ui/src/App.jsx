@@ -658,7 +658,7 @@ export default function App() {
             border: '1px solid #22c55e',
             color: '#22c55e',
             fontWeight: 700,
-            animation: result.code.length > 5000 ? 'blink 1.5s ease-in-out infinite' : 'none',
+            animation: result.code.length > 200000 ? 'blink 1.5s ease-in-out infinite' : 'none',
           }} onClick={downloadCode}>📥 Code</button>
         )}
         {result?.nodes?.length > 0 && (
@@ -1548,7 +1548,9 @@ export default function App() {
                 </div>
               </div>
               {codeOpen && (
-                result.code && result.code.length > 5000 ? (
+                // Umbral alto (200 KB): el codigo generado SIEMPRE se ve salvo que
+                // sea gigantesco de verdad. 11 KB (COBOL grande) se muestra sin problema.
+                result.code && result.code.length > 200000 ? (
                   <div style={{ padding: 20, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, flex: 1, justifyContent: 'center' }}>
                     <style>{`@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.4} }`}</style>
                     <span style={{ fontSize: 48 }}>⚠️</span>
