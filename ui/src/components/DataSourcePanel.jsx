@@ -24,9 +24,17 @@ const DRIVER_HINT = {
 
 export default function DataSourcePanel({ theme, onImport }) {
   const t = theme || {}
-  // Abierto por defecto para que el boton "Traer datos" se vea de inmediato
-  // (antes estaba colapsado y el usuario no encontraba el boton).
-  const [open, setOpen] = useState(true)
+  // Abierto por defecto para que el boton "Traer datos" se vea de inmediato.
+  // Se PERSISTE en localStorage para que no "parpadee" (abra/cierre) al
+  // re-renderizar la pagina o cambiar de pestana.
+  const [open, _setOpen] = useState(() => {
+    try { return localStorage.getItem('bnx_datasource_open') !== '0' } catch { return true }
+  })
+  const setOpen = (v) => {
+    const nv = typeof v === 'function' ? v(open) : v
+    _setOpen(nv)
+    try { localStorage.setItem('bnx_datasource_open', nv ? '1' : '0') } catch { /* ignore */ }
+  }
   const [sourceType, setSourceType] = useState('teradata')
   const [host, setHost] = useState('')
   const [port, setPort] = useState('')
