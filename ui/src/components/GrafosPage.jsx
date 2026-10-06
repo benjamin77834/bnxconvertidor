@@ -17,6 +17,7 @@ export default function GrafosPage({ theme, onLoadToCompiler }) {
   const [uploadMp, setUploadMp] = useState('')
   const [uploadXfr, setUploadXfr] = useState('')
   const [compiling, setCompiling] = useState(false)
+  const [progress, setProgress] = useState(0)   // 0-100 (estimado)
   const fileInputRef = useRef(null)
 
   const card = { background: t.card || '#1e2433', border: `1px solid ${t.border || '#334155'}`, borderRadius: 10, padding: 16 }
@@ -154,6 +155,17 @@ export default function GrafosPage({ theme, onLoadToCompiler }) {
   const convertLegacy = async (f, kind) => {
     if (!selectedProject || !f) return
     setCompiling(true)
+    setProgress(3)
+    // Barra de progreso ESTIMADA (el backend convierte en una sola llamada y no
+    // reporta progreso real). Avanza suave hasta ~92% mientras espera; al llegar
+    // la respuesta salta a 100%. Da sensacion de avance en conversiones largas.
+    let pct = 3
+    const timer = setInterval(() => {
+      // Avanza mas rapido al inicio y se frena cerca del 92% (asintota).
+      pct += Math.max(0.5, (92 - pct) * 0.06)
+      if (pct >= 92) pct = 92
+      setProgress(Math.round(pct))
+    }, 250)
     try {
       const form = new FormData()
       form.append('action', 'download')
@@ -162,13 +174,16 @@ export default function GrafosPage({ theme, onLoadToCompiler }) {
       const dl = await fetch(LIBRARY_URL, { method: 'POST', body: form })
       const data = await dl.json()
       const src = data.content || ''
-      if (!src) { alert('No se pudo leer el archivo.'); return }
+      if (!src) { clearInterval(timer); alert('No se pudo leer el archivo.'); return }
+      setProgress(p => Math.max(p, 25))  // archivo leido
       const endpoint = LIBRARY_URL.replace('/library', '/' + kind) // /cobol | /algol
       const res = await fetch(endpoint, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ [kind]: src, target: 'spark' }),
       })
       const result = await res.json()
+      clearInterval(timer)
+      setProgress(100)
       if (result.error) { alert('No se pudo convertir: ' + result.error); return }
       // Cargar el grafo generado + codigo en el Compiler.
       if (onLoadToCompiler) {
@@ -182,9 +197,11 @@ export default function GrafosPage({ theme, onLoadToCompiler }) {
         })
       }
     } catch (e) {
+      clearInterval(timer)
       alert('Error al convertir: ' + e.message)
     } finally {
-      setCompiling(false)
+      // Pequena pausa para que se vea el 100% antes de cerrar el overlay.
+      setTimeout(() => { setCompiling(false); setProgress(0) }, 350)
     }
   }
 
@@ -242,8 +259,23 @@ export default function GrafosPage({ theme, onLoadToCompiler }) {
             border: '5px solid rgba(168,85,247,0.25)', borderTopColor: '#a855f7',
             animation: 'bnxspin2 0.9s linear infinite',
           }} />
-          <div style={{ fontSize: 18, fontWeight: 800, color: '#e2e8f0', animation: 'bnxpulse2 1.6s ease-in-out infinite' }}>
+          <div style={{ fontSize: 18, fontWeight: 800, color: '#e2e8f0' }}>
             ⚙️ Convirtiendo a PySpark…
+          </div>
+          {/* Barra de progreso 0-100 */}
+          <div style={{ width: 320, maxWidth: '80vw' }}>
+            <div style={{
+              height: 10, borderRadius: 999, background: 'rgba(148,163,184,0.2)', overflow: 'hidden',
+            }}>
+              <div style={{
+                height: '100%', width: `${progress}%`,
+                background: 'linear-gradient(90deg,#a855f7,#6366f1)',
+                borderRadius: 999, transition: 'width .3s ease',
+              }} />
+            </div>
+            <div style={{ marginTop: 6, textAlign: 'center', fontSize: 20, fontWeight: 800, color: '#c4b5fd' }}>
+              {progress}%
+            </div>
           </div>
           <div style={{ fontSize: 13, color: '#94a3b8', maxWidth: 440, textAlign: 'center', lineHeight: 1.5 }}>
             Leyendo el archivo, construyendo el grafo y generando el código PySpark.
