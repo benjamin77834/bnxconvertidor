@@ -127,6 +127,16 @@ export default function App() {
   // Por defecto NO los renderizamos; el usuario puede forzarlo bajo su riesgo.
   const [forceDag, setForceDag] = useState(false)
   const DAG_RENDER_LIMIT = 300  // umbral de nodos para render automatico del DAG
+  // Modo "Solo código": oculta por completo el area del DAG (los chips de nodos
+  // que tapan la pantalla en grafos grandes) y deja el codigo a pantalla completa.
+  // Persiste para que el usuario no tenga que reactivarlo en cada compilacion.
+  const [codeOnly, _setCodeOnly] = useState(() => {
+    try { return localStorage.getItem('bnx_code_only') === '1' } catch { return false }
+  })
+  const setCodeOnly = (v) => {
+    _setCodeOnly(v)
+    try { localStorage.setItem('bnx_code_only', v ? '1' : '0') } catch { /* ignore */ }
+  }
 
   // Cerrar fullscreen con Escape
   useEffect(() => {
@@ -1351,6 +1361,14 @@ export default function App() {
                     background: t.card, border: `1px solid ${t.border}`, color: t.muted,
                   }}>📥 Code</button>
                 )}
+                <button onClick={() => { const v = !codeOnly; setCodeOnly(v); if (v) setCodeOpen(true) }}
+                  title="Oculta el grafo y muestra solo el código generado a pantalla completa"
+                  style={{
+                    padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', fontWeight: 700,
+                    background: codeOnly ? '#22c55e' : t.card,
+                    border: `1px solid ${codeOnly ? '#22c55e' : t.border}`,
+                    color: codeOnly ? '#000' : t.muted,
+                  }}>{codeOnly ? '✓ Solo código' : '📄 Solo código'}</button>
                 <button onClick={downloadDag} style={{
                   padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
                   background: t.card, border: `1px solid ${t.border}`, color: t.muted,
@@ -1412,7 +1430,10 @@ export default function App() {
               </>
             )
           })()}
-          <div ref={dagRef} style={{ flex: 1, position: 'relative', minHeight: 0 }}>
+          <div ref={dagRef} style={{
+            flex: codeOnly ? '0 0 0' : 1, position: 'relative', minHeight: 0,
+            display: codeOnly ? 'none' : 'block',
+          }}>
             {result?.nodes?.length > 0 && (
               <button onClick={() => setExpandedPanel('dag')} style={{
                 position: 'absolute', top: 10, right: 10, zIndex: 10,
@@ -1534,7 +1555,10 @@ export default function App() {
             <div style={{
               borderTop: `1px solid ${t.border}`, background: t.codeBg,
               display: 'flex', flexDirection: 'column', overflow: 'hidden',
-              height: codeOpen ? '50vh' : 36, transition: 'height .3s ease',
+              // En modo "Solo código" el panel ocupa todo el espacio disponible.
+              flex: codeOnly ? 1 : 'none',
+              height: codeOnly ? 'auto' : (codeOpen ? '50vh' : 36),
+              transition: 'height .3s ease',
             }}>
               <div
                 style={{
@@ -1567,7 +1591,7 @@ export default function App() {
                   </button>
                 </div>
               </div>
-              {codeOpen && (
+              {(codeOpen || codeOnly) && (
                 // Umbral alto (200 KB): el codigo generado SIEMPRE se ve salvo que
                 // sea gigantesco de verdad. 11 KB (COBOL grande) se muestra sin problema.
                 result.code && result.code.length > 200000 ? (
