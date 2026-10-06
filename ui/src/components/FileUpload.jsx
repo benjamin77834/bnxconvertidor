@@ -52,7 +52,7 @@ export default function FileUpload({ files, setFiles, onCompile, loading, theme 
   const fileInfo = {
     mp:  { label: 'Graph', desc: 'Nodos, edges y subgraphs del pipeline', required: true },
     xfr: { label: 'Transform Rules', desc: 'SELECT, WHERE, GROUP BY, JOIN keys (sube múltiples .xfr)', required: false },
-    dml: { label: 'Schema', desc: 'Tipos de datos y keys por tabla', required: false },
+    dml: { label: 'Schema', desc: 'Tipos de datos y keys por tabla (sube múltiples .dml)', required: false },
     pset: { label: 'Parameters', desc: 'Variables del grafo (.pset): rutas, fechas, nombres', required: false },
   }
 
@@ -80,7 +80,7 @@ export default function FileUpload({ files, setFiles, onCompile, loading, theme 
           <div key={ext} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <div>
               <span style={{ fontSize: 13, color: t.text || '#e2e8f0', fontWeight: 600 }}>
-                .{ext} — {info.label} {ext === 'xfr' && list.length > 1 && <span style={{ color: '#22c55e', fontSize: 11 }}>({list.length} archivos)</span>}
+                .{ext} — {info.label} {(ext === 'xfr' || ext === 'dml') && list.length > 1 && <span style={{ color: '#22c55e', fontSize: 11 }}>({list.length} archivos)</span>}
               </span>
               <span style={{ fontSize: 12, color: info.required ? '#f59e0b' : (t.dim || '#64748b'), marginLeft: 6 }}>
                 {info.required ? '(required)' : '(optional)'}
@@ -99,12 +99,12 @@ export default function FileUpload({ files, setFiles, onCompile, loading, theme 
                   <div key={f.name} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                     <div style={{
                       ...slot, ...slotActive,
-                      ...(ext === 'xfr' ? slotSelected : (selected === f.name ? slotSelected : {})),
+                      ...((ext === 'xfr' || ext === 'dml') ? slotSelected : (selected === f.name ? slotSelected : {})),
                       padding: '6px 10px', fontSize: 12,
                     }}>
-                      {ext === 'xfr' || selected === f.name ? '✅' : '📄'} {f.name}
+                      {(ext === 'xfr' || ext === 'dml' || selected === f.name) ? '✅' : '📄'} {f.name}
                     </div>
-                    {ext !== 'xfr' && selected !== f.name && (
+                    {ext !== 'xfr' && ext !== 'dml' && selected !== f.name && (
                       <button
                         style={{
                           padding: '4px 8px', background: 'transparent', color: '#22c55e',
@@ -138,12 +138,13 @@ export default function FileUpload({ files, setFiles, onCompile, loading, theme 
         onClick={() => {
           console.log('Compiling with xfr files:', (files.xfr || []).map(f => f.name))
           onCompile({
-            mp: getSelected('mp'), xfr: files.xfr || [], dml: getSelected('dml'), pset: getSelected('pset'), allXfr: true,
+            mp: getSelected('mp'), xfr: files.xfr || [], dml: files.dml || [],
+            pset: getSelected('pset'), allXfr: true, allDml: true,
           })
         }}
         disabled={!canCompile}
       >
-        {loading ? '⏳ Compiling...' : `🚀 Compile${(files.xfr || []).length > 1 ? ` (${(files.xfr || []).length} xfr)` : ''}`}
+        {loading ? '⏳ Compiling...' : `🚀 Compile${[(files.xfr || []).length > 1 ? `${(files.xfr || []).length} xfr` : '', (files.dml || []).length > 1 ? `${(files.dml || []).length} dml` : ''].filter(Boolean).length ? ` (${[(files.xfr || []).length > 1 ? `${(files.xfr || []).length} xfr` : '', (files.dml || []).length > 1 ? `${(files.dml || []).length} dml` : ''].filter(Boolean).join(', ')})` : ''}`}
       </button>
     </div>
   )
