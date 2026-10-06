@@ -613,7 +613,7 @@ export default function App() {
             fontSize: 13, padding: '3px 10px', borderRadius: 99,
             background: t.accentBg, color: t.accent, border: `1px solid ${t.accentBorder}`,
           }}>
-            {result.nodes?.length} nodes · {result.edges?.length} edges
+            {result.nodes_truncated ? result.total_nodes : result.nodes?.length} nodes · {result.nodes_truncated ? result.total_edges : result.edges?.length} edges
           </span>
         )}
 
@@ -1299,7 +1299,8 @@ export default function App() {
                   marginRight: 8,
                 }}>
                   {result.graph_name && <span style={{ color: t.accent || '#6366f1' }}>{result.graph_name} — </span>}
-                  {result.nodes.length} nodes · {result.edges.length} edges
+                  {result.nodes_truncated ? result.total_nodes : result.nodes.length} nodes · {result.nodes_truncated ? result.total_edges : result.edges.length} edges
+                  {result.nodes_truncated && <span style={{ color: '#f59e0b' }}> (vista: {result.nodes.length})</span>}
                   {result.subgraphs?.length > 0 && ` · ${result.subgraphs.length} subgraphs`}
                 </span>
                 <span style={{ width: 1, height: 20, background: t.border }} />
@@ -1409,18 +1410,19 @@ export default function App() {
                 justifyContent: 'center', gap: 14, padding: 24, textAlign: 'center' }}>
                 <span style={{ fontSize: 44 }}>🗺️</span>
                 <span style={{ fontSize: 16, fontWeight: 700, color: t.text }}>
-                  Grafo muy grande para dibujar: {result.nodes.length} nodos · {result.edges?.length || 0} edges
+                  Grafo muy grande para dibujar: {result.nodes_truncated ? result.total_nodes : result.nodes.length} nodos
+                  {!result.nodes_truncated && <> · {result.edges?.length || 0} edges</>}
                 </span>
-                <span style={{ fontSize: 13, color: t.muted, maxWidth: 520, lineHeight: 1.5 }}>
-                  Dibujar más de {DAG_RENDER_LIMIT} nodos congela el navegador. La compilación SÍ funcionó
-                  (el código está abajo y es descargable). Usa el buscador del DAG en pantalla completa,
-                  o fuérzalo bajo tu riesgo.
+                <span style={{ fontSize: 13, color: t.muted, maxWidth: 540, lineHeight: 1.5 }}>
+                  {result.nodes_truncated
+                    ? `El grafo tiene ${result.total_nodes} nodos. Para no congelar el navegador solo se cargaron los primeros ${result.nodes.length} para visualizar. La compilación SÍ procesó el grafo COMPLETO: el código de abajo está entero y es descargable.`
+                    : `Dibujar más de ${DAG_RENDER_LIMIT} nodos congela el navegador. La compilación SÍ funcionó (el código está abajo y es descargable). Usa el buscador del DAG en pantalla completa, o fuérzalo bajo tu riesgo.`}
                 </span>
                 <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
                   <button onClick={() => { setForceDag(true); }} style={{
                     padding: '10px 18px', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 700,
                     background: '#f59e0b', color: '#000', border: 'none',
-                  }}>⚠️ Dibujar de todos modos ({result.nodes.length} nodos)</button>
+                  }}>⚠️ Dibujar {result.nodes.length} nodos cargados</button>
                   {result.code && (
                     <button onClick={downloadCode} style={{
                       padding: '10px 18px', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 700,

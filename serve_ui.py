@@ -1631,9 +1631,31 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             desc_steps = [{"type": n.type.upper(), "name": n.name} for n in dag.execution_order]
             graph_description = _describe_graph(desc_steps, [], [], job_name=(graph_name or "grafo"))
 
+            # --- Truncado para la GUI ---------------------------------------
+            # Grafos enormes (decenas de miles de nodos) cuelgan el navegador al
+            # intentar serializar/persistir/dibujar. Limitamos los nodos y aristas
+            # ENVIADOS a la GUI. El codigo (`code`) va SIEMPRE completo e intacto;
+            # esto solo afecta la visualizacion del DAG.
+            GUI_NODE_LIMIT = 500
+            total_nodes = len(nodes)
+            total_edges = len(edges)
+            nodes_truncated = total_nodes > GUI_NODE_LIMIT
+            if nodes_truncated:
+                kept_nodes = nodes[:GUI_NODE_LIMIT]
+                kept_ids = {n["id"] for n in kept_nodes}
+                kept_edges = [e for e in edges
+                              if e["from"] in kept_ids and e["to"] in kept_ids]
+                print(f"  [resp] TRUNCADO para GUI: {len(kept_nodes)}/{total_nodes} nodos, "
+                      f"{len(kept_edges)}/{total_edges} aristas (codigo completo intacto)")
+                nodes = kept_nodes
+                edges = kept_edges
+
             return {
                 "nodes": nodes,
                 "edges": edges,
+                "nodes_truncated": nodes_truncated,
+                "total_nodes": total_nodes,
+                "total_edges": total_edges,
                 "errors": errors,
                 "warnings": warnings,
                 "code": code,
