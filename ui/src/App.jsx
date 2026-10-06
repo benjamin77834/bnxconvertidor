@@ -238,7 +238,18 @@ export default function App() {
         }
       } catch { /* ignore */ }
     }
-    if (selected.dml) form.append('dml', selected.dml)
+    // Handle multiple .dml files — concatenate them with the same "# ===" marker
+    // that parse_dml understands (mismo mecanismo que los .xfr).
+    if (selected.allDml && Array.isArray(selected.dml) && selected.dml.length > 0) {
+      const dmlContents = []
+      for (const f of selected.dml) {
+        const text = await f.text()
+        dmlContents.push(`# === ${f.name} ===\n${text}`)
+      }
+      form.append('dml', new File([dmlContents.join('\n\n')], 'combined.dml'))
+    } else if (selected.dml && !Array.isArray(selected.dml)) {
+      form.append('dml', selected.dml)
+    }
     if (selected.pset) form.append('pset', selected.pset)
     form.append('target', target)
     try {

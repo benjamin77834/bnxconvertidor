@@ -840,6 +840,22 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
     reader.readAsText(f)
   }
 
+  // Carga MULTIPLE para .xfr/.dml: concatena los archivos con el marcador
+  // "# === nombre ===" (mismo formato que entiende parse_xfr/parse_dml) y lo
+  // vuelca en el textarea. Si ya habia contenido pegado, lo preserva arriba.
+  const onFilesConcat = (setter, prev) => async (e) => {
+    const list = Array.from(e.target.files || [])
+    if (!list.length) return
+    const parts = []
+    for (const f of list) {
+      const text = await f.text()
+      parts.push(`# === ${f.name} ===\n${text}`)
+    }
+    const combined = parts.join('\n\n')
+    setter((prev || '').trim() ? `${prev}\n\n${combined}` : combined)
+    e.target.value = ''
+  }
+
   // Datasets filtrados por entrada/salida
   const allDatasets = result?.datasets || []
   const hasInput = allDatasets.some(d => d.io === 'input')
@@ -965,20 +981,26 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
             {[
-              { lbl: '.mp', val: mp, set: setMp, color: '#22c55e' },
-              { lbl: '.xfr', val: xfr, set: setXfr, color: '#6366f1' },
-              { lbl: '.dml', val: dml, set: setDml, color: '#f59e0b' },
+              { lbl: '.mp', val: mp, set: setMp, color: '#22c55e', multi: false },
+              { lbl: '.xfr', val: xfr, set: setXfr, color: '#6366f1', multi: true },
+              { lbl: '.dml', val: dml, set: setDml, color: '#f59e0b', multi: true },
             ].map(f => (
               <div key={f.lbl} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontSize: 12, color: f.color, fontWeight: 600 }}>{f.lbl}</span>
+                  <span style={{ fontSize: 12, color: f.color, fontWeight: 600 }}>
+                    {f.lbl}{f.multi && <span style={{ color: t.dim, fontWeight: 400 }}> (varios)</span>}
+                  </span>
                   <label style={{ ...btn(false), padding: '2px 8px', fontSize: 10 }}>
                     📁 Cargar
-                    <input type="file" style={{ display: 'none' }} onChange={onFile(f.set)} />
+                    {f.multi ? (
+                      <input type="file" multiple style={{ display: 'none' }} onChange={onFilesConcat(f.set, f.val)} />
+                    ) : (
+                      <input type="file" style={{ display: 'none' }} onChange={onFile(f.set)} />
+                    )}
                   </label>
                 </div>
                 <textarea value={f.val} onChange={e => f.set(e.target.value)}
-                  placeholder={`Pega el contenido ${f.lbl}...`}
+                  placeholder={f.multi ? `Pega o carga uno o varios ${f.lbl}...` : `Pega el contenido ${f.lbl}...`}
                   style={{ ...textarea, borderColor: f.color + '40' }} />
               </div>
             ))}
