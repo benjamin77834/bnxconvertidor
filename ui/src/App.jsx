@@ -147,6 +147,20 @@ export default function App() {
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
   }, [])
+
+  // Si el grafo compilado es GRANDE (truncado o > DAG_RENDER_LIMIT nodos),
+  // activar "Solo código" ANTES de que se dibuje nada grafico, para que los
+  // chips de nodos no tapen la pantalla. El usuario puede desactivarlo luego
+  // con el boton. Solo se fuerza para grafos grandes; los pequenos quedan como
+  // esten (respeta la preferencia guardada).
+  useEffect(() => {
+    const n = result?.nodes_truncated ? result.total_nodes : (result?.nodes?.length || 0)
+    if (result?.code && (result?.nodes_truncated || n > DAG_RENDER_LIMIT)) {
+      setCodeOnly(true)
+      setCodeOpen(true)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [result])
   const dagRef                  = useRef(null)
   const cobolRef                = useRef(null)
   const algolRef                = useRef(null)
