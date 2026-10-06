@@ -96,6 +96,7 @@ from src.perf_optimizer import optimize_pyspark
 from src.export_bundle import build_export_bundle
 from src.cobol_parser import parse_cobol, cobol_to_graph
 from src.algol_parser import parse_algol, algol_to_graph
+from src.lang_detect import detect_language
 from src.datagen import (
     infer_schema_from_graph,
     build_synthetic_data,
@@ -164,6 +165,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_validate()
         elif "/py2spark" in path:
             self._handle_py2spark()
+        elif "/convert" in path:
+            self._handle_convert()
         elif "/cobol" in path:
             self._handle_cobol()
         elif "/algol" in path:
@@ -2155,6 +2158,120 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 result["optimization_count"] = opt.get("total_changes", 0)
         except Exception as e:
             print(f"  [cobol/algol] optimizacion omitida: {e}")
+
+    def _handle_convert(self):
+        """Convierte codigo legacy AUTODETECTANDO el lenguaje (COBOL/ALGOL/Ab Initio).
+
+        El usuario no elige el tipo: se detecta por extension y/o contenido via
+        src.lang_detect.detect_language y se despacha al parser correcto.
+
+        Acepta multipart (campo/archivo 'code' o 'file') o JSON ({"code": "...",
+        "filename": "...", "target": "spark"}). Opcional 'force_language' para
+        forzar el ruteo (cobol|algol|abinitio) cuando la autodeteccion falla.
+
+        Devuelve el mismo shape que /compile mas:
+          - detected_language: lenguaje detectado (o forzado)
+          - detect_scores: puntuacion por lenguaje (diagnostico)
+        """
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        content_type = self.headers.get("Content-Type", "")
+
+        tmp_path = None
+        try:
+            src_code = ""
+            filename = ""
+            target = "spark"
+            force_language = ""
+
+            if "multipart/form-data" in content_type:
+                fields, file_parts = parse_multipart(body, content_type)
+                # El archivo puede venir como 'code' o 'file'. Tomamos el primero
+                # disponible y recuperamos su nombre si parse_multipart lo expone.
+                for key in ("code", "file", "cobol", "algol", "mp"):
+                    if key in file_parts:
+                        src_code = file_parts[key].decode("utf-8", errors="replace")
+                        # parse_multipart guarda el nombre real en '{campo}_filename'.
+                        filename = fields.get(f"{key}_filename", "") or ""
+                        break
+                else:
+                    src_code = fields.get("code", "") or ""
+                if not filename:
+                    filename = fields.get("filename", "") or ""
+                target = (fields.get("target", "") or "spark").lower()
+                force_language = (fields.get("force_language", "") or "").lower()
+            else:
+                try:
+                    data = json.loads(body.decode("utf-8", errors="replace"))
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    self._json_response(400, {"error": "Invalid request format"})
+                    return
+                src_code = data.get("code", "") or ""
+                filename = data.get("filename", "") or ""
+                target = (data.get("target", "") or "spark").lower()
+                force_language = (data.get("force_language", "") or "").lower()
+
+            if not src_code.strip():
+                self._json_response(400, {"error": "Se requiere codigo fuente (campo 'code')."})
+                return
+
+            # Autodeteccion (o forzado manual si el usuario lo pidio).
+            if force_language in ("cobol", "algol", "abinitio"):
+                lang = force_language
+                scores = {}
+            else:
+                lang, scores = detect_language(src_code, filename=filename)
+
+            print(f"  [convert] detectado='{lang}' scores={scores} archivo='{filename}'")
+
+            if lang == "cobol":
+                tmp_path = self._save_temp(src_code, ".cbl")
+                graph = cobol_to_graph(parse_cobol(tmp_path))
+            elif lang == "algol":
+                tmp_path = self._save_temp(src_code, ".alg")
+                graph = algol_to_graph(parse_algol(tmp_path))
+            elif lang == "abinitio":
+                # Ab Initio: el .mp va directo a _compile_graph (sin xfr/dml aparte).
+                compiled = self._compile_graph(src_code, "", "", target=target)
+                result = dict(compiled)
+                result["detected_language"] = lang
+                result["detect_scores"] = scores
+                result["target"] = target
+                self._attach_optimized(result, target)
+                self._json_response(200, result)
+                return
+            else:
+                self._json_response(422, {
+                    "error": "No se pudo detectar el lenguaje del codigo.",
+                    "detected_language": "unknown",
+                    "detect_scores": scores,
+                    "hint": "Usa force_language=cobol|algol|abinitio para forzarlo.",
+                })
+                return
+
+            compiled = self._compile_graph(
+                graph["mp"], graph["xfr"], graph["dml"], target=target
+            )
+            result = dict(compiled)
+            result["generated_mp"] = graph["mp"]
+            result["generated_xfr"] = graph["xfr"]
+            result["generated_dml"] = graph["dml"]
+            result["target"] = target
+            result["detected_language"] = lang
+            result["detect_scores"] = scores
+            self._attach_optimized(result, target)
+            self._json_response(200, result)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": str(e)})
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
     def _handle_cobol(self):
         """Convierte COBOL (.cbl) directo a PySpark (u otro target).

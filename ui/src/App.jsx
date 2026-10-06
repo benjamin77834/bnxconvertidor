@@ -149,6 +149,7 @@ export default function App() {
   const dagRef                  = useRef(null)
   const cobolRef                = useRef(null)
   const algolRef                = useRef(null)
+  const autoRef                 = useRef(null)
   const planRef                 = useRef(null)
   const psetRef                 = useRef(null)
   const [psetFile, setPsetFile] = useState(null)
@@ -201,7 +202,7 @@ export default function App() {
     setPsetFile(null)
     setPlanXfrFile(null)
     // Limpiar inputs de archivo (para poder re-subir el mismo nombre).
-    ;[cobolRef, algolRef, planRef, psetRef, planXfrRef, mpFilesRef, refactorRef].forEach(r => {
+    ;[cobolRef, algolRef, autoRef, planRef, psetRef, planXfrRef, mpFilesRef, refactorRef].forEach(r => {
       if (r && r.current) { try { r.current.value = '' } catch { /* ignore */ } }
     })
   }
@@ -355,6 +356,35 @@ export default function App() {
       const data = await res.json()
       setResult(data)
       if (data.code) setCodeOpen(true)
+    } catch (e) {
+      setResult({ errors: [`Network error: ${e.message}`], warnings: [], nodes: [], edges: [] })
+    } finally { setLoading(false) }
+  }
+
+  // Conversion AUTOMATICA: el backend detecta el lenguaje (COBOL/ALGOL/Ab Initio)
+  // por extension y contenido, y convierte directo. No hay que elegir el tipo.
+  // Acepta .cbl/.cob/.alg/.mp/.txt. forceLanguage opcional si la deteccion falla.
+  const convertAuto = async (file, forceLanguage) => {
+    setLoading(true)
+    const form = new FormData()
+    form.append('code', file)
+    form.append('filename', file.name || '')
+    form.append('target', target)
+    if (forceLanguage) form.append('force_language', forceLanguage)
+    try {
+      const res = await fetch(COMPILE_URL.replace('/compile', '/convert'), { method: 'POST', body: form })
+      const data = await res.json()
+      if (!res.ok || data.error) {
+        setResult({
+          errors: [data.error || `Error ${res.status}`,
+            data.detected_language === 'unknown' ? 'No se detectó el lenguaje. Usa los botones COBOL/ALGOL para forzarlo.' : ''
+          ].filter(Boolean),
+          warnings: [], nodes: [], edges: [],
+        })
+      } else {
+        setResult(data)
+        if (data.code) setCodeOpen(true)
+      }
     } catch (e) {
       setResult({ errors: [`Network error: ${e.message}`], warnings: [], nodes: [], edges: [] })
     } finally { setLoading(false) }
@@ -968,10 +998,26 @@ export default function App() {
             </div>
           </div>
 
-          {/* COBOL upload */}
+          {/* Conversion AUTOMATICA (autodetecta COBOL/ALGOL/Ab Initio) */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <span style={{ fontSize: 14, color: '#22c55e', textTransform: 'uppercase', letterSpacing: 1, fontWeight: 700 }}>✨ Conversión automática</span>
+            <span style={{ fontSize: 12, color: t.dim }}>Sube cualquier archivo legacy (.cbl, .cob, .alg, .mp o .txt) y se detecta el lenguaje y se convierte directo a {target === 'spark' ? 'PySpark' : target.toUpperCase()}. No tienes que elegir el tipo.</span>
+            <button
+              style={{
+                padding: '10px 16px', borderRadius: 8, cursor: 'pointer', fontWeight: 700,
+                background: '#22c55e', border: 'none', color: '#000', fontSize: 13,
+              }}
+              onClick={() => autoRef.current.click()}
+            >✨ Detectar y convertir → {target === 'spark' ? 'PySpark' : target.toUpperCase()}</button>
+            <input ref={autoRef} type="file" accept=".cbl,.cob,.cobol,.alg,.algol,.mp,.txt" hidden
+              onChange={(e) => { if (e.target.files[0]) convertAuto(e.target.files[0]); e.target.value = '' }}
+            />
+          </div>
+
+          {/* COBOL upload (forzar tipo COBOL si la autodeteccion falla) */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <span style={{ fontSize: 14, color: t.muted, textTransform: 'uppercase', letterSpacing: 1 }}>COBOL Migration</span>
-            <span style={{ fontSize: 12, color: t.dim }}>Sube un .cbl y se convierte directo al target ({target.toUpperCase()}). Detecta FILE SECTION, PROCEDURE DIVISION, PIC/COMP-3.</span>
+            <span style={{ fontSize: 12, color: t.dim }}>Fuerza el tipo COBOL. Sube un .cbl y se convierte directo al target ({target.toUpperCase()}). Detecta FILE SECTION, PROCEDURE DIVISION, PIC/COMP-3.</span>
             <button
               style={{
                 padding: '8px 16px', borderRadius: 8, cursor: 'pointer',
@@ -1326,6 +1372,13 @@ export default function App() {
                   fontSize: 15, fontWeight: 700, color: t.text,
                   marginRight: 8,
                 }}>
+                  {result.detected_language && (
+                    <span style={{
+                      color: '#22c55e', fontSize: 12, fontWeight: 700,
+                      padding: '2px 8px', borderRadius: 5, marginRight: 8,
+                      background: '#22c55e15', border: '1px solid #22c55e30',
+                    }}>✨ {result.detected_language.toUpperCase()} detectado</span>
+                  )}
                   {result.graph_name && <span style={{ color: t.accent || '#6366f1' }}>{result.graph_name} — </span>}
                   {result.nodes_truncated ? result.total_nodes : result.nodes.length} nodes · {result.nodes_truncated ? result.total_edges : result.edges.length} edges
                   {result.nodes_truncated && <span style={{ color: '#f59e0b' }}> (vista: {result.nodes.length})</span>}
