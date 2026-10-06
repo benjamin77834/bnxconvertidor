@@ -99,27 +99,40 @@ class DAG:
         order = []
         cycle_nodes = set()
 
-        def visit(node_id):
-            if node_id in done:
-                return True          # ya procesado, sin ciclo por esta via
-            if node_id in on_stack:
-                # Arista hacia un nodo en la pila actual -> CICLO.
-                cycle_nodes.add(node_id)
-                return False
-            on_stack.add(node_id)
-            in_cycle = False
-            for p in self.nodes[node_id].parents:
-                if not visit(p):
-                    in_cycle = True
-            on_stack.discard(node_id)
-            if in_cycle:
-                # Este nodo depende (transitivamente) de un ciclo: no se puede
-                # ordenar; se excluye del execution_order.
-                cycle_nodes.add(node_id)
-                return False
-            done.add(node_id)
-            order.append(self.nodes[node_id])
-            return True
+        # DFS ITERATIVO con pila explicita (no recursivo) para soportar grafos
+        # muy profundos/lineales (miles de nodos encadenados) sin RecursionError.
+        # Semantica identica al DFS recursivo de 3 estados: cada entrada de la
+        # pila se procesa en dos fases (pre: apilar hijos; post: finalizar nodo).
+        def visit(start_id):
+            if start_id in done:
+                return
+            # stack de tuplas (node_id, phase): phase 0 = entrada, 1 = salida
+            stack = [(start_id, 0)]
+            while stack:
+                node_id, phase = stack.pop()
+                if phase == 0:
+                    if node_id in done:
+                        continue
+                    if node_id in on_stack:
+                        # Arista hacia un nodo en la pila actual -> CICLO.
+                        cycle_nodes.add(node_id)
+                        continue
+                    on_stack.add(node_id)
+                    # Programar la fase de salida y luego visitar padres.
+                    stack.append((node_id, 1))
+                    for p in self.nodes[node_id].parents:
+                        if p not in done:
+                            stack.append((p, 0))
+                else:  # phase == 1 (salida): todos los padres ya procesados
+                    on_stack.discard(node_id)
+                    # Si algun padre quedo en un ciclo, este nodo tambien se excluye.
+                    in_cycle = any(p in cycle_nodes for p in self.nodes[node_id].parents)
+                    if in_cycle:
+                        cycle_nodes.add(node_id)
+                        continue
+                    if node_id not in done:
+                        done.add(node_id)
+                        order.append(self.nodes[node_id])
 
         # Sort nodes by vertex_id (numeric) for stable ordering that respects
         # the visual layout of the Ab Initio graph (lower vertex IDs first)
