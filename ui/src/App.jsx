@@ -16,6 +16,7 @@ import GrafosPage from './components/GrafosPage'
 import ModelFrameworkPage from './components/ModelFrameworkPage'
 import CodeQualityPanel from './components/CodeQualityPanel'
 import DataGenPage from './components/DataGenPage'
+import DataSourcePanel from './components/DataSourcePanel'
 import CostEstimateCard from './components/CostEstimateCard'
 import Py2SparkPage from './components/Py2SparkPage'
 import { metricsFromResult } from './costEstimator'
@@ -701,6 +702,7 @@ export default function App() {
             { id: 'grafos', label: '📁 Grafos' },
             { id: 'py2spark', label: '🐍 Py→Spark' },
             { id: 'datagen', label: '🧪 Data Sintética' },
+            { id: 'datasource', label: '🛢️ Datos Remotos' },
             { id: 'models', label: '🔐 Modelos' },
             { id: 'history', label: '📜 History' },
           ].map(tab => (
@@ -797,6 +799,18 @@ export default function App() {
             pythonSource={py2sparkCode ? py2sparkSource : ''}
             graphName={py2sparkCode ? 'py2spark_job' : (result?.graph_name || '')}
             graphDescription={py2sparkCode ? 'Job PySpark generado desde Python (pandas) con py2spark.' : (result?.description || '')} />
+        ) : page === 'datasource' ? (
+          <div style={{ flex: 1, overflowY: 'auto', padding: 24, display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <div>
+              <h2 style={{ margin: 0, fontSize: 22, color: t.text }}>🛢️ Datos Remotos</h2>
+              <p style={{ margin: '4px 0 0', fontSize: 13, color: t.muted }}>
+                Conéctate a Teradata, Cloudera (Hive/Impala), MariaDB, MySQL o PostgreSQL y descarga datos
+                enmascarados por PII. Independiente del Compiler: funciona sin grafo ni código. Guarda hasta 3
+                conexiones por fuente (sin contraseña).
+              </p>
+            </div>
+            <DataSourcePanel theme={t} />
+          </div>
         ) : page === 'models' ? (
           <ModelFrameworkPage theme={t} />
         ) : page === 'designer' ? (

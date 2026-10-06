@@ -51,6 +51,49 @@ export default function DataSourcePanel({ theme, onImport }) {
   const [error, setError] = useState('')
   const [preview, setPreview] = useState(null) // {columns, rows} enmascarado
 
+  // --- Conexiones guardadas (SIN password, por seguridad) ---
+  // Se guardan en localStorage por tipo de fuente. Hasta MAX_SAVED por tipo.
+  // El password NUNCA se persiste: se pide al conectar.
+  const MAX_SAVED = 3
+  const LS_CONN = 'bnx_saved_connections'
+  const [savedConns, setSavedConns] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(LS_CONN) || '{}') } catch { return {} }
+  })
+  const persistConns = (next) => {
+    setSavedConns(next)
+    try { localStorage.setItem(LS_CONN, JSON.stringify(next)) } catch { /* ignore */ }
+  }
+  // Guarda la conexion actual bajo un nombre (sin password). Reemplaza si el
+  // nombre ya existe; respeta el tope de MAX_SAVED por tipo.
+  const saveConnection = () => {
+    const name = (window.prompt('Nombre para esta conexión (ej. "Prod Teradata"):') || '').trim()
+    if (!name) return
+    const entry = {
+      name, sourceType, host, port, database,
+      url: url.trim(), user, table, driverJar,
+    }
+    const list = (savedConns[sourceType] || []).filter(c => c.name !== name)
+    list.unshift(entry)
+    if (list.length > MAX_SAVED) {
+      setError(`Máximo ${MAX_SAVED} conexiones guardadas por fuente. Borra una para añadir otra.`)
+      list.length = MAX_SAVED
+    }
+    persistConns({ ...savedConns, [sourceType]: list })
+  }
+  // Carga una conexion guardada en el formulario (el password queda vacio).
+  const loadConnection = (c) => {
+    setSourceType(c.sourceType || sourceType)
+    setHost(c.host || ''); setPort(c.port || ''); setDatabase(c.database || '')
+    setUrl(c.url || ''); setUser(c.user || ''); setTable(c.table || '')
+    setDriverJar(c.driverJar || ''); setPassword('')
+    setError('')
+  }
+  const deleteConnection = (st, name) => {
+    const list = (savedConns[st] || []).filter(c => c.name !== name)
+    persistConns({ ...savedConns, [st]: list })
+  }
+  const currentSaved = savedConns[sourceType] || []
+
   const field = {
     padding: '7px 9px', borderRadius: 6, fontSize: 12, width: '100%',
     background: t.codeBg || '#081220', color: t.text || '#e2e8f0',
@@ -80,22 +123,51 @@ export default function DataSourcePanel({ theme, onImport }) {
     } finally { setLoading(false) }
   }
 
-  // Convierte el preview enmascarado en un dataset de entrada y lo devuelve.
-  const importToTest = () => {
-    if (!preview || !preview.rows?.length) return
+  // Nombre base del dataset (nodo/tabla) normalizado.
+  const datasetName = () =>
+    (targetNode.trim() || table.trim() || 'external_source').replace(/[^A-Za-z0-9_]/g, '_')
+
+  // Serializa el preview enmascarado a CSV.
+  const toCSV = () => {
     const headers = (preview.columns || []).map(c => c.name)
-    const rows = preview.rows
-    const content = [headers.join(',')].concat(
-      rows.map(r => headers.map(h => {
+    return [headers.join(',')].concat(
+      (preview.rows || []).map(r => headers.map(h => {
         const v = r[h] == null ? '' : String(r[h])
         return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v
       }).join(','))
     ).join('\n') + '\n'
-    const node = (targetNode.trim() || table.trim() || 'external_source').replace(/[^A-Za-z0-9_]/g, '_')
+  }
+
+  // Descarga DIRECTA del dataset enmascarado (CSV o JSON), independiente de si
+  // hay grafo o codigo en el Compiler. El panel es autonomo: conectar -> traer
+  // -> descargar.
+  const downloadMasked = (fmt) => {
+    if (!preview || !preview.rows?.length) return
+    const name = datasetName()
+    let content, mime, ext
+    if (fmt === 'json') {
+      content = JSON.stringify(preview.rows, null, 2)
+      mime = 'application/json'; ext = 'json'
+    } else {
+      content = toCSV(); mime = 'text/csv'; ext = 'csv'
+    }
+    const blob = new Blob([content], { type: mime })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = `${name}_enmascarado.${ext}`; a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  // Convierte el preview enmascarado en un dataset de entrada y lo devuelve
+  // (opcional: solo util cuando hay un grafo/codigo donde usarlo en la prueba).
+  const importToTest = () => {
+    if (!preview || !preview.rows?.length) return
+    const content = toCSV()
+    const node = datasetName()
     const columns = (preview.columns || []).map(c => ({ name: c.name, type: 'string', pii: c.pii || null }))
     onImport && onImport({
       node, node_type: 'SOURCE', io: 'input', format: 'csv',
-      content, columns, rows, external: true, masked: true,
+      content, rows: preview.rows, columns, external: true, masked: true,
     })
   }
 
@@ -138,6 +210,38 @@ export default function DataSourcePanel({ theme, onImport }) {
             <div><label style={lbl}>Host</label><input style={field} value={host} onChange={e => setHost(e.target.value)} placeholder="host.banco.com" /></div>
             <div><label style={lbl}>Puerto</label><input style={field} value={port} onChange={e => setPort(e.target.value)} placeholder={PORT_HINT[sourceType] || '1025 / 10000 / 21050'} /></div>
           </div>
+
+          {/* Conexiones guardadas para esta fuente (max 3, sin password) */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+            <span style={{ fontSize: 11, color: t.dim }}>Conexiones guardadas ({currentSaved.length}/{MAX_SAVED}):</span>
+            {currentSaved.length === 0 && (
+              <span style={{ fontSize: 11, color: t.dim, fontStyle: 'italic' }}>ninguna</span>
+            )}
+            {currentSaved.map(c => (
+              <span key={c.name} style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11,
+                background: '#0ea5e918', border: '1px solid #0ea5e955', borderRadius: 999,
+                padding: '3px 4px 3px 10px', color: '#38bdf8',
+              }}>
+                <button onClick={() => loadConnection(c)} title="Cargar esta conexión"
+                  style={{ background: 'none', border: 'none', color: '#38bdf8', cursor: 'pointer', fontSize: 11, fontWeight: 700, padding: 0 }}>
+                  {c.name}
+                </button>
+                <button onClick={() => deleteConnection(c.sourceType, c.name)} title="Borrar"
+                  style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', fontSize: 12, padding: '0 2px' }}>✕</button>
+              </span>
+            ))}
+            <button onClick={saveConnection}
+              disabled={currentSaved.length >= MAX_SAVED}
+              title={currentSaved.length >= MAX_SAVED ? `Máximo ${MAX_SAVED} por fuente` : 'Guardar la conexión actual (sin password)'}
+              style={{
+                fontSize: 11, fontWeight: 700, borderRadius: 999, padding: '4px 10px',
+                cursor: currentSaved.length >= MAX_SAVED ? 'not-allowed' : 'pointer',
+                background: currentSaved.length >= MAX_SAVED ? 'transparent' : '#22c55e20',
+                border: `1px solid ${currentSaved.length >= MAX_SAVED ? (t.border || '#334155') : '#22c55e55'}`,
+                color: currentSaved.length >= MAX_SAVED ? t.dim : '#22c55e',
+              }}>💾 Guardar conexión</button>
+          </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
             <div><label style={lbl}>Base de datos</label><input style={field} value={database} onChange={e => setDatabase(e.target.value)} placeholder="esquema / database" /></div>
             <div><label style={lbl}>URL JDBC (opcional, sobreescribe host/db)</label><input style={field} value={url} onChange={e => setUrl(e.target.value)} placeholder="jdbc:teradata://host/DATABASE=db" /></div>
@@ -164,11 +268,25 @@ export default function DataSourcePanel({ theme, onImport }) {
               {loading ? '⏳ Conectando...' : '🔌 Traer datos (enmascarados)'}
             </button>
             {preview && preview.rows?.length > 0 && (
-              <button onClick={importToTest}
-                style={{ padding: '8px 14px', borderRadius: 8, fontSize: 13, fontWeight: 700,
-                  cursor: 'pointer', background: '#22c55e', color: '#000', border: 'none' }}>
-                ✓ Usar en la prueba ({preview.rows.length} filas)
-              </button>
+              <>
+                <button onClick={() => downloadMasked('csv')}
+                  style={{ padding: '8px 14px', borderRadius: 8, fontSize: 13, fontWeight: 700,
+                    cursor: 'pointer', background: '#22c55e', color: '#000', border: 'none' }}>
+                  📥 Descargar CSV ({preview.rows.length})
+                </button>
+                <button onClick={() => downloadMasked('json')}
+                  style={{ padding: '8px 14px', borderRadius: 8, fontSize: 13, fontWeight: 700,
+                    cursor: 'pointer', background: 'transparent', color: '#22c55e', border: '1px solid #22c55e55' }}>
+                  📥 JSON
+                </button>
+                {onImport && (
+                  <button onClick={importToTest}
+                    style={{ padding: '8px 14px', borderRadius: 8, fontSize: 13, fontWeight: 700,
+                      cursor: 'pointer', background: 'transparent', color: '#38bdf8', border: '1px solid #38bdf855' }}>
+                    ✓ Usar en la prueba
+                  </button>
+                )}
+              </>
             )}
           </div>
 
