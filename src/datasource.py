@@ -33,6 +33,18 @@ _PRESETS = {
         "driver": "com.cloudera.impala.jdbc.Driver",
         "url": "jdbc:impala://{host}:{port}/{database}",
     },
+    "mariadb": {
+        "driver": "org.mariadb.jdbc.Driver",
+        "url": "jdbc:mariadb://{host}:{port}/{database}",
+    },
+    "mysql": {
+        "driver": "com.mysql.cj.jdbc.Driver",
+        "url": "jdbc:mysql://{host}:{port}/{database}",
+    },
+    "postgres": {
+        "driver": "org.postgresql.Driver",
+        "url": "jdbc:postgresql://{host}:{port}/{database}",
+    },
 }
 
 
@@ -68,13 +80,17 @@ def fetch_masked(source_type, conn, query=None, table=None, limit=50,
         return {"ok": False, "error": "Falta la URL de conexion (o host/database)."}
     if not driver_jar or not os.path.isfile(driver_jar):
         return {"ok": False, "error": "Falta el driver JDBC (driver_jar). "
-                "Teradata: terajdbc4.jar; Cloudera: HiveJDBC/ImpalaJDBC jar."}
+                "Teradata: terajdbc4.jar; Cloudera: HiveJDBC/ImpalaJDBC jar; "
+                "MariaDB/MySQL: mariadb-java-client.jar o mysql-connector-j.jar; "
+                "PostgreSQL: postgresql.jar."}
 
     # dbtable: subconsulta con LIMIT para no traer de mas.
     lim = max(1, min(int(limit or 50), 1000))
+    # Motores que usan sintaxis LIMIT (vs Teradata que usa SAMPLE).
+    _limit_engines = ("hive", "impala", "mariadb", "mysql", "postgres", "jdbc")
     if query:
         dbtable = f"({query.rstrip(';')} ) t_bnx"  # se envuelve; el LIMIT lo pone el usuario o abajo
-        dbtable = f"(SELECT * FROM {dbtable} LIMIT {lim}) t_lim" if source_type in ("hive", "impala") else f"({query.rstrip(';')}) t_bnx"
+        dbtable = f"(SELECT * FROM {dbtable} LIMIT {lim}) t_lim" if source_type in _limit_engines else f"({query.rstrip(';')}) t_bnx"
     elif table:
         if source_type == "teradata":
             dbtable = f"(SELECT * FROM {table} SAMPLE {lim}) t_lim"

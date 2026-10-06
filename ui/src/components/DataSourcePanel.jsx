@@ -8,6 +8,20 @@ import { COMPILE_URL } from '../config'
 // mismo formato que los sinteticos, para usarlo en la prueba.
 const FETCH_URL = COMPILE_URL.replace(/\/compile$/, '/datasource/fetch')
 
+// Pistas por fuente (puerto tipico y jar del driver JDBC esperado en el server).
+const PORT_HINT = {
+  teradata: '1025', hive: '10000', impala: '21050',
+  mariadb: '3306', mysql: '3306', postgres: '5432',
+}
+const DRIVER_HINT = {
+  teradata: '/opt/drivers/terajdbc4.jar',
+  hive: '/opt/drivers/HiveJDBC.jar',
+  impala: '/opt/drivers/ImpalaJDBC.jar',
+  mariadb: '/opt/drivers/mariadb-java-client.jar',
+  mysql: '/opt/drivers/mysql-connector-j.jar',
+  postgres: '/opt/drivers/postgresql.jar',
+}
+
 export default function DataSourcePanel({ theme, onImport }) {
   const t = theme || {}
   // Abierto por defecto para que el boton "Traer datos" se vea de inmediato
@@ -97,7 +111,8 @@ export default function DataSourcePanel({ theme, onImport }) {
           <div style={{ fontSize: 11, color: t.dim, lineHeight: 1.5 }}>
             Los datos llegan <b>enmascarados</b> (tarjetas, nombres, emails, etc. redactados por la
             librería de PII); el dato real nunca sale del server. Para pruebas puntuales (LIMIT).
-            Requiere el driver JDBC en el server (Teradata: terajdbc4.jar; Cloudera: Hive/Impala jar).
+            Requiere el driver JDBC en el server (Teradata: terajdbc4.jar; Cloudera: Hive/Impala jar;
+            MariaDB/MySQL: mariadb-java-client.jar / mysql-connector-j.jar; PostgreSQL: postgresql.jar).
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
@@ -106,11 +121,14 @@ export default function DataSourcePanel({ theme, onImport }) {
                 <option value="teradata">Teradata</option>
                 <option value="hive">Cloudera · Hive</option>
                 <option value="impala">Cloudera · Impala</option>
+                <option value="mariadb">MariaDB</option>
+                <option value="mysql">MySQL</option>
+                <option value="postgres">PostgreSQL</option>
                 <option value="jdbc">JDBC genérico</option>
               </select>
             </div>
             <div><label style={lbl}>Host</label><input style={field} value={host} onChange={e => setHost(e.target.value)} placeholder="host.banco.com" /></div>
-            <div><label style={lbl}>Puerto</label><input style={field} value={port} onChange={e => setPort(e.target.value)} placeholder="1025 / 10000 / 21050" /></div>
+            <div><label style={lbl}>Puerto</label><input style={field} value={port} onChange={e => setPort(e.target.value)} placeholder={PORT_HINT[sourceType] || '1025 / 10000 / 21050'} /></div>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
             <div><label style={lbl}>Base de datos</label><input style={field} value={database} onChange={e => setDatabase(e.target.value)} placeholder="esquema / database" /></div>
@@ -127,7 +145,7 @@ export default function DataSourcePanel({ theme, onImport }) {
           <div><label style={lbl}>o Query SQL (opcional)</label>
             <input style={field} value={query} onChange={e => setQuery(e.target.value)} placeholder="SELECT ... FROM ... WHERE ..." /></div>
           <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 8 }}>
-            <div><label style={lbl}>Ruta del driver JDBC (.jar en el server)</label><input style={field} value={driverJar} onChange={e => setDriverJar(e.target.value)} placeholder="/opt/drivers/terajdbc4.jar" /></div>
+            <div><label style={lbl}>Ruta del driver JDBC (.jar en el server)</label><input style={field} value={driverJar} onChange={e => setDriverJar(e.target.value)} placeholder={DRIVER_HINT[sourceType] || '/opt/drivers/driver.jar'} /></div>
             <div><label style={lbl}>Nombre del nodo/fuente</label><input style={field} value={targetNode} onChange={e => setTargetNode(e.target.value)} placeholder="external_source" /></div>
           </div>
 
