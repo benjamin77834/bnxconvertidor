@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { COMPILE_URL } from '../config'
 
 // Panel SEPARADO para traer datos reales de Cloudera (Hive/Impala) o Teradata
@@ -13,13 +13,23 @@ const PORT_HINT = {
   teradata: '1025', hive: '10000', impala: '21050',
   mariadb: '3306', mysql: '3306', postgres: '5432',
 }
+// Drivers INCLUIDOS en el proyecto (carpeta drivers/, licencia libre). Al elegir
+// la fuente se autollena esta ruta. Teradata e Impala son propietarios (no se
+// pueden incluir por licencia): quedan vacios para que el usuario ponga el .jar.
+const DRIVER_BUNDLED = {
+  hive: 'drivers/hive-jdbc-standalone.jar',
+  mariadb: 'drivers/mariadb-java-client.jar',
+  mysql: 'drivers/mysql-connector-j.jar',
+  postgres: 'drivers/postgresql.jar',
+}
+// Pista (placeholder) para los que NO vienen incluidos.
 const DRIVER_HINT = {
-  teradata: '/opt/drivers/terajdbc4.jar',
-  hive: '/opt/drivers/HiveJDBC.jar',
-  impala: '/opt/drivers/ImpalaJDBC.jar',
-  mariadb: '/opt/drivers/mariadb-java-client.jar',
-  mysql: '/opt/drivers/mysql-connector-j.jar',
-  postgres: '/opt/drivers/postgresql.jar',
+  teradata: 'descárgalo de Teradata (licencia): /ruta/terajdbc4.jar',
+  impala: 'descárgalo de Cloudera (licencia): /ruta/ImpalaJDBC.jar',
+  hive: 'drivers/hive-jdbc-standalone.jar',
+  mariadb: 'drivers/mariadb-java-client.jar',
+  mysql: 'drivers/mysql-connector-j.jar',
+  postgres: 'drivers/postgresql.jar',
 }
 
 export default function DataSourcePanel({ theme, onImport }) {
@@ -93,6 +103,13 @@ export default function DataSourcePanel({ theme, onImport }) {
     persistConns({ ...savedConns, [st]: list })
   }
   const currentSaved = savedConns[sourceType] || []
+
+  // Al montar: si la fuente por defecto trae driver incluido y el campo esta
+  // vacio, lo autollena (p.ej. si el usuario cambia el default a mariadb).
+  useEffect(() => {
+    if (!driverJar && DRIVER_BUNDLED[sourceType]) setDriverJar(DRIVER_BUNDLED[sourceType])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const field = {
     padding: '7px 9px', borderRadius: 6, fontSize: 12, width: '100%',
@@ -191,13 +208,20 @@ export default function DataSourcePanel({ theme, onImport }) {
           <div style={{ fontSize: 11, color: t.dim, lineHeight: 1.5 }}>
             Los datos llegan <b>enmascarados</b> (tarjetas, nombres, emails, etc. redactados por la
             librería de PII); el dato real nunca sale del server. Para pruebas puntuales (LIMIT).
-            Requiere el driver JDBC en el server (Teradata: terajdbc4.jar; Cloudera: Hive/Impala jar;
-            MariaDB/MySQL: mariadb-java-client.jar / mysql-connector-j.jar; PostgreSQL: postgresql.jar).
+            Los drivers de <b>Hive, MariaDB, MySQL y PostgreSQL ya vienen incluidos</b> (se autollenan al
+            elegir la fuente). <b>Teradata e Impala</b> son propietarios: descarga su .jar y pon la ruta.
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
             <div><label style={lbl}>Fuente</label>
-              <select value={sourceType} onChange={e => setSourceType(e.target.value)} style={field}>
+              <select value={sourceType} onChange={e => {
+                const st = e.target.value
+                setSourceType(st)
+                // Autollenar el driver incluido para esa fuente. Teradata/Impala
+                // no vienen incluidos (licencia): se limpia para que lo ponga el usuario.
+                setDriverJar(DRIVER_BUNDLED[st] || '')
+                if (PORT_HINT[st]) setPort(PORT_HINT[st])
+              }} style={field}>
                 <option value="teradata">Teradata</option>
                 <option value="hive">Cloudera · Hive</option>
                 <option value="impala">Cloudera · Impala</option>

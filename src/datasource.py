@@ -78,6 +78,13 @@ def fetch_masked(source_type, conn, query=None, table=None, limit=50,
     driver = conn.get("driver") or preset.get("driver")
     if not url:
         return {"ok": False, "error": "Falta la URL de conexion (o host/database)."}
+    # Resolver rutas relativas (p.ej. 'drivers/xxx.jar' que llega de la GUI)
+    # contra la raiz del proyecto, para que funcione sin importar el cwd.
+    if driver_jar and not os.path.isabs(driver_jar):
+        proj_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        cand = os.path.join(proj_root, driver_jar)
+        if os.path.isfile(cand):
+            driver_jar = cand
     if not driver_jar or not os.path.isfile(driver_jar):
         return {"ok": False, "error": "Falta el driver JDBC (driver_jar). "
                 "Teradata: terajdbc4.jar; Cloudera: HiveJDBC/ImpalaJDBC jar; "
