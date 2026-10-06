@@ -1527,7 +1527,7 @@ export default function App() {
               </div>
               {/* Descripcion en lenguaje natural del grafo */}
               {result.description && (
-                <details open style={{
+                <details style={{
                   padding: '8px 20px', background: t.sidebar,
                   borderBottom: `1px solid ${t.border}`,
                   fontSize: 13, color: t.muted, lineHeight: 1.5,
@@ -1535,7 +1535,7 @@ export default function App() {
                   <summary style={{
                     cursor: 'pointer', color: t.accent || '#818cf8', fontWeight: 600,
                     userSelect: 'none', outline: 'none',
-                  }}>📝 Descripción (clic para ocultar)</summary>
+                  }}>📝 Descripción (clic para ver)</summary>
                   <div style={{ marginTop: 8 }}>{result.description}</div>
                 </details>
               )}
