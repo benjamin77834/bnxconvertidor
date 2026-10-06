@@ -34,8 +34,15 @@ _PRESETS = {
         "url": "jdbc:impala://{host}:{port}/{database}",
     },
     "mariadb": {
-        "driver": "org.mariadb.jdbc.Driver",
-        "url": "jdbc:mariadb://{host}:{port}/{database}",
+        # IMPORTANTE: usamos el driver de MySQL (com.mysql.cj.jdbc.Driver) y URL
+        # jdbc:mysql:// aunque la fuente sea MariaDB. El MariaDB Connector/J 3.x
+        # tiene un bug con Spark: devuelve el NOMBRE de columna como valor del
+        # resultset (java.sql.SQLDataException: value 'col' cannot be decoded).
+        # El driver MySQL es compatible con MariaDB a nivel de protocolo y lee
+        # los datos correctamente. El jar que se autollena en la GUI tambien es
+        # el de mysql-connector-j.jar.
+        "driver": "com.mysql.cj.jdbc.Driver",
+        "url": "jdbc:mysql://{host}:{port}/{database}",
     },
     "mysql": {
         "driver": "com.mysql.cj.jdbc.Driver",
