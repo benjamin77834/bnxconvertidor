@@ -229,6 +229,28 @@ export default function GrafosPage({ theme, onLoadToCompiler }) {
 
   return (
     <div style={{ padding: 32, overflowY: 'auto', height: '100%', display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <style>{`@keyframes bnxspin2 { to { transform: rotate(360deg) } } @keyframes bnxpulse2 { 0%,100%{opacity:1} 50%{opacity:.5} }`}</style>
+      {/* Overlay de "convirtiendo": COBOL/ALGOL grandes tardan varios segundos. */}
+      {compiling && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 9999,
+          background: 'rgba(2,6,20,0.72)', backdropFilter: 'blur(2px)',
+          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 18,
+        }}>
+          <div style={{
+            width: 56, height: 56, borderRadius: '50%',
+            border: '5px solid rgba(168,85,247,0.25)', borderTopColor: '#a855f7',
+            animation: 'bnxspin2 0.9s linear infinite',
+          }} />
+          <div style={{ fontSize: 18, fontWeight: 800, color: '#e2e8f0', animation: 'bnxpulse2 1.6s ease-in-out infinite' }}>
+            ⚙️ Convirtiendo a PySpark…
+          </div>
+          <div style={{ fontSize: 13, color: '#94a3b8', maxWidth: 440, textAlign: 'center', lineHeight: 1.5 }}>
+            Leyendo el archivo, construyendo el grafo y generando el código PySpark.
+            Los COBOL/ALGOL grandes (miles de párrafos) pueden tardar varios segundos. No cierres la pestaña.
+          </div>
+        </div>
+      )}
       <div>
         <h2 style={{ fontSize: 22, fontWeight: 700, color: t.text || '#e2e8f0', margin: 0 }}>Proyectos de Grafos</h2>
         <p style={{ fontSize: 13, color: t.dim || '#64748b', marginTop: 4 }}>Selecciona archivos (.mp, .xfr, .pset, .plan) y compila desde aqui</p>
