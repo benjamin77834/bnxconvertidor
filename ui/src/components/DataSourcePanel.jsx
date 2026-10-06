@@ -18,7 +18,9 @@ const PORT_HINT = {
 // pueden incluir por licencia): quedan vacios para que el usuario ponga el .jar.
 const DRIVER_BUNDLED = {
   hive: 'drivers/hive-jdbc-standalone.jar',
-  mariadb: 'drivers/mariadb-java-client.jar',
+  // MariaDB usa el driver de MySQL (compatible y sin el bug de metadata del
+  // MariaDB Connector/J 3.x con Spark). Ver nota en src/datasource.py.
+  mariadb: 'drivers/mysql-connector-j.jar',
   mysql: 'drivers/mysql-connector-j.jar',
   postgres: 'drivers/postgresql.jar',
 }
