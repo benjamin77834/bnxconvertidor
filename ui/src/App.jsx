@@ -155,7 +155,11 @@ export default function App() {
   // esten (respeta la preferencia guardada).
   useEffect(() => {
     const n = result?.nodes_truncated ? result.total_nodes : (result?.nodes?.length || 0)
-    if (result?.code && (result?.nodes_truncated || n > DAG_RENDER_LIMIT)) {
+    // Grafo grande (truncado o > umbral) O conversion COBOL/ALGOL (viene con
+    // generated_mp y suele ser codigo largo): abrir en "Solo código" para que
+    // los chips de nodos no metan ruido. El usuario puede desactivar el toggle.
+    const esLegacy = Boolean(result?.generated_mp)
+    if (result?.code && (result?.nodes_truncated || n > DAG_RENDER_LIMIT || esLegacy)) {
       setCodeOnly(true)
       setCodeOpen(true)
     }

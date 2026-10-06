@@ -2150,6 +2150,19 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             code = result.get("code") or ""
             if not code.strip():
                 return
+            # GUARD de tamaño: el optimizador tiene costo super-lineal y con
+            # codigos enormes (grafos de decenas de miles de nodos) se cuelga
+            # (>10 min). Para esos casos saltamos la optimizacion automatica: el
+            # codigo base ya es correcto y descargable. El usuario puede optimizar
+            # a mano con /optimize si lo necesita en un fragmento.
+            n_lines = code.count("\n") + 1
+            if n_lines > 20000 or len(code) > 1_500_000:
+                result["optimization_skipped"] = True
+                result["optimization_skip_reason"] = (
+                    f"Código muy grande ({n_lines} líneas): se omitió la optimización "
+                    "automática para no bloquear. El código generado es correcto.")
+                print(f"  [opt] omitida por tamaño: {n_lines} lineas")
+                return
             opt = optimize_pyspark(code, include_coalesce=True)
             if opt and opt.get("code"):
                 result["optimized_code"] = opt["code"]
