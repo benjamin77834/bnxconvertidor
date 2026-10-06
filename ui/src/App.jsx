@@ -83,6 +83,8 @@ export default function App() {
   })
   const setResult = (val) => {
     _setResult(val)
+    // Nuevo resultado: resetear el "forzar DAG" (grafos grandes no se pintan solos).
+    setForceDag(false)
     // Un resultado de grafo con codigo desactiva el modo py2spark (fuente activa
     // = la ultima accion del usuario: compilar un grafo).
     if (val && val.code) setPy2sparkCode('')
@@ -103,6 +105,10 @@ export default function App() {
   }
   const [page, setPage]         = useState('compiler')
   const [expandedPanel, setExpandedPanel] = useState(null)  // 'code' | 'dag' | 'editor-mp' | 'editor-xfr' | 'editor-pset' | null
+  // Grafos MUY grandes (COBOL/ALGOL productivos: 1000+ nodos) congelan ReactFlow.
+  // Por defecto NO los renderizamos; el usuario puede forzarlo bajo su riesgo.
+  const [forceDag, setForceDag] = useState(false)
+  const DAG_RENDER_LIMIT = 300  // umbral de nodos para render automatico del DAG
 
   // Cerrar fullscreen con Escape
   useEffect(() => {
@@ -1396,7 +1402,34 @@ export default function App() {
                 display: 'flex', alignItems: 'center', gap: 4,
               }}>🔲 Fullscreen</button>
             )}
-            {result?.nodes?.length > 0
+            {result?.nodes?.length > 0 && result.nodes.length > DAG_RENDER_LIMIT && !forceDag ? (
+              // Grafo MUY grande: no renderizar ReactFlow (congela la UI). Mostrar
+              // aviso con stats y permitir forzar bajo advertencia.
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center',
+                justifyContent: 'center', gap: 14, padding: 24, textAlign: 'center' }}>
+                <span style={{ fontSize: 44 }}>🗺️</span>
+                <span style={{ fontSize: 16, fontWeight: 700, color: t.text }}>
+                  Grafo muy grande para dibujar: {result.nodes.length} nodos · {result.edges?.length || 0} edges
+                </span>
+                <span style={{ fontSize: 13, color: t.muted, maxWidth: 520, lineHeight: 1.5 }}>
+                  Dibujar más de {DAG_RENDER_LIMIT} nodos congela el navegador. La compilación SÍ funcionó
+                  (el código está abajo y es descargable). Usa el buscador del DAG en pantalla completa,
+                  o fuérzalo bajo tu riesgo.
+                </span>
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
+                  <button onClick={() => { setForceDag(true); }} style={{
+                    padding: '10px 18px', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 700,
+                    background: '#f59e0b', color: '#000', border: 'none',
+                  }}>⚠️ Dibujar de todos modos ({result.nodes.length} nodos)</button>
+                  {result.code && (
+                    <button onClick={downloadCode} style={{
+                      padding: '10px 18px', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 700,
+                      background: '#22c55e', color: '#000', border: 'none',
+                    }}>📥 Descargar código</button>
+                  )}
+                </div>
+              </div>
+            ) : result?.nodes?.length > 0
               ? <DagViewer data={result} theme={t} onEditNode={(nodeId, newRule) => {
                   // Update the node rule in result and recompile
                   const updatedNodes = result.nodes.map(n =>
