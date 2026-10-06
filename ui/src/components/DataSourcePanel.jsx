@@ -10,7 +10,9 @@ const FETCH_URL = COMPILE_URL.replace(/\/compile$/, '/datasource/fetch')
 
 export default function DataSourcePanel({ theme, onImport }) {
   const t = theme || {}
-  const [open, setOpen] = useState(false)
+  // Abierto por defecto para que el boton "Traer datos" se vea de inmediato
+  // (antes estaba colapsado y el usuario no encontraba el boton).
+  const [open, setOpen] = useState(true)
   const [sourceType, setSourceType] = useState('teradata')
   const [host, setHost] = useState('')
   const [port, setPort] = useState('')
@@ -81,11 +83,13 @@ export default function DataSourcePanel({ theme, onImport }) {
       border: '1px solid #0ea5e955',
     }}>
       <button onClick={() => setOpen(v => !v)}
-        style={{ width: '100%', textAlign: 'left', padding: '12px 14px', cursor: 'pointer',
-          background: 'transparent', border: 'none', color: '#38bdf8',
-          fontSize: 14, fontWeight: 700, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span>🛢️ Traer datos de Cloudera / Teradata (enmascarados por PII)</span>
-        <span style={{ fontSize: 12, color: '#38bdf8' }}>{open ? '▲ ocultar' : '▼ abrir conexión'}</span>
+        style={{ width: '100%', textAlign: 'left', padding: '14px 16px', cursor: 'pointer',
+          background: '#0ea5e925', border: 'none', color: '#38bdf8',
+          fontSize: 15, fontWeight: 800, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span>🛢️ Traer datos remotos de Cloudera / Teradata (enmascarados por PII)</span>
+        <span style={{ fontSize: 12, color: '#38bdf8', background: '#0ea5e930', padding: '3px 10px', borderRadius: 6 }}>
+          {open ? '▲ ocultar conexión' : '▼ abrir conexión'}
+        </span>
       </button>
 
       {open && (
