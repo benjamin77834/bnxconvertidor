@@ -2145,19 +2145,56 @@ def parse_project(file_path):
         return parse_mp_ast(file_path)
 
 
+def _norm_name(s):
+    """Normaliza un nombre para comparar: minusculas, sin extension conocida y
+    sin separadores (espacios, guiones, puntos, underscores). Asi 'Join_Cust.xfr'
+    y el nodo 'joincust' se consideran el mismo nombre."""
+    import os as _os
+    s = (s or "").strip().lower()
+    # Quitar extension conocida (.xfr/.dml) si viene en el nombre del archivo.
+    base, ext = _os.path.splitext(s)
+    if ext in (".xfr", ".dml"):
+        s = base
+    # Quitar separadores para una comparacion robusta.
+    return re.sub(r"[\s\-_.]+", "", s)
+
+
 def _assign_multi_xfr(multi, transform_nodes, xfr_rules):
     """Assign multiple parsed .xfr files to TRANSFORM nodes by name matching.
-    
-    Strategy:
-    1. Try to match by extracting version tokens (e.g. V9S2P3) from XFR filename
-       and finding the TRANSFORM node that contains the same token.
-    2. If no token match, try fuzzy substring matching on the XFR name vs node ID.
-    3. Fallback: assign in positional order to unmatched TRANSFORM nodes.
+
+    Strategy (en orden de prioridad):
+    0. Match DIRECTO por nombre de archivo: el nombre del .xfr (sin extension,
+       normalizado) == nombre/id del nodo TRANSFORM. Es el caso real cuando el
+       usuario sube archivos cuyos nombres coinciden con los nodos del grafo.
+    1. Token de version (e.g. V9S2P3) en el nombre del .xfr que aparezca en el nodo.
+    2. Substring difuso del nombre del .xfr contra el id del nodo.
+    3. Fallback posicional para los que queden sin asignar.
     """
     assigned = set()  # indices of transform_nodes already assigned
     unmatched_xfrs = []  # (index, xfr_data) for fallback
 
+    # --- ESTRATEGIA 0: match directo por nombre de archivo == nombre de nodo ---
+    # Se hace en una pasada previa para que tenga prioridad sobre tokens/substring.
+    still_pending = []
     for xi, xfr_data in enumerate(multi):
+        raw_name = xfr_data.get("name", "")
+        norm_xfr = _norm_name(raw_name)
+        matched = False
+        if norm_xfr:
+            for ti, tnode in enumerate(transform_nodes):
+                if ti in assigned:
+                    continue
+                if norm_xfr == _norm_name(tnode["id"]) or norm_xfr == _norm_name(tnode.get("name", "")):
+                    nid = tnode["id"].lower()
+                    xfr_rules[nid] = {"dml_fields": xfr_data["dml_fields"]}
+                    assigned.add(ti)
+                    matched = True
+                    print(f"[i] Applied {raw_name} ({len(xfr_data['dml_fields'])} fields) → {nid} (NAME match)")
+                    break
+        if not matched:
+            still_pending.append((xi, xfr_data))
+
+    for xi, xfr_data in still_pending:
         xfr_name = xfr_data.get("name", "").upper()
         matched = False
 
