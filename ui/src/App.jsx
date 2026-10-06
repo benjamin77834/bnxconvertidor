@@ -73,15 +73,33 @@ export default function App() {
   // Python ORIGINAL de py2spark: se envia al runtest para reconvertir fresco en
   // el servidor (evita ejecutar PySpark viejo cacheado).
   const [py2sparkSource, setPy2sparkSource] = useState('')
+  // Defensa frontend: trunca nodes/edges de un result a 500 para no colgar la
+  // vista. Aplica al leer de localStorage (grafos viejos guardados ANTES del
+  // truncado de backend) y a cualquier result entrante. NUNCA toca `code`.
+  const GUI_NODE_LIMIT = 500
+  const capResult = (r) => {
+    if (!r || !Array.isArray(r.nodes)) return r
+    const total = r.nodes.length
+    if (r.nodes_truncated || total <= GUI_NODE_LIMIT) return r
+    const kept = r.nodes.slice(0, GUI_NODE_LIMIT)
+    const keptIds = new Set(kept.map(n => n.id))
+    const keptEdges = (r.edges || []).filter(e => keptIds.has(e.from) && keptIds.has(e.to))
+    return {
+      ...r, nodes: kept, edges: keptEdges,
+      nodes_truncated: true, total_nodes: total, total_edges: (r.edges || []).length,
+    }
+  }
+
   // result persiste en localStorage para que el codigo compilado sobreviva a
   // recargas de pagina (asi Data Redactada / Pipeline no pierden el codigo).
   const [result, _setResult]    = useState(() => {
     try {
       const saved = localStorage.getItem('bnx_last_result')
-      return saved ? JSON.parse(saved) : null
+      return saved ? capResult(JSON.parse(saved)) : null
     } catch { return null }
   })
-  const setResult = (val) => {
+  const setResult = (raw) => {
+    const val = capResult(raw)   // recorta nodos gigantes antes de dibujar/guardar
     _setResult(val)
     // Nuevo resultado: resetear el "forzar DAG" (grafos grandes no se pintan solos).
     setForceDag(false)
