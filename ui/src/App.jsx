@@ -521,7 +521,32 @@ export default function App() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: t.bg, color: t.text, transition: 'background .4s ease, color .4s ease' }}>
-      <style>{`@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.4} }`}</style>
+      <style>{`@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.4} }
+        @keyframes bnxspin { to { transform: rotate(360deg) } }
+        @keyframes bnxpulse { 0%,100%{opacity:1} 50%{opacity:.5} }`}</style>
+
+      {/* Overlay GLOBAL de "procesando": se muestra mientras loading=true, para
+          que el usuario sepa que esta trabajando (compilaciones grandes tardan). */}
+      {loading && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 9999,
+          background: 'rgba(2,6,20,0.72)', backdropFilter: 'blur(2px)',
+          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 18,
+        }}>
+          <div style={{
+            width: 56, height: 56, borderRadius: '50%',
+            border: '5px solid rgba(99,102,241,0.25)', borderTopColor: '#6366f1',
+            animation: 'bnxspin 0.9s linear infinite',
+          }} />
+          <div style={{ fontSize: 18, fontWeight: 800, color: '#e2e8f0', animation: 'bnxpulse 1.6s ease-in-out infinite' }}>
+            ⚙️ Procesando…
+          </div>
+          <div style={{ fontSize: 13, color: '#94a3b8', maxWidth: 420, textAlign: 'center', lineHeight: 1.5 }}>
+            Compilando y generando el código. Los grafos grandes (COBOL/ALGOL o miles de nodos)
+            pueden tardar varios segundos. No cierres la pestaña.
+          </div>
+        </div>
+      )}
 
       {/* Fullscreen Overlay: Optimizacion de performance */}
       {optimizeFullscreen && optimizeResult && !optimizeResult.error && (
