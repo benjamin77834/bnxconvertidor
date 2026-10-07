@@ -1004,7 +1004,27 @@ def _parse_gde_native(content):
         # Filter: only include vertices that are actual instances (in node_by_id)
         # This removes template/prototype vertices that have ports but aren't real nodes
         included_vids = included_vids & set(node_by_id.keys())
-        
+
+        # Excluir componentes TRASH: en Ab Initio un Trash es un endpoint de
+        # DESCARTE (tira los registros rechazados por un filtro/validacion). NO es
+        # un paso de transformacion de datos y NO debe aparecer en el flujo del
+        # grafo convertido (metia nodos fantasma Trash_1/Trash_2 que alteraban la
+        # salida). Se omite el nodo; sus aristas de entrada se descartan (es una
+        # salida terminal de rechazo, no re-enruta datos hacia adelante).
+        def _is_trash(vid):
+            info = node_by_id.get(vid, {})
+            nm = (info.get("comp_type") or info.get("display_name") or info.get("name") or "").lower()
+            return "trash" in nm
+        trash_vids = {vid for vid in included_vids if _is_trash(vid)}
+        if trash_vids:
+            included_vids = included_vids - trash_vids
+            # Quitar aristas que tocan un Trash (entrada de descarte: no aporta
+            # al flujo de datos de salida).
+            edge_set = {(s, d) for (s, d) in edge_set
+                        if s not in trash_vids and d not in trash_vids}
+            for _tv in sorted(trash_vids, key=lambda x: int(x)):
+                print(f"  [dbg] Trash excluido del grafo: {node_by_id[_tv].get('display_name', _tv)} (vertex {_tv})")
+
         for vid in sorted(included_vids, key=lambda x: int(x)):
             if vid not in vertex_names:
                 continue
@@ -1013,14 +1033,22 @@ def _parse_gde_native(content):
             if name in seen_names:
                 name = f"{name}_{vid}"
             seen_names.add(name)
+            # Marcar si este vertice es hijo de un subgrafo (el GDE suele ocultar
+            # estos internos). Util para diagnosticar nodos "fantasma": si en tu
+            # grafo aparecen nodos de mas, revisa el log [dbg] subgraph-child.
+            _parent_sg = subgraph_parent_map.get(vid)
+            _from_subgraph = _parent_sg in subgraph_ids if _parent_sg else False
             node_data = {
                 "id": name,
                 "name": info["display_name"],
                 "type": info["type"],
                 "params": "",
-                "subgraph": None,
+                "subgraph": subgraph_names.get(_parent_sg) if _from_subgraph else None,
                 "vertex_id": vid,
             }
+            if _from_subgraph:
+                print(f"  [dbg] subgraph-child: {info['display_name']} (vertex {vid}) "
+                      f"dentro de subgrafo '{subgraph_names.get(_parent_sg, _parent_sg)}' → tipo {info['type']}")
             # Include data_path if available (for SOURCE/SINK)
             if "data_path" in info:
                 node_data["data_path"] = info["data_path"]
