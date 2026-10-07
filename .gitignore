@@ -62,3 +62,6 @@ vscode-extension/*.vsix
 # Drivers JDBC incluidos localmente (pesados; se descargan con drivers/README).
 # No se versionan: el de Hive pesa ~69MB y MySQL es GPL con FOSS exception.
 drivers/*.jar
+
+# Artefactos de empaquetado/distribucion (se regeneran; no versionar)
+*.7z
