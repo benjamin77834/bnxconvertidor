@@ -504,3 +504,46 @@ def test_join_named_inputs_map_to_positional():
     assert "stat_fromPortName" not in joined
     assert 0 in cols_by_side and "fromPortName" in cols_by_side[0]
     assert 1 in cols_by_side and "systemCpu" in cols_by_side[1]
+
+
+# ---------------------------------------------------------------------------
+# SUBGRAFO-PLANTILLA DE DATASET aplanado como ISLA de nodos fantasma.
+# Bug A_DRI_ECMS_AMBS_IMR_D: el .mp GDE serializa Input/Output_File como un
+# subgrafo (p.ej. "Graph4") cuyos internos (Reformat/Redefine_Format/
+# Filter_by_Expression/Dedup/Trash) son casting DML, no pasos del usuario. GDE
+# los oculta y muestra solo la cadena real source->sort->join->sink. El parser
+# los aplanaba como nodos de primer nivel, y como sus flujos son internos al
+# subgrafo quedaban como una ISLA desconectada que contaminaba el DAG y los
+# datos de salida. El fix elimina esa isla (plumbing con nombre canonico de
+# plantilla) pero CONSERVA subgrafos de usuario con logica real.
+# ---------------------------------------------------------------------------
+def test_dataset_template_subgraph_island_removed():
+    import os
+    from main import parse_project
+    from src.dag.builder import build_dag
+
+    fx = os.path.join(os.path.dirname(__file__), "fixtures",
+                      "graph4_subgraph_repro.mp")
+    if not os.path.exists(fx):
+        pytest.skip("fixture graph4_subgraph_repro.mp no disponible")
+
+    ast = parse_project(fx)
+    ids = {n["id"] for n in ast["nodes"]}
+
+    # El grafo real tiene exactamente 6 nodos (2 sources, 2 sorts, join, sink).
+    assert len(ast["nodes"]) == 6, f"esperados 6 nodos, hay {len(ast['nodes'])}: {sorted(ids)}"
+
+    # Los internos de la plantilla "Graph4" NO deben aparecer como nodos.
+    for ghost in ("Reformat", "Redefine_Format", "Redefine_Format_1",
+                  "Filter_by_Expression", "Dedup_Sorted", "Trash_1"):
+        assert ghost not in ids, f"nodo fantasma de subgrafo no eliminado: {ghost}"
+
+    # La topologia real debe reconstruirse: Join recibe Sort y Sort_1.
+    dag = build_dag(ast)
+    join = next((n for n in dag.execution_order if n.type == "JOIN"), None)
+    assert join is not None, "no se encontro el nodo Join"
+    assert set(join.parents) == {"Sort", "Sort_1"}, f"padres del Join: {join.parents}"
+
+    # El sink cuelga del Join.
+    sink = next((n for n in dag.execution_order if n.type == "SINK"), None)
+    assert sink is not None and sink.parents == ["Join"]

@@ -1,17 +1,16 @@
 """
-[*] BNX V54 GENERATED GLUE JOB
-? Generated at: 2026-09-09 18:18:16.243675
+[*] BNX V54 GENERATED PYSPARK JOB
+? Generated at: 2026-09-09 18:18:16.250450
 """
 
 import os
-from awsglue.context import GlueContext
-from pyspark.context import SparkContext
+from pyspark.sql import SparkSession
 from pyspark.sql.functions import *
 from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+from pyspark.sql.types import StructType
 
-sc = SparkContext()
-glueContext = GlueContext(sc)
-spark = glueContext.spark_session
+spark = SparkSession.builder.appName("BNX_Pipeline").getOrCreate()
 
 # =========================
 # PARAMETERS
@@ -19,7 +18,7 @@ spark = glueContext.spark_session
 class PARAMS:
     BASE_PATH = os.environ.get("BNX_BASE_PATH", "s3://datalake-bnx-scripts-dev")
 
-print("[*] BNX Glue Job V54 Started")
+print("[*] BNX PySpark Job Started")
 
 # =========================
 # HELPER FUNCTIONS
@@ -28,6 +27,35 @@ print("[*] BNX Glue Job V54 Started")
 def filter_by_expression_hdr_trl(df, field, start, length, exclude_values):
     """Filter rows where substring(field, start, length) is NOT in exclude_values."""
     return df.filter(~F.substring(F.col(field), start, length).isin(exclude_values))
+
+
+def _bnx_safe_col(df, name, sql):
+    """withColumn(name, expr(sql)) tolerante a columnas fuente ausentes."""
+    try:
+        out = df.withColumn(name, F.expr(sql))
+        _ = out.schema  # fuerza el analisis (resuelve nombres) sin ejecutar
+        return out
+    except Exception as _e:
+        _msg = str(_e)
+        _cls = type(_e).__name__
+        # Columna ausente (UNRESOLVED_COLUMN), SQL malformado (ParseException),
+        # funcion inexistente (UNRESOLVED_ROUTINE) o cualquier error de analisis:
+        # neutralizar la columna a NULL en vez de tumbar el job.
+        if ("UNRESOLVED_COLUMN" in _msg or "cannot be resolved" in _msg
+                or "UNRESOLVED_ROUTINE" in _msg or "PARSE_SYNTAX_ERROR" in _msg
+                or "ParseException" in _cls or "AnalysisException" in _cls):
+            return df.withColumn(name, F.lit(None))
+        raise
+
+
+def _bnx_aggcol(df, name):
+    """Resuelve una columna para agregar, tolerante a typo/casing; lit(None) si falta."""
+    if df is not None:
+        want = name.lower().replace('_', '')
+        for c in df.columns:
+            if c.lower().replace('_', '') == want:
+                return F.col(c)
+    return F.lit(None)
 
 
 def _bnx_ensure_side(df, cols):
@@ -84,7 +112,7 @@ CleanAds_df = CleanAds_df.where("ad_id IS NOT NULL")
 print("[~] TRANSFORM: CleanAds")
 
 # [.] TRANSFORM: AdRevenue
-AdRevenue_df = CleanAds_df.groupBy("user_id", "campaign_id").agg(sum("revenue").alias("ad_revenue"), sum("impressions").alias("total_impressions"), sum("clicks").alias("total_clicks"))
+AdRevenue_df = CleanAds_df.groupBy("user_id", "campaign_id").agg(sum(_bnx_aggcol(CleanAds_df, "revenue")).alias("ad_revenue"), sum(_bnx_aggcol(CleanAds_df, "impressions")).alias("total_impressions"), sum(_bnx_aggcol(CleanAds_df, "clicks")).alias("total_clicks"))
 print("[~] TRANSFORM: AdRevenue")
 
 # [+] SOURCE: RawUsers
@@ -111,7 +139,7 @@ CleanSubscriptions_df = CleanSubscriptions_df.where("subscription_id IS NOT NULL
 print("[~] TRANSFORM: CleanSubscriptions")
 
 # [~] JOIN: UserSubscriptionType
-UserSubscriptionType_df = FilterActiveUsers_df.join(CleanSubscriptions_df, on="user_id", how="left")
+UserSubscriptionType_df = FilterActiveUsers_df.join(CleanSubscriptions_df, on=["user_id"], how="left")
 print("[~] JOIN: UserSubscriptionType")
 
 # [+] SOURCE: RawDevices
@@ -124,28 +152,28 @@ CleanDevices_df = CleanDevices_df.where("device_id IS NOT NULL")
 print("[~] TRANSFORM: CleanDevices")
 
 # [~] JOIN: UserDeviceHistory
-UserDeviceHistory_df = FilterActiveUsers_df.join(CleanDevices_df, on="user_id", how="left")
+UserDeviceHistory_df = FilterActiveUsers_df.join(CleanDevices_df, on=["user_id"], how="left")
 print("[~] JOIN: UserDeviceHistory")
 
 # [.] TRANSFORM: UserListeningHours
-UserListeningHours_df = FilterActiveUsers_df.groupBy("user_id").agg(sum("duration_sec").alias("total_listen_sec"), count("stream_id").alias("stream_count"))
+UserListeningHours_df = FilterActiveUsers_df.groupBy("user_id").agg(sum(_bnx_aggcol(FilterActiveUsers_df, "duration_sec")).alias("total_listen_sec"), count(_bnx_aggcol(FilterActiveUsers_df, "stream_id")).alias("stream_count"))
 print("[~] TRANSFORM: UserListeningHours")
 
 # [.] TRANSFORM: UserSkipRate
-UserSkipRate_df = FilterActiveUsers_df.groupBy("user_id").agg(count("skip_id").alias("skip_count"), avg("skip_time_sec").alias("avg_skip_sec"))
+UserSkipRate_df = FilterActiveUsers_df.groupBy("user_id").agg(count(_bnx_aggcol(FilterActiveUsers_df, "skip_id")).alias("skip_count"), avg(_bnx_aggcol(FilterActiveUsers_df, "skip_time_sec")).alias("avg_skip_sec"))
 print("[~] TRANSFORM: UserSkipRate")
 
 # [~] JOIN: UserEngagement
-UserEngagement_df = UserListeningHours_df.join(UserSkipRate_df, on="user_id", how="inner")
+UserEngagement_df = UserListeningHours_df.join(UserSkipRate_df, on=["user_id"], how="inner")
 print("[~] JOIN: UserEngagement")
 
 # [~] JOIN: UserProfile
-UserProfile_df = UserSubscriptionType_df.join(UserDeviceHistory_df, on="user_id", how="left")
-UserProfile_df = UserProfile_df.join(UserEngagement_df, on="user_id", how="left")
+UserProfile_df = UserSubscriptionType_df.join(UserDeviceHistory_df, on=["user_id"], how="left")
+UserProfile_df = UserProfile_df.join(UserEngagement_df, on=["user_id"], how="left")
 print("[~] JOIN: UserProfile")
 
 # [~] JOIN: AdWithUser
-AdWithUser_df = AdRevenue_df.join(UserProfile_df, on="user_id", how="left")
+AdWithUser_df = AdRevenue_df.join(UserProfile_df, on=["user_id"], how="left")
 print("[~] JOIN: AdWithUser")
 
 # [+] SOURCE: RawStreams
@@ -167,7 +195,7 @@ CleanArtists_df = CleanArtists_df.where("artist_id IS NOT NULL")
 print("[~] TRANSFORM: CleanArtists")
 
 # [.] TRANSFORM: ArtistStreamCount
-ArtistStreamCount_df = CleanStreams_df.groupBy("artist_id").agg(count("stream_id").alias("artist_streams"), sum("duration_sec").alias("artist_listen_sec"))
+ArtistStreamCount_df = CleanStreams_df.groupBy("artist_id").agg(count(_bnx_aggcol(CleanStreams_df, "stream_id")).alias("artist_streams"), sum(_bnx_aggcol(CleanStreams_df, "duration_sec")).alias("artist_listen_sec"))
 print("[~] TRANSFORM: ArtistStreamCount")
 
 # [+] SOURCE: RawAlbums
@@ -180,7 +208,7 @@ CleanAlbums_df = CleanAlbums_df.where("album_id IS NOT NULL")
 print("[~] TRANSFORM: CleanAlbums")
 
 # [~] JOIN: ArtistWithAlbums
-ArtistWithAlbums_df = ArtistStreamCount_df.join(CleanAlbums_df, on="artist_id", how="left")
+ArtistWithAlbums_df = ArtistStreamCount_df.join(CleanAlbums_df, on=["artist_id"], how="left")
 print("[~] JOIN: ArtistWithAlbums")
 
 # [+] SOURCE: RawPayments
@@ -198,11 +226,11 @@ FilterConfirmedPayments_df = FilterConfirmedPayments_df.where("confirmed = true"
 print("[~] TRANSFORM: FilterConfirmedPayments")
 
 # [.] TRANSFORM: ArtistRevenue
-ArtistRevenue_df = FilterConfirmedPayments_df.groupBy("artist_id").agg(sum("amount").alias("artist_revenue"), count("payment_id").alias("artist_payments"))
+ArtistRevenue_df = FilterConfirmedPayments_df.groupBy("artist_id").agg(sum(_bnx_aggcol(FilterConfirmedPayments_df, "amount")).alias("artist_revenue"), count(_bnx_aggcol(FilterConfirmedPayments_df, "payment_id")).alias("artist_payments"))
 print("[~] TRANSFORM: ArtistRevenue")
 
 # [~] JOIN: ArtistPopularity
-ArtistPopularity_df = ArtistWithAlbums_df.join(ArtistRevenue_df, on="artist_id", how="left")
+ArtistPopularity_df = ArtistWithAlbums_df.join(ArtistRevenue_df, on=["artist_id"], how="left")
 print("[~] JOIN: ArtistPopularity")
 
 # [+] SOURCE: RawSongs
@@ -220,7 +248,7 @@ FilterPublishedSongs_df = FilterPublishedSongs_df.where("published = true")
 print("[~] TRANSFORM: FilterPublishedSongs")
 
 # [.] TRANSFORM: SongPopularity
-SongPopularity_df = CleanStreams_df.groupBy("song_id").agg(count("stream_id").alias("play_count"), sum("duration_sec").alias("total_play_sec"))
+SongPopularity_df = CleanStreams_df.groupBy("song_id").agg(count(_bnx_aggcol(CleanStreams_df, "stream_id")).alias("play_count"), sum(_bnx_aggcol(CleanStreams_df, "duration_sec")).alias("total_play_sec"))
 print("[~] TRANSFORM: SongPopularity")
 
 # [+] SOURCE: RawSkips
@@ -233,7 +261,7 @@ CleanSkips_df = CleanSkips_df.where("skip_id IS NOT NULL")
 print("[~] TRANSFORM: CleanSkips")
 
 # [.] TRANSFORM: SongSkipRate
-SongSkipRate_df = CleanSkips_df.groupBy("song_id").agg(count("skip_id").alias("song_skip_count"))
+SongSkipRate_df = CleanSkips_df.groupBy("song_id").agg(count(_bnx_aggcol(CleanSkips_df, "skip_id")).alias("song_skip_count"))
 print("[~] TRANSFORM: SongSkipRate")
 
 # [+] SOURCE: RawLikes
@@ -246,12 +274,12 @@ CleanLikes_df = CleanLikes_df.where("like_id IS NOT NULL")
 print("[~] TRANSFORM: CleanLikes")
 
 # [.] TRANSFORM: SongLikeRate
-SongLikeRate_df = CleanLikes_df.groupBy("song_id").agg(count("like_id").alias("song_like_count"))
+SongLikeRate_df = CleanLikes_df.groupBy("song_id").agg(count(_bnx_aggcol(CleanLikes_df, "like_id")).alias("song_like_count"))
 print("[~] TRANSFORM: SongLikeRate")
 
 # [~] JOIN: SongScore
-SongScore_df = SongPopularity_df.join(SongSkipRate_df, on="song_id", how="left")
-SongScore_df = SongScore_df.join(SongLikeRate_df, on="song_id", how="left")
+SongScore_df = SongPopularity_df.join(SongSkipRate_df, on=["song_id"], how="left")
+SongScore_df = SongScore_df.join(SongLikeRate_df, on=["song_id"], how="left")
 print("[~] JOIN: SongScore")
 
 # [.] TRANSFORM: BottomSongs
@@ -297,52 +325,52 @@ FilterCompletedStreams_df = FilterCompletedStreams_df.where("completed = true")
 print("[~] TRANSFORM: FilterCompletedStreams")
 
 # [.] TRANSFORM: StreamTotals
-StreamTotals_df = FilterCompletedStreams_df.groupBy("user_id", "song_id").agg(sum("duration_sec").alias("total_duration"), count("stream_id").alias("stream_count"))
+StreamTotals_df = FilterCompletedStreams_df.groupBy("user_id", "song_id").agg(sum(_bnx_aggcol(FilterCompletedStreams_df, "duration_sec")).alias("total_duration"), count(_bnx_aggcol(FilterCompletedStreams_df, "stream_id")).alias("stream_count"))
 print("[~] TRANSFORM: StreamTotals")
 
 # [~] JOIN: StreamWithUser
-StreamWithUser_df = StreamTotals_df.join(UserProfile_df, on="user_id", how="inner")
+StreamWithUser_df = StreamTotals_df.join(UserProfile_df, on=["user_id"], how="inner")
 print("[~] JOIN: StreamWithUser")
 
 # [~] JOIN: SongWithArtist
-SongWithArtist_df = FilterPublishedSongs_df.join(CleanArtists_df, on="artist_id", how="left")
+SongWithArtist_df = FilterPublishedSongs_df.join(CleanArtists_df, on=["artist_id"], how="left")
 print("[~] JOIN: SongWithArtist")
 
 # [~] JOIN: SongWithAlbum
-SongWithAlbum_df = SongWithArtist_df.join(CleanAlbums_df, on="album_id", how="left")
+SongWithAlbum_df = SongWithArtist_df.join(CleanAlbums_df, on=["album_id"], how="left")
 print("[~] JOIN: SongWithAlbum")
 
 # [~] JOIN: StreamWithSong
-StreamWithSong_df = StreamWithUser_df.join(SongWithAlbum_df, on="song_id", how="left")
+StreamWithSong_df = StreamWithUser_df.join(SongWithAlbum_df, on=["song_id"], how="left")
 print("[~] JOIN: StreamWithSong")
 
 # [.] TRANSFORM: StreamByDevice
-StreamByDevice_df = FilterCompletedStreams_df.groupBy("device_id").agg(count("stream_id").alias("device_stream_count"), sum("duration_sec").alias("device_total_sec"))
+StreamByDevice_df = FilterCompletedStreams_df.groupBy("device_id").agg(count(_bnx_aggcol(FilterCompletedStreams_df, "stream_id")).alias("device_stream_count"), sum(_bnx_aggcol(FilterCompletedStreams_df, "duration_sec")).alias("device_total_sec"))
 print("[~] TRANSFORM: StreamByDevice")
 
 # [~] JOIN: StreamEnriched
-StreamEnriched_df = StreamWithSong_df.join(StreamByDevice_df, on="device_id", how="left")
+StreamEnriched_df = StreamWithSong_df.join(StreamByDevice_df, on=["device_id"], how="left")
 print("[~] JOIN: StreamEnriched")
 
 # [.] TRANSFORM: RevenueByUser
-RevenueByUser_df = FilterConfirmedPayments_df.groupBy("user_id").agg(sum("amount").alias("user_revenue"), count("payment_id").alias("payment_count"))
+RevenueByUser_df = FilterConfirmedPayments_df.groupBy("user_id").agg(sum(_bnx_aggcol(FilterConfirmedPayments_df, "amount")).alias("user_revenue"), count(_bnx_aggcol(FilterConfirmedPayments_df, "payment_id")).alias("payment_count"))
 print("[~] TRANSFORM: RevenueByUser")
 
 # [.] TRANSFORM: RevenueBySubscription
-RevenueBySubscription_df = FilterConfirmedPayments_df.groupBy("plan_type", "user_id").agg(sum("amount").alias("plan_revenue"), count("user_id").alias("subscriber_count"))
+RevenueBySubscription_df = FilterConfirmedPayments_df.groupBy("plan_type", "user_id").agg(sum(_bnx_aggcol(FilterConfirmedPayments_df, "amount")).alias("plan_revenue"), count(_bnx_aggcol(FilterConfirmedPayments_df, "user_id")).alias("subscriber_count"))
 print("[~] TRANSFORM: RevenueBySubscription")
 
 # [~] JOIN: TotalRevenue
-TotalRevenue_df = RevenueByUser_df.join(RevenueBySubscription_df, on="user_id", how="left")
-TotalRevenue_df = TotalRevenue_df.join(AdWithUser_df, on="user_id", how="left")
+TotalRevenue_df = RevenueByUser_df.join(RevenueBySubscription_df, on=["user_id"], how="left")
+TotalRevenue_df = TotalRevenue_df.join(AdWithUser_df, on=["user_id"], how="left")
 print("[~] JOIN: TotalRevenue")
 
 # [~] JOIN: FullStreamBase
-FullStreamBase_df = StreamEnriched_df.join(TotalRevenue_df, on="user_id", how="left")
+FullStreamBase_df = StreamEnriched_df.join(TotalRevenue_df, on=["user_id"], how="left")
 print("[~] JOIN: FullStreamBase")
 
 # [~] JOIN: EnrichWithRevenue
-EnrichWithRevenue_df = FullStreamBase_df.join(TotalRevenue_df, on="user_id", how="left")
+EnrichWithRevenue_df = FullStreamBase_df.join(TotalRevenue_df, on=["user_id"], how="left")
 print("[~] JOIN: EnrichWithRevenue")
 
 # [.] TRANSFORM: FilterValidSearches
@@ -351,23 +379,23 @@ FilterValidSearches_df = FilterValidSearches_df.where("results_count > 0")
 print("[~] TRANSFORM: FilterValidSearches")
 
 # [~] JOIN: SearchWithUser
-SearchWithUser_df = FilterValidSearches_df.join(UserProfile_df, on="user_id", how="left")
+SearchWithUser_df = FilterValidSearches_df.join(UserProfile_df, on=["user_id"], how="left")
 print("[~] JOIN: SearchWithUser")
 
 # [~] JOIN: SearchToStream
-SearchToStream_df = SearchWithUser_df.join(StreamEnriched_df, on="user_id", how="left")
+SearchToStream_df = SearchWithUser_df.join(StreamEnriched_df, on=["user_id"], how="left")
 print("[~] JOIN: SearchToStream")
 
 # [.] TRANSFORM: SearchConversion
-SearchConversion_df = SearchToStream_df.groupBy("user_id").agg(count("search_id").alias("searches"), sum("clicked").alias("search_clicks"))
+SearchConversion_df = SearchToStream_df.groupBy("user_id").agg(count(_bnx_aggcol(SearchToStream_df, "search_id")).alias("searches"), sum(_bnx_aggcol(SearchToStream_df, "clicked")).alias("search_clicks"))
 print("[~] TRANSFORM: SearchConversion")
 
 # [~] JOIN: EnrichWithSearch
-EnrichWithSearch_df = EnrichWithRevenue_df.join(SearchConversion_df, on="user_id", how="left")
+EnrichWithSearch_df = EnrichWithRevenue_df.join(SearchConversion_df, on=["user_id"], how="left")
 print("[~] JOIN: EnrichWithSearch")
 
 # [~] JOIN: EnrichWithArtist
-EnrichWithArtist_df = EnrichWithSearch_df.join(ArtistPopularity_df, on="artist_id", how="left")
+EnrichWithArtist_df = EnrichWithSearch_df.join(ArtistPopularity_df, on=["artist_id"], how="left")
 print("[~] JOIN: EnrichWithArtist")
 
 # [.] TRANSFORM: FilterPublicPlaylists
@@ -396,25 +424,25 @@ FlagPowerUser_df = FlagPowerUser_df.where("total_listen_sec > 360000 AND stream_
 print("[~] TRANSFORM: FlagPowerUser")
 
 # [~] JOIN: MasterReport
-MasterReport_df = FlagPowerUser_df.join(FlagChurning_df, on="user_id", how="left")
-MasterReport_df = MasterReport_df.join(FlagAdTarget_df, on="user_id", how="left")
-MasterReport_df = MasterReport_df.join(FlagNewFan_df, on="user_id", how="left")
+MasterReport_df = FlagPowerUser_df.join(FlagChurning_df, on=["user_id"], how="left")
+MasterReport_df = MasterReport_df.join(FlagAdTarget_df, on=["user_id"], how="left")
+MasterReport_df = MasterReport_df.join(FlagNewFan_df, on=["user_id"], how="left")
 print("[~] JOIN: MasterReport")
 
 # [~] JOIN: PlaylistWithUser
-PlaylistWithUser_df = FilterPublicPlaylists_df.join(UserProfile_df, on="user_id", how="left")
+PlaylistWithUser_df = FilterPublicPlaylists_df.join(UserProfile_df, on=["user_id"], how="left")
 print("[~] JOIN: PlaylistWithUser")
 
 # [.] TRANSFORM: PlaylistSongCount
-PlaylistSongCount_df = FilterPublicPlaylists_df.groupBy("playlist_id").agg(sum("song_count").alias("total_songs"))
+PlaylistSongCount_df = FilterPublicPlaylists_df.groupBy("playlist_id").agg(sum(_bnx_aggcol(FilterPublicPlaylists_df, "song_count")).alias("total_songs"))
 print("[~] TRANSFORM: PlaylistSongCount")
 
 # [~] JOIN: PlaylistPopularity
-PlaylistPopularity_df = PlaylistWithUser_df.join(PlaylistSongCount_df, on="playlist_id", how="left")
+PlaylistPopularity_df = PlaylistWithUser_df.join(PlaylistSongCount_df, on=["playlist_id"], how="left")
 print("[~] JOIN: PlaylistPopularity")
 
 # [.] TRANSFORM: SearchTrends
-SearchTrends_df = FilterValidSearches_df.groupBy("query").agg(count("search_id").alias("search_count"), avg("results_count").alias("avg_results"))
+SearchTrends_df = FilterValidSearches_df.groupBy("query").agg(count(_bnx_aggcol(FilterValidSearches_df, "search_id")).alias("search_count"), avg(_bnx_aggcol(FilterValidSearches_df, "results_count")).alias("avg_results"))
 print("[~] TRANSFORM: SearchTrends")
 
 # [.] TRANSFORM: TopArtists
@@ -504,4 +532,5 @@ write_topsongs_df = TopSongs_df
 TopSongs_df.write.mode("overwrite").parquet(f"{PARAMS.BASE_PATH}/output/write_topsongs")
 print("[>] SINK: Write_TopSongs")
 
-print("[ok] BNX Glue Job V54 Finished")
+spark.stop()
+print("[ok] BNX PySpark Job Finished")

@@ -1025,6 +1025,124 @@ def _parse_gde_native(content):
             for _tv in sorted(trash_vids, key=lambda x: int(x)):
                 print(f"  [dbg] Trash excluido del grafo: {node_by_id[_tv].get('display_name', _tv)} (vertex {_tv})")
 
+        # Eliminar NODOS DE SUBGRAFO QUE FORMAN UNA ISLA DESCONECTADA del flujo
+        # principal del grafo raiz. Sintoma del bug reportado en
+        # A_DRI_ECMS_AMBS_IMR_D: el GDE muestra la cadena real (source->sort->
+        # join->sink), pero el .mp serializa subgrafos-plantilla (p.ej. "Graph4")
+        # cuyos internos (Reformat/Redefine_Format/Filter/Dedup) se aplanaban como
+        # nodos de primer nivel. Como sus flujos son INTERNOS al subgrafo, quedaban
+        # como una ISLA sin ninguna conexion con los nodos del grafo raiz,
+        # contaminando el DAG y los datos de salida.
+        #
+        # Criterio SEGURO (no por nombre ni por tipo, que daban falsos positivos y
+        # borraban subgrafos de usuario legitimos como Enrich_Phase_2/Read_Tracking
+        # con joins/rollups reales): se eliminan unicamente los componentes de
+        # subgrafo que NO tienen ningun camino (ignorando direccion) hacia algun
+        # nodo del grafo RAIZ (subgraph == None). Es decir, componentes de subgrafo
+        # que solo se conectan entre si -> ruido garantizado. Todo lo que toque el
+        # flujo principal, aunque venga de un subgrafo, se preserva intacto.
+        #
+        # No aplica a subgrafos ya colapsados a SOURCE/SINK (su vid esta en
+        # collapsed_sink_map y no estan en included_vids como internos).
+
+        # Conjunto de vids que son "raiz" (no pertenecen a ningun subgrafo).
+        _root_vids = {vid for vid in included_vids
+                      if not subgraph_parent_map.get(vid)
+                      or subgraph_parent_map.get(vid) not in subgraph_ids}
+        # Vids que pertenecen a algun subgrafo (candidatos a isla).
+        _sg_vids = included_vids - _root_vids
+
+        subgraph_internal_vids = set()
+        if _sg_vids and _root_vids:
+            # Grafo NO dirigido sobre included_vids para medir conectividad.
+            _adj = {}
+            for (_s, _d) in edge_set:
+                if _s in included_vids and _d in included_vids:
+                    _adj.setdefault(_s, set()).add(_d)
+                    _adj.setdefault(_d, set()).add(_s)
+            # BFS desde todos los nodos raiz: lo alcanzable esta "conectado al flujo".
+            _connected = set(_root_vids)
+            _stack = list(_root_vids)
+            while _stack:
+                _v = _stack.pop()
+                for _n in _adj.get(_v, ()):  # noqa
+                    if _n not in _connected:
+                        _connected.add(_n)
+                        _stack.append(_n)
+            # Internos de subgrafo que NO quedaron conectados al flujo = isla.
+            _island_vids = {vid for vid in _sg_vids if vid not in _connected}
+
+            # ACOTACION DE SEGURIDAD (doble filtro). Una isla de subgrafo solo se
+            # elimina si es, con alta confianza, una PLANTILLA DE DATASET que GDE
+            # oculta (el caso del bug "Graph4": Input/Output_File serializado como
+            # subgrafo cuyos internos son casting DML). Debe cumplir TODO esto:
+            #
+            #  (a) Todos sus componentes son plumbing por TIPO
+            #      (TRANSFORM/FILTER/DEDUP) — ni JOIN, ni LOOKUP, ni ROLLUP, etc.
+            #  (b) Todos sus componentes tienen NOMBRE CANONICO de plantilla
+            #      (Reformat / Redefine_Format / Filter_by_Expression / Dedup* /
+            #      Trash). Un subgrafo de USUARIO con nombres descriptivos
+            #      (Retrieve_Component_Detail, Reformat_not_found, ...) NO califica,
+            #      aunque sus tipos sean plumbing: es logica real que quedo
+            #      desconectada por resolucion incompleta de aristas y debe
+            #      conservarse (preferimos un nodo huerfano a borrar negocio).
+            #
+            # Este criterio es deliberadamente estricto: ante la duda, CONSERVA.
+            _PLUMBING_TYPES = {"TRANSFORM", "FILTER", "DEDUP"}
+            # Nombres canonicos de los componentes internos de una plantilla
+            # Input_File/Output_File de GDE (normalizados: minusculas, sin
+            # separadores). Se compara el nombre BASE del componente, ignorando
+            # sufijos numericos de desambiguacion (_1, _362, ...).
+            _TEMPLATE_COMP_NAMES = {
+                "reformat", "redefineformat", "filterbyexpression",
+                "dedup", "dedupsorted", "trash",
+            }
+            def _canon_comp(vid):
+                info = node_by_id.get(vid, {})
+                raw = (info.get("comp_type") or info.get("display_name")
+                       or info.get("name") or "")
+                s = re.sub(r"[\s\-_.]+", "", raw.lower())
+                # quitar sufijo numerico final de desambiguacion
+                s = re.sub(r"\d+$", "", s)
+                return s
+            # Agrupar la isla por subgrafo padre y decidir por grupo.
+            _island_by_sg = {}
+            for vid in _island_vids:
+                _island_by_sg.setdefault(subgraph_parent_map.get(vid), []).append(vid)
+            for _psg, _kids in _island_by_sg.items():
+                _all_plumbing = all(
+                    node_by_id.get(k, {}).get("type", "").upper() in _PLUMBING_TYPES
+                    for k in _kids
+                )
+                _all_template_names = all(
+                    _canon_comp(k) in _TEMPLATE_COMP_NAMES for k in _kids
+                )
+                if _all_plumbing and _all_template_names:
+                    subgraph_internal_vids.update(_kids)
+                else:
+                    _sgname = subgraph_names.get(_psg, _psg)
+                    _types = sorted({node_by_id.get(k, {}).get("type", "?") for k in _kids})
+                    print(f"  [dbg] Isla de subgrafo CONSERVADA (tipos={_types}, "
+                          f"nombres no-plantilla o logica real): '{_sgname}' "
+                          f"({len(_kids)} comp.)")
+
+        if subgraph_internal_vids:
+            # La isla no toca el flujo principal, asi que no hay aristas que
+            # re-enrutar hacia nodos supervivientes: basta con quitar nodos y las
+            # aristas internas de la isla.
+            included_vids = included_vids - subgraph_internal_vids
+            edge_set = {(s, d) for (s, d) in edge_set
+                        if s not in subgraph_internal_vids
+                        and d not in subgraph_internal_vids}
+            _islas_por_sg = {}
+            for _iv in subgraph_internal_vids:
+                _sg = subgraph_names.get(subgraph_parent_map.get(_iv), "?")
+                _islas_por_sg.setdefault(_sg, 0)
+                _islas_por_sg[_sg] += 1
+            for _sg, _cnt in _islas_por_sg.items():
+                print(f"  [dbg] Isla de subgrafo eliminada (desconectada del flujo): "
+                      f"'{_sg}' ({_cnt} componente(s))")
+
         for vid in sorted(included_vids, key=lambda x: int(x)):
             if vid not in vertex_names:
                 continue

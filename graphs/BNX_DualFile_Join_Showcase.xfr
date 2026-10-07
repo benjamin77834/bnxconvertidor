@@ -1,0 +1,33 @@
+# ============================================================
+#  BNX SHOWCASE "Dual-File Join" — reglas de transformacion
+# ============================================================
+
+# --- SOURCES: dos archivos de entrada ---
+ECMS_AMBS_D:
+  source_type s3
+  path s3://datalake-bnx/landing/ecms_ambs_d
+  format parquet
+
+ECMS_AMBSX_D:
+  source_type s3
+  path s3://datalake-bnx/landing/ecms_ambsx_d
+  format parquet
+
+# --- SORT: ordenar cada entrada por la llave del join ---
+Sort:
+  order_by v_acct, mis_date
+
+Sort_1:
+  order_by v_acct, mis_date
+
+# --- JOIN: une las dos entradas por la cuenta ---
+Join:
+  join_key v_acct
+  join_type inner
+
+# --- SINK: archivo de salida ---
+Output_File:
+  sink_type s3
+  path s3://datalake-bnx/curated/ecms_ambs_joined
+  format parquet
+  mode overwrite

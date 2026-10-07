@@ -243,26 +243,26 @@ begin
   out.null_dinerosuc::in.null_dinerosuc;
 end;
 
-//6.	Tipo de Cuenta: Seleccionar los valores del campo BIN del Catï¿½logo EE1DQSPT001615 cuando el campo STATBIN tenga valor 'A'.
+//6.	Tipo de Cuenta: Seleccionar los valores del campo BIN del Catálogo EE1DQSPT001615 cuando el campo STATBIN tenga valor 'A'.
 //6.1.	Evaluar si el campo NUM_CUENTA contiene 16 caracteres:
-//6.1.1	Cuando las primeras seis posiciones del campo NUM_CUENTA tenga el mismo valor del campo BIN, se deberï¿½ reportar con valor '6'.
-//6.1.2	En caso de que las primeras seis posiciones del campo NUM_CUENTA no tengan el mismo valor del campo BIN, se deberï¿½ reportar con valor '1'.
-//6.2.	Cuando el valor del campo NUM_CUENTA tenga menos 16 caracteres se deberï¿½ reportar con valor '1'.
-//6.3.	Cuando el valor del campo NUM_CUENTA no tenga valor se deberï¿½ reportar con valor '22'.
+//6.1.1	Cuando las primeras seis posiciones del campo NUM_CUENTA tenga el mismo valor del campo BIN, se deberá reportar con valor '6'.
+//6.1.2	En caso de que las primeras seis posiciones del campo NUM_CUENTA no tengan el mismo valor del campo BIN, se deberá reportar con valor '1'.
+//6.2.	Cuando el valor del campo NUM_CUENTA tenga menos 16 caracteres se deberá reportar con valor '1'.
+//6.3.	Cuando el valor del campo NUM_CUENTA no tenga valor se deberá reportar con valor '22'.
 
 
 
 
-//3.	Tipo de Operaciï¿½n: Seleccionar los valores del catï¿½logo EE1DOIPT001503 cuando el campo CVE_PAE tenga valor '05' para las Operaciones de Sucursales.
-//3.1.	Identificar el valor del campo CVE_TXNSISTEMA de la Tabla FZ1DB2TRANSACSUC sea el mismo que el campo CVE_TXN del catï¿½logo EE1DOIPT001503.
-//3.2.	Asignar el valor del campo CVE_OBM del catï¿½logo EE1DOIPT001503.
-//3.3.	En caso de no encontrar algï¿½n valor se deberï¿½ de reportar como '099'.
-//4.	Sucursal: Se asignarï¿½ el valor que contenga el campo NUM_SUCOPERADORA de la Tabla FZ1DB2TRANSACSUC alineï¿½ndolo a la derecha y 
+//3.	Tipo de Operación: Seleccionar los valores del catálogo EE1DOIPT001503 cuando el campo CVE_PAE tenga valor '05' para las Operaciones de Sucursales.
+//3.1.	Identificar el valor del campo CVE_TXNSISTEMA de la Tabla FZ1DB2TRANSACSUC sea el mismo que el campo CVE_TXN del catálogo EE1DOIPT001503.
+//3.2.	Asignar el valor del campo CVE_OBM del catálogo EE1DOIPT001503.
+//3.3.	En caso de no encontrar algún valor se deberá de reportar como '099'.
+//4.	Sucursal: Se asignará el valor que contenga el campo NUM_SUCOPERADORA de la Tabla FZ1DB2TRANSACSUC alineándolo a la derecha y 
 //              rellenando con CEROS las primeras posiciones.
 
-// CLABE se reporta como 'NA' puesto que este flujo corresponde a los NUM_CUENTA con largo mayor a 11. Por lo que no se hace el cï¿½lculo de CLABE.
+// CLABE se reporta como 'NA' puesto que este flujo corresponde a los NUM_CUENTA con largo mayor a 11. Por lo que no se hace el cálculo de CLABE.
 
-//Tipo de Cliente: Deberï¿½ de contener '01' como valor asignado y '02' para cuentas concentradoras que son aquellas cuentas en las que el campo
+//Tipo de Cliente: Deberá de contener '01' como valor asignado y '02' para cuentas concentradoras que son aquellas cuentas en las que el campo
 // NUM_SUCPROMTORACTA tenga valor de '870'.|3|1|l|@{0|}}
 {30001002|XXparameter|in_metadata||3|8|s=|@{0|}}
 {30001002|XXparameter|reject0_metadata||3|8|s=|@{0|}}
@@ -2982,8 +2982,8 @@ begin
 end;
 
 // Las claves \{fec_transaccion; num_caja; num_operacion; num_operador; num_sucoperadora; cve_ext\} corresponden a un "grupo de operacions"
-// Para que un grupo de operaciones sea vï¿½lido, debe tener un registro tipo partida (cve_ext == 'P') y uno contrapartida (cve_ext == 'N') 
-// se hace rollup por las claves y cve_ext para con poder filtrar los grupos que no son vï¿½lidos
+// Para que un grupo de operaciones sea válido, debe tener un registro tipo partida (cve_ext == 'P') y uno contrapartida (cve_ext == 'N') 
+// se hace rollup por las claves y cve_ext para con poder filtrar los grupos que no son válidos
 
 out :: output_select(out) =
 begin
@@ -4988,26 +4988,26 @@ begin
   out.null_dinerosuc::in.null_dinerosuc;
 end;
 
-//6.	Tipo de Cuenta: Seleccionar los valores del campo BIN del Catï¿½logo EE1DQSPT001615 cuando el campo STATBIN tenga valor 'A'.
+//6.	Tipo de Cuenta: Seleccionar los valores del campo BIN del Catálogo EE1DQSPT001615 cuando el campo STATBIN tenga valor 'A'.
 //6.1.	Evaluar si el campo NUM_CUENTA contiene 16 caracteres:
-//6.1.1	Cuando las primeras seis posiciones del campo NUM_CUENTA tenga el mismo valor del campo BIN, se deberï¿½ reportar con valor '6'.
-//6.1.2	En caso de que las primeras seis posiciones del campo NUM_CUENTA no tengan el mismo valor del campo BIN, se deberï¿½ reportar con valor '1'.
-//6.2.	Cuando el valor del campo NUM_CUENTA tenga menos 16 caracteres se deberï¿½ reportar con valor '1'.
-//6.3.	Cuando el valor del campo NUM_CUENTA no tenga valor se deberï¿½ reportar con valor '22'.
+//6.1.1	Cuando las primeras seis posiciones del campo NUM_CUENTA tenga el mismo valor del campo BIN, se deberá reportar con valor '6'.
+//6.1.2	En caso de que las primeras seis posiciones del campo NUM_CUENTA no tengan el mismo valor del campo BIN, se deberá reportar con valor '1'.
+//6.2.	Cuando el valor del campo NUM_CUENTA tenga menos 16 caracteres se deberá reportar con valor '1'.
+//6.3.	Cuando el valor del campo NUM_CUENTA no tenga valor se deberá reportar con valor '22'.
 
 
 
 
-//3.	Tipo de Operaciï¿½n: Seleccionar los valores del catï¿½logo EE1DOIPT001503 cuando el campo CVE_PAE tenga valor '05' para las Operaciones de Sucursales.
-//3.1.	Identificar el valor del campo CVE_TXNSISTEMA de la Tabla FZ1DB2TRANSACSUC sea el mismo que el campo CVE_TXN del catï¿½logo EE1DOIPT001503.
-//3.2.	Asignar el valor del campo CVE_OBM del catï¿½logo EE1DOIPT001503.
-//3.3.	En caso de no encontrar algï¿½n valor se deberï¿½ de reportar como '099'.
-//4.	Sucursal: Se asignarï¿½ el valor que contenga el campo NUM_SUCOPERADORA de la Tabla FZ1DB2TRANSACSUC alineï¿½ndolo a la derecha y 
+//3.	Tipo de Operación: Seleccionar los valores del catálogo EE1DOIPT001503 cuando el campo CVE_PAE tenga valor '05' para las Operaciones de Sucursales.
+//3.1.	Identificar el valor del campo CVE_TXNSISTEMA de la Tabla FZ1DB2TRANSACSUC sea el mismo que el campo CVE_TXN del catálogo EE1DOIPT001503.
+//3.2.	Asignar el valor del campo CVE_OBM del catálogo EE1DOIPT001503.
+//3.3.	En caso de no encontrar algún valor se deberá de reportar como '099'.
+//4.	Sucursal: Se asignará el valor que contenga el campo NUM_SUCOPERADORA de la Tabla FZ1DB2TRANSACSUC alineándolo a la derecha y 
 //              rellenando con CEROS las primeras posiciones.
 
-// CLABE se reporta como 'NA' puesto que este flujo corresponde a los NUM_CUENTA nulos. Por lo que no se hace el cï¿½lculo de CLABE.
+// CLABE se reporta como 'NA' puesto que este flujo corresponde a los NUM_CUENTA nulos. Por lo que no se hace el cálculo de CLABE.
 
-//Tipo de Cliente: Deberï¿½ de contener '01' como valor asignado y '02' para cuentas concentradoras que son aquellas cuentas en las que el campo
+//Tipo de Cliente: Deberá de contener '01' como valor asignado y '02' para cuentas concentradoras que son aquellas cuentas en las que el campo
 // NUM_SUCPROMTORACTA tenga valor de '870'.|3|1|l|@{0|}}
 {30001002|XXparameter|in_metadata||3|8|s=|@{0|}}
 {30001002|XXparameter|reject0_metadata||3|8|s=|@{0|}}
@@ -5197,26 +5197,26 @@ begin
   out.null_dinerosuc::in0.null_dinerosuc;
 end;
 
-//6.	Tipo de Cuenta: Seleccionar los valores del campo BIN del Catï¿½logo EE1DQSPT001615 cuando el campo STATBIN tenga valor 'A'.
+//6.	Tipo de Cuenta: Seleccionar los valores del campo BIN del Catálogo EE1DQSPT001615 cuando el campo STATBIN tenga valor 'A'.
 //6.1.	Evaluar si el campo NUM_CUENTA contiene 16 caracteres:
-//6.1.1	Cuando las primeras seis posiciones del campo NUM_CUENTA tenga el mismo valor del campo BIN, se deberï¿½ reportar con valor '6'.
-//6.1.2	En caso de que las primeras seis posiciones del campo NUM_CUENTA no tengan el mismo valor del campo BIN, se deberï¿½ reportar con valor '1'.
-//6.2.	Cuando el valor del campo NUM_CUENTA tenga menos 16 caracteres se deberï¿½ reportar con valor '1'.
-//6.3.	Cuando el valor del campo NUM_CUENTA no tenga valor se deberï¿½ reportar con valor '22'.
+//6.1.1	Cuando las primeras seis posiciones del campo NUM_CUENTA tenga el mismo valor del campo BIN, se deberá reportar con valor '6'.
+//6.1.2	En caso de que las primeras seis posiciones del campo NUM_CUENTA no tengan el mismo valor del campo BIN, se deberá reportar con valor '1'.
+//6.2.	Cuando el valor del campo NUM_CUENTA tenga menos 16 caracteres se deberá reportar con valor '1'.
+//6.3.	Cuando el valor del campo NUM_CUENTA no tenga valor se deberá reportar con valor '22'.
 
 
 
 
-//3.	Tipo de Operaciï¿½n: Seleccionar los valores del catï¿½logo EE1DOIPT001503 cuando el campo CVE_PAE tenga valor '05' para las Operaciones de Sucursales.
-//3.1.	Identificar el valor del campo CVE_TXNSISTEMA de la Tabla FZ1DB2TRANSACSUC sea el mismo que el campo CVE_TXN del catï¿½logo EE1DOIPT001503.
-//3.2.	Asignar el valor del campo CVE_OBM del catï¿½logo EE1DOIPT001503.
-//3.3.	En caso de no encontrar algï¿½n valor se deberï¿½ de reportar como '099'.
-//4.	Sucursal: Se asignarï¿½ el valor que contenga el campo NUM_SUCOPERADORA de la Tabla FZ1DB2TRANSACSUC alineï¿½ndolo a la derecha y 
+//3.	Tipo de Operación: Seleccionar los valores del catálogo EE1DOIPT001503 cuando el campo CVE_PAE tenga valor '05' para las Operaciones de Sucursales.
+//3.1.	Identificar el valor del campo CVE_TXNSISTEMA de la Tabla FZ1DB2TRANSACSUC sea el mismo que el campo CVE_TXN del catálogo EE1DOIPT001503.
+//3.2.	Asignar el valor del campo CVE_OBM del catálogo EE1DOIPT001503.
+//3.3.	En caso de no encontrar algún valor se deberá de reportar como '099'.
+//4.	Sucursal: Se asignará el valor que contenga el campo NUM_SUCOPERADORA de la Tabla FZ1DB2TRANSACSUC alineándolo a la derecha y 
 //              rellenando con CEROS las primeras posiciones.
 
-// CLABE se reporta como 'NA' puesto que este flujo corresponde a los NUM_CUENTA con largo mayor a 11. Por lo que no se hace el cï¿½lculo de CLABE.
+// CLABE se reporta como 'NA' puesto que este flujo corresponde a los NUM_CUENTA con largo mayor a 11. Por lo que no se hace el cálculo de CLABE.
 
-//Tipo de Cliente: Deberï¿½ de contener '01' como valor asignado y '02' para cuentas concentradoras que son aquellas cuentas en las que el campo
+//Tipo de Cliente: Deberá de contener '01' como valor asignado y '02' para cuentas concentradoras que son aquellas cuentas en las que el campo
 // NUM_SUCPROMTORACTA tenga valor de '870'.|3|1|l|@{0|}}
 {30001002|XXparameter|Layout||3|8|s=|@{0|}}
 {30001002|XXparameter|error0_metadata|$AB_HOME/include/error-info.dml|3|2|f$|@{0|}}
@@ -5527,14 +5527,14 @@ end;
 // el campo CLABE debe contener 'NA'.
 
 // Para el caso de los 2 joins superiores se utilizan num_cuenta y num_sucpromtoracta,
-// pero para el caso de los 2 joins inferiores, se utilizan num_cuenta_vip y num_sucpromtoracta_vip, calculados en el reformat anterior tal y como dice la especificaciï¿½n:
-//	Formatear NUM_CUENTA a un numero de 11 dï¿½gitos, rellenando con ceros a la izquierda de ser necesario
-//	Formatear NUM_SUCPROMTORACTA a un numero de 4 dï¿½gitos, rellenando con ceros a la izquierda de ser necesario
-//	Sustituir  los primeros 4 dï¿½gitos de NUM_CUENTA con formato de 11 dï¿½gitos por NUM_SUCPROMTORACTA formateada a 4 dï¿½gitos
+// pero para el caso de los 2 joins inferiores, se utilizan num_cuenta_vip y num_sucpromtoracta_vip, calculados en el reformat anterior tal y como dice la especificación:
+//	Formatear NUM_CUENTA a un numero de 11 dígitos, rellenando con ceros a la izquierda de ser necesario
+//	Formatear NUM_SUCPROMTORACTA a un numero de 4 dígitos, rellenando con ceros a la izquierda de ser necesario
+//	Sustituir  los primeros 4 dígitos de NUM_CUENTA con formato de 11 dígitos por NUM_SUCPROMTORACTA formateada a 4 dígitos
 
 // con estos campos se intenta nuevamente buscar la Plaza.
 
-// en el interï¿½n del cambio de claves de join, se utiliza un sort para cambiar el orden, de forma acorde.|3|1|l|@{0|}}
+// en el interín del cambio de claves de join, se utiliza un sort para cambiar el orden, de forma acorde.|3|1|l|@{0|}}
 {30001002|XXparameter|join_type|Explicit|3|1|l|@{0|}}
 {30001002|XXparameter|record_required1|True|3|1|l|@{0|}}
 {30001002|XXparameter|in1_metadata||3|8|s=|@{0|}}
@@ -6430,7 +6430,7 @@ metadata type: log = remote("$AB_HOME/include/log-info.dml")|3|1|HKl|@{0|}}
   
    string(11) cuenta_p_clabe; // lg78522 2016-06-27 Fixes MN PROD. Se agrega campo cuenta_p_clabe para la generacion del campo CLABE
   
-  //decimal("\\x01") num_sucpromtoracta_vip = (0);  lg78522 2016-06-27 Fixes MN PROD. No se necesitan mï¿½s estos campos
+  //decimal("\\x01") num_sucpromtoracta_vip = (0);  lg78522 2016-06-27 Fixes MN PROD. No se necesitan más estos campos
   //decimal("\\x01") num_cuenta_vip = (0);  
   
   decimal("\\x01") cve_monedasistema /*SMALLINT NOT NULL*/;  
@@ -6459,10 +6459,10 @@ begin
   out.cuenta_p_clabe:: (string(11))(decimal(11, zerofill))((decimal(4))in.num_sucpromtoracta * 10000000 + ( (decimal(11))in.num_cuenta % 10000000 ));
 end;
 
-// se agregan los campos _vip para utilizarse en el grupo de 4 joins a continuaciï¿½n. Acorde especificaciï¿½n:
-//	Formatear NUM_CUENTA a un numero de 11 dï¿½gitos, rellenando con ceros a la izquierda de ser necesario
-//	Formatear NUM_SUCPROMTORACTA a un numero de 4 dï¿½gitos, rellenando con ceros a la izquierda de ser necesario
-//	Sustituir  los primeros 4 dï¿½gitos de NUM_CUENTA con formato de 11 dï¿½gitos por NUM_SUCPROMTORACTA formateada a 4 dï¿½gitos
+// se agregan los campos _vip para utilizarse en el grupo de 4 joins a continuación. Acorde especificación:
+//	Formatear NUM_CUENTA a un numero de 11 dígitos, rellenando con ceros a la izquierda de ser necesario
+//	Formatear NUM_SUCPROMTORACTA a un numero de 4 dígitos, rellenando con ceros a la izquierda de ser necesario
+//	Sustituir  los primeros 4 dígitos de NUM_CUENTA con formato de 11 dígitos por NUM_SUCPROMTORACTA formateada a 4 dígitos
 
 // Extracto de query que hacia algo similar
 
@@ -6898,14 +6898,14 @@ end;
 // el campo CLABE debe contener 'NA'.
 
 // Para el caso de los 2 joins superiores se utilizan num_cuenta y num_sucpromtoracta,
-// pero para el caso de los 2 joins inferiores, se utilizan num_cuenta_vip y num_sucpromtoracta_vip, calculados en el reformat anterior tal y como dice la especificaciï¿½n:
-//	Formatear NUM_CUENTA a un numero de 11 dï¿½gitos, rellenando con ceros a la izquierda de ser necesario
-//	Formatear NUM_SUCPROMTORACTA a un numero de 4 dï¿½gitos, rellenando con ceros a la izquierda de ser necesario
-//	Sustituir  los primeros 4 dï¿½gitos de NUM_CUENTA con formato de 11 dï¿½gitos por NUM_SUCPROMTORACTA formateada a 4 dï¿½gitos
+// pero para el caso de los 2 joins inferiores, se utilizan num_cuenta_vip y num_sucpromtoracta_vip, calculados en el reformat anterior tal y como dice la especificación:
+//	Formatear NUM_CUENTA a un numero de 11 dígitos, rellenando con ceros a la izquierda de ser necesario
+//	Formatear NUM_SUCPROMTORACTA a un numero de 4 dígitos, rellenando con ceros a la izquierda de ser necesario
+//	Sustituir  los primeros 4 dígitos de NUM_CUENTA con formato de 11 dígitos por NUM_SUCPROMTORACTA formateada a 4 dígitos
 
 // con estos campos se intenta nuevamente buscar la Plaza.
 
-// en el interï¿½n del cambio de claves de join, se utiliza un sort para cambiar el orden, de forma acorde.|3|1|l|@{0|}}
+// en el interín del cambio de claves de join, se utiliza un sort para cambiar el orden, de forma acorde.|3|1|l|@{0|}}
 {30001002|XXparameter|join_type|Explicit|3|1|l|@{0|}}
 {30001002|XXparameter|record_required1|True|3|1|l|@{0|}}
 {30001002|XXparameter|in1_metadata||3|8|s=|@{0|}}
@@ -8101,14 +8101,14 @@ end;
 // el campo CLABE debe contener 'NA'.
 
 // Para el caso de los 2 joins superiores se utilizan num_cuenta y num_sucpromtoracta,
-// pero para el caso de los 2 joins inferiores, se utilizan num_cuenta_vip y num_sucpromtoracta_vip, calculados en el reformat anterior tal y como dice la especificaciï¿½n:
-//	Formatear NUM_CUENTA a un numero de 11 dï¿½gitos, rellenando con ceros a la izquierda de ser necesario
-//	Formatear NUM_SUCPROMTORACTA a un numero de 4 dï¿½gitos, rellenando con ceros a la izquierda de ser necesario
-//	Sustituir  los primeros 4 dï¿½gitos de NUM_CUENTA con formato de 11 dï¿½gitos por NUM_SUCPROMTORACTA formateada a 4 dï¿½gitos
+// pero para el caso de los 2 joins inferiores, se utilizan num_cuenta_vip y num_sucpromtoracta_vip, calculados en el reformat anterior tal y como dice la especificación:
+//	Formatear NUM_CUENTA a un numero de 11 dígitos, rellenando con ceros a la izquierda de ser necesario
+//	Formatear NUM_SUCPROMTORACTA a un numero de 4 dígitos, rellenando con ceros a la izquierda de ser necesario
+//	Sustituir  los primeros 4 dígitos de NUM_CUENTA con formato de 11 dígitos por NUM_SUCPROMTORACTA formateada a 4 dígitos
 
 // con estos campos se intenta nuevamente buscar la Plaza.
 
-// en el interï¿½n del cambio de claves de join, se utiliza un sort para cambiar el orden, de forma acorde.|3|1|l|@{0|}}
+// en el interín del cambio de claves de join, se utiliza un sort para cambiar el orden, de forma acorde.|3|1|l|@{0|}}
 {30001002|XXparameter|in1_metadata||3|8|s=|@{0|}}
 {30001002|XXparameter|reject1_metadata||3|8|s=|@{0|}}
 {30001002|XXparameter|unused1_metadata||3|8|s=|@{0|}}
@@ -8687,14 +8687,14 @@ end;
 // el campo CLABE debe contener 'NA'.
 
 // Para el caso de los 2 joins superiores se utilizan num_cuenta y num_sucpromtoracta,
-// pero para el caso de los 2 joins inferiores, se utilizan num_cuenta_vip y num_sucpromtoracta_vip, calculados en el reformat anterior tal y como dice la especificaciï¿½n:
-//	Formatear NUM_CUENTA a un numero de 11 dï¿½gitos, rellenando con ceros a la izquierda de ser necesario
-//	Formatear NUM_SUCPROMTORACTA a un numero de 4 dï¿½gitos, rellenando con ceros a la izquierda de ser necesario
-//	Sustituir  los primeros 4 dï¿½gitos de NUM_CUENTA con formato de 11 dï¿½gitos por NUM_SUCPROMTORACTA formateada a 4 dï¿½gitos
+// pero para el caso de los 2 joins inferiores, se utilizan num_cuenta_vip y num_sucpromtoracta_vip, calculados en el reformat anterior tal y como dice la especificación:
+//	Formatear NUM_CUENTA a un numero de 11 dígitos, rellenando con ceros a la izquierda de ser necesario
+//	Formatear NUM_SUCPROMTORACTA a un numero de 4 dígitos, rellenando con ceros a la izquierda de ser necesario
+//	Sustituir  los primeros 4 dígitos de NUM_CUENTA con formato de 11 dígitos por NUM_SUCPROMTORACTA formateada a 4 dígitos
 
 // con estos campos se intenta nuevamente buscar la Plaza.
 
-// en el interï¿½n del cambio de claves de join, se utiliza un sort para cambiar el orden, de forma acorde.|3|1|l|@{0|}}
+// en el interín del cambio de claves de join, se utiliza un sort para cambiar el orden, de forma acorde.|3|1|l|@{0|}}
 {30001002|XXparameter|in1_metadata||3|8|s=|@{0|}}
 {30001002|XXparameter|reject1_metadata||3|8|s=|@{0|}}
 {30001002|XXparameter|unused1_metadata||3|8|s=|@{0|}}
@@ -9394,18 +9394,18 @@ end;
 // el campo CLABE debe contener 'NA'.
 
 // Para el caso de los 2 joins superiores se utilizan num_cuenta y num_sucpromtoracta,
-// pero para el caso de los 2 joins inferiores, se utilizan num_cuenta_vip y num_sucpromtoracta_vip, calculados en el reformat anterior tal y como dice la especificaciï¿½n:
-//	Formatear NUM_CUENTA a un numero de 11 dï¿½gitos, rellenando con ceros a la izquierda de ser necesario
-//	Formatear NUM_SUCPROMTORACTA a un numero de 4 dï¿½gitos, rellenando con ceros a la izquierda de ser necesario
-//	Sustituir  los primeros 4 dï¿½gitos de NUM_CUENTA con formato de 11 dï¿½gitos por NUM_SUCPROMTORACTA formateada a 4 dï¿½gitos
+// pero para el caso de los 2 joins inferiores, se utilizan num_cuenta_vip y num_sucpromtoracta_vip, calculados en el reformat anterior tal y como dice la especificación:
+//	Formatear NUM_CUENTA a un numero de 11 dígitos, rellenando con ceros a la izquierda de ser necesario
+//	Formatear NUM_SUCPROMTORACTA a un numero de 4 dígitos, rellenando con ceros a la izquierda de ser necesario
+//	Sustituir  los primeros 4 dígitos de NUM_CUENTA con formato de 11 dígitos por NUM_SUCPROMTORACTA formateada a 4 dígitos
 
 // con estos campos se intenta nuevamente buscar la Plaza.
 
-// en el interï¿½n del cambio de claves de join, se utiliza un sort para cambiar el orden, de forma acorde.
+// en el interín del cambio de claves de join, se utiliza un sort para cambiar el orden, de forma acorde.
 
 //)
 
-//---Este reformat se encarga de que, en caso de que los joins anteriores no generen un campo plaza, ya sea vï¿½lido o "NA", otorgarles a estos registros que no tienen
+//---Este reformat se encarga de que, en caso de que los joins anteriores no generen un campo plaza, ya sea válido o "NA", otorgarles a estos registros que no tienen
 // plaza el "NA" para que no se calcule la CLABE, puesto que si no tiene PLAZA, no se calcula CLABE.|3|1|l|@{0|}}
 {30001002|XXparameter|in_metadata||3|8|s=|@{0|}}
 {30001002|XXparameter|reject0_metadata||3|8|s=|@{0|}}
@@ -18113,8 +18113,8 @@ begin
   out.cve_txnsistema :: in.cve_txnsistema;
 end;
 
-// se sumarizan los importes por el ï¿½ltimo juego de llaves de agregaciï¿½n.
-// el nï¿½mero de operaciones es una suma tambien, porque el conteo se hizo en el rollup anterior|3|1|l|@{0|}}
+// se sumarizan los importes por el último juego de llaves de agregación.
+// el número de operaciones es una suma tambien, porque el conteo se hizo en el rollup anterior|3|1|l|@{0|}}
 {30001002|XXparameter|out0_metadata||3|8|s=|@{0|}}
 {30001002|XXparameter|in_metadata||3|8|s=|@{0|}}
 {30001002|XXparameter|reject0_metadata||3|8|s=|@{0|}}
@@ -24422,7 +24422,7 @@ begin
          out.tipo_cliente :: if (string_lrtrim(in.null_dinerosuc)  == 'F' && in.num_cuenta == 0) '02' else '01';
          
          //   MAL
-         out.tipo_cuenta :: '1'; // lg78522 Moneda Nacional Fase 2 2016-09-27 Para el campo num_cuenta mayor a 7 caracteres pero menor de 16, se deberï¿½ reportar tipo_cuenta con valor '6'
+         out.tipo_cuenta :: '1'; // lg78522 Moneda Nacional Fase 2 2016-09-27 Para el campo num_cuenta mayor a 7 caracteres pero menor de 16, se deberá reportar tipo_cuenta con valor '6'
 
   out.cve_monedasistema :: in.cve_monedasistema;
 
@@ -24447,26 +24447,26 @@ begin
   out.null_dinerosuc::in.null_dinerosuc;
 end;
 
-//6.	Tipo de Cuenta: Seleccionar los valores del campo BIN del Catï¿½logo EE1DQSPT001615 cuando el campo STATBIN tenga valor 'A'.
+//6.	Tipo de Cuenta: Seleccionar los valores del campo BIN del Catálogo EE1DQSPT001615 cuando el campo STATBIN tenga valor 'A'.
 //6.1.	Evaluar si el campo NUM_CUENTA contiene 16 caracteres:
-//6.1.1	Cuando las primeras seis posiciones del campo NUM_CUENTA tenga el mismo valor del campo BIN, se deberï¿½ reportar con valor '6'.
-//6.1.2	En caso de que las primeras seis posiciones del campo NUM_CUENTA no tengan el mismo valor del campo BIN, se deberï¿½ reportar con valor '1'.
-//6.2.	Cuando el valor del campo NUM_CUENTA tenga menos 16 caracteres se deberï¿½ reportar con valor '1'.
-//6.3.	Cuando el valor del campo NUM_CUENTA no tenga valor se deberï¿½ reportar con valor '22'.
+//6.1.1	Cuando las primeras seis posiciones del campo NUM_CUENTA tenga el mismo valor del campo BIN, se deberá reportar con valor '6'.
+//6.1.2	En caso de que las primeras seis posiciones del campo NUM_CUENTA no tengan el mismo valor del campo BIN, se deberá reportar con valor '1'.
+//6.2.	Cuando el valor del campo NUM_CUENTA tenga menos 16 caracteres se deberá reportar con valor '1'.
+//6.3.	Cuando el valor del campo NUM_CUENTA no tenga valor se deberá reportar con valor '22'.
 
 
 
 
-//3.	Tipo de Operaciï¿½n: Seleccionar los valores del catï¿½logo EE1DOIPT001503 cuando el campo CVE_PAE tenga valor '05' para las Operaciones de Sucursales.
-//3.1.	Identificar el valor del campo CVE_TXNSISTEMA de la Tabla FZ1DB2TRANSACSUC sea el mismo que el campo CVE_TXN del catï¿½logo EE1DOIPT001503.
-//3.2.	Asignar el valor del campo CVE_OBM del catï¿½logo EE1DOIPT001503.
-//3.3.	En caso de no encontrar algï¿½n valor se deberï¿½ de reportar como '099'.
-//4.	Sucursal: Se asignarï¿½ el valor que contenga el campo NUM_SUCOPERADORA de la Tabla FZ1DB2TRANSACSUC alineï¿½ndolo a la derecha y 
+//3.	Tipo de Operación: Seleccionar los valores del catálogo EE1DOIPT001503 cuando el campo CVE_PAE tenga valor '05' para las Operaciones de Sucursales.
+//3.1.	Identificar el valor del campo CVE_TXNSISTEMA de la Tabla FZ1DB2TRANSACSUC sea el mismo que el campo CVE_TXN del catálogo EE1DOIPT001503.
+//3.2.	Asignar el valor del campo CVE_OBM del catálogo EE1DOIPT001503.
+//3.3.	En caso de no encontrar algún valor se deberá de reportar como '099'.
+//4.	Sucursal: Se asignará el valor que contenga el campo NUM_SUCOPERADORA de la Tabla FZ1DB2TRANSACSUC alineándolo a la derecha y 
 //              rellenando con CEROS las primeras posiciones.
 
-// CLABE se reporta como 'NA' puesto que este flujo corresponde a los NUM_CUENTA con largo mayor a 11 pero distinto de 16. Por lo que no se hace el cï¿½lculo de CLABE.
+// CLABE se reporta como 'NA' puesto que este flujo corresponde a los NUM_CUENTA con largo mayor a 11 pero distinto de 16. Por lo que no se hace el cálculo de CLABE.
 
-//Tipo de Cliente: Deberï¿½ de contener '01' como valor asignado y '02' para cuentas concentradoras que son aquellas cuentas en las que el campo
+//Tipo de Cliente: Deberá de contener '01' como valor asignado y '02' para cuentas concentradoras que son aquellas cuentas en las que el campo
 // NUM_SUCPROMTORACTA tenga valor de '870'.|3|1|l|@{0|}}
 {30001002|XXparameter|in_metadata||3|8|s=|@{0|}}
 {30001002|XXparameter|reject0_metadata||3|8|s=|@{0|}}
