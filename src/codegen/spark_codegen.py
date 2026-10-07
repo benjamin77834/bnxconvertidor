@@ -2837,7 +2837,16 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                         # dobles internas que romperian el f-string).
                         _p = _safe_path_fragment(path) if path else None
                         if _p:
-                            f.write(f'{src}.write.mode("{mode}").parquet(f"{{PARAMS.BASE_PATH}}/output/{_p}")\n')
+                            # Si la ruta ya es ABSOLUTA (s3://, hdfs://, file:,
+                            # gs://, abfss://, o /abs/path), respetarla tal cual.
+                            # Solo cuando es relativa se ancla bajo BASE_PATH/output.
+                            _abs_prefixes = ("s3://", "s3a://", "s3n://", "hdfs://",
+                                             "file:", "gs://", "abfss://", "wasbs://",
+                                             "dbfs:/", "/")
+                            if _p.startswith(_abs_prefixes):
+                                f.write(f'{src}.write.mode("{mode}").parquet(f"{_p}")\n')
+                            else:
+                                f.write(f'{src}.write.mode("{mode}").parquet(f"{{PARAMS.BASE_PATH}}/output/{_p}")\n')
                         else:
                             f.write(f'{src}.write.mode("{mode}").parquet(f"{{PARAMS.BASE_PATH}}/output/{var_id.lower()}")\n')
                 else:

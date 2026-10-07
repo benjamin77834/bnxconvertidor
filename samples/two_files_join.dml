@@ -1,0 +1,21 @@
+keys:
+  ECMS_AMBS_D: v_acct
+  ECMS_AMBSX_D: v_acct
+
+schema:
+  ECMS_AMBS_D:
+    mis_date: date
+    v_acct: string
+    v_cust_org: string
+    v_cust_nbr: string
+    n_curr_bal: double
+    n_crlim: double
+    v_logo: string
+
+  ECMS_AMBSX_D:
+    v_acct: string
+    v_cr_card_partner_id: string
+    n_cr_fcy_tp_id: double
+    n_cr_ar_aprv_tp_cd: double
+    d_ac_stmt_dt: date
+    v_filler_4: string
