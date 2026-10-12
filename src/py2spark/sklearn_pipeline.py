@@ -293,7 +293,27 @@ def detect_and_build(tree):
     L('label_indexer = StringIndexer(inputCol=label_col, outputCol="label", handleInvalid="keep")')
     kinds.add("onehot")  # StringIndexer vive en el import de onehot
 
-    fillna_cols = []  # columnas categoricas con imputer most_frequent
+    fillna_cols = []       # columnas categoricas con imputer most_frequent
+    numeric_cast_cols = [] # columnas numericas a castear a double antes del Imputer
+
+    # 1a pasada: identificar las columnas NUMERICAS (van por Imputer/Scaler).
+    # El Imputer de Spark exige tipo numerico; si el CSV se leyo con nulos/vacios
+    # Spark las infiere como string -> hay que castearlas a double ANTES.
+    for part in spec:
+        steps = part["steps"]
+        has_scaler = any(s["kind"] == "scaler" for s in steps)
+        has_imputer_num = next((s for s in steps if s["kind"] == "imputer"
+                                and s.get("strategy") in ("mean", "median")), None)
+        has_onehot = any(s["kind"] == "onehot" for s in steps)
+        if (has_scaler or has_imputer_num) and not has_onehot:
+            for c in part["cols"]:
+                if c not in numeric_cast_cols:
+                    numeric_cast_cols.append(c)
+    if numeric_cast_cols:
+        L("# Castear columnas numericas a double (el Imputer exige tipo numerico;")
+        L("# si el CSV trae nulos/vacios Spark las infiere como string).")
+        for c in numeric_cast_cols:
+            L(f'df = df.withColumn({c!r}, F.col({c!r}).cast("double"))')
 
     for part in spec:
         role = part["role"]
