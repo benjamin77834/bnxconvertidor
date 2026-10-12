@@ -199,3 +199,83 @@ def test_rf_label_string_and_evaluators():
     assert "weightedPrecision" in code and "weightedRecall" in code
     assert "accuracy_score" not in "\n".join(
         ln for ln in code.splitlines() if not ln.lstrip().startswith("#"))
+
+
+# ---------------------------------------------------------------------------
+# sklearn Pipeline + ColumnTransformer -> pyspark.ml.Pipeline (reconocedor).
+# El patron COMPLETO soportado (SimpleImputer/StandardScaler/OneHotEncoder +
+# clasificador) se traduce a un pipeline MLlib runnable, SIN TODO. Si el patron
+# trae algo no soportado, degrada a TODO honesto (no genera basura).
+# ---------------------------------------------------------------------------
+_SK_PIPELINE_SRC = (
+    "import pandas as pd\n"
+    "from sklearn.compose import ColumnTransformer\n"
+    "from sklearn.pipeline import Pipeline\n"
+    "from sklearn.impute import SimpleImputer\n"
+    "from sklearn.preprocessing import StandardScaler, OneHotEncoder\n"
+    "from sklearn.ensemble import RandomForestClassifier\n"
+    "from sklearn.model_selection import train_test_split\n"
+    "from sklearn.metrics import classification_report\n"
+    "df = pd.read_csv('clientes.csv')\n"
+    "numeric_features = ['edad', 'ingreso']\n"
+    "categorical_features = ['plan', 'region']\n"
+    "X = df[numeric_features + categorical_features]\n"
+    "y = df['churn']\n"
+    "numeric_transformer = Pipeline(steps=[('imputer', SimpleImputer(strategy='median')), ('scaler', StandardScaler())])\n"
+    "categorical_transformer = Pipeline(steps=[('imputer', SimpleImputer(strategy='most_frequent')), ('onehot', OneHotEncoder(handle_unknown='ignore'))])\n"
+    "preprocessor = ColumnTransformer(transformers=[('num', numeric_transformer, numeric_features), ('cat', categorical_transformer, categorical_features)])\n"
+    "model = Pipeline(steps=[('preprocessor', preprocessor), ('classifier', RandomForestClassifier(n_estimators=150, max_depth=12, min_samples_leaf=5, random_state=42, n_jobs=-1))])\n"
+    "X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)\n"
+    "model.fit(X_train, y_train)\n"
+    "print(classification_report(y_test, model.predict(X_test)))\n"
+)
+
+
+def test_sklearn_pipeline_columntransformer_to_mllib():
+    r = _conv(_SK_PIPELINE_SRC)
+    code = r["code"]
+    # sin construcciones sin soportar (cero TODO reales). Nota: el preambulo
+    # contiene la frase "# TODO py2spark:" como instruccion; eso NO es un TODO
+    # real. Verificamos que no haya LINEAS de TODO real emitidas.
+    assert r["unsupported"] == []
+    _real_todos = [l for l in code.splitlines() if l.lstrip().startswith("# TODO py2spark:")]
+    assert _real_todos == []
+    # el pipeline MLlib esta completo
+    assert "pyspark.ml import Pipeline" in code
+    assert "Imputer(strategy=\"median\"" in code
+    assert "StandardScaler(" in code
+    assert "StringIndexer(" in code and "OneHotEncoder(" in code
+    assert "VectorAssembler(" in code and 'outputCol="features"' in code
+    assert "RandomForestClassifier(" in code and "numTrees=150" in code
+    assert "maxDepth=12" in code and "minInstancesPerNode=5" in code
+    assert "Pipeline(stages=[" in code
+    assert ".fit(train_df)" in code and ".transform(test_df)" in code
+    assert "MulticlassClassificationEvaluator(" in code
+    assert ".write().overwrite().save(" in code
+    # label inferido de y = df['churn']
+    assert 'label_col = "churn"' in code
+    # no quedan residuos de la version pandas/sklearn
+    for ln in code.splitlines():
+        s = ln.strip()
+        if s.startswith("#"):
+            continue
+        assert "df.filter(" not in s
+        assert "train_test_split(" not in s
+        assert not s.startswith("X =") and not s.startswith("y =")
+
+
+def test_sklearn_pipeline_unsupported_transformer_degrades_to_todo():
+    # Pipeline con un transformer NO soportado (PCA): NO debe fingir equivalencia,
+    # debe degradar a TODO honesto.
+    r = _conv(
+        "import pandas as pd\n"
+        "from sklearn.pipeline import Pipeline\n"
+        "from sklearn.decomposition import PCA\n"
+        "from sklearn.ensemble import RandomForestClassifier\n"
+        "df = pd.read_csv('d.csv')\n"
+        "model = Pipeline(steps=[('pca', PCA(n_components=3)), ('clf', RandomForestClassifier())])\n"
+    )
+    assert r["unsupported"]  # hay al menos un TODO
+    assert "TODO py2spark:" in r["code"]
+    # no debe haber inventado un pipeline MLlib
+    assert "Pipeline(stages=[" not in r["code"]

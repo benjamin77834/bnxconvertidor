@@ -236,6 +236,15 @@ class PandasToSparkTransformer(ast.NodeTransformer):
         self.needs_rows_helper = False
         # Alias de numpy (import numpy as np) para traducir np.where/np.random.
         self.numpy_alias = {"np", "numpy"}
+        # Reconocedor de pipeline sklearn (Pipeline + ColumnTransformer). Si el
+        # modulo contiene ese patron completo con piezas soportadas, se llena en
+        # convert_code ANTES de transformar: sklearn_pipeline = {code, kinds, ...}
+        # emit_var = la variable del Pipeline final (donde se inyecta el bloque),
+        # suppress = nombres intermedios (sub-pipelines, preprocessor) que se
+        # neutralizan SIN TODO (ya quedan cubiertos por el bloque unico).
+        self.sklearn_pipeline = None
+        self.sklearn_emit_var = None
+        self.sklearn_suppress = set()
 
     # ---- imports: detectar alias de pandas, y neutralizar 'import pandas' ----
     def visit_Import(self, node):
@@ -381,6 +390,38 @@ class PandasToSparkTransformer(ast.NodeTransformer):
 
     # ---- Assign: x = pd.read_*  |  df["c"] = expr  |  x = <df>.metodo() ----
     def visit_Assign(self, node):
+        # --- Patron sklearn Pipeline + ColumnTransformer reconocido ---
+        # Si este modulo lo detecto (convert_code), los statements intermedios
+        # (sub-pipelines, preprocessor) se neutralizan SIN TODO, y el bloque
+        # pyspark.ml completo se emite en el lugar del Pipeline final.
+        if self.sklearn_pipeline is not None and len(node.targets) == 1 \
+                and isinstance(node.targets[0], ast.Name):
+            _nm = node.targets[0].id
+            if _nm == self.sklearn_emit_var:
+                self._mllib_seq += 1
+                pid = f"__PY2SPARK_MLLIB_{self._mllib_seq}__"
+                self.mllib_blocks[pid] = self.sklearn_pipeline["code"]
+                self.mllib_kinds |= self.sklearn_pipeline["kinds"]
+                return ast.Expr(value=ast.Name(pid, ast.Load()))
+            if _nm in self.sklearn_suppress:
+                return None  # se omite el statement (cubierto por el bloque)
+
+        # Con el patron activo, suprimir SIN TODO los statements auxiliares que el
+        # bloque unico ya reemplaza: el train_test_split (el bloque hace su propio
+        # randomSplit sobre df) y las asignaciones X = df[...] / y = df[...] (en
+        # Spark el label es una columna de df, no una variable aparte).
+        if self.sklearn_pipeline is not None and isinstance(node.value, ast.Call):
+            _fn = node.value.func
+            _cn = _fn.id if isinstance(_fn, ast.Name) else (
+                _fn.attr if isinstance(_fn, ast.Attribute) else None)
+            if _cn == "train_test_split":
+                return None
+        if self.sklearn_pipeline is not None and isinstance(node.value, ast.Subscript):
+            # X = df[...] / y = df['col'] -> redundante con el bloque.
+            _base = node.value.value
+            if isinstance(_base, ast.Name) and (_base.id in self.df_names or _base.id == self.last_df):
+                return None
+
         # Si el valor usa una variable "muerta" (proveniente de un statement no
         # traducible), este statement tambien se neutraliza a TODO.
         dead = self._refs_dead_var(node.value)
@@ -500,6 +541,14 @@ class PandasToSparkTransformer(ast.NodeTransformer):
 
     # ---- Expr suelto: model.fit(...) / model.predict(...) sin asignacion ----
     def visit_Expr(self, node):
+        # Patron sklearn reconocido: los statements que referencian el modelo
+        # suprimido (model.fit(...), print(classification_report(...)) sobre sus
+        # predicciones) ya los cubre el bloque unico -> se omiten SIN TODO.
+        if self.sklearn_pipeline is not None and self.sklearn_suppress:
+            for _sub in ast.walk(node.value):
+                if isinstance(_sub, ast.Name) and _sub.id in self.sklearn_suppress:
+                    return None
+
         snip = self._ml_snippet_for_expr(node.value, out_targets=[])
         if snip is not None:
             return self._emit_mllib(snip)
@@ -1436,6 +1485,41 @@ def convert_code(source, add_preamble=True):
 
     used_pandas = _detect_pandas(source)
     transformer = PandasToSparkTransformer(diag)
+
+    # Reconocedor del patron sklearn Pipeline + ColumnTransformer (opcional).
+    # Si el modulo lo contiene con piezas soportadas, se emite un unico bloque
+    # pyspark.ml.Pipeline equivalente en el lugar del Pipeline final, y los
+    # statements intermedios/posteriores que ya cubre se suprimen SIN TODO.
+    # Si NO se reconoce, no hace nada: el convertidor sigue su camino normal.
+    try:
+        from . import sklearn_pipeline as _skp
+        _sk = _skp.detect_and_build(tree)
+    except Exception:
+        _sk = None
+    if _sk:
+        _final = _skp._find_final_pipeline(_skp._scan_module(tree))
+        if _final:
+            model_var, _pre_ref, _est = _final
+            transformer.sklearn_pipeline = _sk
+            transformer.sklearn_emit_var = model_var
+            # Suprimir (sin TODO) los sub-pipelines/preprocessor y el .fit/.predict/
+            # report posteriores sobre el modelo: todo eso ya lo hace el bloque.
+            _sc = _skp._scan_module(tree)
+            _supp = set()
+            for _n, _call in _sc.assigns.items():
+                _cn = _skp._call_name(_call)
+                if _cn in ("Pipeline", "ColumnTransformer") and _n != model_var:
+                    _supp.add(_n)
+            # El modelo tambien se suprime (sin TODO): sus .fit()/.predict()/
+            # classification_report() posteriores ya los cubre el bloque unico.
+            _supp.add(model_var)
+            transformer.sklearn_suppress = _supp
+            diag.warn(
+                "sklearn Pipeline + ColumnTransformer -> pyspark.ml.Pipeline "
+                "(Imputer/StandardScaler/StringIndexer/OneHotEncoder aplanados en "
+                "stages). Ajusta la ruta del CSV y la columna label si difieren."
+            )
+
     new_tree = transformer.visit(tree)
     ast.fix_missing_locations(new_tree)
 
