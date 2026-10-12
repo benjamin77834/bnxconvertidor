@@ -291,6 +291,51 @@ sudo systemctl status bnx       # verificar que quedó activo
 
 ---
 
+## 📚 Biblioteca de grafos (local + S3)
+
+Los grafos de la pestaña **Grafos** (endpoint `/library`) se guardan en **dos
+lugares a la vez**:
+
+1. **Local** — `./bnx_library/` en disco. Es la **fuente de verdad** y el
+   **fallback**: siempre se escribe aquí primero, aunque S3 no esté disponible.
+   (`bnx_library/` está en `.gitignore`; los grafos no viajan por git.)
+2. **S3** — se sube además a un bucket, *best-effort*. Si S3 falla (sin
+   credenciales, sin red, sin `boto3`/AWS CLI), el guardado local no se ve
+   afectado y la UI sigue funcionando.
+
+El flujo cubre `save` / `upload` (suben a S3) y `delete` (borra en local **y**
+S3). Al arrancar, el servidor sincroniza la biblioteca **desde** S3 a disco para
+tener la pestaña Grafos al día.
+
+### Configuración (variables de entorno)
+
+| Variable | Default | Descripción |
+|----------|---------|-------------|
+| `BNX_AWS_PROFILE` | `monkeyapp` | Perfil de `~/.aws` para acceder a S3 |
+| `BNX_S3_BUCKET` | `bnx-e2e-test` | Bucket donde viven los grafos |
+| `BNX_S3_PREFIX` | `library/` | Prefijo (carpeta) dentro del bucket |
+| `BNX_SKIP_LIBRARY_SYNC` | — | `=1` omite el sync de arranque desde S3 |
+
+Por defecto apunta a la cuenta **monkey** (`034711235858`), bucket
+`s3://bnx-e2e-test/library/`, perfil `monkeyapp`. Para usar otra cuenta/bucket,
+exporta las variables antes de arrancar `serve_ui.py`:
+
+```bash
+export BNX_AWS_PROFILE=otro_perfil
+export BNX_S3_BUCKET=mi-bucket
+export BNX_S3_PREFIX=grafos/
+python serve_ui.py
+```
+
+### Acceso a S3
+
+El upload usa **`boto3`** si está instalado; si no, cae a **AWS CLI** (`aws s3
+cp`/`rm`). Basta con tener uno de los dos y credenciales válidas para el perfil
+configurado. `boto3` es opcional (`requirements.txt` lo lista como tal); el
+guardado local nunca depende de S3.
+
+---
+
 ## 🏗️ Arquitectura
 
 ```

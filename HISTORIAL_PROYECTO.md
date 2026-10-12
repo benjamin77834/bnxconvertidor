@@ -466,6 +466,20 @@ Verificacion: pipeline de Modelos deployable=True con firma Ed25519 valida y dem
 
 ---
 
+## 7-12 de octubre — Dias 54-55: Fix subgrafos, linaje + export a catalogos, Code Review y grafos en S3
+
+- **Fix parser GDE — subgrafos-plantilla**: los `Input/Output_File` se serializan como subgrafos (p.ej. "Graph4") cuyos internos (Reformat/Redefine_Format/Filter/Dedup/Trash) son casting DML — plumbing que GDE oculta. Se aplanaban como nodos de primer nivel y quedaban como ISLA desconectada que contaminaba el DAG y los datos de salida (bug reportado en `A_DRI_ECMS_AMBS_IMR_D`). Ahora se eliminan de forma segura (doble filtro: tipo plumbing + nombre canonico de plantilla) sin tocar subgrafos de usuario con logica real. Codegen Spark: respeta rutas de sink ya absolutas (`s3://`, `hdfs://`, `/...`). Nuevo grafo de ejemplo `BNX_DualFile_Join_Showcase` + fixture y test.
+- **Panel de LINAJE** al lado del grafo (DagViewer): pestañas Nodos (upstream/downstream) y Columnas (`out.col <- source.col`, con llave de join marcada), sincronizado con la seleccion.
+- **Export de METADATA a catalogos** (`src/metadata.py` + endpoint `/metadata`): modelo canonico BNX (JSON), **OpenLineage** (JSON con columnLineage facet), **AWS Glue Data Catalog** (script boto3: tablas+columnas+descripcion+linaje en Parameters) y **Databricks Unity Catalog** (DDL con COMMENT de linaje por columna + TBLPROPERTIES). Botones de descarga en el panel de linaje y en Data Sintetica.
+- **Analisis de calidad ampliado**: nueva regla de **palabras reservadas / shadowing de built-ins** (estilo SonarLint: `list`/`str`/`sum`/`filter`/`input`...) y soft keywords (`match`/`type`). **3ª extension VS Code "BNX Code Review"** (`vscode-extension-review`): el analisis como diagnosticos nativos del editor; descargable en `/download/vsix/review`.
+- **py2spark — sklearn Pipeline + ColumnTransformer → pyspark.ml**: nuevo `src/py2spark/sklearn_pipeline.py` que reconoce el patron completo (SimpleImputer/StandardScaler/OneHotEncoder + clasificador) y genera un `pyspark.ml.Pipeline` runnable (antes se marcaba "sin equivalente"). Si trae algo no soportado, degrada a `# TODO py2spark` honesto. Extension py2spark 0.2.0.
+- **Grafos en S3 (cuenta monkey) + local**: la biblioteca de grafos (`/library`) ahora se guarda SIEMPRE en local (`./bnx_library/`, fuente de verdad y fallback) y ADEMAS se sube a S3 best-effort (save/upload suben, delete borra en ambos). Configurable por env: `BNX_AWS_PROFILE=monkeyapp`, `BNX_S3_BUCKET=bnx-e2e-test`, `BNX_S3_PREFIX=library/`. Usa `boto3` si esta, si no cae a AWS CLI; si S3 falla, el local no se ve afectado. Documentado en el README (seccion "📚 Biblioteca de grafos").
+- **Fix UI**: el panel "Datos Remotos" se veia "mocho" (aplastado por el flex column) → `flexShrink:0` + grids responsivos.
+
+Verificacion: fix de subgrafos valida 6 nodos vs 193 del grafo complejo sin perder joins; metadata exportada a los 4 formatos (JS == Python); regla de shadowing marca `list`/`input`/`sum`; py2spark genera y EJECUTA el pipeline sklearn end-to-end con Spark 4.1.2; guardado de grafo verificado en `s3://bnx-e2e-test/library/` (save + delete) con perfil monkeyapp; **127 tests**.
+
+---
+
 ## Estatus del convertidor por complejidad de grafo
 
 Validado **ejecutando** el PySpark generado con datos redactados (barrido de 58 grafos: 58/58 compilan) y, desde el Dia 45, con **validacion de equivalencia de datos** (esquema + conteo + contenido) contra una referencia. Desde el Dia 46 tambien convertimos **Python/pandas + ML** a PySpark 3 (py2spark). Desde el Dia 51 tambien **COBOL** (IBM) y **ALGOL** (Unisys) a PySpark, con optimizador que ademas reduce codigo.
