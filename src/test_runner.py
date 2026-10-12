@@ -1496,6 +1496,17 @@ def _bnx_write(df, var, dest=None):
     if df is None:
         print(f"[BNX-TEST] WRITE {{var}}: SKIP (DataFrame None — nodo sin datos)")
         return
+    # MODELO MLlib (PipelineModel / *Model), NO un DataFrame: no tiene .count()
+    # ni .columns. El codigo generado hace model_fitted.write().save("..."); aqui
+    # lo tratamos como modelo (se reporta; no se vuelca CSV ni checksum de datos).
+    _is_model = (not hasattr(df, "count") or not hasattr(df, "columns")) and (
+        hasattr(df, "write") or hasattr(df, "transform") or hasattr(df, "stages")
+        or type(df).__name__.endswith("Model"))
+    if _is_model:
+        _mt = type(df).__name__
+        print(f"[BNX-TEST] WRITE {{var}}: modelo MLlib ({{_mt}}) — entrenado OK (no es un dataset)")
+        _BNX_WRITES.append({{"var": var, "model": _mt}})
+        return
     try:
         n = df.count()
         cols = df.columns
