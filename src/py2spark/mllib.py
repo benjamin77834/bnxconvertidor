@@ -39,6 +39,10 @@ def _arg(call, idx):
 def imports_for(kinds):
     """Devuelve las lineas de import de pyspark.ml necesarias para `kinds`."""
     imp = set()
+    if "pipeline" in kinds:
+        imp.add("from pyspark.ml import Pipeline")
+    if "imputer" in kinds:
+        imp.add("from pyspark.ml.feature import Imputer")
     if "assembler" in kinds:
         imp.add("from pyspark.ml.feature import VectorAssembler")
     if "scaler_std" in kinds:

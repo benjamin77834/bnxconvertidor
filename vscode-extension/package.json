@@ -1,8 +1,8 @@
 {
   "name": "py2spark",
   "displayName": "py2spark — Python a PySpark 3",
-  "description": "Convierte codigo Python (pandas) a PySpark 3 usando el motor py2spark del portal BNX.",
-  "version": "0.1.0",
+  "description": "Convierte codigo Python (pandas + sklearn) a PySpark 3 usando el motor py2spark del portal BNX. Incluye traduccion de sklearn Pipeline + ColumnTransformer a pyspark.ml.Pipeline.",
+  "version": "0.2.0",
   "publisher": "bnx",
   "engines": {
     "vscode": "^1.75.0"

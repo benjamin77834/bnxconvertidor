@@ -26,8 +26,17 @@ pandas → PySpark: `read_csv/read_parquet`, filtros booleanos, `groupby/agg`,
 `merge` → `join`, `sort_values` → `orderBy`, selección/asignación de columnas,
 `rename/drop/head`, `to_csv/to_parquet`, `len(df)` → `count()`, entre otros.
 
-Lo que no es traducible 1:1 (p. ej. `apply` con lambda, `iterrows`) se marca con
-`# TODO py2spark:` para revisión manual, sin romper el resto del código.
+**scikit-learn → pyspark.ml** (nuevo en 0.2.0): el patrón `Pipeline` +
+`ColumnTransformer` se traduce a un `pyspark.ml.Pipeline` runnable —
+`SimpleImputer`→`Imputer`/`fillna`, `StandardScaler`→`VectorAssembler`+
+`StandardScaler`, `OneHotEncoder`→`StringIndexer`+`OneHotEncoder`,
+`ColumnTransformer` aplanado en stages, clasificador MLlib con hiperparámetros
+mapeados, split sobre el DataFrame, evaluación con `MulticlassClassificationEvaluator`
+y guardado del modelo.
+
+Lo que no es traducible 1:1 (p. ej. `apply` con lambda, `iterrows`, o un
+transformer de sklearn no soportado) se marca con `# TODO py2spark:` para
+revisión manual, sin romper el resto del código.
 
 ## Requisitos
 
