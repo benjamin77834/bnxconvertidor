@@ -1,0 +1,69 @@
+{
+  "name": "bnx-code-review",
+  "displayName": "BNX Code Review (estilo Sonar)",
+  "description": "Analiza calidad de PySpark/Python por reglas (palabras reservadas, shadowing de built-ins, performance, seguridad) usando el motor del portal BNX. Marca los hallazgos como diagnosticos en el editor.",
+  "version": "0.1.0",
+  "publisher": "bnx",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Linters",
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "lint",
+    "sonar",
+    "code review",
+    "pyspark",
+    "python",
+    "quality"
+  ],
+  "activationEvents": [
+    "onLanguage:python"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "bnxReview.analyzeFile",
+        "title": "BNX Review: Analizar archivo (calidad)"
+      },
+      {
+        "command": "bnxReview.clear",
+        "title": "BNX Review: Limpiar diagnosticos"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "bnxReview.analyzeFile",
+          "when": "editorLangId == python",
+          "group": "1_modification"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "BNX Code Review",
+      "properties": {
+        "bnxReview.serverUrl": {
+          "type": "string",
+          "default": "http://localhost:8081",
+          "description": "URL base del portal BNX que expone el endpoint /analyze."
+        },
+        "bnxReview.analyzeOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Analizar automaticamente el archivo Python al guardarlo."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "package": "vsce package --allow-missing-repository -o bnx-code-review.vsix"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^2.15.0"
+  }
+}

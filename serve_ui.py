@@ -92,6 +92,7 @@ from src.validator.semantic import validate
 from src.accuracy import compute_accuracy
 from src.py2spark import convert_code as py2spark_convert
 from src.py2spark import infer_input_schema as py2spark_infer_schema
+from src.metadata import build_all as build_metadata
 from src.perf_optimizer import optimize_pyspark
 from src.export_bundle import build_export_bundle
 from src.cobol_parser import parse_cobol, cobol_to_graph
@@ -177,6 +178,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_analyze()
         elif "/datasource/fetch" in path:
             self._handle_datasource_fetch()
+        elif "/metadata" in path:
+            self._handle_metadata()
         elif "/compile" in path or "/api" in path:
             self._handle_compile()
         else:
@@ -201,6 +204,10 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         # Descarga de addons de VS Code (.vsix) generados on-demand.
         # /download/vsix            -> py2spark (Python -> PySpark)
         # /download/vsix/optimizer  -> BNX PySpark Optimizer
+        if path in ("/download/vsix/review", "/api/download/vsix/review"):
+            self._handle_download_vsix(ext_dir="vscode-extension-review",
+                                       filename="bnx-code-review.vsix")
+            return
         if path in ("/download/vsix/optimizer", "/api/download/vsix/optimizer"):
             self._handle_download_vsix(ext_dir="vscode-extension-optimizer",
                                        filename="pyspark-optimizer.vsix")
@@ -1563,9 +1570,16 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             nodes = []
             node_ids = set()
             for node in dag.execution_order:
+                # Adjuntar la regla XFR del nodo (si existe) para que la GUI pueda
+                # mostrar el detalle y derivar el LINAJE DE COLUMNAS (out.col <-
+                # in.col). Las reglas se indexan por id en minusculas.
+                _rule = (xfr_rules.get(node.id.lower())
+                         or xfr_rules.get((node.name or "").lower())
+                         or {})
                 nodes.append({
                     "id": node.id, "name": node.name, "type": node.type,
                     "parents": node.parents, "children": node.children,
+                    "rule": _rule,
                 })
                 node_ids.add(node.id)
             # Filter edges: only include edges where both endpoints exist as nodes
@@ -1669,6 +1683,9 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 "graph_name": graph_name,
                 "description": graph_description,
                 "params": {k: v for k, v in list(ast.get("abinitio_params", {}).items())[:20]},
+                # Esquema de columnas por SOURCE (del .dml). Base del linaje de
+                # columnas en la GUI: permite trazar out.col -> source.col.
+                "dml_schema": dml_schema,
             }
         finally:
             # Cleanup temp files
@@ -2070,6 +2087,40 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 result["code"] = result["optimized_code"]
                 result["optimized_applied"] = True
             self._json_response(200, result)
+
+        except Exception as e:
+            import traceback
+            err_msg = str(e)
+            traceback.print_exc()
+            self._json_response(500, {"error": err_msg})
+
+    def _handle_metadata(self):
+        """Exporta la metadata/linaje del grafo a formatos de catalogo.
+
+        Recibe el grafo (mp/xfr/dml/pset) igual que /compile, lo compila para
+        obtener nodos+reglas+dml_schema y devuelve:
+          {canonical, openlineage, glue_script, databricks_ddl}
+        El cliente descarga el formato que elija. No conecta a ningun catalogo:
+        son artefactos para ejecutar en el entorno del usuario (seguro).
+        """
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        content_type = self.headers.get("Content-Type", "")
+
+        try:
+            try:
+                mp_content, xfr_content, dml_content, pset_content, target, mp_filename = \
+                    self._parse_compile_request(body, content_type)
+            except ValueError as ve:
+                self._json_response(400, {"error": str(ve)})
+                return
+
+            result = self._compile_graph(
+                mp_content, xfr_content, dml_content, pset_content, target,
+                mp_filename=mp_filename,
+            )
+            metadata = build_metadata(result)
+            self._json_response(200, metadata)
 
         except Exception as e:
             import traceback

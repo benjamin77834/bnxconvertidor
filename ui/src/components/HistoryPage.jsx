@@ -323,11 +323,25 @@ const TIMELINE = [
     tags: ['modelos', 'pmml', 'security', 'sonar', 'bundle', 'python'],
     color: '#8b5cf6',
   },
+  {
+    date: '7 Oct 2026',
+    title: 'Dia 54: Fix de subgrafos-plantilla + grafo showcase',
+    desc: 'Fix del parser GDE: los Input/Output_File se serializan como subgrafos (p.ej. "Graph4") cuyos internos (Reformat/Redefine_Format/Filter/Dedup/Trash) son casting DML — plumbing que GDE oculta. Antes se aplanaban como nodos de primer nivel y quedaban como ISLA desconectada que contaminaba el DAG y los datos de salida (bug reportado en A_DRI_ECMS_AMBS_IMR_D). Ahora se eliminan de forma segura (doble filtro: tipo plumbing + nombre canonico de plantilla) sin tocar subgrafos de usuario con logica real (joins/rollups). Codegen Spark: respeta rutas de sink ya absolutas (s3://, hdfs://, /...) en vez de anteponer BASE_PATH/output/. Nuevo grafo de ejemplo BNX_DualFile_Join_Showcase (dos archivos -> sort -> join -> output) + fixture y test de regresion. 125 tests.',
+    tags: ['parser', 'gde', 'subgrafos', 'codegen', 'fix'],
+    color: '#22c55e',
+  },
+  {
+    date: '9 Oct 2026',
+    title: 'Dia 55: Linaje visual, export a catalogos y Code Review (.vsix)',
+    desc: 'Panel de LINAJE al lado del grafo (DagViewer): pestanas Nodos (upstream/downstream) y Columnas (out.col <- source.col, con llave de join marcada), sincronizado con la seleccion. Export de METADATA a formatos de catalogo (src/metadata.py + endpoint /metadata): modelo canonico BNX (JSON), OpenLineage (JSON, con columnLineage facet), AWS Glue Data Catalog (script boto3: tablas+columnas+descripcion+linaje en Parameters) y Databricks Unity Catalog (DDL con COMMENT de linaje por columna + TBLPROPERTIES). Botones de descarga en el panel de linaje y en Data Sintetica. Analisis de calidad estilo Sonar ampliado: nueva regla de palabras reservadas / shadowing de built-ins (list/str/sum/filter/input...) y soft keywords (match/type). 3a extension VS Code "BNX Code Review" (vscode-extension-review): el analisis como diagnosticos nativos del editor; descargable en /download/vsix/review. Fix de layout del panel Datos Remotos (se veia "mocho": flexShrink + grids responsivos). 125 tests.',
+    tags: ['lineage', 'metadata', 'glue', 'databricks', 'openlineage', 'vsix', 'sonar'],
+    color: '#a855f7',
+  },
 ]
 
 const STATS = [
-  { label: 'Dias de desarrollo', value: '53', color: '#6366f1' },
-  { label: 'Commits', value: '185+', color: '#22c55e' },
+  { label: 'Dias de desarrollo', value: '55', color: '#6366f1' },
+  { label: 'Commits', value: '190+', color: '#22c55e' },
   { label: 'Componentes', value: '33+', color: '#f59e0b' },
   { label: 'Parsers', value: '7', color: '#a855f7' },
   { label: 'Code Generators', value: '7', color: '#ec4899' },

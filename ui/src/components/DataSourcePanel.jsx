@@ -194,6 +194,10 @@ export default function DataSourcePanel({ theme, onImport }) {
     <div style={{
       background: '#0ea5e912', borderRadius: 10, padding: 0, overflow: 'hidden',
       border: '1px solid #0ea5e955',
+      // Evita que el flex column padre (Data Sintetica) aplaste este panel y
+      // recorte su cuerpo ("se ve mocho"). flexShrink:0 preserva su altura
+      // intrinseca; width:100% asegura que ocupe todo el ancho disponible.
+      flexShrink: 0, width: '100%',
     }}>
       <button onClick={() => setOpen(v => !v)}
         style={{ width: '100%', textAlign: 'left', padding: '14px 16px', cursor: 'pointer',
@@ -214,8 +218,8 @@ export default function DataSourcePanel({ theme, onImport }) {
             elegir la fuente). <b>Teradata e Impala</b> son propietarios: descarga su .jar y pon la ruta.
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
-            <div><label style={lbl}>Fuente</label>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8 }}>
+            <div style={{ minWidth: 0 }}><label style={lbl}>Fuente</label>
               <select value={sourceType} onChange={e => {
                 const st = e.target.value
                 setSourceType(st)
@@ -233,8 +237,8 @@ export default function DataSourcePanel({ theme, onImport }) {
                 <option value="jdbc">JDBC genérico</option>
               </select>
             </div>
-            <div><label style={lbl}>Host</label><input style={field} value={host} onChange={e => setHost(e.target.value)} placeholder="host.banco.com" /></div>
-            <div><label style={lbl}>Puerto</label><input style={field} value={port} onChange={e => setPort(e.target.value)} placeholder={PORT_HINT[sourceType] || '1025 / 10000 / 21050'} /></div>
+            <div style={{ minWidth: 0 }}><label style={lbl}>Host</label><input style={field} value={host} onChange={e => setHost(e.target.value)} placeholder="host.banco.com" /></div>
+            <div style={{ minWidth: 0 }}><label style={lbl}>Puerto</label><input style={field} value={port} onChange={e => setPort(e.target.value)} placeholder={PORT_HINT[sourceType] || '1025 / 10000 / 21050'} /></div>
           </div>
 
           {/* Conexiones guardadas para esta fuente (max 3, sin password) */}
@@ -268,26 +272,26 @@ export default function DataSourcePanel({ theme, onImport }) {
                 color: currentSaved.length >= MAX_SAVED ? t.dim : '#22c55e',
               }}>💾 Guardar conexión</button>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-            <div><label style={lbl}>Base de datos</label><input style={field} value={database} onChange={e => setDatabase(e.target.value)} placeholder="esquema / database" /></div>
-            <div><label style={lbl}>URL JDBC (opcional, sobreescribe host/db)</label><input style={field} value={url} onChange={e => setUrl(e.target.value)} placeholder="jdbc:teradata://host/DATABASE=db" /></div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 8 }}>
+            <div style={{ minWidth: 0 }}><label style={lbl}>Base de datos</label><input style={field} value={database} onChange={e => setDatabase(e.target.value)} placeholder="esquema / database" /></div>
+            <div style={{ minWidth: 0 }}><label style={lbl}>URL JDBC (opcional, sobreescribe host/db)</label><input style={field} value={url} onChange={e => setUrl(e.target.value)} placeholder="jdbc:teradata://host/DATABASE=db" /></div>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-            <div><label style={lbl}>Usuario</label><input style={field} value={user} onChange={e => setUser(e.target.value)} /></div>
-            <div><label style={lbl}>Password (no se guarda ni se muestra)</label><input style={field} type="password" value={password} onChange={e => setPassword(e.target.value)} /></div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 8 }}>
+            <div style={{ minWidth: 0 }}><label style={lbl}>Usuario</label><input style={field} value={user} onChange={e => setUser(e.target.value)} /></div>
+            <div style={{ minWidth: 0 }}><label style={lbl}>Password (no se guarda ni se muestra)</label><input style={field} type="password" value={password} onChange={e => setPassword(e.target.value)} /></div>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 8 }}>
-            <div><label style={lbl}>Tabla</label><input style={field} value={table} onChange={e => setTable(e.target.value)} placeholder="esquema.clientes" /></div>
-            <div><label style={lbl}>Límite de filas</label><input style={field} type="number" value={limit} onChange={e => setLimit(e.target.value)} /></div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8 }}>
+            <div style={{ minWidth: 0 }}><label style={lbl}>Tabla</label><input style={field} value={table} onChange={e => setTable(e.target.value)} placeholder="esquema.clientes" /></div>
+            <div style={{ minWidth: 0 }}><label style={lbl}>Límite de filas</label><input style={field} type="number" value={limit} onChange={e => setLimit(e.target.value)} /></div>
           </div>
-          <div><label style={lbl}>o Query SQL (opcional)</label>
+          <div style={{ minWidth: 0 }}><label style={lbl}>o Query SQL (opcional)</label>
             <input style={field} value={query} onChange={e => setQuery(e.target.value)} placeholder="SELECT ... FROM ... WHERE ..." /></div>
-          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 8 }}>
-            <div><label style={lbl}>Ruta del driver JDBC (.jar en el server)</label><input style={field} value={driverJar} onChange={e => setDriverJar(e.target.value)} placeholder={DRIVER_HINT[sourceType] || '/opt/drivers/driver.jar'} /></div>
-            <div><label style={lbl}>Nombre del nodo/fuente</label><input style={field} value={targetNode} onChange={e => setTargetNode(e.target.value)} placeholder="external_source" /></div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8 }}>
+            <div style={{ minWidth: 0 }}><label style={lbl}>Ruta del driver JDBC (.jar en el server)</label><input style={field} value={driverJar} onChange={e => setDriverJar(e.target.value)} placeholder={DRIVER_HINT[sourceType] || '/opt/drivers/driver.jar'} /></div>
+            <div style={{ minWidth: 0 }}><label style={lbl}>Nombre del nodo/fuente</label><input style={field} value={targetNode} onChange={e => setTargetNode(e.target.value)} placeholder="external_source" /></div>
           </div>
 
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <button onClick={fetchData} disabled={loading}
               style={{ padding: '8px 14px', borderRadius: 8, fontSize: 13, fontWeight: 700,
                 cursor: loading ? 'wait' : 'pointer', background: '#0ea5e9', color: '#fff', border: 'none' }}>

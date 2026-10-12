@@ -11,10 +11,27 @@ usar). Cada hallazgo trae: rule, severity (info|minor|major|critical), line,
 message y category (bug|smell|security|performance).
 """
 import ast
+import builtins
+import keyword
 import re
 
 
 _SEVERITY_ORDER = {"critical": 0, "major": 1, "minor": 2, "info": 3}
+
+# Palabras reservadas de Python (keywords duros). Usarlas como identificador es
+# un SyntaxError, pero las detectamos en texto por si vienen de codigo generado
+# o de otro lenguaje embebido. Los soft keywords (match/case/type/_) SI pueden
+# usarse como nombre, pero hacerlo es confuso -> smell.
+_HARD_KEYWORDS = set(keyword.kwlist)
+_SOFT_KEYWORDS = set(getattr(keyword, "softkwlist", ["_", "case", "match", "type"]))
+
+# Built-ins de Python que, usados como nombre de variable/parametro/funcion,
+# "sombrean" (shadow) el built-in y son fuente clasica de bugs. Es la regla
+# estilo SonarLint (builtin shadowing). Se excluyen nombres triviales que casi
+# nunca causan dano real para no generar ruido.
+_BUILTINS = {b for b in dir(builtins) if not b.startswith("_")}
+_SHADOW_IGNORE = {"id", "type", "object", "property"}  # muy comunes, bajo riesgo
+_SHADOW_BUILTINS = _BUILTINS - _SHADOW_IGNORE
 
 
 def review_code(code, language="python"):
@@ -113,7 +130,96 @@ def _ast_rules(tree, code):
                     "message": "except con solo 'pass' silencia el error. "
                                "Recomendacion: registrar (log) o manejar la excepcion.",
                 })
+
+    # Palabras reservadas / shadowing de built-ins (estilo SonarLint).
+    out += _reserved_words_rules(tree)
     return out
+
+
+def _reserved_words_rules(tree):
+    """Detecta identificadores problematicos (estilo SonarLint):
+
+    - python:ShadowBuiltin  : una variable/parametro/funcion se llama igual que
+      un built-in (list, dict, str, sum, filter, input, ...). Sombrea el built-in
+      y es fuente clasica de bugs. -> smell major.
+    - python:SoftKeywordName: se usa un soft keyword (match, case, type, _) como
+      nombre. Es legal pero confuso. -> smell minor.
+
+    Se reporta cada nombre UNA sola vez (en su primera aparicion) para no inundar.
+    """
+    out = []
+    seen = set()  # (clase, nombre) -> ya reportado
+
+    def report(name, lineno):
+        if not name or not isinstance(name, str):
+            return
+        if name in _SHADOW_BUILTINS:
+            key = ("shadow", name)
+            if key not in seen:
+                seen.add(key)
+                out.append({
+                    "rule": "python:ShadowBuiltin", "category": "smell", "severity": "major",
+                    "line": lineno or 0,
+                    "message": f"'{name}' sombrea un built-in de Python; reasignarlo puede "
+                               f"romper usos posteriores. Recomendacion: renombrar (p.ej. '{name}_').",
+                })
+        elif name in _SOFT_KEYWORDS:
+            key = ("soft", name)
+            if key not in seen:
+                seen.add(key)
+                out.append({
+                    "rule": "python:SoftKeywordName", "category": "smell", "severity": "minor",
+                    "line": lineno or 0,
+                    "message": f"'{name}' es una palabra reservada 'suave' de Python; usarla como "
+                               f"nombre es confuso. Recomendacion: elegir otro identificador.",
+                })
+
+    for node in ast.walk(tree):
+        # Asignaciones: x = ...
+        if isinstance(node, ast.Assign):
+            for tgt in node.targets:
+                for nm in _names_in_target(tgt):
+                    report(nm, node.lineno)
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            for nm in _names_in_target(node.target):
+                report(nm, node.lineno)
+        # Bucles: for x in ...
+        elif isinstance(node, (ast.For, ast.AsyncFor)):
+            for nm in _names_in_target(node.target):
+                report(nm, node.lineno)
+        # Definiciones de funcion/clase y sus parametros.
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            report(node.name, node.lineno)
+            a = node.args
+            for arg in (list(a.args) + list(a.posonlyargs) + list(a.kwonlyargs)):
+                report(arg.arg, arg.lineno)
+            if a.vararg:
+                report(a.vararg.arg, a.vararg.lineno)
+            if a.kwarg:
+                report(a.kwarg.arg, a.kwarg.lineno)
+        elif isinstance(node, ast.ClassDef):
+            report(node.name, node.lineno)
+        # Comprensiones y with/as.
+        elif isinstance(node, ast.comprehension):
+            for nm in _names_in_target(node.target):
+                report(nm, getattr(node.target, "lineno", 0))
+        elif isinstance(node, ast.withitem) and node.optional_vars is not None:
+            for nm in _names_in_target(node.optional_vars):
+                report(nm, getattr(node.optional_vars, "lineno", 0))
+    return out
+
+
+def _names_in_target(node):
+    """Extrae los nombres asignables de un target (Name, Tuple/List anidados)."""
+    names = []
+    if isinstance(node, ast.Name):
+        names.append(node.id)
+    elif isinstance(node, (ast.Tuple, ast.List)):
+        for e in node.elts:
+            names.extend(_names_in_target(e))
+    elif isinstance(node, ast.Starred):
+        names.extend(_names_in_target(node.value))
+    return names
 
 
 def _is_none(node):

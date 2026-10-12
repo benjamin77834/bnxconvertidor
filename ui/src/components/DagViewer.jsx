@@ -4,6 +4,7 @@ import ReactFlow, {
   MarkerType, useNodesState, useEdgesState
 } from 'reactflow'
 import 'reactflow/dist/style.css'
+import LineagePanel from './LineagePanel'
 
 const TYPE_COLOR = {
   SOURCE:      '#22c55e',
@@ -281,6 +282,7 @@ export default function DagViewer({ data, theme, onEditNode }) {
   const [selected, setSelected] = useState(null)
   const [hideTechnical, setHideTechnical] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
+  const [lineageOpen, setLineageOpen] = useState(false)
 
   // Technical node types that can be hidden for clarity
   const TECHNICAL_TYPES = ['TRANSFORM', 'PARTITION', 'CONCATENATE']
@@ -374,6 +376,12 @@ export default function DagViewer({ data, theme, onEditNode }) {
 
   const onPaneClick = useCallback(() => setSelected(null), [])
 
+  // Seleccionar un nodo desde el panel de linaje (por id).
+  const pickNode = useCallback((nodeId) => {
+    const full = data.nodes.find(n => n.id === nodeId)
+    if (full) setSelected(full)
+  }, [data])
+
   const toolbarStyle = {
     position: 'absolute', top: 8, left: 8, zIndex: 10,
     display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap',
@@ -415,35 +423,54 @@ export default function DagViewer({ data, theme, onEditNode }) {
             color: t.text || '#e2e8f0', outline: 'none',
           }}
         />
+        <button style={btnStyle(lineageOpen)} onClick={() => setLineageOpen(v => !v)}>
+          🧬 Linaje
+        </button>
       </div>
 
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        onNodeClick={onNodeClick}
-        onPaneClick={onPaneClick}
-        fitView
-        minZoom={0.05}
-        maxZoom={2}
-      >
-        <Background color={t.flowBg || '#1e2433'} gap={20} />
-        <Controls />
-        <MiniMap
-          nodeColor={n => {
-            const orig = data.nodes.find(x => x.id === n.id)
-            return TYPE_COLOR[orig?.type] || '#64748b'
-          }}
-          style={{ background: t.card || '#1e2433' }}
-        />
-      </ReactFlow>
+      {/* Split view: grafo a la izquierda, panel de linaje a la derecha */}
+      <div style={{ width: '100%', height: '100%', display: 'flex' }}>
+        <div style={{ flex: 1, height: '100%', position: 'relative' }}>
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onNodeClick={onNodeClick}
+            onPaneClick={onPaneClick}
+            fitView
+            minZoom={0.05}
+            maxZoom={2}
+          >
+            <Background color={t.flowBg || '#1e2433'} gap={20} />
+            <Controls />
+            <MiniMap
+              nodeColor={n => {
+                const orig = data.nodes.find(x => x.id === n.id)
+                return TYPE_COLOR[orig?.type] || '#64748b'
+              }}
+              style={{ background: t.card || '#1e2433' }}
+            />
+          </ReactFlow>
 
-      {selected && (
-        <NodeDetail node={selected} theme={t} onClose={() => setSelected(null)}
-          onEdit={onEditNode ? (nodeId, newRule) => { onEditNode(nodeId, newRule); setSelected(null) } : null}
-        />
-      )}
+          {selected && (
+            <NodeDetail node={selected} theme={t} onClose={() => setSelected(null)}
+              onEdit={onEditNode ? (nodeId, newRule) => { onEditNode(nodeId, newRule); setSelected(null) } : null}
+            />
+          )}
+        </div>
+
+        {lineageOpen && (
+          <LineagePanel
+            data={data}
+            selectedId={selected?.id || null}
+            theme={t}
+            onPickNode={pickNode}
+            collapsed={false}
+            onToggle={() => setLineageOpen(false)}
+          />
+        )}
+      </div>
     </div>
   )
 }

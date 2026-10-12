@@ -634,6 +634,53 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Exportar METADATA / LINAJE a formatos de catalogo (mismo motor que el panel
+  // de linaje del Compiler). Usa el endpoint /metadata con el grafo actual
+  // (mp/xfr/dml) para obtener {canonical, openlineage, glue_script,
+  // databricks_ddl} y descarga el formato elegido. No conecta a ningun catalogo.
+  // -------------------------------------------------------------------------
+  const [mdMenuOpen, setMdMenuOpen] = useState(false)
+  const [mdLoading, setMdLoading] = useState(false)
+  const METADATA_URL = COMPILE_URL.replace(/\/compile$/, '/metadata')
+
+  const _dl = (filename, text, mime) => {
+    const blob = new Blob([text], { type: mime || 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = filename
+    document.body.appendChild(a); a.click()
+    document.body.removeChild(a); URL.revokeObjectURL(url)
+  }
+
+  const exportMetadata = async (fmt) => {
+    setMdMenuOpen(false)
+    if (!hasCompilerGraph) {
+      alert('Primero compila/trae un grafo (mp/xfr) en el Compiler o Grafos.')
+      return
+    }
+    setMdLoading(true)
+    try {
+      const form = new FormData()
+      form.append('mp', new File([graphMp || mp || ''], 'graph.mp'))
+      if ((graphXfr || xfr || '').trim()) form.append('xfr', new File([graphXfr || xfr], 'graph.xfr'))
+      if ((dml || '').trim()) form.append('dml', new File([dml], 'graph.dml'))
+      form.append('mp_filename', (graphName || 'grafo') + '.mp')
+      const res = await fetch(METADATA_URL, { method: 'POST', body: form })
+      const md = await res.json()
+      if (md.error) { alert('No se pudo generar la metadata: ' + md.error); return }
+      const slug = ((graphName || 'grafo') + '').replace(/[^\w.-]+/g, '_')
+      if (fmt === 'bnx') _dl(`${slug}.metadata.json`, JSON.stringify(md.canonical, null, 2), 'application/json')
+      else if (fmt === 'openlineage') _dl(`${slug}.openlineage.json`, JSON.stringify(md.openlineage, null, 2), 'application/json')
+      else if (fmt === 'glue') _dl(`${slug}_glue_catalog.py`, md.glue_script, 'text/x-python')
+      else if (fmt === 'databricks') _dl(`${slug}_unity_catalog.sql`, md.databricks_ddl, 'text/x-sql')
+    } catch (e) {
+      alert('No se pudo generar la metadata: ' + e.message)
+    } finally {
+      setMdLoading(false)
+    }
+  }
+
   // Clasifica una linea para colorearla en la consola
   const classifyLine = (text) => {
     if (/Traceback|Exception|Error|ERROR|SQLSTATE/.test(text)) return 'error'
@@ -884,19 +931,57 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
             Tu trabajo se conserva al cambiar de pestaña o recargar. Se limpia solo al cambiar el grafo del Compiler.
           </p>
         </div>
-        {(result || runResult || consoleLines.length > 0 || compareResult) && (
+        {(result || runResult || consoleLines.length > 0 || compareResult || hasCompilerGraph) && (
           <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-            <button onClick={exportReportPDF} title="Reporte PDF de todo lo hecho en esta sesión (datos, prueba, comparación)"
-              style={{
-                padding: '8px 14px', borderRadius: 8, cursor: 'pointer', fontSize: 13, whiteSpace: 'nowrap',
-                background: (t.accent || '#6366f1') + '20', border: `1px solid ${t.accent || '#6366f1'}40`,
-                color: t.accent || '#6366f1', fontWeight: 600,
-              }}>📄 Reporte PDF</button>
-            <button onClick={clearWork} title="Borra datos generados, resultado de prueba, consola y comparación"
-              style={{
-                padding: '8px 14px', borderRadius: 8, cursor: 'pointer', fontSize: 13, whiteSpace: 'nowrap',
-                background: '#ef444418', border: '1px solid #ef444440', color: '#ef4444', fontWeight: 600,
-              }}>🧹 Limpiar</button>
+            {/* Exportar metadata/linaje a catalogo (Glue, Databricks, OpenLineage, BNX) */}
+            <div style={{ position: 'relative' }}>
+              <button onClick={() => setMdMenuOpen(v => !v)} disabled={mdLoading || !hasCompilerGraph}
+                title="Exporta la metadata y el linaje del grafo a formatos de catálogo (Glue, Databricks, OpenLineage)"
+                style={{
+                  padding: '8px 14px', borderRadius: 8, fontSize: 13, whiteSpace: 'nowrap', fontWeight: 600,
+                  cursor: (mdLoading || !hasCompilerGraph) ? 'not-allowed' : 'pointer',
+                  background: '#a855f720', border: '1px solid #a855f740', color: '#a855f7',
+                  opacity: (!hasCompilerGraph) ? 0.5 : 1,
+                }}>{mdLoading ? '⏳ Generando...' : '🧬 Metadata ▾'}</button>
+              {mdMenuOpen && (
+                <div style={{
+                  position: 'absolute', top: '110%', left: 0, zIndex: 30, width: 250,
+                  background: t.sidebar || t.card || '#161b27', border: `1px solid ${t.border || '#334155'}`,
+                  borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,.35)', overflow: 'hidden',
+                }}>
+                  {[
+                    ['bnx', 'Metadata BNX (JSON)', 'Modelo canónico: grafo + columnas + linaje'],
+                    ['openlineage', 'OpenLineage (JSON)', 'Estándar: Marquez, DataHub, etc.'],
+                    ['glue', 'AWS Glue Catalog (boto3)', 'Script Python: crea tablas + metadata'],
+                    ['databricks', 'Databricks Unity Catalog', 'DDL SQL: CREATE TABLE + COMMENT'],
+                  ].map(([fmt, lbl, sub]) => (
+                    <button key={fmt} onClick={() => exportMetadata(fmt)} style={{
+                      display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px',
+                      background: 'none', border: 'none', cursor: 'pointer',
+                      borderBottom: `1px solid ${(t.border || '#334155')}44`,
+                    }}>
+                      <div style={{ fontSize: 12, color: t.text || '#e2e8f0', fontWeight: 600 }}>{lbl}</div>
+                      <div style={{ fontSize: 10, color: t.dim || '#64748b' }}>{sub}</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            {(result || runResult || consoleLines.length > 0 || compareResult) && (
+              <>
+                <button onClick={exportReportPDF} title="Reporte PDF de todo lo hecho en esta sesión (datos, prueba, comparación)"
+                  style={{
+                    padding: '8px 14px', borderRadius: 8, cursor: 'pointer', fontSize: 13, whiteSpace: 'nowrap',
+                    background: (t.accent || '#6366f1') + '20', border: `1px solid ${t.accent || '#6366f1'}40`,
+                    color: t.accent || '#6366f1', fontWeight: 600,
+                  }}>📄 Reporte PDF</button>
+                <button onClick={clearWork} title="Borra datos generados, resultado de prueba, consola y comparación"
+                  style={{
+                    padding: '8px 14px', borderRadius: 8, cursor: 'pointer', fontSize: 13, whiteSpace: 'nowrap',
+                    background: '#ef444418', border: '1px solid #ef444440', color: '#ef4444', fontWeight: 600,
+                  }}>🧹 Limpiar</button>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -1377,6 +1462,12 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
                     {' '}{s.minor || 0} menores, {s.info || 0} info
                   </span>
                   <div style={{ display: 'flex', gap: 6 }}>
+                    <a href={COMPILE_URL.replace('/compile', '/download/vsix/review')} download="bnx-code-review.vsix"
+                      title="Descarga la extensión 'BNX Code Review' (.vsix): este mismo análisis (palabras reservadas, shadowing, performance, seguridad) como diagnósticos dentro de VS Code"
+                      style={{ padding: '4px 10px', borderRadius: 6, fontSize: 11, cursor: 'pointer', textDecoration: 'none',
+                        background: '#a855f720', border: '1px solid #a855f7', color: '#c084fc', fontWeight: 600 }}>
+                      🔎 Extensión VS Code (.vsix)
+                    </a>
                     <button onClick={analyzeQuality} disabled={analyzing}
                       title="Volver a analizar con el código editado"
                       style={{ padding: '4px 10px', borderRadius: 6, fontSize: 11, cursor: analyzing ? 'wait' : 'pointer',
