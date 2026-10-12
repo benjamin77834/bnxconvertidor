@@ -249,6 +249,10 @@ def test_sklearn_pipeline_columntransformer_to_mllib():
     assert "RandomForestClassifier(" in code and "numTrees=150" in code
     assert "maxDepth=12" in code and "minInstancesPerNode=5" in code
     assert "Pipeline(stages=[" in code
+    # las columnas numericas se castean a double ANTES del Imputer (Spark exige
+    # tipo numerico; si el CSV trae vacios se infieren string -> IllegalArgument).
+    assert 'F.col(\'edad\').cast("double")' in code
+    assert 'F.col(\'ingreso\').cast("double")' in code
     assert ".fit(train_df)" in code and ".transform(test_df)" in code
     assert "MulticlassClassificationEvaluator(" in code
     assert ".write().overwrite().save(" in code
