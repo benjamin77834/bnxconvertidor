@@ -338,11 +338,16 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 name = _safe(fields.get("name", "grafo"))
                 mp = fields.get("mp", "") or ""
                 xfr = fields.get("xfr", "") or ""
+                # 1) Guardado LOCAL (fuente de verdad, siempre).
                 with open(os.path.join(flat_dir, name + ".mp"), "w", encoding="utf-8") as f:
                     f.write(mp)
                 if xfr:
                     with open(os.path.join(flat_dir, name + ".xfr"), "w", encoding="utf-8") as f:
                         f.write(xfr)
+                # 2) Subida a S3 (best-effort; no rompe si falla).
+                _s3_upload_library_file(os.path.join("_flat", name + ".mp"), mp)
+                if xfr:
+                    _s3_upload_library_file(os.path.join("_flat", name + ".xfr"), xfr)
                 self._json_response(200, {"saved": {"id": name, "name": name, "mp": mp, "xfr": xfr}})
                 return
 
@@ -404,10 +409,12 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                     with open(os.path.join(root, proj, name + ".mp"), "w", encoding="utf-8") as f:
                         f.write(mp)
                     uploaded.append(name + ".mp")
+                    _s3_upload_library_file(os.path.join(proj, name + ".mp"), mp)
                 if xfr:
                     with open(os.path.join(root, proj, name + ".xfr"), "w", encoding="utf-8") as f:
                         f.write(xfr)
                     uploaded.append(name + ".xfr")
+                    _s3_upload_library_file(os.path.join(proj, name + ".xfr"), xfr)
                 self._json_response(200, {"uploaded": uploaded, "project": proj})
                 return
 
@@ -420,6 +427,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                         p = os.path.join(flat_dir, gid + ext)
                         if os.path.exists(p):
                             os.unlink(p)
+                        _s3_delete_library_file(os.path.join("_flat", gid + ext))
                     self._json_response(200, {"deleted": gid})
                     return
                 proj = _safe(fields.get("project", ""))
@@ -428,6 +436,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                     p = os.path.join(root, proj, _safe(fname))
                     if os.path.exists(p):
                         os.unlink(p)
+                    _s3_delete_library_file(os.path.join(proj, _safe(fname)))
                     self._json_response(200, {"deleted": f"{proj}/{fname}"})
                 else:
                     import shutil
@@ -2705,6 +2714,113 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             print(f"  [{args[1]}] {args[0]}")
 
 
+# ============================================================
+# Biblioteca de grafos en S3 (cuenta monkey, bucket bnx-e2e-test).
+# Los grafos se guardan SIEMPRE en local (./bnx_library/, fuente de verdad y
+# fallback) y ADEMAS se suben a S3 best-effort. Si S3 falla (sin credenciales,
+# sin red, sin boto3), el guardado local no se ve afectado y la UI sigue.
+# Todo es configurable por variables de entorno:
+#   BNX_AWS_PROFILE  (perfil ~/.aws)      default: monkeyapp
+#   BNX_S3_BUCKET    (bucket de grafos)   default: bnx-e2e-test
+#   BNX_S3_PREFIX    (prefijo/carpeta)    default: library/
+#   BNX_SKIP_LIBRARY_SYNC=1  -> omite el sync de arranque
+# ============================================================
+def _library_s3_config():
+    """Devuelve (profile, bucket, prefix) de la biblioteca en S3."""
+    profile = os.environ.get("BNX_AWS_PROFILE", "monkeyapp")
+    bucket = os.environ.get("BNX_S3_BUCKET", "bnx-e2e-test")
+    prefix = os.environ.get("BNX_S3_PREFIX", "library/")
+    if prefix and not prefix.endswith("/"):
+        prefix += "/"
+    return profile, bucket, prefix
+
+
+def _library_s3_client():
+    """Cliente boto3 S3 con el perfil configurado, o None si no se puede.
+    Best-effort: nunca lanza (si falta boto3/credenciales, devuelve None)."""
+    profile, bucket, prefix = _library_s3_config()
+    try:
+        import boto3
+    except Exception:
+        return None, bucket, prefix
+    try:
+        try:
+            session = boto3.Session(profile_name=profile)
+        except Exception:
+            session = boto3.Session()  # cae a credenciales por defecto / env vars
+        return session.client("s3"), bucket, prefix
+    except Exception:
+        return None, bucket, prefix
+
+
+def _s3_cli_cmd(args, profile):
+    """Ejecuta un comando `aws s3api/s3` con el perfil dado. Devuelve True si
+    tuvo exito. Best-effort: no lanza."""
+    import shutil as _sh, subprocess as _sp
+    if not _sh.which("aws"):
+        return False
+    try:
+        proc = _sp.run(args + ["--profile", profile],
+                       capture_output=True, text=True, timeout=60)
+        return proc.returncode == 0
+    except Exception:
+        return False
+
+
+def _s3_upload_library_file(rel_path, content):
+    """Sube UN archivo de la biblioteca a s3://<bucket>/<prefix><rel_path>.
+
+    rel_path es la ruta relativa dentro de bnx_library/ (p.ej. '_flat/grafo.mp'
+    o 'proyecto/grafo.xfr'). content es texto. Best-effort: usa boto3 si esta;
+    si no, cae a AWS CLI. Cualquier fallo se reporta y se ignora (el guardado
+    local ya ocurrio)."""
+    profile, bucket, prefix = _library_s3_config()
+    key = prefix + rel_path.replace(os.sep, "/")
+    client, _b, _p = _library_s3_client()
+    if client is not None:
+        try:
+            body = content.encode("utf-8") if isinstance(content, str) else content
+            client.put_object(Bucket=bucket, Key=key, Body=body)
+            print(f"  [library] subido a S3 (boto3): s3://{bucket}/{key}")
+            return True
+        except Exception as e:
+            print(f"  [library] S3 upload boto3 fallo ({type(e).__name__}: {e}); intento CLI...")
+    # Fallback: AWS CLI (escribe el contenido a un temporal y lo sube).
+    import tempfile as _tf
+    try:
+        with _tf.NamedTemporaryFile("w", suffix=".bnxtmp", delete=False, encoding="utf-8") as _tmp:
+            _tmp.write(content if isinstance(content, str) else content.decode("utf-8", "replace"))
+            _tmp_path = _tmp.name
+        ok = _s3_cli_cmd(["aws", "s3", "cp", _tmp_path, f"s3://{bucket}/{key}", "--only-show-errors"], profile)
+        os.unlink(_tmp_path)
+        if ok:
+            print(f"  [library] subido a S3 (cli): s3://{bucket}/{key}")
+        else:
+            print(f"  [library] S3 upload omitido (sin boto3 ni AWS CLI/credenciales): {key}")
+        return ok
+    except Exception as e:
+        print(f"  [library] S3 upload omitido ({type(e).__name__}: {e})")
+        return False
+
+
+def _s3_delete_library_file(rel_path):
+    """Borra UN archivo de la biblioteca en S3 (best-effort: boto3 o AWS CLI)."""
+    profile, bucket, prefix = _library_s3_config()
+    key = prefix + rel_path.replace(os.sep, "/")
+    client, _b, _p = _library_s3_client()
+    if client is not None:
+        try:
+            client.delete_object(Bucket=bucket, Key=key)
+            print(f"  [library] borrado en S3 (boto3): s3://{bucket}/{key}")
+            return True
+        except Exception as e:
+            print(f"  [library] S3 delete boto3 fallo ({type(e).__name__}: {e}); intento CLI...")
+    ok = _s3_cli_cmd(["aws", "s3", "rm", f"s3://{bucket}/{key}", "--only-show-errors"], profile)
+    if ok:
+        print(f"  [library] borrado en S3 (cli): s3://{bucket}/{key}")
+    return ok
+
+
 def _sync_library_from_s3():
     """Sincroniza la biblioteca de grafos desde S3 (DataLab) a ./bnx_library/.
 
@@ -2721,9 +2837,10 @@ def _sync_library_from_s3():
         return
     dest = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bnx_library")
     os.makedirs(dest, exist_ok=True)
-    profile = os.environ.get("BNX_AWS_PROFILE", "datalab")
-    bucket = "datalake-bnx-scripts-dev"
-    prefix = "library/"
+    # Config S3 de la biblioteca (configurable por env). Default: cuenta monkey,
+    # bucket bnx-e2e-test, perfil monkeyapp. Los grafos viven en S3 (no en git) y
+    # se guardan tambien en local (fallback); al arrancar se bajan los nuevos.
+    profile, bucket, prefix = _library_s3_config()
 
     # Metodo 1: AWS CLI si esta instalado (rapido, incremental).
     import shutil, subprocess
