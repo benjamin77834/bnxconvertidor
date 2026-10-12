@@ -118,6 +118,11 @@ j.to_parquet("salida")`
             style={{ ...btn(t, 'secondary'), textDecoration: 'none' }}>
             ⚡ Optimizer VS Code (.vsix)
           </a>
+          <a href={COMPILE_URL.replace('/compile', '/download/vsix/review')} download="bnx-code-review.vsix"
+            title="Descarga la extensión 'BNX Code Review' (.vsix): análisis de calidad estilo Sonar (palabras reservadas, shadowing de built-ins, performance, seguridad) con diagnósticos en el editor"
+            style={{ ...btn(t, 'secondary'), textDecoration: 'none' }}>
+            🔎 Code Review VS Code (.vsix)
+          </a>
         </div>
       </div>
 

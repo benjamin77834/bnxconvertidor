@@ -21,8 +21,8 @@ const ROADMAP_DATA = {
         tasks: [
           { task: 'Configurar SonarQube scanner en el proyecto', status: 'pending' },
           { task: 'Crear sonar-project.properties', status: 'pending' },
-          { task: 'Resolver issues Critical/Blocker', status: 'pending' },
-          { task: 'Eliminar code smells (duplicacion, complejidad)', status: 'pending' },
+          { task: 'Resolver issues Critical/Blocker', status: 'in-progress' },
+          { task: 'Eliminar code smells (duplicacion, complejidad) + analizador propio estilo Sonar (code_review.py)', status: 'in-progress' },
           { task: 'Cobertura de tests minima 60%', status: 'pending' },
           { task: 'Quality gates: 0 bugs, 0 vulnerabilities', status: 'pending' },
         ],
@@ -147,6 +147,10 @@ const CURRENT_EFFORTS = [
   { task: 'Seccion Modelos: operacionalizacion (PMML+PySpark, SHA-256+cifrado+firma Ed25519, VERIFY)', status: 'done', impact: 'Empaqueta modelos de negocio en paquetes verificables y seguros, listos para desplegar' },
   { task: 'Bundles offline multi-Python 3.8-3.14 (2 series PySpark + autodeteccion en setup.sh)', status: 'done', impact: 'El bundle instala el PySpark correcto sea cual sea el Python del Linux destino' },
   { task: 'Analisis de calidad estilo Sonar en Data Sintetica (recomendaciones, sin cambios)', status: 'done', impact: 'Detecta code smells / seguridad / performance en el PySpark generado antes de desplegar' },
+  { task: 'Fix parser GDE: subgrafos-plantilla (Input/Output_File) ya no meten nodos fantasma', status: 'done', impact: 'El DAG y los datos de salida coinciden con el grafo real de GDE (bug A_DRI_ECMS_AMBS_IMR_D resuelto)' },
+  { task: 'Linaje visual (nodos + columnas) al lado del grafo, sincronizado con la seleccion', status: 'done', impact: 'Trazabilidad end-to-end: de donde viene y a donde va cada campo, para gobierno de datos' },
+  { task: 'Export de metadata/linaje a catalogos: BNX, OpenLineage, Glue (boto3), Databricks (DDL)', status: 'done', impact: 'La metadata del grafo se carga en el catalogo del banco (DAMA/governance) con un clic' },
+  { task: 'Regla de palabras reservadas / shadowing de built-ins (estilo SonarLint) + 3a extension VS Code (Code Review)', status: 'done', impact: 'Detecta variables que sombrean built-ins (list/str/sum...) y lleva el analisis al editor como diagnosticos' },
 ]
 
 // Estatus de conversion por complejidad de grafo. Honesto: bajo/medio validado,
