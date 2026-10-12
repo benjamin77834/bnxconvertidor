@@ -86,3 +86,21 @@ def test_regex_safety_net_detects_spark_read():
     )
     sch = infer_input_schema(code)
     assert any(s["node"] == "mi_tabla" for s in sch)
+
+
+def test_cast_double_marks_column_numeric():
+    # Una columna casteada a double (como las que emite el reconocedor de
+    # sklearn Pipeline para el Imputer) debe inferirse como numerica, para que
+    # Data Redactada genere numeros (si no, el cast las vuelve null y el Imputer
+    # falla con 'surrogate cannot be computed').
+    from src.py2spark.schema import infer_input_schema as _infer
+    code = (
+        "from pyspark.sql import SparkSession\n"
+        "from pyspark.sql import functions as F\n"
+        "spark = SparkSession.builder.getOrCreate()\n"
+        "df = spark.read.csv('x.csv')\n"
+        "df = df.withColumn('edad', F.col('edad').cast(\"double\"))\n"
+    )
+    sch = _infer(code)
+    tipos = {c["name"]: c["type"] for s in sch for c in s["columns"]}
+    assert tipos.get("edad") in ("decimal", "integer"), f"edad quedo como {tipos.get('edad')}"
