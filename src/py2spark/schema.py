@@ -26,13 +26,21 @@ _NON_COLUMN = {
 
 
 def _numeric_hint(col, code):
-    """True si la columna se compara/opera aritmeticamente (=> numerica)."""
+    """True si la columna se compara/opera aritmeticamente o se castea/usa como
+    numerica (=> generar datos numericos en la prueba)."""
+    c = re.escape(col)
     patterns = [
-        rf"col\(['\"]{re.escape(col)}['\"]\)\s*[<>]=?",       # F.col('x') > ...
-        rf"col\(['\"]{re.escape(col)}['\"]\)\s*[-+*/]",       # F.col('x') - ...
-        rf"[-+*/]\s*F?\.?col\(['\"]{re.escape(col)}['\"]\)",  # ... - F.col('x')
-        rf"sum\(['\"]{re.escape(col)}['\"]\)",                # F.sum('x')
-        rf"avg\(['\"]{re.escape(col)}['\"]\)",
+        rf"col\(['\"]{c}['\"]\)\s*[<>]=?",       # F.col('x') > ...
+        rf"col\(['\"]{c}['\"]\)\s*[-+*/]",       # F.col('x') - ...
+        rf"[-+*/]\s*F?\.?col\(['\"]{c}['\"]\)",  # ... - F.col('x')
+        rf"sum\(['\"]{c}['\"]\)",                # F.sum('x')
+        rf"avg\(['\"]{c}['\"]\)",
+        # cast explicito a tipo numerico: F.col('x').cast("double"/"int"/...).
+        # Clave para el pipeline sklearn: el Imputer exige numerico y el codegen
+        # emite df.withColumn('x', F.col('x').cast("double")).
+        rf"col\(['\"]{c}['\"]\)\.cast\(\s*['\"](?:double|float|int|integer|bigint|long|decimal|short)['\"]",
+        # withColumn('x', ... cast numerico ...)
+        rf"withColumn\(\s*['\"]{c}['\"]\s*,[^)]*cast\(\s*['\"](?:double|float|int|integer|bigint|long|decimal|short)['\"]",
     ]
     return any(re.search(p, code) for p in patterns)
 
