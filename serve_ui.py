@@ -1718,7 +1718,10 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             # navegador al renderizar). Se envia un prefijo + aviso; la descarga
             # (y el envio a AWS / prueba local) usan el codigo COMPLETO desde el
             # backend, no esta version recortada de visualizacion.
-            CODE_GUI_LIMIT = 500_000  # ~500 KB
+            # 80 KB (~2000 lineas): tamaño que un <pre> renderiza sin colgar el
+            # navegador. El codigo COMPLETO se descarga por token
+            # (code_download_url); esta version recortada es solo para la vista.
+            CODE_GUI_LIMIT = 80_000
             code_full_bytes = len(code or "")
             code_truncated = code_full_bytes > CODE_GUI_LIMIT
             code_for_gui = code

@@ -102,6 +102,18 @@ export default function App() {
   })
   const setResult = (raw) => {
     const val = capResult(raw)   // recorta nodos gigantes antes de dibujar/guardar
+    // Decidir "Solo código" de forma SINCRONA (antes de renderizar). Si el grafo
+    // es grande (truncado, > umbral de dibujo, o conversion COBOL/ALGOL), forzar
+    // codeOnly YA: si lo dejamos a un useEffect posterior, el primer render monta
+    // ReactFlow con cientos de nodos y cuelga el navegador (pantalla en blanco).
+    try {
+      const n = val?.nodes_truncated ? val.total_nodes : (val?.nodes?.length || 0)
+      const esLegacy = Boolean(val?.generated_mp)
+      if (val?.code && (val?.nodes_truncated || n > DAG_RENDER_LIMIT || esLegacy)) {
+        _setCodeOnly(true)
+        try { localStorage.setItem('bnx_code_only', '1') } catch { /* ignore */ }
+      }
+    } catch { /* ignore */ }
     _setResult(val)
     // Nuevo resultado: resetear el "forzar DAG" (grafos grandes no se pintan solos).
     setForceDag(false)
@@ -1633,7 +1645,10 @@ export default function App() {
             flex: codeOnly ? '0 0 0' : 1, position: 'relative', minHeight: 0,
             display: codeOnly ? 'none' : 'block',
           }}>
-            {result?.nodes?.length > 0 && (
+            {/* En modo "Solo código" NO montamos nada del DAG: con display:none
+                React igual montaria ReactFlow y, con cientos de nodos, cuelga el
+                navegador (pantalla en blanco). Al no renderizarlo, no hay costo. */}
+            {!codeOnly && result?.nodes?.length > 0 && (
               <button onClick={() => setExpandedPanel('dag')} style={{
                 position: 'absolute', top: 10, right: 10, zIndex: 10,
                 padding: '6px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
@@ -1641,7 +1656,8 @@ export default function App() {
                 display: 'flex', alignItems: 'center', gap: 4,
               }}>🔲 Fullscreen</button>
             )}
-            {result?.nodes?.length > 0 && result.nodes.length > DAG_RENDER_LIMIT && !forceDag ? (
+            {codeOnly ? null : (
+             result?.nodes?.length > 0 && result.nodes.length > DAG_RENDER_LIMIT && !forceDag ? (
               // Grafo MUY grande: no renderizar ReactFlow (congela la UI). Mostrar
               // aviso con stats y permitir forzar bajo advertencia.
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center',
@@ -1711,7 +1727,7 @@ export default function App() {
                   position: 'absolute', inset: 0, display: 'flex',
                   alignItems: 'center', justifyContent: 'center', color: t.dim, fontSize: 14,
                 }}>Upload a .mp file and click Compile to visualize the DAG</div>
-            }
+            )}
           </div>
 
           {/* DB Sources Alert — Two Programs */}
