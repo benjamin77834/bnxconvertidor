@@ -630,3 +630,62 @@ def test_cobol_graph_no_genera_joins_sin_llave():
     assert ": JOIN" not in g["mp"]
     # Debe seguir habiendo al menos un SOURCE (el fichero CUENTAS).
     assert ": SOURCE" in g["mp"]
+
+
+# ---------------------------------------------------------------------------
+# BUG — COBOL: formato de columnas variable + MOVE no se parseaban
+# ---------------------------------------------------------------------------
+from src.cobol_parser import _match_paragraph, _parse_moves, _parse_filters
+
+
+def test_cobol_paragraph_formato_columnas_variable():
+    """Los labels de parrafo con sangria 1-6 espacios (no solo 7) se detectan."""
+    assert _match_paragraph(" 000-0000-MENSAJE-INPUT.") == "000_0000_mensaje_input"
+    assert _match_paragraph("       0100-PROCESO.") == "0100_proceso"
+    # Encabezados NO son parrafos.
+    assert _match_paragraph(" PROCEDIMIENTOS SECTION.") is None
+    assert _match_paragraph(" PROCEDURE DIVISION.") is None
+    # Una sentencia no es un parrafo.
+    assert _match_paragraph("     MOVE A TO B.") is None
+
+
+def test_cobol_parse_moves_asignaciones():
+    """MOVE origen TO destino -> (destino, expr_sql), incluyendo literales."""
+    lines = [
+        " 0100-PROCESO.",
+        "     MOVE WKS-PARAM TO ANZ-ENTRADA",
+        "     MOVE ZERO TO WKS-CTA-STATUS",
+        "     MOVE 'TXT' TO WS-LITERAL",
+        "     MOVE 5 TO WS-NUM A B",          # un origen, varios destinos
+    ]
+    moves = _parse_moves(lines)
+    got = moves["0100_proceso"]
+    assert ("anz_entrada", "wks_param") in got
+    assert ("wks_cta_status", "0") in got
+    assert ("ws_literal", "'TXT'") in got
+    # varios destinos
+    assert ("ws_num", "5") in got
+    assert ("a", "5") in got
+    assert ("b", "5") in got
+
+
+def test_cobol_move_corresponding_y_subindices_se_omiten():
+    """Variantes no soportadas (CORRESPONDING, subindices) no rompen."""
+    lines = [
+        " 0100-PROCESO.",
+        "     MOVE CORRESPONDING REG-A TO REG-B",
+        "     MOVE TABLA(I) TO SALIDA",
+    ]
+    moves = _parse_moves(lines)
+    assert moves.get("0100_proceso") in (None, [])
+
+
+def test_cobol_filtros_con_formato_columnas():
+    """Con la deteccion de parrafo arreglada, los IF se asocian a su parrafo."""
+    lines = [
+        " 0200-VALIDA.",
+        "     IF SALDO > 0",
+        "        MOVE 1 TO SW",
+    ]
+    filters = _parse_filters(lines)
+    assert "0200_valida" in filters

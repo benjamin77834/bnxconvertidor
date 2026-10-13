@@ -140,6 +140,7 @@ def parse_cobol(path):
     filters = _parse_filters(lines)
     joins = _parse_joins(lines, fields)
     computes = _parse_computes(lines)
+    moves = _parse_moves(lines)
 
     return {
         "files": files,
@@ -148,6 +149,7 @@ def parse_cobol(path):
         "filters": filters,
         "joins": joins,
         "computes": computes,
+        "moves": moves,
         "encoding": "EBCDIC" if content and "COMP-3" in content.upper() else "ASCII",
     }
 
@@ -235,15 +237,54 @@ def _parse_procedures(lines):
     return procs
 
 
+# Palabras reservadas COBOL que, aunque terminen en '.', NO son nombres de
+# parrafo (encabezados de division/section o verbos). Evita falsos positivos.
+_NOT_PARAGRAPH = {
+    "division", "section", "end-if", "end-perform", "end-evaluate",
+    "end-read", "end-string", "end-call", "exit",
+}
+
+
+def _match_paragraph(line):
+    """Devuelve el nombre normalizado del parrafo si la linea es un LABEL de
+    parrafo COBOL, o None.
+
+    Un parrafo se declara en 'area A': el nombre arranca cerca del margen
+    izquierdo (pocos espacios), es un identificador y termina en '.' siendo lo
+    unico de la linea. El formato de columnas varia entre fuentes (col 8 clasico
+    vs archivos 'sueltos' con 1-6 espacios), asi que aceptamos 0-7 espacios de
+    sangria en vez de exigir exactamente 7.
+
+    Rechaza encabezados (XXX DIVISION./SECTION.) y lineas con mas tokens
+    (esas son sentencias, p.ej. 'MOVE A TO B.').
+    """
+    # Ignorar comentarios ('*' en col 7) y lineas de barra.
+    stripped = line.rstrip()
+    if not stripped or stripped.lstrip().startswith("*") or stripped.strip() == "/":
+        return None
+    m = re.match(r"^\s{0,7}([A-Za-z0-9][\w-]*)\.\s*$", stripped)
+    if not m:
+        return None
+    name = m.group(1)
+    low = name.lower()
+    if low in _NOT_PARAGRAPH:
+        return None
+    # 'FILE-CONTROL.' y similares de ENVIRONMENT no son parrafos de PROCEDURE,
+    # pero son inofensivos como clave; aun asi los descartamos por claridad.
+    if low in ("file-control", "input-output", "working-storage", "program-id"):
+        return None
+    return name.replace("-", "_").lower()
+
+
 def _parse_filters(lines):
     """Extract IF conditions ? WHERE clauses."""
     filters = {}
     current_para = None
 
     for line in lines:
-        m_para = re.match(r"\s{7}([\w-]+)\.", line)
-        if m_para:
-            current_para = m_para.group(1).replace("-", "_").lower()
+        para = _match_paragraph(line)
+        if para:
+            current_para = para
             continue
 
         if current_para and "IF " in line.upper():
@@ -291,9 +332,9 @@ def _parse_joins(lines, fields=None):
     current_para = None
 
     for line in lines:
-        m_para = re.match(r"\s{7}([\w-]+)\.", line)
-        if m_para:
-            current_para = m_para.group(1).replace("-", "_").lower()
+        para = _match_paragraph(line)
+        if para:
+            current_para = para
             continue
         if not current_para:
             continue
@@ -318,6 +359,91 @@ def _parse_joins(lines, fields=None):
     return joins
 
 
+# Literales/figurativas COBOL -> su equivalente SQL para el MOVE.
+_FIGURATIVE = {
+    "ZERO": "0", "ZEROS": "0", "ZEROES": "0",
+    "SPACE": "''", "SPACES": "''",
+    "HIGH-VALUE": "NULL", "HIGH-VALUES": "NULL",
+    "LOW-VALUE": "NULL", "LOW-VALUES": "NULL",
+    "NULL": "NULL", "NULLS": "NULL",
+}
+
+
+def _move_source_to_sql(src):
+    """Traduce el origen de un MOVE a una expresion SQL de Spark:
+    - literal numerico -> tal cual
+    - literal entre comillas -> 'texto'
+    - figurativa (ZERO/SPACES/...) -> equivalente
+    - identificador -> columna (lower, '-'->'_')"""
+    src = src.strip()
+    up = src.upper()
+    if up in _FIGURATIVE:
+        return _FIGURATIVE[up]
+    # Literal entre comillas simples o dobles.
+    m = re.fullmatch(r'["\'](.*)["\']', src)
+    if m:
+        return "'" + m.group(1).replace("'", "''") + "'"
+    # Numero (con signo/decimal).
+    if re.fullmatch(r"[+-]?\d+(\.\d+)?", src):
+        return src
+    # Identificador -> columna.
+    if re.fullmatch(r"[A-Za-z0-9][\w-]*", src):
+        return _f(src)
+    return None  # expresion no soportada (p.ej. subindices A(I))
+
+
+def _parse_moves(lines):
+    """Extrae asignaciones 'MOVE origen TO destino' por parrafo.
+
+    El MOVE es el verbo mas comun en COBOL batch y representa una asignacion de
+    columna (withColumn). Soporta:
+      MOVE A TO B
+      MOVE A TO B C D        (un origen, varios destinos)
+      MOVE 0 / 'TXT' / ZEROS / SPACES TO B
+    No soporta (se omiten sin romper): MOVE CORRESPONDING, subindices A(I),
+    reference modification A(1:3). Esos quedan fuera para no generar SQL invalido.
+
+    Devuelve {parrafo: [(target_col, source_sql), ...]} respetando el orden.
+    """
+    moves = {}
+    current_para = None
+    for line in lines:
+        para = _match_paragraph(line)
+        if para:
+            current_para = para
+            continue
+        if not current_para:
+            continue
+        s = line.strip().rstrip(".")
+        if not re.match(r"MOVE\s+", s, re.I):
+            continue
+        # Excluir variantes no soportadas.
+        if re.match(r"MOVE\s+CORRESPONDING\b", s, re.I) or re.match(r"MOVE\s+CORR\b", s, re.I):
+            continue
+        m = re.match(r"MOVE\s+(.+?)\s+TO\s+(.+)$", s, re.I)
+        if not m:
+            continue
+        src_raw = m.group(1).strip()
+        dst_raw = m.group(2).strip()
+        # Origen con subindice/ref-mod o compuesto -> no soportado.
+        if "(" in src_raw or " " in src_raw.strip().strip('"\''):
+            # Permitir literal con espacios SOLO si esta entre comillas.
+            if not re.fullmatch(r'["\'].*["\']', src_raw):
+                continue
+        src_sql = _move_source_to_sql(src_raw)
+        if src_sql is None:
+            continue
+        # Varios destinos separados por espacios/comas.
+        for dst in re.split(r"[,\s]+", dst_raw):
+            dst = dst.strip()
+            if not dst or "(" in dst:
+                continue
+            if not re.fullmatch(r"[A-Za-z0-9][\w-]*", dst):
+                continue
+            moves.setdefault(current_para, []).append((_f(dst), src_sql))
+    return moves
+
+
 def _parse_computes(lines):
     """Extrae logica aritmetica por parrafo.
 
@@ -335,9 +461,9 @@ def _parse_computes(lines):
     current_para = None
 
     for line in lines:
-        m_para = re.match(r"\s{7}([\w-]+)\.", line)
-        if m_para:
-            current_para = m_para.group(1).replace("-", "_").lower()
+        para = _match_paragraph(line)
+        if para:
+            current_para = para
             continue
         if not current_para:
             continue
@@ -432,17 +558,55 @@ def cobol_to_graph(parsed):
     """Convert parsed COBOL to .mp, .xfr, .dml content strings."""
     files = parsed["files"]
     fields = parsed["fields"]
-    procedures = list(parsed["procedures"])
     filters = parsed["filters"]
     joins = parsed["joins"]
     computes = parsed["computes"]
+    moves = parsed.get("moves", {})
+
+    # DEDUP preservando orden: un parrafo puede invocarse por PERFORM varias
+    # veces; como nodo del grafo debe aparecer UNA sola vez (si no, el .mp trae
+    # NODE duplicados y el DAG descarta/confunde aristas).
+    procedures = list(dict.fromkeys(parsed["procedures"]))
 
     # Incluir tambien los parrafos QUE TIENEN LOGICA aunque no se invoquen por
     # PERFORM (COBOL batch suele ejecutar parrafos en secuencia). Asi no se
-    # pierden filtros/joins/aritmetica cuando no hay PERFORM explicito.
-    for extra in list(filters.keys()) + list(joins.keys()) + list(computes.keys()):
+    # pierden filtros/joins/aritmetica/asignaciones cuando no hay PERFORM.
+    for extra in (list(filters.keys()) + list(joins.keys())
+                  + list(computes.keys()) + list(moves.keys())):
         if extra not in procedures:
             procedures.append(extra)
+
+    # Un COBOL batch real trae miles de parrafos; volcarlos todos como nodos
+    # satura el grafo y el codegen. Nos quedamos con los parrafos SIGNIFICATIVOS
+    # (tienen filtro/join/aritmetica/moves) y, si aun son demasiados, con los
+    # mas 'ricos' (mas asignaciones/condiciones), hasta un tope navegable.
+    MAX_PROC_NODES = 80
+
+    def _richness(proc):
+        score = 0
+        score += len(moves.get(proc, []))
+        score += 3 if proc in filters else 0
+        score += 3 if proc in joins else 0
+        c = computes.get(proc, {})
+        score += 2 * len(c.get("arith", [])) + (2 if c.get("type") == "sum" else 0)
+        return score
+
+    significant = [p for p in procedures
+                   if p in filters or p in joins or p in computes or p in moves]
+    if len(significant) > MAX_PROC_NODES:
+        # Conservar el ORDEN de aparicion pero quedarnos con los top-N por riqueza.
+        top = set(sorted(significant, key=_richness, reverse=True)[:MAX_PROC_NODES])
+        significant = [p for p in procedures if p in top]
+    significant_set = set(significant)
+
+    # Nombre de nodo SANEADO: un parrafo COBOL puede empezar con digito
+    # (p.ej. '010_0200_inicia') lo cual no es un identificador valido ni para el
+    # .mp ni para una variable Python. Prefijamos 'p_' en ese caso. Mantenemos
+    # un mapa parrafo -> nombre_nodo para usarlo consistentemente en .mp y .xfr.
+    def _node_name(proc):
+        return ("p_" + proc) if proc[:1].isdigit() else proc
+
+    node_of = {p: _node_name(p) for p in significant}
 
     # Classify files as input/output
     input_files = {}
@@ -472,25 +636,22 @@ def cobol_to_graph(parsed):
 
     # Process subgraph from procedures
     mp_lines.append("SUBGRAPH Process {")
-    proc_nodes = []
-    for proc in procedures:
+    proc_nodes = []  # nombres de nodo SANEADOS, en orden
+    for proc in significant:
         # Parrafos de E/S (abrir/leer/cerrar fichero) no son pasos de datos.
         if proc.startswith(("read_", "write_", "open_", "close_")):
             continue
+        nn = node_of[proc]
         if proc in joins or proc.startswith("join_"):
             # JOIN SOLO cuando _parse_joins confirmo union de dos ficheros (o el
             # nombre lo indica). Asi no quedan JOINs sin llave que el codegen
             # convierte en TODOs.
-            mp_lines.append(f"  NODE {proc} : JOIN")
+            mp_lines.append(f"  NODE {nn} : JOIN")
             proc_nodes.append(proc)
-        elif (proc in filters or proc in computes
-              or proc.startswith(("filter_", "compute_", "detect_", "valid",
-                                   "calc_", "sum_", "agg_", "transform_"))):
-            # Parrafos con LOGICA DE DATOS reconocida (filtro, aritmetica,
-            # validacion) -> TRANSFORM. No incluimos cada parrafo PERFORM
-            # trivial (MOVE/GO TO) como nodo: un COBOL grande tiene miles y
-            # saturan el grafo sin aportar transformacion.
-            mp_lines.append(f"  NODE {proc} : TRANSFORM")
+        else:
+            # Parrafo con logica de datos (filtro, aritmetica, asignaciones
+            # MOVE) -> TRANSFORM secuencial. El .xfr detalla las columnas.
+            mp_lines.append(f"  NODE {nn} : TRANSFORM")
             proc_nodes.append(proc)
     mp_lines.append("}")
     mp_lines.append("")
@@ -506,27 +667,28 @@ def cobol_to_graph(parsed):
 
     # Edges: clean -> process nodes
     if proc_nodes:
-        # All cleans feed into the first process node
-        # For JOINs, also connect the previous node
+        # Nombres de nodo saneados, en orden.
+        chain = [node_of[p] for p in proc_nodes]
         input_list = list(input_files.keys())
+        # Todas las fuentes limpias alimentan al primer nodo de proceso.
         for f in input_list:
-            mp_lines.append(f"Clean_{f} -> {proc_nodes[0]}")
+            mp_lines.append(f"Clean_{f} -> {chain[0]}")
 
         # Chain process nodes -> los JOINs reciben 2 padres (prev + un clean)
         clean_idx = 0
         for i in range(len(proc_nodes) - 1):
-            mp_lines.append(f"{proc_nodes[i]} -> {proc_nodes[i+1]}")
-            nxt = proc_nodes[i+1]
+            mp_lines.append(f"{chain[i]} -> {chain[i+1]}")
+            nxt_proc = proc_nodes[i+1]
             # Si el siguiente es un JOIN REAL (en 'joins' o nombre join_*), dale
             # un segundo padre desde una fuente limpia para que haya dos streams.
-            is_join = nxt in joins or nxt.startswith("join_")
+            is_join = nxt_proc in joins or nxt_proc.startswith("join_")
             if is_join and clean_idx < len(input_list):
-                mp_lines.append(f"Clean_{input_list[clean_idx]} -> {nxt}")
+                mp_lines.append(f"Clean_{input_list[clean_idx]} -> {chain[i+1]}")
                 clean_idx = (clean_idx + 1) % len(input_list)
 
         # Last process -> sinks
         for f in output_files:
-            mp_lines.append(f"{proc_nodes[-1]} -> Write_{f}")
+            mp_lines.append(f"{chain[-1]} -> Write_{f}")
 
     # Build .xfr
     xfr_lines = ["# Auto-generated from COBOL", ""]
@@ -539,41 +701,40 @@ def cobol_to_graph(parsed):
             xfr_lines.append("")
 
     for proc in proc_nodes:
-        if proc in filters:
-            xfr_lines.append(f"{proc}:")
-            xfr_lines.append(f"  select *")
-            xfr_lines.append(f"  where {filters[proc]}")
-            xfr_lines.append("")
-        elif proc in joins:
+        nn = node_of[proc]
+        # Los JOINs reales se tratan aparte (necesitan llave, no columnas).
+        if proc in joins:
             j = joins[proc]
-            xfr_lines.append(f"{proc}:")
+            xfr_lines.append(f"{nn}:")
             xfr_lines.append(f"  join_key {j['left']}")
             xfr_lines.append(f"  join_type inner")
             xfr_lines.append("")
-        elif proc in computes:
-            c = computes[proc]
-            xfr_lines.append(f"{proc}:")
-            if c.get("arith"):
-                # Aritmetica avanzada -> columnas calculadas (select con alias).
-                # El codegen de Spark emite withColumn(target, expr(...)) por item.
-                items = ["*"] + [f"{expr} as {target}" for (target, expr) in c["arith"]]
-                xfr_lines.append(f"  select {', '.join(items)}")
-            elif "source" in c and "target" in c:
-                xfr_lines.append(f"  group_by {c['source']}")
-                xfr_lines.append(f"  select SUM({c['source']}) as {c['target']}")
-            xfr_lines.append("")
-        elif proc.startswith("detect_") and proc in filters:
-            xfr_lines.append(f"{proc}:")
-            xfr_lines.append(f"  select *")
-            xfr_lines.append(f"  where {filters[proc]}")
-            xfr_lines.append("")
+            continue
+
+        # Un parrafo TRANSFORM puede combinar: asignaciones MOVE + aritmetica
+        # (COMPUTE/ADD...) + un filtro IF. Acumulamos todas las columnas
+        # calculadas en un solo 'select' y el filtro en un 'where'.
+        calc_items = []  # "<expr> as <target>"
+        c = computes.get(proc, {})
+        for (target, expr) in c.get("arith", []):
+            calc_items.append(f"{expr} as {target}")
+        for (target, src_sql) in moves.get(proc, []):
+            calc_items.append(f"{src_sql} as {target}")
+
+        xfr_lines.append(f"{nn}:")
+        if calc_items:
+            # '*' conserva las columnas de entrada + las calculadas por MOVE/arith.
+            items = ["*"] + calc_items
+            xfr_lines.append(f"  select {', '.join(items)}")
+        elif "source" in c and "target" in c:
+            # ADD x TO y (acumulador) -> agregacion SUM.
+            xfr_lines.append(f"  group_by {c['source']}")
+            xfr_lines.append(f"  select SUM({c['source']}) as {c['target']}")
         else:
-            # Parrafo procedural sin filtro/aritmetica/join reconocido: paso de
-            # paso-a-traves explicito (select *). Deja el nodo valido y evita
-            # que el codegen lo marque como incompleto.
-            xfr_lines.append(f"{proc}:")
             xfr_lines.append(f"  select *")
-            xfr_lines.append("")
+        if proc in filters:
+            xfr_lines.append(f"  where {filters[proc]}")
+        xfr_lines.append("")
 
     # Build .dml
     dml_lines = ["keys:"]
