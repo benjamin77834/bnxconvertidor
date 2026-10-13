@@ -126,10 +126,17 @@ export default function GrafosPage({ theme, onLoadToCompiler }) {
     for (const file of fileList) {
       const content = await file.text()
       const form = new FormData(); form.append('action', 'upload'); form.append('project', selectedProject.name)
-      form.append('name', file.name.replace(/\.(mp|xfr|dml|pset|plan)$/, ''))
-      if (file.name.endsWith('.mp')) form.append('mp', content)
-      else if (file.name.endsWith('.xfr')) form.append('xfr', content)
-      else { form.append('mp', content) } // generic
+      const m = file.name.match(/\.([A-Za-z0-9]+)$/)
+      const ext = m ? m[1].toLowerCase() : ''
+      form.append('name', file.name.replace(/\.[A-Za-z0-9]+$/, ''))
+      if (ext === 'mp') form.append('mp', content)
+      else if (ext === 'xfr') form.append('xfr', content)
+      else {
+        // Cualquier otra extension (.alg/.cbl/.dml/.pset/.plan): se guarda con su
+        // extension real (campos raw + ext), para no renombrar un .alg a .mp.
+        form.append('raw', content)
+        form.append('ext', ext || 'txt')
+      }
       await fetch(LIBRARY_URL, { method: 'POST', body: form })
     }
     selectProject(selectedProject)
@@ -285,7 +292,7 @@ export default function GrafosPage({ theme, onLoadToCompiler }) {
       )}
       <div>
         <h2 style={{ fontSize: 22, fontWeight: 700, color: t.text || '#e2e8f0', margin: 0 }}>Proyectos de Grafos</h2>
-        <p style={{ fontSize: 13, color: t.dim || '#64748b', marginTop: 4 }}>Selecciona archivos (.mp, .xfr, .pset, .plan) y compila desde aqui</p>
+        <p style={{ fontSize: 13, color: t.dim || '#64748b', marginTop: 4 }}>Selecciona archivos (.mp, .xfr, .pset, .plan, .cbl, .alg) y compila desde aqui</p>
       </div>
 
       <div style={{ display: 'flex', gap: 20, flex: 1, minHeight: 0 }}>
@@ -293,7 +300,12 @@ export default function GrafosPage({ theme, onLoadToCompiler }) {
         <div style={{ flex: '0 0 auto', minWidth: 180, maxWidth: 320, display: 'flex', flexDirection: 'column', gap: 8, overflowY: 'auto' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span style={{ fontSize: 12, fontWeight: 600, color: t.muted || '#94a3b8' }}>Proyectos</span>
-            <button onClick={() => setShowNewProject(!showNewProject)} style={{ padding: '3px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer', background: '#22c55e15', border: '1px solid #22c55e30', color: '#22c55e' }}>+</button>
+            <div style={{ display: 'flex', gap: 4 }}>
+              <button onClick={() => { fetchProjects(); if (selectedProject) selectProject(selectedProject) }}
+                title="Recargar proyectos y archivos desde el servidor (p.ej. si subiste .alg/.mp al disco)"
+                style={{ padding: '3px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer', background: '#6366f115', border: '1px solid #6366f130', color: '#6366f1' }}>🔄</button>
+              <button onClick={() => setShowNewProject(!showNewProject)} style={{ padding: '3px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer', background: '#22c55e15', border: '1px solid #22c55e30', color: '#22c55e' }}>+</button>
+            </div>
           </div>
           {showNewProject && (
             <div style={{ display: 'flex', gap: 4 }}>
@@ -325,7 +337,7 @@ export default function GrafosPage({ theme, onLoadToCompiler }) {
                 </button>
                 <button onClick={() => setShowUpload(!showUpload)} style={{ padding: '3px 6px', borderRadius: 4, fontSize: 10, cursor: 'pointer', background: '#6366f115', border: '1px solid #6366f130', color: '#6366f1' }}>+ Grafo</button>
                 <button onClick={() => fileInputRef.current.click()} style={{ padding: '3px 6px', borderRadius: 4, fontSize: 10, cursor: 'pointer', background: 'transparent', border: `1px solid ${t.border || '#334155'}`, color: t.dim || '#64748b' }}>📂</button>
-                <input ref={fileInputRef} type="file" accept=".mp,.xfr,.dml,.pset,.plan" multiple hidden onChange={e => { if (e.target.files.length) uploadFiles(Array.from(e.target.files)); e.target.value = '' }} />
+                <input ref={fileInputRef} type="file" accept=".mp,.xfr,.dml,.pset,.plan,.cbl,.cob,.cobol,.alg,.algol" multiple hidden onChange={e => { if (e.target.files.length) uploadFiles(Array.from(e.target.files)); e.target.value = '' }} />
               </div>
             </div>
 

@@ -415,6 +415,17 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                         f.write(xfr)
                     uploaded.append(name + ".xfr")
                     _s3_upload_library_file(os.path.join(proj, name + ".xfr"), xfr)
+                # Archivo generico con su extension real (.alg/.cbl/.dml/.pset/.plan)
+                # para no renombrar un .alg a .mp. Viene como raw + ext.
+                raw = fields.get("raw", "") or ""
+                ext = (fields.get("ext", "") or "").lstrip(".")
+                if raw and ext:
+                    _ext = _safe(ext)
+                    fn = name + "." + _ext
+                    with open(os.path.join(root, proj, fn), "w", encoding="utf-8") as f:
+                        f.write(raw)
+                    uploaded.append(fn)
+                    _s3_upload_library_file(os.path.join(proj, fn), raw)
                 self._json_response(200, {"uploaded": uploaded, "project": proj})
                 return
 
