@@ -273,6 +273,7 @@ Las lecturas de archivo se mapean a spark.read.csv; ajusta las rutas/schema a tu
 entorno. Las sentencias no traducidas quedan como comentario con el texto fuente.
 """
 import os
+import datetime as _dt
 from pyspark.sql import SparkSession, functions as F
 from pyspark.sql.types import *
 
@@ -319,6 +320,7 @@ Los READ ... INVALID KEY se traducen a lookups en memoria (dict), cargados UNA
 sola vez desde CSV con pandas. Corre con `python <archivo>.py` sin cluster.
 """
 import os
+import datetime as _dt
 
 try:
     import pandas as pd
@@ -555,10 +557,10 @@ def _cobol_stmt(line, lang="cobol"):
         src = {"DATE": "F.current_date()", "TIME": "F.current_timestamp()",
                "DAY": "F.current_date()", "DAY-OF-WEEK": "F.current_date()"}[m.group(2).upper()]
         # En contexto procedural usamos datetime, no funciones de columna Spark.
-        now = {"DATE": "__import__('datetime').date.today().strftime('%y%m%d')",
-               "TIME": "__import__('datetime').datetime.now().strftime('%H%M%S')",
-               "DAY": "__import__('datetime').date.today().strftime('%y%j')",
-               "DAY-OF-WEEK": "__import__('datetime').date.today().isoweekday()"}[m.group(2).upper()]
+        now = {"DATE": "_dt.date.today().strftime('%y%m%d')",
+               "TIME": "_dt.datetime.now().strftime('%H%M%S')",
+               "DAY": "_dt.date.today().strftime('%y%j')",
+               "DAY-OF-WEEK": "_dt.date.today().isoweekday()"}[m.group(2).upper()]
         return [("assign", (tgt, now))]
 
     # IF <cond>  (inicio de bloque; el THEN implicito)
@@ -776,12 +778,17 @@ def _fname(name):
     return ("p_" + name) if name[:1].isdigit() else name
 
 
-def _emit_body(ops, valid_funcs=None):
+def _emit_body(ops, valid_funcs=None, clean=True):
     """Convierte la lista de ops de un parrafo/proc en lineas Python.
 
     valid_funcs: set de nombres de funcion existentes. Un PERFORM/llamada a un
     nombre que NO existe (parrafo no declarado, PERFORM THRU, typo) se emite como
     comentario en vez de romper con NameError en runtime.
+
+    clean=True (default): NO emite comentarios de sentencias NO traducidas
+    (MOVE con subindices, IF complejo, verbos de mainframe, etc.). Deja solo
+    codigo Python ejecutable y legible. clean=False conserva esos comentarios
+    como guia de lo que habia en el fuente.
 
     IMPORTANTE: NO reconstruimos el anidamiento IF/ELSE/END con regex. Hacerlo
     linea-a-linea produce bloques descuadrados (else huerfano, END mal casado)
@@ -810,13 +817,18 @@ def _emit_body(ops, valid_funcs=None):
             lines.append(f"    {stmt}")
         emitted_any = True
 
+    def _note(txt):
+        # Comentario-guia de una sentencia no traducida: solo en modo NO limpio.
+        if not clean:
+            lines.append(f"    # {txt}")
+
     for op, arg in ops:
         if op == "assign":
             tgt, val = arg
             if _is_valid_py_expr(val):
                 _emit_stmt(f"ctx[{tgt!r}] = {val}")
             else:
-                lines.append(f"    # TODO revisar: ctx[{tgt!r}] = {val}")
+                _note(f"revisar: ctx[{tgt!r}] = {val}")
                 pending_cond = None
         elif op == "call":
             fn = _fname(arg)
@@ -824,8 +836,8 @@ def _emit_body(ops, valid_funcs=None):
                 _emit_stmt(f"{fn}(ctx)")
             else:
                 # Parrafo no declarado como funcion (PERFORM THRU / typo): no
-                # romper con NameError; documentar.
-                lines.append(f"    # PERFORM {arg} (parrafo no resuelto)")
+                # romper con NameError; se omite (o se documenta en modo guia).
+                _note(f"PERFORM {arg} (parrafo no resuelto)")
                 pending_cond = None
         elif op == "read_lookup":
             # READ archivo INTO destino INVALID KEY -> lookup en memoria.
@@ -848,13 +860,13 @@ def _emit_body(ops, valid_funcs=None):
                     compile(arg, "<stmt>", "eval")
                     _emit_stmt(arg)
                 except (SyntaxError, ValueError):
-                    lines.append(f"    # {arg}")
+                    _note(arg)
                     pending_cond = None
         elif op == "loop_until":
             tgt, cond = arg
             fn = _fname(tgt)
             if valid_funcs is not None and fn not in valid_funcs:
-                lines.append(f"    # PERFORM {tgt} UNTIL {cond} (parrafo no resuelto)")
+                _note(f"PERFORM {tgt} UNTIL {cond} (parrafo no resuelto)")
                 pending_cond = None
             elif _is_valid_py_expr(cond):
                 # Bucle con GUARDA de iteraciones: el modelo plano puede no
@@ -867,26 +879,25 @@ def _emit_body(ops, valid_funcs=None):
                 emitted_any = True
                 pending_cond = None
             else:
-                lines.append(f"    # PERFORM UNTIL {cond}")
-                lines.append(f"    {fn}(ctx)")
-                emitted_any = True
+                _note(f"PERFORM UNTIL {cond}")
+                _emit_stmt(f"{fn}(ctx)")
                 pending_cond = None
         elif op in ("if", "while"):
             # Condicion que aplica a la proxima sentencia simple (patron COBOL
             # 'IF cond MOVE ...'). Si es valida, se usa como `if cond:` al emitir
-            # la siguiente sentencia (sin comentario de ruido). Si NO es valida
-            # (expresion compleja), se documenta para revision manual.
+            # la siguiente sentencia. Si NO es valida (expresion compleja), se
+            # descarta (modo limpio) o se documenta (modo guia).
             if _is_valid_py_expr(arg):
                 pending_cond = arg
             else:
                 kw = "IF" if op == "if" else "WHILE"
-                lines.append(f"    # {kw} (revisar): {arg}")
+                _note(f"{kw} (revisar): {arg}")
                 pending_cond = None
         elif op in ("else", "dedent"):
             # Sin anidamiento real: el else/end solo rompe la condicion pendiente.
             pending_cond = None
         elif op == "raw":
-            lines.append(f"    # {arg}")
+            _note(arg)
             pending_cond = None
 
     if not emitted_any:
