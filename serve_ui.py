@@ -97,6 +97,12 @@ from src.perf_optimizer import optimize_pyspark
 from src.export_bundle import build_export_bundle
 from src.cobol_parser import parse_cobol, cobol_to_graph, extract_source_from_bytes
 from src.algol_parser import parse_algol, algol_to_graph
+from src.direct_transpiler import transpile_direct
+
+# Umbral de "codigo grande": a partir de aqui COBOL/ALGOL se traduce DIRECTO a
+# PySpark (procedural, fiel al fuente) en vez de pasar por el grafo. Un override
+# por entorno permite ajustarlo sin tocar codigo.
+DIRECT_TRANSPILE_MIN_LINES = int(os.environ.get("BNX_DIRECT_MIN_LINES", "1000"))
 from src.lang_detect import detect_language
 from src.datagen import (
     infer_schema_from_graph,
@@ -2343,6 +2349,64 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             else:
                 result[field] = full
 
+    def _direct_transpile_response(self, src_code, lang, scores):
+        """Traduce COBOL/ALGOL GRANDE directo a PySpark (sin grafo) y responde.
+
+        Shape compatible con la GUI: code (quiza truncado para la vista),
+        code_truncated, code_full_bytes, code_download_url, mas stats del
+        traductor y 'mode':'direct' para que la UI muestre la vista terminal.
+        El codigo COMPLETO se descarga por token (igual que el flujo de grafo).
+        """
+        out = transpile_direct(src_code, lang)
+        code = out["code"]
+        stats = out["stats"]
+
+        CODE_GUI_LIMIT = 80_000
+        code_full_bytes = len(code)
+        code_truncated = code_full_bytes > CODE_GUI_LIMIT
+        code_download_url = None
+        code_for_gui = code
+        if code_truncated:
+            try:
+                import uuid as _uuid
+                _tok = _uuid.uuid4().hex
+                _dir = os.path.join(tempfile.gettempdir(), "bnx_code_full")
+                os.makedirs(_dir, exist_ok=True)
+                with open(os.path.join(_dir, _tok + ".py"), "w", encoding="utf-8") as _f:
+                    _f.write(code)
+                code_download_url = f"/code/download?token={_tok}"
+            except Exception as _e:
+                print(f"  [direct] no se pudo preparar descarga completa: {_e}")
+            code_for_gui = (code[:CODE_GUI_LIMIT] +
+                f"\n\n# ... [CÓDIGO TRUNCADO PARA VISUALIZACIÓN] ...\n"
+                f"# El job completo tiene {code_full_bytes:,} bytes "
+                f"(~{stats.get('lines', 0):,} líneas).\n"
+                f"# Usa 📥 Descargar para el archivo COMPLETO.\n")
+
+        self._json_response(200, {
+            "ok": True,
+            "mode": "direct",             # <- la GUI usa esto para la vista terminal
+            "detected_language": lang,
+            "detect_scores": scores,
+            "target": "spark",
+            "code": code_for_gui,
+            "code_truncated": code_truncated,
+            "code_full_bytes": code_full_bytes,
+            "code_download_url": code_download_url,
+            # Sin grafo: nodes/edges vacios + total_nodes para que isHugeGraph
+            # y la consola muestren el tamaño real.
+            "nodes": [],
+            "edges": [],
+            "nodes_truncated": True,
+            "total_nodes": stats.get("paragraphs", 0),
+            "total_edges": 0,
+            "warnings": [],
+            "warnings_total": 0,
+            "errors": [],
+            "direct_stats": stats,
+            "graph_name": f"{lang}_direct_job",
+        })
+
     def _attach_optimized(self, result, target):
         """Pasa el PySpark generado por el optimizador (cache/broadcast/coalesce)
         y adjunta el resultado al dict 'result' SIN perder el codigo original:
@@ -2452,6 +2516,15 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
 
             print(f"  [convert] detectado='{lang}' scores={scores} archivo='{filename}'")
 
+            # CODIGO GRANDE (COBOL/ALGOL): traduccion DIRECTA a PySpark procedural
+            # (sin grafo). Evita la perdida del pipeline-por-grafo (tope de nodos,
+            # aplanado) y produce un .py completo y fiel al fuente.
+            n_src_lines = src_code.count("\n") + 1
+            if lang in ("cobol", "algol") and n_src_lines >= DIRECT_TRANSPILE_MIN_LINES:
+                print(f"  [convert] codigo grande ({n_src_lines} lineas) -> traductor DIRECTO {lang}")
+                self._direct_transpile_response(src_code, lang, scores)
+                return
+
             if lang == "cobol":
                 tmp_path = self._save_temp(src_code, ".cbl")
                 graph = cobol_to_graph(parse_cobol(tmp_path))
@@ -2538,6 +2611,14 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
 
             if not cobol_src.strip():
                 self._json_response(400, {"error": "Se requiere codigo COBOL (campo 'cobol')."})
+                return
+
+            # COBOL GRANDE: traduccion DIRECTA a PySpark (sin grafo).
+            n_src_lines = cobol_src.count("\n") + 1
+            if n_src_lines >= DIRECT_TRANSPILE_MIN_LINES:
+                print(f"  [cobol] codigo grande ({n_src_lines} lineas) -> traductor DIRECTO")
+                self._direct_transpile_response(cobol_src, "cobol",
+                                                {"cobol": 1, "algol": 0, "abinitio": 0})
                 return
 
             # 1) COBOL -> grafo (.mp/.xfr/.dml). parse_cobol lee de un archivo.
