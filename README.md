@@ -304,8 +304,17 @@ lugares a la vez**:
    afectado y la UI sigue funcionando.
 
 El flujo cubre `save` / `upload` (suben a S3) y `delete` (borra en local **y**
-S3). Al arrancar, el servidor sincroniza la biblioteca **desde** S3 a disco para
-tener la pestaña Grafos al día.
+S3). Al arrancar, el servidor hace una **sincronización bidireccional** de la
+biblioteca:
+
+1. **Baja** de S3 lo que falte en local (descarga incremental).
+2. **Sube** a S3 lo que falte en el bucket (push incremental de lo que ya tenías
+   en disco).
+
+Ninguna dirección borra: la unión local + S3 **solo crece**. Así cada máquina
+aporta sus grafos al bucket y recibe los de las demás — nunca se pierden grafos.
+Se puede desactivar la bajada con `BNX_SKIP_LIBRARY_SYNC=1` y la subida con
+`BNX_SKIP_LIBRARY_PUSH=1`.
 
 ### Configuración (variables de entorno)
 
@@ -314,7 +323,8 @@ tener la pestaña Grafos al día.
 | `BNX_AWS_PROFILE` | `monkeyapp` | Perfil de `~/.aws` para acceder a S3 |
 | `BNX_S3_BUCKET` | `bnx-e2e-test` | Bucket donde viven los grafos |
 | `BNX_S3_PREFIX` | `library/` | Prefijo (carpeta) dentro del bucket |
-| `BNX_SKIP_LIBRARY_SYNC` | — | `=1` omite el sync de arranque desde S3 |
+| `BNX_SKIP_LIBRARY_SYNC` | — | `=1` omite la **bajada** de S3 al arrancar |
+| `BNX_SKIP_LIBRARY_PUSH` | — | `=1` omite la **subida** local→S3 al arrancar |
 
 Por defecto apunta a la cuenta **monkey** (`034711235858`), bucket
 `s3://bnx-e2e-test/library/`, perfil `monkeyapp`. Para usar otra cuenta/bucket,
