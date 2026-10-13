@@ -1,5 +1,13 @@
 # Changelog — BNX Code Review
 
+## 0.2.0
+- Modelo **SonarQube/SonarLint**: cada hallazgo trae su `type`
+  (BUG / CODE_SMELL / VULNERABILITY / SECURITY_HOTSPOT), su severidad Sonar y la
+  clave de regla (`python:Sxxxx`). El diagnóstico se muestra como SonarLint:
+  `[TYPE] mensaje` con la clave de regla en el panel Problems.
+- El portal BNX tiene además una pestaña **🛡️ Calidad** (dashboard estilo
+  SonarQube): Quality Gate, ratings A–E, deuda técnica y lista de issues.
+
 ## 0.1.1
 - Los hallazgos ahora se ven: `minor`→Warning e `info`→Information (antes caían
   en `Hint`, que VS Code dibuja casi invisible y a veces oculta del panel

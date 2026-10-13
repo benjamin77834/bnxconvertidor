@@ -14,6 +14,7 @@ import PipelinePage from './components/PipelinePage'
 import GraphLibrary from './components/GraphLibrary'
 import GrafosPage from './components/GrafosPage'
 import ModelFrameworkPage from './components/ModelFrameworkPage'
+import QualityPage from './components/QualityPage'
 import CodeQualityPanel from './components/CodeQualityPanel'
 import DataGenPage from './components/DataGenPage'
 import DataSourcePanel from './components/DataSourcePanel'
@@ -781,6 +782,7 @@ export default function App() {
             { id: 'py2spark', label: '🐍 Py→Spark' },
             { id: 'datagen', label: '🧪 Data Sintética' },
             { id: 'datasource', label: '🛢️ Datos Remotos' },
+            { id: 'quality', label: '🛡️ Calidad' },
             { id: 'models', label: '🔐 Modelos' },
             { id: 'history', label: '📜 History' },
           ].map(tab => (
@@ -889,6 +891,8 @@ export default function App() {
             </div>
             <DataSourcePanel theme={t} />
           </div>
+        ) : page === 'quality' ? (
+          <QualityPage theme={t} compiledCode={py2sparkCode || result?.code || ''} />
         ) : page === 'models' ? (
           <ModelFrameworkPage theme={t} />
         ) : page === 'designer' ? (

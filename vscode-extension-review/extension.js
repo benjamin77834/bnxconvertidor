@@ -77,9 +77,14 @@ function buildDiagnostics(doc, findings) {
     const range = line
       ? new vscode.Range(lineNo, line.firstNonWhitespaceCharacterIndex, lineNo, line.text.length)
       : new vscode.Range(lineNo, 0, lineNo, 0);
-    const d = new vscode.Diagnostic(range, f.message || f.rule, toSeverity(f.severity));
-    d.source = "BNX Review";
-    d.code = f.rule + (f.category ? ` · ${f.category}` : "");
+    // Mensaje estilo SonarLint: "[TYPE] mensaje". type/rule_key vienen del
+    // modelo Sonar del backend (BUG/CODE_SMELL/VULNERABILITY/SECURITY_HOTSPOT).
+    const typeTag = f.type ? `[${f.type}] ` : "";
+    const d = new vscode.Diagnostic(range, typeTag + (f.message || f.rule), toSeverity(f.severity));
+    d.source = "BNX Review (Sonar)";
+    // d.code con la clave de regla tipo Sonar (python:Sxxxx) para que se vea en
+    // el panel Problems, como SonarLint.
+    d.code = f.rule_key || f.rule;
     diags.push(d);
   }
   return diags;
