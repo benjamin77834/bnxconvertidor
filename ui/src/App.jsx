@@ -242,6 +242,7 @@ export default function App() {
   const HUGE_CODE_BYTES = 80_000  // ~2000 líneas: a partir de aquí el <pre> sufre
   const isHugeGraph = Boolean(
     result && result.code && (
+      result.mode === 'direct' ||       // traducción directa: no hay grafo que dibujar
       result.nodes_truncated ||
       (Array.isArray(result.nodes) && result.nodes.length > DAG_RENDER_LIMIT) ||
       result.code_truncated ||
@@ -1727,6 +1728,8 @@ export default function App() {
               const nRead = (result.code || '').match(/spark\.read/g)?.length || 0
               const term = isDark ? '#0b0f14' : '#0b0f14'
               const green = '#22ff88', dim = '#5b6b7a', amber = '#ffcc66', cyan = '#67e8f9'
+              const isDirect = result.mode === 'direct'
+              const ds = result.direct_stats || {}
               return (
               <div style={{ padding: 16, borderBottom: `1px solid ${t.border}`, background: t.sidebar }}>
                 <div style={{
@@ -1736,16 +1739,28 @@ export default function App() {
                 }}>
                   <div style={{ color: dim }}>$ bnx convert <span style={{ color: cyan }}>
                     {(result.detected_language || 'cobol').toUpperCase()}</span> → <span style={{ color: cyan }}>
-                    {target.toUpperCase()}</span></div>
+                    {target.toUpperCase()}</span>{isDirect ? <span style={{ color: dim }}>  (modo directo, sin grafo)</span> : null}</div>
                   <div style={{ color: green }}>✓ Fuente decodificada y parseada</div>
-                  <div style={{ color: green }}>✓ Grafo construido: <b>{totalNodes}</b> nodos · {result.total_edges ?? result.edges?.length ?? 0} aristas</div>
-                  <div style={{ color: green }}>✓ Lecturas de origen: <b>{nRead || '—'}</b> · filtros (where): <b>{nWhere}</b> · columnas (withColumn): <b>{nWith}</b> <span style={{ color: dim }}>(muestra visible)</span></div>
-                  <div style={{ color: green }}>✓ Código {target.toUpperCase()} generado: <b>~{totalLines.toLocaleString()}</b> líneas{kb ? <> · <b>{kb.toLocaleString()} KB</b></> : null}</div>
+                  {isDirect ? (
+                    <>
+                      <div style={{ color: green }}>✓ Traducción directa procedural (fiel al fuente)</div>
+                      <div style={{ color: green }}>✓ Procedimientos/párrafos: <b>{(ds.paragraphs||0).toLocaleString()}</b> funciones · archivos: <b>{ds.files||0}</b></div>
+                      <div style={{ color: green }}>✓ Asignaciones: <b>{(ds.assigns||0).toLocaleString()}</b> · condiciones: <b>{(ds.ifs||0).toLocaleString()}</b> · llamadas: <b>{(ds.calls||0).toLocaleString()}</b></div>
+                    </>
+                  ) : (
+                    <>
+                      <div style={{ color: green }}>✓ Grafo construido: <b>{totalNodes}</b> nodos · {result.total_edges ?? result.edges?.length ?? 0} aristas</div>
+                      <div style={{ color: green }}>✓ Lecturas de origen: <b>{nRead || '—'}</b> · filtros (where): <b>{nWhere}</b> · columnas (withColumn): <b>{nWith}</b> <span style={{ color: dim }}>(muestra visible)</span></div>
+                    </>
+                  )}
+                  <div style={{ color: green }}>✓ Código {target.toUpperCase()} generado: <b>~{(isDirect ? (ds.lines||totalLines) : totalLines).toLocaleString()}</b> líneas{kb ? <> · <b>{kb.toLocaleString()} KB</b></> : null}</div>
                   {result.warnings_total > 0 && (
                     <div style={{ color: amber }}>⚠ {result.warnings_total} advertencia(s) — revisa el panel de warnings</div>
                   )}
                   <div style={{ color: dim, marginTop: 6 }}>
-                    # El diagrama de {totalNodes} nodos no se dibuja (ilegible y pesado).
+                    # {isDirect
+                        ? 'Traducción directa fuente→PySpark para código grande (sin DAG).'
+                        : `El diagrama de ${totalNodes} nodos no se dibuja (ilegible y pesado).`}
                   </div>
                   <div style={{ color: dim }}>
                     # Debajo verás una <b>vista previa</b>; descarga el paquete para el software completo.
