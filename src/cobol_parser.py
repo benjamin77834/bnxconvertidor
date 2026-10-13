@@ -138,7 +138,7 @@ def parse_cobol(path):
     fields = _parse_fields(lines)
     procedures = _parse_procedures(lines)
     filters = _parse_filters(lines)
-    joins = _parse_joins(lines)
+    joins = _parse_joins(lines, fields)
     computes = _parse_computes(lines)
 
     return {
@@ -259,8 +259,34 @@ def _parse_filters(lines):
     return filters
 
 
-def _parse_joins(lines):
-    """Extract IF field = field patterns ? join keys."""
+def _parse_joins(lines, fields=None):
+    """Detecta JOINS REALES: un parrafo une dos FICHEROS distintos.
+
+    OJO: un COBOL procedural compara campos todo el tiempo (`IF A = B`) sin que
+    eso sea un join. Marcar cada `IF a = b` como JOIN producia nodos JOIN sin
+    llave valida (-> TODOs en el PySpark). Aqui exigimos evidencia real de join:
+
+      1) el parrafo se llama 'join_*' / contiene 'match'/'merge', O
+      2) el `IF a = b` compara un campo de un FICHERO con un campo de OTRO
+         fichero distinto (segun los schemas FD), lo que si implica unir dos
+         streams.
+
+    'fields' es {fichero: {campo: tipo}} (de _parse_fields) para resolver a que
+    fichero pertenece cada campo. Si no se provee, solo valen los join_* por
+    nombre.
+    """
+    fields = fields or {}
+
+    # Indice campo_normalizado -> fichero. Un campo puede repetirse; guardamos
+    # el conjunto de ficheros que lo declaran.
+    field_owner = {}
+    for fname, cols in fields.items():
+        for col in cols:
+            field_owner.setdefault(col.lower(), set()).add(fname)
+
+    def _owners(col):
+        return field_owner.get(col.lower(), set())
+
     joins = {}
     current_para = None
 
@@ -269,13 +295,24 @@ def _parse_joins(lines):
         if m_para:
             current_para = m_para.group(1).replace("-", "_").lower()
             continue
+        if not current_para:
+            continue
 
-        if current_para and "IF " in line.upper():
+        name_is_join = (current_para.startswith("join_")
+                        or "match" in current_para or "merge" in current_para)
+
+        if "IF " in line.upper():
             m = re.search(r"IF\s+([\w-]+)\s*=\s*([\w-]+)", line, re.I)
             if m:
                 left = m.group(1).replace("-", "_").lower()
                 right = m.group(2).replace("-", "_").lower()
-                if left != right:
+                if left == right:
+                    continue
+                # Join real si: nombre lo indica, O los campos vienen de dos
+                # ficheros DISTINTOS (evidencia de que se unen dos streams).
+                lo, ro = _owners(left), _owners(right)
+                cross_file = bool(lo and ro and (lo != ro or len(lo | ro) > 1))
+                if name_is_join or cross_file:
                     joins[current_para] = {"left": left, "right": right}
 
     return joins
@@ -437,14 +474,22 @@ def cobol_to_graph(parsed):
     mp_lines.append("SUBGRAPH Process {")
     proc_nodes = []
     for proc in procedures:
-        if proc.startswith("read_") or proc.startswith("write_") or proc.startswith(("open_", "close_")):
+        # Parrafos de E/S (abrir/leer/cerrar fichero) no son pasos de datos.
+        if proc.startswith(("read_", "write_", "open_", "close_")):
             continue
         if proc in joins or proc.startswith("join_"):
+            # JOIN SOLO cuando _parse_joins confirmo union de dos ficheros (o el
+            # nombre lo indica). Asi no quedan JOINs sin llave que el codegen
+            # convierte en TODOs.
             mp_lines.append(f"  NODE {proc} : JOIN")
             proc_nodes.append(proc)
         elif (proc in filters or proc in computes
-              or proc.startswith(("filter_", "compute_", "detect_", "valid"))):
-            # filtros, aritmetica (compute/arith) y validaciones -> TRANSFORM.
+              or proc.startswith(("filter_", "compute_", "detect_", "valid",
+                                   "calc_", "sum_", "agg_", "transform_"))):
+            # Parrafos con LOGICA DE DATOS reconocida (filtro, aritmetica,
+            # validacion) -> TRANSFORM. No incluimos cada parrafo PERFORM
+            # trivial (MOVE/GO TO) como nodo: un COBOL grande tiene miles y
+            # saturan el grafo sin aportar transformacion.
             mp_lines.append(f"  NODE {proc} : TRANSFORM")
             proc_nodes.append(proc)
     mp_lines.append("}")
@@ -467,13 +512,16 @@ def cobol_to_graph(parsed):
         for f in input_list:
             mp_lines.append(f"Clean_{f} -> {proc_nodes[0]}")
 
-        # Chain process nodes ? JOINs get 2 parents (prev + a clean source)
+        # Chain process nodes -> los JOINs reciben 2 padres (prev + un clean)
         clean_idx = 0
         for i in range(len(proc_nodes) - 1):
             mp_lines.append(f"{proc_nodes[i]} -> {proc_nodes[i+1]}")
-            # If next is a JOIN, give it a second parent from a clean source
-            if proc_nodes[i+1].startswith("join_") and clean_idx < len(input_list):
-                mp_lines.append(f"Clean_{input_list[clean_idx]} -> {proc_nodes[i+1]}")
+            nxt = proc_nodes[i+1]
+            # Si el siguiente es un JOIN REAL (en 'joins' o nombre join_*), dale
+            # un segundo padre desde una fuente limpia para que haya dos streams.
+            is_join = nxt in joins or nxt.startswith("join_")
+            if is_join and clean_idx < len(input_list):
+                mp_lines.append(f"Clean_{input_list[clean_idx]} -> {nxt}")
                 clean_idx = (clean_idx + 1) % len(input_list)
 
         # Last process -> sinks
@@ -518,6 +566,13 @@ def cobol_to_graph(parsed):
             xfr_lines.append(f"{proc}:")
             xfr_lines.append(f"  select *")
             xfr_lines.append(f"  where {filters[proc]}")
+            xfr_lines.append("")
+        else:
+            # Parrafo procedural sin filtro/aritmetica/join reconocido: paso de
+            # paso-a-traves explicito (select *). Deja el nodo valido y evita
+            # que el codegen lo marque como incompleto.
+            xfr_lines.append(f"{proc}:")
+            xfr_lines.append(f"  select *")
             xfr_lines.append("")
 
     # Build .dml
