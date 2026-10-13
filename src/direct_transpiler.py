@@ -36,19 +36,23 @@ def _col(name):
     return re.sub(r"[^\w]", "_", name).strip("_").lower()
 
 
+# Constantes figurativas COBOL/ALGOL -> literal Python. A nivel de modulo para
+# reutilizarlas tanto al traducir literales como identificadores en condiciones.
+_FIGURATIVE = {
+    "ZERO": "0", "ZEROS": "0", "ZEROES": "0",
+    "SPACE": "''", "SPACES": "''",
+    "HIGH-VALUE": "None", "HIGH-VALUES": "None",
+    "LOW-VALUE": "None", "LOW-VALUES": "None",
+    "NULL": "None", "NULLS": "None", "TRUE": "True", "FALSE": "False",
+}
+
+
 def _py_literal(tok):
     """Convierte un literal COBOL/ALGOL a literal Python, o None si no es literal."""
     t = tok.strip()
     up = t.upper()
-    figur = {
-        "ZERO": "0", "ZEROS": "0", "ZEROES": "0",
-        "SPACE": "''", "SPACES": "''",
-        "HIGH-VALUE": "None", "HIGH-VALUES": "None",
-        "LOW-VALUE": "None", "LOW-VALUES": "None",
-        "NULL": "None", "NULLS": "None", "TRUE": "True", "FALSE": "False",
-    }
-    if up in figur:
-        return figur[up]
+    if up in _FIGURATIVE:
+        return _FIGURATIVE[up]
     m = re.fullmatch(r'"(.*)"', t) or re.fullmatch(r"'(.*)'", t)
     if m:
         return repr(m.group(1))
@@ -134,6 +138,11 @@ def _translate_condition(cond, lang):
             return tok
         if tok.lower() in kw:
             return tok.lower()
+        # Figurativas COBOL/ALGOL -> su literal (ZERO->0, SPACES->'', etc.),
+        # no un campo de ctx. Asi 'IF X > ZERO' -> 'ctx[x] > 0', no ctx['zero'].
+        up = tok.upper()
+        if up in _FIGURATIVE:
+            return _FIGURATIVE[up]
         return f"ctx[{_col(tok)!r}]"
 
     # Reemplazar identificadores fuera de strings.
@@ -508,12 +517,19 @@ def _cobol_stmt(line, lang="cobol"):
         return []
     if re.search(r"\bSECTION\b", up) and not re.search(r"\b(MOVE|IF|COMPUTE)\b", up):
         return []
-    if re.match(r"\d\d\s+", s) and ("PIC " in up or "PICTURE" in up or re.match(r"\d\d\s+[\w-]+\s*\.?$", s)):
-        return []  # declaracion de campo WORKING-STORAGE / nivel 01-49/77
-    if re.match(r"(PROGRAM-ID|AUTHOR|FILE-CONTROL|INPUT-OUTPUT|WORKING-STORAGE|FD|SELECT|FILE|CONFIGURATION|SOURCE-COMPUTER|OBJECT-COMPUTER)\b", up):
+    # Niveles de datos COBOL (01-49, 66 RENAMES, 77 independiente, 88 condicion
+    # de nivel): son DECLARACIONES, no operaciones. Se ignoran aunque no traigan
+    # PIC (grupos 02/03 y los 88 'VALUE ...' no lo traen). Esto evitaba miles de
+    # comentarios '# 88 ...' / '# 02 ...' en el modulo.
+    if re.match(r"(0[1-9]|[1-4]\d|6[6]|7[7]|8[8])\s+[\w-]", s):
+        return []
+    if re.match(r"(PROGRAM-ID|AUTHOR|FILE-CONTROL|INPUT-OUTPUT|WORKING-STORAGE|FD|SELECT|FILE|CONFIGURATION|SOURCE-COMPUTER|OBJECT-COMPUTER|LINKAGE|COPY|REPLACE)\b", up):
         return []
     if up in ("STOP RUN", "GOBACK", "EXIT PROGRAM", "EXIT"):
         return [("raw_py", "return")]
+    # NEXT SENTENCE / CONTINUE: control de flujo sin efecto de datos -> no-op.
+    if up in ("NEXT SENTENCE", "CONTINUE"):
+        return []
 
     # OPEN / CLOSE de archivos: no aplican en Python puro / lookups en memoria.
     if re.match(r"(OPEN|CLOSE)\s+", up):
@@ -856,15 +872,18 @@ def _emit_body(ops, valid_funcs=None):
                 emitted_any = True
                 pending_cond = None
         elif op in ("if", "while"):
-            # Guia: documentar la condicion y, si es valida, condicionar la
-            # proxima sentencia simple (patron COBOL 'IF cond MOVE ...').
-            kw = "IF" if op == "if" else "WHILE"
-            lines.append(f"    # {kw} {arg}")
-            pending_cond = arg if _is_valid_py_expr(arg) else None
+            # Condicion que aplica a la proxima sentencia simple (patron COBOL
+            # 'IF cond MOVE ...'). Si es valida, se usa como `if cond:` al emitir
+            # la siguiente sentencia (sin comentario de ruido). Si NO es valida
+            # (expresion compleja), se documenta para revision manual.
+            if _is_valid_py_expr(arg):
+                pending_cond = arg
+            else:
+                kw = "IF" if op == "if" else "WHILE"
+                lines.append(f"    # {kw} (revisar): {arg}")
+                pending_cond = None
         elif op in ("else", "dedent"):
             # Sin anidamiento real: el else/end solo rompe la condicion pendiente.
-            if op == "else":
-                lines.append("    # ELSE")
             pending_cond = None
         elif op == "raw":
             lines.append(f"    # {arg}")
