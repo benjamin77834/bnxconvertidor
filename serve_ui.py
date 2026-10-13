@@ -2668,7 +2668,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             if "multipart/form-data" in content_type:
                 fields, file_parts = parse_multipart(body, content_type)
                 if "algol" in file_parts:
-                    algol_src = file_parts["algol"].decode("utf-8", errors="replace")
+                    _fn = fields.get("algol_filename", "") or fields.get("filename", "") or ""
+                    algol_src = extract_source_from_bytes(file_parts["algol"], prefer_name=_fn)
                 else:
                     algol_src = fields.get("algol", "") or ""
                 target = (fields.get("target", "") or "spark").lower()
@@ -2683,6 +2684,14 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
 
             if not algol_src.strip():
                 self._json_response(400, {"error": "Se requiere codigo ALGOL (campo 'algol')."})
+                return
+
+            # ALGOL GRANDE: traduccion DIRECTA a PySpark (sin grafo).
+            n_src_lines = algol_src.count("\n") + 1
+            if n_src_lines >= DIRECT_TRANSPILE_MIN_LINES:
+                print(f"  [algol] codigo grande ({n_src_lines} lineas) -> traductor DIRECTO")
+                self._direct_transpile_response(algol_src, "algol",
+                                                {"cobol": 0, "algol": 1, "abinitio": 0})
                 return
 
             algol_path = self._save_temp(algol_src, ".alg")

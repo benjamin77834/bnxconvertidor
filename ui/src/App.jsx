@@ -934,12 +934,13 @@ export default function App() {
             setShowEditor(true)
             setEditorTab(g.xfr ? 'xfr' : 'mp')
             setPage('compiler')
-            // Caso COBOL/ALGOL: ya viene el resultado convertido (y optimizado).
-            // Mostrarlo directo (con el PySpark refactorizado si existe) en vez de
-            // re-compilar el .mp, para que se vea el codigo optimizado.
+            // Si viene resultado convertido (COBOL/ALGOL ya pasaron por /cobol
+            // o /algol en GrafosPage, que usan el traductor directo para codigo
+            // grande), mostrarlo directo. En modo directo NO sobreescribir code
+            // con optimized_code (el optimizador se salta en codigo enorme).
             if (g.result) {
               const res = { ...g.result }
-              if (res.optimized_code) res.code = res.optimized_code
+              if (res.mode !== 'direct' && res.optimized_code) res.code = res.optimized_code
               setResult(res)
               setCodeOpen(true)
               return
