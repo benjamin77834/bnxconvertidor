@@ -401,6 +401,31 @@ export default function App() {
     } finally { setLoading(false) }
   }
 
+  // Heuristica de lenguaje para el contenido pegado en el editor del Compiler.
+  // Devuelve 'cobol' | 'algol' | 'mp'. El objetivo: si el usuario pega codigo
+  // ALGOL/COBOL (en vez de un .mp), enrutar a /convert (autodeteccion real del
+  // backend) en lugar de /compile, que lo parsearia como grafo -> nodos basura.
+  // Conservador: ante la duda, 'mp' (comportamiento actual).
+  const detectEditorLanguage = (text) => {
+    const s = (text || '')
+    // Un .mp de Ab Initio: formato BNX ('NODE X : TIPO' / 'A -> B') o GDE nativo
+    // serializado (XXGpvertex/XXGgraph/XXGvertex...). Si parece .mp, es .mp.
+    if (/\bXXG\w*vertex\b|\bXXGgraph\b|\bXXGrepository\b/.test(s)) return 'mp'
+    if (/^\s*NODE\s+\w+\s*:/m.test(s) || /^\s*\w+\s*->\s*\w+/m.test(s)) return 'mp'
+    const up = s.toUpperCase()
+    // COBOL: divisiones y clausulas tipicas.
+    if (/\bIDENTIFICATION\s+DIVISION\b|\bPROCEDURE\s+DIVISION\b|\bDATA\s+DIVISION\b|\bWORKING-STORAGE\b/.test(up)
+        || (/\bPERFORM\b/.test(up) && /\bPIC\b|\bPICTURE\b/.test(up))) {
+      return 'cobol'
+    }
+    // ALGOL (Unisys MCP): BEGIN/END., PROCEDURE, FILE/EBCDIC, ARRAY, DISPLAY.
+    if (/\bBEGIN\b[\s\S]*\bEND\s*\.?/.test(up)
+        && (/\bPROCEDURE\b|\bARRAY\b|\bEBCDIC\b|\bDISPLAY\b|\bFILE\b|\bREPLACE\b/.test(up))) {
+      return 'algol'
+    }
+    return 'mp'
+  }
+
   // Conversion AUTOMATICA: el backend detecta el lenguaje (COBOL/ALGOL/Ab Initio)
   // por extension y contenido, y convierte directo. No hay que elegir el tipo.
   // Acepta .cbl/.cob/.alg/.mp/.txt. forceLanguage opcional si la deteccion falla.
@@ -1025,8 +1050,26 @@ export default function App() {
                 <button
                   onClick={() => {
                     if (!editorMp.trim()) return
+                    // AUTODETECCION: si el editor trae codigo ALGOL o COBOL (no un
+                    // .mp de Ab Initio), enrutar a /convert (que detecta el lenguaje
+                    // y lo convierte bien). Pegar ALGOL/COBOL y mandarlo a /compile
+                    // lo parseaba como grafo .mp -> miles de nodos basura.
+                    const _lang = detectEditorLanguage(editorMp)
                     setLoading(true)
                     const startTime = Date.now()
+                    if (_lang === 'cobol' || _lang === 'algol') {
+                      const form = new FormData()
+                      form.append('code', new File([editorMp], _lang === 'cobol' ? 'editor.cbl' : 'editor.alg'))
+                      form.append('filename', _lang === 'cobol' ? 'editor.cbl' : 'editor.alg')
+                      form.append('target', target)
+                      form.append('force_language', _lang)
+                      fetch(COMPILE_URL.replace('/compile', '/convert'), { method: 'POST', body: form })
+                        .then(res => res.json())
+                        .then(data => { setCompileTime(Date.now() - startTime); setResult(data); if (data.code) setCodeOpen(true) })
+                        .catch(e => { setCompileTime(Date.now() - startTime); setResult({ errors: [`Error: ${e.message}`], warnings: [], nodes: [], edges: [] }) })
+                        .finally(() => setLoading(false))
+                      return
+                    }
                     const form = new FormData()
                     form.append('mp', new File([editorMp], 'editor.mp'))
                     if (editorXfr.trim()) form.append('xfr', new File([editorXfr], 'editor.xfr'))
