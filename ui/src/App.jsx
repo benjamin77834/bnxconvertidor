@@ -145,7 +145,18 @@ export default function App() {
   // que tapan la pantalla en grafos grandes) y deja el codigo a pantalla completa.
   // Persiste para que el usuario no tenga que reactivarlo en cada compilacion.
   const [codeOnly, _setCodeOnly] = useState(() => {
-    try { return localStorage.getItem('bnx_code_only') === '1' } catch { return false }
+    try {
+      if (localStorage.getItem('bnx_code_only') === '1') return true
+      // Si el result RESTAURADO de localStorage es un grafo grande, arrancar en
+      // "Solo código" para no montar ReactFlow al abrir (pantalla en blanco).
+      const saved = localStorage.getItem('bnx_last_result')
+      if (saved) {
+        const r = JSON.parse(saved)
+        const n = r?.nodes_truncated ? r.total_nodes : (r?.nodes?.length || 0)
+        if (r?.code && (r?.nodes_truncated || n > 300 || r?.generated_mp)) return true
+      }
+      return false
+    } catch { return false }
   })
   const setCodeOnly = (v) => {
     _setCodeOnly(v)
@@ -219,6 +230,19 @@ export default function App() {
   const setEditorPset = (v) => { _setEditorPset(v); _lsSet('bnx_editor_pset', v) }
 
   const t = isDark ? dark : light
+
+  // Grafo "enorme": COBOL/ALGOL o grafos de miles de nodos. Para estos NO se
+  // dibuja el DAG (ReactFlow con cientos/miles de nodos congela el navegador —
+  // pantalla en blanco) y se muestra SOLO el código. Es determinista: no depende
+  // del toggle "Solo código". Un grafo asi es ilegible como diagrama de todos
+  // modos; el valor esta en el codigo generado (visible y descargable).
+  const isHugeGraph = Boolean(
+    result && result.code && (
+      result.nodes_truncated ||
+      (Array.isArray(result.nodes) && result.nodes.length > DAG_RENDER_LIMIT) ||
+      result.generated_mp
+    )
+  )
 
   // Debug: track mpFiles state changes
   console.log('RENDER - target:', target, 'mpFiles:', mpFiles.length, mpFiles.map(f => f.name))
@@ -1641,6 +1665,24 @@ export default function App() {
               </>
             )
           })()}
+          {/* GRAFO ENORME (COBOL/ALGOL o miles de nodos): NO montar el DAG. Un
+              diagrama de miles de nodos es ilegible y ReactFlow cuelga el
+              navegador. Mostramos SOLO el código (abajo) con un aviso compacto. */}
+          {isHugeGraph ? (
+            <div style={{
+              padding: '10px 20px', borderBottom: `1px solid ${t.border}`,
+              background: t.sidebar, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+            }}>
+              <span style={{ fontSize: 18 }}>🗺️</span>
+              <span style={{ fontSize: 13, color: t.text, fontWeight: 600 }}>
+                Grafo grande ({result.nodes_truncated ? result.total_nodes : result.nodes.length} nodos)
+              </span>
+              <span style={{ fontSize: 12, color: t.muted }}>
+                — se muestra solo el código generado (el diagrama de miles de nodos no es legible).
+                Usa 📥 Descargar para el código completo.
+              </span>
+            </div>
+          ) : (
           <div ref={dagRef} style={{
             flex: codeOnly ? '0 0 0' : 1, position: 'relative', minHeight: 0,
             display: codeOnly ? 'none' : 'block',
@@ -1729,6 +1771,7 @@ export default function App() {
                 }}>Upload a .mp file and click Compile to visualize the DAG</div>
             )}
           </div>
+          )}
 
           {/* DB Sources Alert — Two Programs */}
           {result?.has_db_sources && (
