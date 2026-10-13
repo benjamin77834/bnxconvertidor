@@ -58,12 +58,24 @@ def _decode_bytes(raw):
     return best_text
 
 
-def extract_source_from_bytes(raw):
+def _basename_noext(name):
+    """nombre de archivo sin ruta ni extension, en minusculas."""
+    base = name.replace("\\", "/").rsplit("/", 1)[-1]
+    return base.rsplit(".", 1)[0].lower() if "." in base else base.lower()
+
+
+def extract_source_from_bytes(raw, prefer_name=None):
     """Devuelve el codigo fuente (texto) a partir de los bytes crudos subidos.
 
-    Un .CBL del banco a menudo NO es texto: es un ZIP que empaqueta el COBOL
-    real junto con otros miembros. Si detectamos la firma ZIP, extraemos el
-    miembro que parezca codigo fuente; si no, decodificamos como texto.
+    Un .CBL/.alg del banco a menudo NO es texto: es un ZIP que empaqueta VARIOS
+    miembros (p.ej. un .alg, un .dma y un .CBL juntos, con el MISMO contenido en
+    dos archivos de distinto nombre). Si detectamos la firma ZIP extraemos el
+    miembro correcto; si no, decodificamos como texto.
+
+    prefer_name: nombre del archivo CONTENEDOR (p.ej. '...L191....alg_m'). Si el
+    ZIP trae un miembro con ese mismo nombre, se extrae ESE —asi abrir el .alg
+    da el ALGOL y abrir el .CBL da el COBOL, aunque ambos ZIP sean identicos—.
+    Sin prefer_name, se cae a heuristicas de contenido/extension/tamaño.
 
     Nunca lanza por codificacion: usa latin-1 como ultimo recurso.
     """
@@ -84,6 +96,23 @@ def extract_source_from_bytes(raw):
                     except Exception:
                         continue
                     decoded.append((name, text))
+
+                # 0) PRIORIDAD MAXIMA: el miembro cuyo nombre coincide con el del
+                #    archivo contenedor. Resuelve ZIPs que empaquetan varios
+                #    fuentes (ALGOL + COBOL + ...) bajo distintos nombres: abrir
+                #    el .alg devuelve el .alg, abrir el .CBL devuelve el .CBL.
+                if prefer_name:
+                    want_full = prefer_name.replace("\\", "/").rsplit("/", 1)[-1].lower()
+                    want_stem = _basename_noext(prefer_name)
+                    # match exacto por nombre completo del miembro
+                    for name, text in decoded:
+                        if name.replace("\\", "/").rsplit("/", 1)[-1].lower() == want_full:
+                            return text
+                    # match por nombre sin extension (p.ej. '.alg_m' vs '.alg_mux')
+                    for name, text in decoded:
+                        if _basename_noext(name) == want_stem:
+                            return text
+
                 # 1) Preferir el miembro cuyo contenido parezca COBOL.
                 for name, text in decoded:
                     if _looks_like_cobol(text):

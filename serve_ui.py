@@ -1858,11 +1858,13 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             algol_src = ""
             if "multipart/form-data" in content_type:
                 if "cobol" in file_parts:
-                    cobol_src = extract_source_from_bytes(file_parts["cobol"])
+                    _fn = fields.get("cobol_filename", "") or mp_filename or ""
+                    cobol_src = extract_source_from_bytes(file_parts["cobol"], prefer_name=_fn)
                 elif "cobol" in fields:
                     cobol_src = fields["cobol"]
                 if "algol" in file_parts:
-                    algol_src = extract_source_from_bytes(file_parts["algol"])
+                    _fn = fields.get("algol_filename", "") or mp_filename or ""
+                    algol_src = extract_source_from_bytes(file_parts["algol"], prefer_name=_fn)
                 elif "algol" in fields:
                     algol_src = fields["algol"]
             else:
@@ -2412,12 +2414,13 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 # disponible y recuperamos su nombre si parse_multipart lo expone.
                 for key in ("code", "file", "cobol", "algol", "mp"):
                     if key in file_parts:
-                        # Puede venir como texto plano o como ZIP (p.ej. un .CBL
-                        # que en realidad empaqueta el fuente). El helper detecta
-                        # el ZIP y extrae el miembro de codigo real.
-                        src_code = extract_source_from_bytes(file_parts[key])
                         # parse_multipart guarda el nombre real en '{campo}_filename'.
                         filename = fields.get(f"{key}_filename", "") or ""
+                        # Puede venir como texto plano o como ZIP (p.ej. un .CBL/
+                        # .alg que empaqueta VARIOS fuentes). Pasamos el nombre del
+                        # archivo para que, si el ZIP trae un miembro homonimo, se
+                        # extraiga ESE (abrir el .alg -> ALGOL, el .CBL -> COBOL).
+                        src_code = extract_source_from_bytes(file_parts[key], prefer_name=filename)
                         break
                 else:
                     src_code = fields.get("code", "") or ""
@@ -2517,8 +2520,10 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 fields, file_parts = parse_multipart(body, content_type)
                 if "cobol" in file_parts:
                     # Puede venir como texto o como ZIP (.CBL empaquetado). El
-                    # helper detecta el ZIP y extrae el miembro COBOL real.
-                    cobol_src = extract_source_from_bytes(file_parts["cobol"])
+                    # helper detecta el ZIP y extrae el miembro COBOL real
+                    # (usando el nombre del archivo si el ZIP trae homonimo).
+                    _fn = fields.get("cobol_filename", "") or fields.get("filename", "") or ""
+                    cobol_src = extract_source_from_bytes(file_parts["cobol"], prefer_name=_fn)
                 else:
                     cobol_src = fields.get("cobol", "") or ""
                 target = (fields.get("target", "") or "spark").lower()
