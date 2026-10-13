@@ -1848,6 +1848,43 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             target = data.get("target", "glue")
             mp_filename = data.get("mp_filename", "") or data.get("filename", "") or ""
 
+        # Soporte COBOL/ALGOL: si no vino un .mp pero si codigo fuente COBOL o
+        # ALGOL, lo convertimos al grafo COMPLETO aqui (sin truncar). Asi los
+        # endpoints que consumen mp/xfr/dml (p.ej. /export/bundle) funcionan
+        # directo con un COBOL enorme sin depender de la version recortada que
+        # viaja a la GUI.
+        if not mp_content:
+            cobol_src = ""
+            algol_src = ""
+            if "multipart/form-data" in content_type:
+                if "cobol" in file_parts:
+                    cobol_src = extract_source_from_bytes(file_parts["cobol"])
+                elif "cobol" in fields:
+                    cobol_src = fields["cobol"]
+                if "algol" in file_parts:
+                    algol_src = extract_source_from_bytes(file_parts["algol"])
+                elif "algol" in fields:
+                    algol_src = fields["algol"]
+            else:
+                cobol_src = data.get("cobol", "") or ""
+                algol_src = data.get("algol", "") or ""
+            if cobol_src.strip():
+                tmp_path = self._save_temp(cobol_src, ".cbl")
+                try:
+                    graph = cobol_to_graph(parse_cobol(tmp_path))
+                finally:
+                    os.unlink(tmp_path)
+                return (graph["mp"], graph["xfr"], graph["dml"], "",
+                        target if target != "glue" else "spark", mp_filename or "cobol_job")
+            if algol_src.strip():
+                tmp_path = self._save_temp(algol_src, ".alg")
+                try:
+                    graph = algol_to_graph(parse_algol(tmp_path))
+                finally:
+                    os.unlink(tmp_path)
+                return (graph["mp"], graph["xfr"], graph["dml"], "",
+                        target if target != "glue" else "spark", mp_filename or "algol_job")
+
         if not mp_content:
             raise ValueError("mp file is required")
         return mp_content, xfr_content, dml_content, pset_content, target, mp_filename
