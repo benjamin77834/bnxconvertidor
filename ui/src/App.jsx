@@ -388,6 +388,25 @@ export default function App() {
     }
   }, [result, editorMp, editorXfr])
 
+  // Prueba del PYTHON PURO transaccional: genera lookups + mensajes sinteticos
+  // y ejecuta procesa_entidad, mostrando el reporte (cuantos corrieron, errores).
+  const [txTest, setTxTest] = useState(null)  // null | 'running' | reporte
+  const runTransactionalTest = useCallback(async () => {
+    const base = COMPILE_URL.replace('/compile', '')
+    const lang = (result?.detected_language || detectEditorLanguage(editorMp) || 'cobol').toLowerCase()
+    try {
+      setTxTest('running')
+      const res = await fetch(base + '/transactional/test', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source: editorMp, lang, num_messages: 3, timeout: 60 }),
+      })
+      const data = await res.json()
+      setTxTest(data)
+    } catch (e) {
+      setTxTest({ ok: false, error: e.message })
+    }
+  }, [result, editorMp])
+
   const downloadReport = useCallback(() => {
     if (!result) return
     const counts = {}
@@ -1195,6 +1214,7 @@ export default function App() {
                 { id: 'glue', label: '🔧 Glue', desc: 'AWS Glue + GlueContext' },
                 { id: 'spark', label: '⚡ PySpark', desc: 'PySpark puro + SparkSession' },
                 { id: 'flink', label: '🌊 Flink', desc: 'PyFlink + Table API / Flink SQL' },
+                { id: 'python', label: '🐍 Python', desc: 'Python puro transaccional (CICS): procesa 1 mensaje, sin Spark' },
               ].map(opt => (
                 <button key={opt.id}
                   onClick={() => setTarget(opt.id)}
@@ -1779,10 +1799,42 @@ export default function App() {
                     <button onClick={downloadCode} style={{
                       padding: '9px 16px', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: 'pointer',
                       background: 'transparent', border: `1px solid ${t.border}`, color: t.text,
-                    }}>📥 Solo el código ({target === 'spark' ? '.py' : target === 'flink' ? 'flink.py' : 'glue.py'})</button>
+                    }}>📥 Solo el código ({result.transpile_mode === 'pure' ? '.py' : target === 'spark' ? '.py' : target === 'flink' ? 'flink.py' : 'glue.py'})</button>
+                    {/* Probar transacción: solo para Python puro (transaccional) */}
+                    {result.transpile_mode === 'pure' && (
+                      <button onClick={runTransactionalTest} disabled={txTest === 'running'} style={{
+                        padding: '9px 16px', borderRadius: 8, fontSize: 13, fontWeight: 700,
+                        cursor: txTest === 'running' ? 'wait' : 'pointer', border: 'none',
+                        background: '#6366f1', color: '#fff',
+                      }}>{txTest === 'running' ? '⏳ Probando…' : '🧪 Probar transacción'}</button>
+                    )}
                   </div>
+                  {/* Reporte de la prueba transaccional */}
+                  {txTest && txTest !== 'running' && (
+                    <div style={{
+                      marginTop: 10, padding: '10px 12px', borderRadius: 8,
+                      border: `1px solid ${txTest.ok ? '#22c55e55' : '#ef444455'}`,
+                      background: txTest.ok ? '#06240f' : '#2a0d0d', fontSize: 12, color: '#cfe',
+                    }}>
+                      <div style={{ fontWeight: 700, color: txTest.ok ? green : '#ff8a8a' }}>
+                        {txTest.ok ? '✓ Prueba transaccional OK' : '✕ Prueba con fallos'}
+                      </div>
+                      {typeof txTest.passed === 'number' && (
+                        <div style={{ color: dim }}>
+                          Mensajes procesados: <b>{txTest.passed}</b>/<b>{txTest.total}</b>
+                          {txTest.lookups?.length ? <> · lookups: {txTest.lookups.length}</> : null}
+                        </div>
+                      )}
+                      {txTest.error && <div style={{ color: '#ff8a8a' }}># {String(txTest.error).slice(0, 160)}</div>}
+                      {(txTest.runs || []).filter(r => !r.ok).slice(0, 3).map((r, i) => (
+                        <div key={i} style={{ color: amber }}>⚠ msg {r.i}: {r.error}</div>
+                      ))}
+                    </div>
+                  )}
                   <div style={{ color: dim, marginTop: 8, fontSize: 11 }}>
-                    El .zip trae el job completo, el harness de prueba (setup.sh/run.sh) y datos de ejemplo.
+                    {result.transpile_mode === 'pure'
+                      ? 'Python puro transaccional: procesa 1 mensaje a la vez (sin Spark). “Probar transacción” genera lookups + mensajes sintéticos y lo ejecuta.'
+                      : 'El .zip trae el job completo, el harness de prueba (setup.sh/run.sh) y datos de ejemplo.'}
                   </div>
                 </div>
               </div>

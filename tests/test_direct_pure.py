@@ -39,9 +39,10 @@ def test_pure_sin_spark_y_compila(tmp_path):
     # READ -> lookup en memoria.
     assert "_lookups" in code
     assert "'SUC_BC'" in code
-    # ADD 1 -> literal, no ctx['1'].
+    # ADD 1 -> literal, no ctx['1']; con coercion numerica en el operando.
     assert "ctx['1']" not in code
     assert "+ 1" in code
+    assert "_n(" in code  # coercion numerica presente
     # Compila.
     f = tmp_path / "out.py"
     f.write_text(code)

@@ -172,6 +172,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_validate()
         elif "/py2spark" in path:
             self._handle_py2spark()
+        elif "/transactional/test" in path:
+            self._handle_transactional_test()
         elif "/convert" in path:
             self._handle_convert()
         elif "/cobol" in path:
@@ -2349,8 +2351,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             else:
                 result[field] = full
 
-    def _direct_transpile_response(self, src_code, lang, scores):
-        """Traduce COBOL/ALGOL GRANDE directo a PySpark (sin grafo) y responde.
+    def _direct_transpile_response(self, src_code, lang, scores, target=None):
+        """Traduce COBOL/ALGOL GRANDE directo a PySpark/Python puro y responde.
 
         Shape compatible con la GUI: code (quiza truncado para la vista),
         code_truncated, code_full_bytes, code_download_url, mas stats del
@@ -2365,7 +2367,14 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                              and "AT END" not in up) or (
             "INVALID KEY" in up and up.count("INVALID KEY") >= 3
             and "PERFORM UNTIL" not in up)
-        pure = is_transactional
+        # target='python' FUERZA Python puro; target='spark/glue/flink' fuerza
+        # PySpark; sin target, decide la heuristica transaccional.
+        if target == "python":
+            pure = True
+        elif target in ("spark", "glue", "flink"):
+            pure = False
+        else:
+            pure = is_transactional
         out = transpile_direct(src_code, lang, pure=pure)
         code = out["code"]
         stats = out["stats"]
@@ -2423,6 +2432,43 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             "graph_name": f"{lang}_direct_job",
             "fastapi_app": fastapi_app,   # app.py FastAPI (solo modo puro)
         })
+
+    def _handle_transactional_test(self):
+        """Prueba el PYTHON PURO transaccional: genera lookups + mensajes
+        sinteticos y ejecuta procesa_entidad, devolviendo un reporte.
+
+        Body JSON: {"cobol"|"algol": "<fuente>", "lang": "cobol"|"algol",
+                    "num_messages": 3, "timeout": 60}
+        o {"code": "<python puro ya generado>", "source": "<fuente>", "lang": ...}
+        """
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        try:
+            data = json.loads(body.decode("utf-8", errors="replace"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._json_response(400, {"error": "Invalid JSON body"})
+            return
+        try:
+            lang = (data.get("lang") or "cobol").lower()
+            src_code = (data.get("cobol") or data.get("algol")
+                        or data.get("source") or data.get("code_source") or "")
+            if not src_code.strip():
+                self._json_response(400, {"error": "Se requiere el fuente COBOL/ALGOL (campo 'cobol'/'algol'/'source')."})
+                return
+            # Si no mandan el python puro, lo generamos del fuente.
+            code = data.get("code") or ""
+            if not code.strip():
+                code = transpile_direct(src_code, lang, pure=True)["code"]
+            num_messages = int(data.get("num_messages", 3))
+            timeout = min(int(data.get("timeout", 60)), 120)
+            from src.transactional_harness import run_transactional_test
+            report = run_transactional_test(code, src_code, lang,
+                                            num_messages=num_messages, timeout=timeout)
+            self._json_response(200, report)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": str(e)})
 
     def _attach_optimized(self, result, target):
         """Pasa el PySpark generado por el optimizador (cache/broadcast/coalesce)
@@ -2539,7 +2585,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             n_src_lines = src_code.count("\n") + 1
             if lang in ("cobol", "algol") and n_src_lines >= DIRECT_TRANSPILE_MIN_LINES:
                 print(f"  [convert] codigo grande ({n_src_lines} lineas) -> traductor DIRECTO {lang}")
-                self._direct_transpile_response(src_code, lang, scores)
+                self._direct_transpile_response(src_code, lang, scores, target=target)
                 return
 
             if lang == "cobol":
@@ -2635,7 +2681,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             if n_src_lines >= DIRECT_TRANSPILE_MIN_LINES:
                 print(f"  [cobol] codigo grande ({n_src_lines} lineas) -> traductor DIRECTO")
                 self._direct_transpile_response(cobol_src, "cobol",
-                                                {"cobol": 1, "algol": 0, "abinitio": 0})
+                                                {"cobol": 1, "algol": 0, "abinitio": 0},
+                                                target=target)
                 return
 
             # 1) COBOL -> grafo (.mp/.xfr/.dml). parse_cobol lee de un archivo.
@@ -2708,7 +2755,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             if n_src_lines >= DIRECT_TRANSPILE_MIN_LINES:
                 print(f"  [algol] codigo grande ({n_src_lines} lineas) -> traductor DIRECTO")
                 self._direct_transpile_response(algol_src, "algol",
-                                                {"cobol": 0, "algol": 1, "abinitio": 0})
+                                                {"cobol": 0, "algol": 1, "abinitio": 0},
+                                                target=target)
                 return
 
             algol_path = self._save_temp(algol_src, ".alg")

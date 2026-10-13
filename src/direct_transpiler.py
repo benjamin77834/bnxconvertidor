@@ -89,11 +89,29 @@ def _display_args(args):
     return ", ".join(parts) if parts else "''"
 
 
+def _strip_subscripts(s):
+    """Elimina los subindices de tabla COBOL/ALGOL: 'TABLA(I)' -> 'TABLA',
+    'A(I,J)' -> 'A', y reference modification 'X(1:3)' -> 'X'.
+
+    El modelo `ctx` es un dict plano (sin arreglos reales), asi que un subindice
+    no se puede resolver; dejarlo generaria `ctx['x'](...)` = llamada invalida
+    (TypeError en runtime). Neutralizamos el indice usando el campo base. Se
+    repite hasta estabilizar para subindices anidados A(B(I))."""
+    prev = None
+    cur = s
+    # 'ident(...)' donde dentro NO hay otro parentesis sin cerrar: quitar '(...)'.
+    pat = re.compile(r"([A-Za-z][\w-]*)\s*\([^()]*\)")
+    while prev != cur:
+        prev = cur
+        cur = pat.sub(r"\1", cur)
+    return cur
+
+
 def _translate_condition(cond, lang):
     """Traduce una condicion COBOL/ALGOL a expresion booleana Python sobre ctx.
     Soporta =, <, >, <=, >=, <>, NOT, AND, OR y los mnemonicos ALGOL
     (EQL/NEQ/LSS/GTR/LEQ/GEQ). Lo no resoluble se deja como comentario arriba."""
-    c = " " + cond.strip() + " "
+    c = " " + _strip_subscripts(cond.strip()) + " "
     # Mnemonicos ALGOL.
     repl = [(r"\bNEQ\b", " != "), (r"\bEQL\b", " == "), (r"\bLSS\b", " < "),
             (r"\bGTR\b", " > "), (r"\bLEQ\b", " <= "), (r"\bGEQ\b", " >= ")]
@@ -130,7 +148,109 @@ def _translate_condition(cond, lang):
             out.append(repl_id(m))
         i = m.end()
     out.append(c[i:])
-    return "".join(out).strip()
+    result = "".join(out).strip()
+
+    # Coercion numerica en ARITMETICA dentro de la condicion: un operando de
+    # +,-,*,/ que sea ctx['x'] se envuelve en _n(...) para no romper 'str - str'
+    # (los campos vienen como texto del CSV/mensaje). No tocamos las igualdades
+    # (ctx['x'] == 'ABC' debe seguir comparando texto).
+    def _wrap_arith(mm):
+        return f"_n({mm.group(0)})"
+    # ctx['x'] seguido o precedido de operador aritmetico.
+    result = re.sub(r"(ctx\[[^\]]+\])\s*([+\-*/])", lambda mm: f"_n({mm.group(1)}) {mm.group(2)}", result)
+    result = re.sub(r"([+\-*/])\s*(ctx\[[^\]]+\])", lambda mm: f"{mm.group(1)} _n({mm.group(2)})", result)
+
+    # Comparaciones de ORDEN (< > <= >=): coaccionar ambos lados a numero con
+    # _n para no romper 'str > int' (un campo del CSV es texto; COBOL lo compara
+    # como numero). Las igualdades (==, !=) se dejan: comparan texto o numero
+    # sin romper. Operando = numero o un acceso ctx['..'] (quiza ya con _n()).
+    _opnd = r"(_n\(ctx\[[^\]]+\]\)|ctx\[[^\]]+\]|\d+(?:\.\d+)?)"
+    _cmp = re.compile(_opnd + r"\s*(<=|>=|<|>)\s*" + _opnd)
+
+    def _wrap_cmp(mm):
+        a, op, b = mm.group(1), mm.group(2), mm.group(3)
+        aw = a if a.startswith("_n(") else (a if a[0].isdigit() else f"_n({a})")
+        bw = b if b.startswith("_n(") else (b if b[0].isdigit() else f"_n({b})")
+        return f"{aw} {op} {bw}"
+
+    result = _cmp.sub(_wrap_cmp, result)
+    return result
+
+
+# Helpers de runtime compartidos (coercion numerica + estado tolerante). Se
+# inyectan en el header del modo PySpark via {{runtime}}. El modo puro los trae
+# inline en HEADER_PURE.
+_RUNTIME_HELPERS = r'''def _n(v):
+    """Coercion numerica tolerante (str/_Zero/num -> numero, 0 si no se puede)."""
+    if isinstance(v, bool):
+        return int(v)
+    if isinstance(v, (int, float)):
+        return v
+    if v is None:
+        return 0
+    s = str(v).strip()
+    if not s:
+        return 0
+    try:
+        return float(s) if "." in s else int(s)
+    except ValueError:
+        import re as _re
+        m = _re.match(r"[+-]?\d+", s)
+        return int(m.group(0)) if m else 0
+
+
+def _div(a, b):
+    """Division tolerante: COBOL con ON SIZE ERROR / divisor 0 no debe tumbar el
+    programa. Devuelve 0 si el divisor es 0 (dato no inicializado/sintetico)."""
+    a, b = _n(a), _n(b)
+    return a / b if b else 0
+
+
+# Guarda de profundidad: el flujo plano (sin el control real del COBOL) puede
+# provocar recursion mutua entre parrafos. El decorador corta la ejecucion de un
+# parrafo si se supera la profundidad maxima, evitando RecursionError.
+_BNX_MAX_DEPTH = 50
+_bnx_depth = {"n": 0}
+
+
+def _guard_depth(fn):
+    def _wrap(ctx):
+        if _bnx_depth["n"] >= _BNX_MAX_DEPTH:
+            return  # circuit breaker: demasiada anidacion de PERFORM
+        _bnx_depth["n"] += 1
+        try:
+            return fn(ctx)
+        finally:
+            _bnx_depth["n"] -= 1
+    return _wrap
+
+
+class _Zero:
+    """Valor por defecto para campos no inicializados: 0 en aritmetica, '' en texto."""
+    def __add__(self, o): return o if isinstance(o, str) else (o + 0)
+    def __radd__(self, o): return o if isinstance(o, str) else (0 + o)
+    def __sub__(self, o): return -o
+    def __rsub__(self, o): return o
+    def __mul__(self, o): return 0 if not isinstance(o, str) else ""
+    __rmul__ = __mul__
+    def __truediv__(self, o): return 0
+    def __rtruediv__(self, o): return 0
+    def __eq__(self, o): return o in (0, "", None) or isinstance(o, _Zero)
+    def __ne__(self, o): return not self.__eq__(o)
+    def __lt__(self, o): return 0 < o if not isinstance(o, str) else "" < o
+    def __gt__(self, o): return 0 > o if not isinstance(o, str) else "" > o
+    def __le__(self, o): return not self.__gt__(o)
+    def __ge__(self, o): return not self.__lt__(o)
+    def __bool__(self): return False
+    def __str__(self): return ""
+    def __repr__(self): return "0"
+    def __hash__(self): return 0
+
+
+class _Ctx(dict):
+    def __missing__(self, key):
+        return _Zero()
+'''
 
 
 HEADER = '''"""
@@ -154,10 +274,11 @@ class PARAMS:
     BASE_PATH = os.environ.get("BNX_BASE_PATH", "s3://datalake-bnx-scripts-dev")
 
 
+{runtime}
+
 # Estado del programa: emula las variables WORKING-STORAGE / declaraciones ALGOL.
-# Un dict por fila cuando se procesan registros; aqui es el estado global del job.
 def new_ctx():
-    return {{}}
+    return _Ctx()
 '''
 
 
@@ -226,6 +347,55 @@ def load_lookups(data_dir=None):
 
 # Lookups globales: se cargan UNA sola vez al importar el modulo.
 LOOKUPS = load_lookups()
+
+
+def _n(v):
+    """Coercion numerica tolerante para aritmetica COBOL. Un campo puede venir
+    como str (del CSV/mensaje), _Zero (no inicializado) o numero. Devuelve float
+    si parece decimal, int si es entero, 0 si no se puede convertir. Asi
+    `_n(a) - _n(b)` nunca rompe por 'str - str'."""
+    if isinstance(v, bool):
+        return int(v)
+    if isinstance(v, (int, float)):
+        return v
+    if v is None:
+        return 0
+    s = str(v).strip()
+    if not s:
+        return 0
+    try:
+        if "." in s:
+            return float(s)
+        return int(s)
+    except ValueError:
+        # Extraer digitos iniciales (p.ej. '0012ABC' -> 12); si no, 0.
+        import re as _re
+        m = _re.match(r"[+-]?\\d+", s)
+        return int(m.group(0)) if m else 0
+
+
+def _div(a, b):
+    """Division tolerante: devuelve 0 si el divisor es 0 (evita ZeroDivisionError)."""
+    a, b = _n(a), _n(b)
+    return a / b if b else 0
+
+
+# Guarda de profundidad: evita RecursionError por recursion mutua entre parrafos
+# (el flujo plano no reproduce el retorno exacto del PERFORM COBOL).
+_BNX_MAX_DEPTH = 50
+_bnx_depth = {{"n": 0}}
+
+
+def _guard_depth(fn):
+    def _wrap(ctx):
+        if _bnx_depth["n"] >= _BNX_MAX_DEPTH:
+            return
+        _bnx_depth["n"] += 1
+        try:
+            return fn(ctx)
+        finally:
+            _bnx_depth["n"] -= 1
+    return _wrap
 
 
 class _Zero:
@@ -427,21 +597,32 @@ def _translate_expr(expr):
     excluye porque empieza por [A-Za-z])."""
     def repl(m):
         tok = m.group(0)
-        return f"ctx[{_col(tok)!r}]"
-    e = expr.strip().rstrip(".")
+        # Coercion numerica: COMPUTE/aritmetica opera numeros; _n evita str-str.
+        return f"_n(ctx[{_col(tok)!r}])"
+    e = _strip_subscripts(expr.strip().rstrip("."))
     # Importante: el patron exige inicio con letra, asi un numero como '1' NO
     # entra (no se convierte en ctx['1']).
-    return re.sub(r"[A-Za-z][\w-]*", repl, e)
+    e = re.sub(r"[A-Za-z][\w-]*", repl, e)
+    # Divisiones seguras: 'A / B' -> '_div(A, B)' para evitar ZeroDivisionError.
+    # Operandos simples (numero o _n(ctx[...])); se repite para varias '/'.
+    _operand = r"(_n\(ctx\[[^\]]+\]\)|\d+(?:\.\d+)?)"
+    _divpat = re.compile(_operand + r"\s*/\s*" + _operand)
+    prev = None
+    while prev != e:
+        prev = e
+        e = _divpat.sub(lambda m: f"_div({m.group(1)}, {m.group(2)})", e)
+    return e
 
 
 def _cobol_arith(s):
     """ADD/SUBTRACT/MULTIPLY/DIVIDE ... GIVING -> (target, expr_py). None si no."""
     def ref(tok):
-        # Operando aritmetico: literal numerico tal cual, si no columna de ctx.
+        # Operando aritmetico: literal numerico tal cual, si no columna de ctx
+        # envuelta en _n(...) para coercion numerica tolerante (evita str - str).
         lit = _py_literal(tok)
         if lit is not None and re.fullmatch(r"[+-]?\d+(\.\d+)?", lit):
             return lit
-        return f"ctx[{_col(tok)!r}]"
+        return f"_n(ctx[{_col(tok)!r}])"
 
     m = re.match(r"ADD\s+(.+?)\s+TO\s+([\w-]+)\s+GIVING\s+([\w-]+)$", s, re.I)
     if m:
@@ -458,10 +639,15 @@ def _cobol_arith(s):
     if m:
         tgt = _col(m.group(3)) if m.group(3) else _col(m.group(2))
         return (tgt, f"{ref(m.group(1))} * {ref(m.group(2))}")
-    m = re.match(r"DIVIDE\s+([\w-]+)\s+(?:INTO|BY)\s+([\w-]+)(?:\s+GIVING\s+([\w-]+))?$", s, re.I)
+    # DIVIDE a INTO b -> b/a ; DIVIDE a BY b -> a/b. Division segura (_div).
+    m = re.match(r"DIVIDE\s+([\w-]+)\s+INTO\s+([\w-]+)(?:\s+GIVING\s+([\w-]+))?$", s, re.I)
     if m:
         tgt = _col(m.group(3)) if m.group(3) else _col(m.group(2))
-        return (tgt, f"{ref(m.group(2))} / {ref(m.group(1))}")
+        return (tgt, f"_div({ref(m.group(2))}, {ref(m.group(1))})")
+    m = re.match(r"DIVIDE\s+([\w-]+)\s+BY\s+([\w-]+)(?:\s+GIVING\s+([\w-]+))?$", s, re.I)
+    if m:
+        tgt = _col(m.group(3)) if m.group(3) else _col(m.group(2))
+        return (tgt, f"_div({ref(m.group(1))}, {ref(m.group(2))})")
     return None
 
 
@@ -574,8 +760,12 @@ def _fname(name):
     return ("p_" + name) if name[:1].isdigit() else name
 
 
-def _emit_body(ops):
+def _emit_body(ops, valid_funcs=None):
     """Convierte la lista de ops de un parrafo/proc en lineas Python.
+
+    valid_funcs: set de nombres de funcion existentes. Un PERFORM/llamada a un
+    nombre que NO existe (parrafo no declarado, PERFORM THRU, typo) se emite como
+    comentario en vez de romper con NameError en runtime.
 
     IMPORTANTE: NO reconstruimos el anidamiento IF/ELSE/END con regex. Hacerlo
     linea-a-linea produce bloques descuadrados (else huerfano, END mal casado)
@@ -613,7 +803,14 @@ def _emit_body(ops):
                 lines.append(f"    # TODO revisar: ctx[{tgt!r}] = {val}")
                 pending_cond = None
         elif op == "call":
-            _emit_stmt(f"{_fname(arg)}(ctx)")
+            fn = _fname(arg)
+            if valid_funcs is None or fn in valid_funcs:
+                _emit_stmt(f"{fn}(ctx)")
+            else:
+                # Parrafo no declarado como funcion (PERFORM THRU / typo): no
+                # romper con NameError; documentar.
+                lines.append(f"    # PERFORM {arg} (parrafo no resuelto)")
+                pending_cond = None
         elif op == "read_lookup":
             # READ archivo INTO destino INVALID KEY -> lookup en memoria.
             # La clave se toma de ctx['<file>_key'] (ajustable); si no existe,
@@ -639,14 +836,25 @@ def _emit_body(ops):
                     pending_cond = None
         elif op == "loop_until":
             tgt, cond = arg
-            if _is_valid_py_expr(cond):
-                lines.append(f"    while not ({cond}):")
-                lines.append(f"        {_fname(tgt)}(ctx)")
+            fn = _fname(tgt)
+            if valid_funcs is not None and fn not in valid_funcs:
+                lines.append(f"    # PERFORM {tgt} UNTIL {cond} (parrafo no resuelto)")
+                pending_cond = None
+            elif _is_valid_py_expr(cond):
+                # Bucle con GUARDA de iteraciones: el modelo plano puede no
+                # actualizar la condicion (seria bucle infinito). El tope evita
+                # colgar; ajusta/retira la guarda tras revisar la logica real.
+                lines.append(f"    _guard = 0")
+                lines.append(f"    while not ({cond}) and _guard < 1000:")
+                lines.append(f"        {fn}(ctx)")
+                lines.append(f"        _guard += 1")
+                emitted_any = True
+                pending_cond = None
             else:
                 lines.append(f"    # PERFORM UNTIL {cond}")
-                lines.append(f"    {_fname(tgt)}(ctx)")
-            emitted_any = True
-            pending_cond = None
+                lines.append(f"    {fn}(ctx)")
+                emitted_any = True
+                pending_cond = None
         elif op in ("if", "while"):
             # Guia: documentar la condicion y, si es valida, condicionar la
             # proxima sentencia simple (patron COBOL 'IF cond MOVE ...').
@@ -766,11 +974,18 @@ def transpile_direct(src, lang="cobol", pure=False):
             seen[n] = 0
         uniq.append((n, ops))
 
-    # Generar funciones.
+    # Generar funciones. IMPORTANTE: generamos UNA funcion por CADA parrafo,
+    # aunque no tenga sentencias traducibles (cuerpo 'pass'). Si lo saltaramos,
+    # un PERFORM a ese parrafo seria un NameError en runtime. 'init' (lo previo
+    # al primer parrafo) sí se omite si esta vacio (no se invoca).
+    # Set de nombres de funcion que SI vamos a generar (para resolver llamadas).
+    valid_funcs = {_fname(name) for name, ops in uniq
+                   if not (not ops and name == "init")}
+
     func_blocks = []
     stats = {"paragraphs": 0, "assigns": 0, "ifs": 0, "calls": 0}
     for name, ops in uniq:
-        if not ops:
+        if not ops and name == "init":
             continue
         stats["paragraphs"] += 1
         for op, _ in ops:
@@ -780,14 +995,14 @@ def transpile_direct(src, lang="cobol", pure=False):
                 stats["ifs"] += 1
             elif op in ("call", "loop_until"):
                 stats["calls"] += 1
-        body = _emit_body(ops)
-        func_blocks.append(f"def {name}(ctx):\n" + "\n".join(body) + "\n")
+        body = _emit_body(ops, valid_funcs=valid_funcs)
+        func_blocks.append(f"@_guard_depth\ndef {name}(ctx):\n" + "\n".join(body) + "\n")
 
     # Llamadas en orden (el flujo principal). 'init' (lo previo al primer
     # parrafo) solo son declaraciones; se omite de las llamadas.
     call_lines = []
     for name, ops in uniq:
-        if ops and name != "init":
+        if ops and name != "init" and name in valid_funcs:
             call_lines.append(f"    {name}(ctx)")
     if not call_lines:
         call_lines.append("    pass")
@@ -814,7 +1029,8 @@ def transpile_direct(src, lang="cobol", pure=False):
             src_lines.append("    # (el programa no declara archivos de entrada explicitos)")
         app = f"BNX_{lang.upper()}_Direct"
         title = f"BNX JOB — traduccion directa {lang.upper()} -> PySpark"
-        header = HEADER.format(title=title, lang=lang.upper(), ts=ts, app=app)
+        header = HEADER.format(title=title, lang=lang.upper(), ts=ts, app=app,
+                               runtime=_RUNTIME_HELPERS)
         footer = FOOTER.format(sources="\n".join(src_lines),
                                calls="\n".join(call_lines), lang=lang.upper())
         code = header + "\n\n" + "\n\n".join(func_blocks) + "\n" + footer
