@@ -21,17 +21,29 @@ import re
 
 def parse_algol(path):
     """Lee el archivo ALGOL (UTF-8 o EBCDIC) y extrae la estructura ETL."""
+    # OJO: 'cp1047' NO es un codec de Python (daba LookupError -> 500). Los
+    # codecs EBCDIC validos son cp500 y cp1140. Capturamos LookupError por si
+    # algun codec no esta disponible, y usamos latin-1 como fallback que nunca
+    # falla (decodifica cualquier byte).
     content = None
-    for enc in ["utf-8", "cp500", "cp1047", "latin-1"]:
+    last = None
+    for enc in ("utf-8", "cp500", "cp1140", "latin-1"):
         try:
             with open(path, "r", encoding=enc) as f:
-                content = f.read()
-            up = content.upper()
-            # Sanity check: ALGOL de Unisys suele tener BEGIN/END/PROCEDURE/FILE.
-            if "BEGIN" in up or "PROCEDURE" in up or "FILE " in up:
-                break
+                data = f.read()
         except (UnicodeDecodeError, UnicodeError):
             continue
+        except LookupError:
+            # codec no registrado en este Python: saltarlo sin romper.
+            continue
+        last = data
+        up = data.upper()
+        # Sanity check: ALGOL de Unisys suele tener BEGIN/END/PROCEDURE/FILE.
+        if "BEGIN" in up or "PROCEDURE" in up or "FILE " in up:
+            content = data
+            break
+    if content is None:
+        content = last  # usar el ultimo decodificado (p.ej. latin-1)
 
     if not content:
         raise ValueError(f"No se pudo decodificar el archivo ALGOL: {path}")
