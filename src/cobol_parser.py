@@ -3,21 +3,131 @@
 Parses COBOL source files and generates .mp, .xfr, .dml for BNX compiler.
 Handles: FILE SECTION, WORKING-STORAGE, PROCEDURE DIVISION.
 """
+import io
 import re
+import zipfile
+
+
+# Extensiones que consideramos "codigo fuente" dentro de un ZIP, en orden de
+# preferencia. Un .CBL exportado desde el mainframe/IDS suele venir realmente
+# como un ZIP (firma 'PK\x03\x04') que empaqueta varios miembros; nos quedamos
+# con el primero que parezca COBOL.
+_SOURCE_EXTS = (".cbl", ".cob", ".cpy", ".alg", ".dma", ".mp", ".xfr", ".dml", ".txt")
+
+
+def _looks_like_cobol(text):
+    up = text.upper()
+    return ("IDENTIFICATION DIVISION" in up or "PROCEDURE DIVISION" in up
+            or "PROGRAM-ID" in up or "DATA DIVISION" in up)
+
+
+def _text_score(text):
+    """Puntua que tan 'legible' es un texto: ratio de caracteres imprimibles
+    mas un bonus fuerte si contiene palabras clave COBOL. Sirve para elegir el
+    codec correcto (p.ej. latin-1 vs cp500) cuando varios 'no lanzan'."""
+    if not text:
+        return -1.0
+    sample = text[:20000]
+    printable = sum(1 for c in sample if c == "\n" or c == "\t" or 32 <= ord(c) < 127)
+    ratio = printable / len(sample)
+    bonus = 0.0
+    up = sample.upper()
+    for kw in ("DIVISION", "SECTION", "PROGRAM-ID", "PIC ", "MOVE ", "$SET", "PERFORM"):
+        if kw in up:
+            bonus += 0.2
+    return ratio + bonus
+
+
+def _decode_bytes(raw):
+    """Decodifica bytes a texto eligiendo el codec que produce el texto mas
+    legible. No basta con 'el primero que no lance': cp500 decodifica cualquier
+    byte pero puede devolver basura cuando el fuente ya estaba en ASCII/latin-1.
+    """
+    best_text = None
+    best_score = -2.0
+    for enc in ("utf-8", "latin-1", "cp500", "cp1140"):
+        try:
+            text = raw.decode(enc)
+        except (UnicodeDecodeError, UnicodeError, LookupError):
+            continue
+        score = _text_score(text)
+        if score > best_score:
+            best_score, best_text = score, text
+    if best_text is None:
+        best_text = raw.decode("latin-1", errors="replace")
+    return best_text
+
+
+def extract_source_from_bytes(raw):
+    """Devuelve el codigo fuente (texto) a partir de los bytes crudos subidos.
+
+    Un .CBL del banco a menudo NO es texto: es un ZIP que empaqueta el COBOL
+    real junto con otros miembros. Si detectamos la firma ZIP, extraemos el
+    miembro que parezca codigo fuente; si no, decodificamos como texto.
+
+    Nunca lanza por codificacion: usa latin-1 como ultimo recurso.
+    """
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+
+    # Firma de ZIP: 'PK\x03\x04'. Tambien aceptamos ZIP vacio ('PK\x05\x06').
+    if raw[:2] == b"PK" and zipfile.is_zipfile(io.BytesIO(raw)):
+        try:
+            with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+                members = [n for n in zf.namelist() if not n.endswith("/")]
+                decoded = []
+                for name in members:
+                    try:
+                        text = _decode_bytes(zf.read(name))
+                    except Exception:
+                        continue
+                    decoded.append((name, text))
+                # 1) Preferir el miembro cuyo contenido parezca COBOL.
+                for name, text in decoded:
+                    if _looks_like_cobol(text):
+                        return text
+                # 2) Si no, el primero con extension de codigo fuente conocida.
+                for name, text in decoded:
+                    low = name.lower()
+                    if any(low.endswith(ext) for ext in _SOURCE_EXTS):
+                        return text
+                # 3) Si no, el miembro mas grande (suele ser el fuente).
+                if decoded:
+                    return max(decoded, key=lambda nt: len(nt[1]))[1]
+        except (zipfile.BadZipFile, OSError):
+            pass  # cae al decode de texto normal
+
+    return _decode_bytes(raw)
 
 
 def parse_cobol(path):
-    # Try UTF-8 first, then EBCDIC (cp500/cp1047)
+    # Probar UTF-8 primero, luego EBCDIC (cp500/cp1140) y por ultimo latin-1
+    # (que decodifica cualquier byte, es el fallback que nunca falla).
+    # OJO: 'cp1047' NO es un codec de Python (daba LookupError -> 500). Los
+    # codecs EBCDIC validos son cp500 y cp1140. Capturamos LookupError por si
+    # algun codec no esta disponible en el entorno.
     content = None
-    for enc in ["utf-8", "cp500", "cp1047", "latin-1"]:
+    last = None
+    for enc in ("utf-8", "cp500", "cp1140", "latin-1"):
         try:
             with open(path, "r", encoding=enc) as f:
-                content = f.read()
-            # Sanity check: COBOL should have DIVISION or SECTION
-            if "DIVISION" in content.upper() or "SECTION" in content.upper():
-                break
+                data = f.read()
         except (UnicodeDecodeError, UnicodeError):
             continue
+        except LookupError:
+            # codec no registrado en este Python: saltarlo sin romper.
+            continue
+        last = data
+        # Sanity check: un COBOL valido trae DIVISION o SECTION. Si lo cumple,
+        # es la codificacion correcta; si no, seguimos probando pero guardamos
+        # el ultimo decodificado como respaldo.
+        if "DIVISION" in data.upper() or "SECTION" in data.upper():
+            content = data
+            break
+    if content is None:
+        content = last  # usar el ultimo decodificado (p.ej. latin-1)
 
     if not content:
         raise ValueError(f"Cannot decode COBOL file: {path}")
@@ -46,10 +156,15 @@ def _parse_file_section(lines):
     """Extract SELECT ... ASSIGN TO statements ? source/sink files."""
     files = {}
     for line in lines:
-        m = re.match(r"\s+SELECT\s+([\w-]+)\s+ASSIGN\s+TO\s+'(\w+)'", line, re.I)
+        # ASSIGN TO puede traer el destino entre comillas ('ARCHIVO') o como
+        # literal/palabra reservada sin comillas (DISK, REMOTE, PRINTER...).
+        m = re.match(
+            r"\s*SELECT\s+([\w-]+)\s+ASSIGN\s+TO\s+'?([\w./-]+)'?",
+            line, re.I,
+        )
         if m:
             name = m.group(1).replace("-", "_")
-            assign = m.group(2)
+            assign = m.group(2).strip().strip("'\"").rstrip(".")
             files[name] = assign
     return files
 

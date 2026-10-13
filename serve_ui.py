@@ -95,7 +95,7 @@ from src.py2spark import infer_input_schema as py2spark_infer_schema
 from src.metadata import build_all as build_metadata
 from src.perf_optimizer import optimize_pyspark
 from src.export_bundle import build_export_bundle
-from src.cobol_parser import parse_cobol, cobol_to_graph
+from src.cobol_parser import parse_cobol, cobol_to_graph, extract_source_from_bytes
 from src.algol_parser import parse_algol, algol_to_graph
 from src.lang_detect import detect_language
 from src.datagen import (
@@ -2375,7 +2375,10 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 # disponible y recuperamos su nombre si parse_multipart lo expone.
                 for key in ("code", "file", "cobol", "algol", "mp"):
                     if key in file_parts:
-                        src_code = file_parts[key].decode("utf-8", errors="replace")
+                        # Puede venir como texto plano o como ZIP (p.ej. un .CBL
+                        # que en realidad empaqueta el fuente). El helper detecta
+                        # el ZIP y extrae el miembro de codigo real.
+                        src_code = extract_source_from_bytes(file_parts[key])
                         # parse_multipart guarda el nombre real en '{campo}_filename'.
                         filename = fields.get(f"{key}_filename", "") or ""
                         break
@@ -2476,7 +2479,9 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             if "multipart/form-data" in content_type:
                 fields, file_parts = parse_multipart(body, content_type)
                 if "cobol" in file_parts:
-                    cobol_src = file_parts["cobol"].decode("utf-8", errors="replace")
+                    # Puede venir como texto o como ZIP (.CBL empaquetado). El
+                    # helper detecta el ZIP y extrae el miembro COBOL real.
+                    cobol_src = extract_source_from_bytes(file_parts["cobol"])
                 else:
                     cobol_src = fields.get("cobol", "") or ""
                 target = (fields.get("target", "") or "spark").lower()
