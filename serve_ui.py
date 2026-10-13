@@ -2911,6 +2911,81 @@ def _sync_library_from_s3():
               "El server sigue con los grafos que ya haya en disco.")
 
 
+def _push_library_to_s3():
+    """Sube a S3 los grafos que estan en LOCAL (./bnx_library/) y faltan o
+    cambiaron en el bucket. Complementa al sync de descarga: sin esto, los
+    grafos que ya existian en disco ANTES de activar S3 nunca llegaban al bucket
+    (el upload por /library solo sube lo que se guarda en el momento).
+
+    Best-effort (AWS CLI primero, luego boto3). Se puede desactivar con
+    BNX_SKIP_LIBRARY_PUSH=1. Excluye _flat/ no: _flat SI se sube (son grafos
+    planos). Excluye Repo_Git/ y .DS_Store."""
+    if os.environ.get("BNX_SKIP_LIBRARY_PUSH") == "1":
+        return
+    src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bnx_library")
+    if not os.path.isdir(src):
+        return
+    profile, bucket, prefix = _library_s3_config()
+
+    # Metodo 1: AWS CLI (sync local -> S3, incremental).
+    import shutil, subprocess
+    if shutil.which("aws"):
+        print(f"[*] Subiendo biblioteca de grafos LOCAL -> S3 (aws cli, perfil {profile})...")
+        try:
+            proc = subprocess.run(
+                ["aws", "s3", "sync", src + os.sep, f"s3://{bucket}/{prefix}",
+                 "--profile", profile, "--only-show-errors",
+                 "--exclude", "Repo_Git/*", "--exclude", "*.DS_Store",
+                 "--exclude", "**/__pycache__/*"],
+                capture_output=True, text=True, timeout=180,
+            )
+            if proc.returncode == 0:
+                print("[*] Biblioteca de grafos subida a S3.")
+                return
+            msg = (proc.stderr or "").strip().splitlines()
+            print(f"[i] push aws cli fallo ({msg[-1] if msg else 'error'}), intento boto3...")
+        except subprocess.TimeoutExpired:
+            print("[i] push aws cli timeout, intento boto3...")
+        except Exception as e:
+            print(f"[i] push aws cli error ({e}), intento boto3...")
+
+    # Metodo 2: boto3 (recorre disco y sube lo que falte/cambie por tamano).
+    try:
+        import boto3
+    except ImportError:
+        print("[i] Push biblioteca omitido: sin AWS CLI ni boto3.")
+        return
+    try:
+        try:
+            session = boto3.Session(profile_name=profile)
+        except Exception:
+            session = boto3.Session()
+        s3 = session.client("s3", region_name="us-east-1")
+        # tamanos ya en S3 (para subir solo lo nuevo/cambiado)
+        sizes = {}
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                sizes[obj["Key"]] = obj.get("Size", -1)
+        subidos = 0
+        for rootd, _dirs, files in os.walk(src):
+            if "Repo_Git" in rootd or "__pycache__" in rootd:
+                continue
+            for fn in files:
+                if fn == ".DS_Store":
+                    continue
+                fp = os.path.join(rootd, fn)
+                rel = os.path.relpath(fp, src).replace(os.sep, "/")
+                key = prefix + rel
+                if sizes.get(key) == os.path.getsize(fp):
+                    continue  # ya esta igual en S3
+                s3.upload_file(fp, bucket, key)
+                subidos += 1
+        print(f"[*] Biblioteca de grafos subida a S3 (boto3, {subidos} archivo(s) nuevos/actualizados).")
+    except Exception as e:
+        print(f"[i] Push biblioteca omitido (boto3): {e}.")
+
+
 def _git_version():
     """Devuelve el commit de git actual (corto + fecha) para saber que version
     del codigo esta corriendo el server. Asi, tras un 'git pull', se ve de un
@@ -2946,9 +3021,15 @@ if __name__ == "__main__":
     print(f"[*] Open: http://localhost:{PORT}")
     print()
 
-    # Bajar grafos nuevos del S3 en un hilo aparte para no retrasar el arranque.
+    # Sincronizacion BIDIRECCIONAL de la biblioteca en un hilo aparte (no retrasa
+    # el arranque). Primero BAJA de S3 lo que falte en local, luego SUBE a S3 lo
+    # que falte en el bucket. Ninguna direccion BORRA: la union local+S3 solo
+    # CRECE (cada maquina aporta sus grafos y recibe los de las demas).
     import threading as _threading
-    _threading.Thread(target=_sync_library_from_s3, daemon=True).start()
+    def _library_bidirectional_sync():
+        _sync_library_from_s3()   # S3 -> local (descarga incremental)
+        _push_library_to_s3()     # local -> S3 (subida incremental)
+    _threading.Thread(target=_library_bidirectional_sync, daemon=True).start()
 
     class _BNXServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         allow_reuse_address = True  # evita "Address already in use" al reiniciar
