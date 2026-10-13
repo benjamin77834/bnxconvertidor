@@ -139,6 +139,16 @@ export default function App() {
     try { localStorage.setItem('bnx_code_only', v ? '1' : '0') } catch { /* ignore */ }
   }
 
+  // Mostrar/ocultar la descripcion del grafo (toggle como "Solo código").
+  // Persiste la preferencia. Por defecto ENCENDIDA (se muestra la descripcion).
+  const [showDescription, _setShowDescription] = useState(() => {
+    try { return localStorage.getItem('bnx_show_description') !== '0' } catch { return true }
+  })
+  const setShowDescription = (v) => {
+    _setShowDescription(v)
+    try { localStorage.setItem('bnx_show_description', v ? '1' : '0') } catch { /* ignore */ }
+  }
+
   // Cerrar fullscreen con Escape
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -1490,6 +1500,17 @@ export default function App() {
                     border: `1px solid ${codeOnly ? '#22c55e' : t.border}`,
                     color: codeOnly ? '#000' : t.muted,
                   }}>{codeOnly ? '✓ Solo código' : '📄 Solo código'}</button>
+
+                {result.description && (
+                  <button onClick={() => setShowDescription(!showDescription)}
+                    title="Muestra u oculta la descripción en lenguaje natural del grafo"
+                    style={{
+                      padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', fontWeight: 700,
+                      background: showDescription ? '#818cf8' : t.card,
+                      border: `1px solid ${showDescription ? '#818cf8' : t.border}`,
+                      color: showDescription ? '#000' : t.muted,
+                    }}>{showDescription ? '✓ Descripción' : '📝 Descripción'}</button>
+                )}
                 <button onClick={downloadDag} style={{
                   padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
                   background: t.card, border: `1px solid ${t.border}`, color: t.muted,
@@ -1525,8 +1546,8 @@ export default function App() {
                     fontWeight: 600,
                   }}>🧹 Limpiar</button>
               </div>
-              {/* Descripcion en lenguaje natural del grafo */}
-              {result.description && (
+              {/* Descripcion en lenguaje natural del grafo (toggle 'Descripción') */}
+              {result.description && showDescription && (
                 <details style={{
                   padding: '8px 20px', background: t.sidebar,
                   borderBottom: `1px solid ${t.border}`,
