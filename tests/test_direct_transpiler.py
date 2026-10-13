@@ -42,8 +42,8 @@ def test_cobol_directo_compila_y_captura(tmp_path):
     # Asignaciones MOVE traducidas sobre ctx.
     assert "ctx['ws_total'] = 0" in code
     assert "ctx['ws_tipo'] = 'A'" in code
-    # COMPUTE -> expresion.
-    assert "ctx['ws_total'] = ctx['ws_a'] + ctx['ws_b']" in code
+    # COMPUTE -> expresion con coercion numerica tolerante (_n evita str-str).
+    assert "ctx['ws_total'] = _n(ctx['ws_a']) + _n(ctx['ws_b'])" in code
     # PERFORM -> llamada a la funcion.
     assert "p_0200_calcula(ctx)" in code
     # Lectura del archivo de entrada.
