@@ -689,3 +689,41 @@ def test_cobol_filtros_con_formato_columnas():
     ]
     filters = _parse_filters(lines)
     assert "0200_valida" in filters
+
+
+# ---------------------------------------------------------------------------
+# BUG — ZIP con VARIOS fuentes: abrir el .alg daba el .CBL (miembro equivocado)
+# ---------------------------------------------------------------------------
+def test_extract_prefer_name_elige_miembro_homonimo():
+    """Un ZIP que empaqueta un ALGOL y un COBOL: abrir por nombre debe devolver
+    el miembro cuyo nombre coincide con el archivo contenedor."""
+    algol = (
+        " $SET SHARING = PRIVATE\n BEGIN\n"
+        "   FILE RMT(KIND=REMOTE,MYUSE=IO);\n"
+        "   INTEGER PROCEDURE VALIDA_FECHA; BEGIN END;\n END.\n"
+    )
+    cobol = (
+        "       IDENTIFICATION DIVISION.\n"
+        "       PROGRAM-ID. BIG.\n"
+        "       PROCEDURE DIVISION.\n"
+        "       0100-X.  MOVE A TO B.\n" * 50
+    )
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("S016_L191.alg_m", algol)
+        zf.writestr("S016_L036_MERGED.CBL", cobol)  # mas grande + con DIVISION
+    raw = buf.getvalue()
+
+    # Abrir por el nombre del ALGOL -> ALGOL (aunque el COBOL sea mayor y "gane"
+    # las heuristicas de contenido/tamaño).
+    got_alg = extract_source_from_bytes(raw, prefer_name="S016_L191.alg_m")
+    assert "BEGIN" in got_alg and "VALIDA_FECHA" in got_alg
+    assert "IDENTIFICATION DIVISION" not in got_alg
+
+    # Abrir por el nombre del COBOL -> COBOL.
+    got_cbl = extract_source_from_bytes(raw, prefer_name="S016_L036_MERGED.CBL")
+    assert "IDENTIFICATION DIVISION" in got_cbl
+
+    # Match por nombre SIN extension (contenedor '.alg_mux' vs miembro '.alg_m').
+    got_stem = extract_source_from_bytes(raw, prefer_name="S016_L191.alg_mux")
+    assert "BEGIN" in got_stem and "IDENTIFICATION DIVISION" not in got_stem
