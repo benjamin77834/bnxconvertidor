@@ -21,7 +21,20 @@ Python en tu máquina.
 1. Abre un archivo `.py` (PySpark o Python).
 2. Clic derecho → **BNX Review: Analizar archivo (calidad)**, o guarda el archivo
    (análisis automático al guardar, configurable).
-3. Los hallazgos aparecen subrayados y en el panel **Problems**.
+3. Los hallazgos aparecen subrayados en el editor y listados en el panel
+   **Problems**.
+
+### Dónde ver los hallazgos
+
+- **Panel Problems** (lo más claro): `View → Problems` o **Cmd/Ctrl+Shift+M**.
+  Ahí salen todos los hallazgos con el prefijo "BNX Review", agrupados por
+  archivo. Al analizar a mano, el panel se abre solo.
+- **En el editor**: cada hallazgo subraya su línea. Pasa el cursor por encima
+  para ver el detalle (regla + recomendación). Los críticos salen en rojo, los
+  demás en amarillo/azul.
+
+Si la notificación dice "N hallazgos" pero no los ves subrayados, ábrelos en el
+panel Problems (Cmd/Ctrl+Shift+M) — ahí están siempre.
 
 ## Configuración
 

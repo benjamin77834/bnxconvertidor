@@ -60,8 +60,11 @@ function toSeverity(sev) {
   switch (sev) {
     case "critical": return vscode.DiagnosticSeverity.Error;
     case "major": return vscode.DiagnosticSeverity.Warning;
-    case "minor": return vscode.DiagnosticSeverity.Information;
-    default: return vscode.DiagnosticSeverity.Hint;
+    // minor e info -> Information (visible). Evitamos 'Hint' porque VS Code lo
+    // dibuja casi invisible (3 puntitos) y a veces lo oculta del panel Problems,
+    // asi el usuario no "veia" los hallazgos aunque la notificacion los contaba.
+    case "minor": return vscode.DiagnosticSeverity.Warning;
+    default: return vscode.DiagnosticSeverity.Information;
   }
 }
 
@@ -99,10 +102,20 @@ async function analyzeDocument(doc, collection, serverUrl, silent) {
     collection.set(doc.uri, buildDiagnostics(doc, findings));
     if (!silent) {
       const s = result.summary || {};
-      const msg = findings.length === 0
-        ? "sin hallazgos — el codigo luce limpio."
-        : `${s.total || findings.length} hallazgo(s): ${s.critical || 0} críticos, ${s.major || 0} mayores, ${s.minor || 0} menores.`;
-      vscode.window.showInformationMessage("BNX Review: " + msg);
+      if (findings.length === 0) {
+        vscode.window.showInformationMessage("BNX Review: sin hallazgos — el codigo luce limpio.");
+      } else {
+        const msg = `${s.total || findings.length} hallazgo(s): ${s.critical || 0} críticos, ${s.major || 0} mayores, ${s.minor || 0} menores, ${s.info || 0} info.`;
+        // Abrir el panel Problems para que el usuario VEA los hallazgos (no solo
+        // la notificacion). Ofrecemos un boton por si prefiere abrirlo a mano.
+        try { await vscode.commands.executeCommand("workbench.actions.view.problems"); } catch (_e) { /* ignore */ }
+        const pick = await vscode.window.showInformationMessage(
+          "BNX Review: " + msg + " Revisa el panel Problems (Cmd/Ctrl+Shift+M).",
+          "Ver Problems");
+        if (pick === "Ver Problems") {
+          try { await vscode.commands.executeCommand("workbench.actions.view.problems"); } catch (_e) { /* ignore */ }
+        }
+      }
     }
   } catch (e) {
     if (!silent) vscode.window.showErrorMessage("BNX Review: " + e.message);
