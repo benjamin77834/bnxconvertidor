@@ -295,6 +295,16 @@ export default function App() {
   }
 
   const downloadCode = useCallback(() => {
+    // Si el codigo se trunco para la vista (grafos gigantes), descargar el
+    // COMPLETO del servidor por su URL con token; si no, el que ya tenemos.
+    if (result?.code_truncated && result?.code_download_url) {
+      const base = COMPILE_URL.replace('/compile', '')
+      const a = document.createElement('a')
+      a.href = base + result.code_download_url
+      a.download = target === 'spark' ? 'pyspark_job.py' : target === 'flink' ? 'flink_job.py' : 'glue_job.py'
+      document.body.appendChild(a); a.click(); document.body.removeChild(a)
+      return
+    }
     if (result?.code) download(result.code, target === 'spark' ? 'pyspark_job.py' : target === 'flink' ? 'flink_job.py' : 'glue_job.py')
   }, [result, target])
 

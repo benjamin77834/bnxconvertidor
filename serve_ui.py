@@ -218,6 +218,11 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
 
         # Descarga por streaming de un bundle ya preparado (token). Para archivos
         # grandes (offline ~320-760MB): el navegador descarga nativo, sin blob.
+        # Descarga del CODIGO COMPLETO (cuando se trunco para la vista por ser
+        # enorme). Token generado en _compile_graph; se sirve por streaming.
+        if path == "/code/download" or path == "/api/code/download":
+            self._handle_code_download()
+            return
         if path == "/export/download" or path == "/api/export/download":
             self._handle_export_download()
             return
@@ -980,6 +985,27 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             traceback.print_exc()
             self._json_response(500, {"error": str(e)})
 
+    def _handle_code_download(self):
+        """Sirve el CODIGO COMPLETO guardado con token en _compile_graph (cuando
+        se trunco para la vista). Lee ?token=<hex>. Descarga como .py."""
+        from urllib.parse import urlparse as _up, parse_qs as _pq
+        qs = _pq(_up(self.path).query)
+        token = (qs.get("token", [""])[0] or "").strip()
+        if not token or not re.fullmatch(r"[0-9a-f]{8,64}", token):
+            self._json_response(400, {"error": "token invalido"})
+            return
+        fp = os.path.join(tempfile.gettempdir(), "bnx_code_full", token + ".py")
+        if not os.path.isfile(fp):
+            self._json_response(404, {"error": "codigo no encontrado o expirado"})
+            return
+        try:
+            with open(fp, "rb") as f:
+                data = f.read()
+        except OSError:
+            self._json_response(404, {"error": "codigo no accesible"})
+            return
+        self._binary_response(data, "pyspark_job.py", content_type="text/x-python")
+
     def _handle_export_download(self):
         """Sirve por STREAMING un bundle preparado (token) y lo borra tras enviar.
         Lee ?token=<hex>. Descarga nativa del navegador, sin blob en memoria."""
@@ -1687,6 +1713,50 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 nodes = kept_nodes
                 edges = kept_edges
 
+            # Truncar el CODIGO enviado a la GUI si es gigantesco (grafos de
+            # decenas de miles de nodos generan MB de PySpark que congelan el
+            # navegador al renderizar). Se envia un prefijo + aviso; la descarga
+            # (y el envio a AWS / prueba local) usan el codigo COMPLETO desde el
+            # backend, no esta version recortada de visualizacion.
+            CODE_GUI_LIMIT = 500_000  # ~500 KB
+            code_full_bytes = len(code or "")
+            code_truncated = code_full_bytes > CODE_GUI_LIMIT
+            code_for_gui = code
+            code_download_url = None
+            if code_truncated:
+                # Guardar el codigo COMPLETO en disco con un token para que la GUI
+                # lo descargue por GET (streaming), ya que no viaja entero en el JSON.
+                try:
+                    import uuid as _uuid
+                    _tok = _uuid.uuid4().hex
+                    _dir = os.path.join(tempfile.gettempdir(), "bnx_code_full")
+                    os.makedirs(_dir, exist_ok=True)
+                    _fp = os.path.join(_dir, _tok + ".py")
+                    with open(_fp, "w", encoding="utf-8") as _f:
+                        _f.write(code or "")
+                    code_download_url = f"/code/download?token={_tok}"
+                except Exception as _e:
+                    print(f"  [resp] no se pudo preparar descarga de codigo completo: {_e}")
+                _cut = (code or "")[:CODE_GUI_LIMIT]
+                code_for_gui = (_cut +
+                    f"\n\n# ... [CÓDIGO TRUNCADO PARA VISUALIZACIÓN] ...\n"
+                    f"# El job completo tiene {code_full_bytes:,} bytes "
+                    f"(~{(code or '').count(chr(10)) + 1:,} líneas).\n"
+                    f"# Usa 📥 Descargar código para obtener el archivo COMPLETO.\n")
+
+            # Acotar listas/textos que explotan en grafos enormes: miles de
+            # warnings y una descripcion que lista decenas de miles de pasos
+            # inflan el JSON y congelan el navegador.
+            WARN_LIMIT = 300
+            warnings_total = len(warnings)
+            if warnings_total > WARN_LIMIT:
+                warnings = (warnings[:WARN_LIMIT] +
+                            [f"... y {warnings_total - WARN_LIMIT} advertencia(s) mas "
+                             f"(ocultas para no sobrecargar la vista)."])
+            desc_for_gui = graph_description or ""
+            if len(desc_for_gui) > 20_000:
+                desc_for_gui = desc_for_gui[:20_000] + "\n… (descripción truncada para la vista)"
+
             return {
                 "nodes": nodes,
                 "edges": edges,
@@ -1695,13 +1765,17 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 "total_edges": total_edges,
                 "errors": errors,
                 "warnings": warnings,
-                "code": code,
+                "warnings_total": warnings_total,
+                "code": code_for_gui,
+                "code_truncated": code_truncated,
+                "code_full_bytes": code_full_bytes,
+                "code_download_url": code_download_url,
                 "extractor_code": extractor_code,
                 "has_db_sources": bool(db_nodes),
                 "db_sources_count": len(db_nodes),
                 "accuracy": acc,
                 "graph_name": graph_name,
-                "description": graph_description,
+                "description": desc_for_gui,
                 "params": {k: v for k, v in list(ast.get("abinitio_params", {}).items())[:20]},
                 # Esquema de columnas por SOURCE (del .dml). Base del linaje de
                 # columnas en la GUI: permite trazar out.col -> source.col.
@@ -2207,6 +2281,26 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             traceback.print_exc()
             self._json_response(500, {"error": str(e)})
 
+    def _attach_generated_sources(self, result, graph):
+        """Adjunta los .mp/.xfr/.dml generados (COBOL/ALGOL -> grafo) al result,
+        pero TRUNCA los que sean enormes para no mandar una respuesta JSON gigante
+        que congele el navegador.
+
+        Un COBOL de decenas de miles de parrafos genera .mp/.xfr de varios MB.
+        Esos campos son solo para INSPECCION/descarga en la GUI, no criticos: si
+        superan el umbral, se recorta lo enviado y se marca *_truncated=True con
+        el tamano total. El codigo (`code`) ya lo gestiona _compile_graph."""
+        LIMIT = 300_000  # ~300 KB por fuente enviada a la GUI
+        for key in ("mp", "xfr", "dml"):
+            full = graph.get(key, "") or ""
+            field = "generated_" + key
+            if len(full) > LIMIT:
+                result[field] = full[:LIMIT]
+                result[field + "_truncated"] = True
+                result[field + "_total_bytes"] = len(full)
+            else:
+                result[field] = full
+
     def _attach_optimized(self, result, target):
         """Pasa el PySpark generado por el optimizador (cache/broadcast/coalesce)
         y adjunta el resultado al dict 'result' SIN perder el codigo original:
@@ -2226,13 +2320,17 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             # (>10 min). Para esos casos saltamos la optimizacion automatica: el
             # codigo base ya es correcto y descargable. El usuario puede optimizar
             # a mano con /optimize si lo necesita en un fragmento.
+            # OJO: medimos el tamaño del codigo COMPLETO (code_full_bytes), no el
+            # recortado para la vista: si no, optimizariamos el prefijo truncado
+            # y mandariamos un optimized_code redundante que infla el JSON.
+            full_bytes = result.get("code_full_bytes") or len(code)
             n_lines = code.count("\n") + 1
-            if n_lines > 20000 or len(code) > 1_500_000:
+            if result.get("code_truncated") or n_lines > 20000 or full_bytes > 1_500_000:
                 result["optimization_skipped"] = True
                 result["optimization_skip_reason"] = (
-                    f"Código muy grande ({n_lines} líneas): se omitió la optimización "
+                    f"Código muy grande ({full_bytes:,} bytes): se omitió la optimización "
                     "automática para no bloquear. El código generado es correcto.")
-                print(f"  [opt] omitida por tamaño: {n_lines} lineas")
+                print(f"  [opt] omitida por tamaño: {full_bytes} bytes")
                 return
             opt = optimize_pyspark(code, include_coalesce=True)
             if opt and opt.get("code"):
@@ -2337,9 +2435,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 graph["mp"], graph["xfr"], graph["dml"], target=target
             )
             result = dict(compiled)
-            result["generated_mp"] = graph["mp"]
-            result["generated_xfr"] = graph["xfr"]
-            result["generated_dml"] = graph["dml"]
+            self._attach_generated_sources(result, graph)
             result["target"] = target
             result["detected_language"] = lang
             result["detect_scores"] = scores
@@ -2406,9 +2502,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
 
             # 3) Respuesta: codigo + grafo generado (para inspeccion/descarga).
             result = dict(compiled)
-            result["generated_mp"] = graph["mp"]
-            result["generated_xfr"] = graph["xfr"]
-            result["generated_dml"] = graph["dml"]
+            self._attach_generated_sources(result, graph)
             result["target"] = target
             # 4) Refactor/optimizacion del PySpark generado (cache/broadcast/coalesce).
             self._attach_optimized(result, target)
@@ -2469,9 +2563,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             )
 
             result = dict(compiled)
-            result["generated_mp"] = graph["mp"]
-            result["generated_xfr"] = graph["xfr"]
-            result["generated_dml"] = graph["dml"]
+            self._attach_generated_sources(result, graph)
             result["target"] = target
             # Refactor/optimizacion del PySpark generado (cache/broadcast/coalesce).
             self._attach_optimized(result, target)
