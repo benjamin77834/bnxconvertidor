@@ -178,6 +178,125 @@ if __name__ == "__main__":
 '''
 
 
+# --- Modo PYTHON PURO (COBOL transaccional CICS: procesa 1 mensaje a la vez) ---
+HEADER_PURE = '''"""
+{title}
+Generado por BNX (traductor directo {lang} -> Python puro) el {ts}.
+
+COBOL/ALGOL TRANSACCIONAL (tipo CICS): procesa UN mensaje a la vez. No usa
+Spark. Cada parrafo es una funcion que opera sobre `ctx` (estado del programa).
+Los READ ... INVALID KEY se traducen a lookups en memoria (dict), cargados UNA
+sola vez desde CSV con pandas. Corre con `python <archivo>.py` sin cluster.
+"""
+import os
+
+try:
+    import pandas as pd
+except ImportError:  # pandas es opcional: sin el, los lookups quedan vacios.
+    pd = None
+
+
+class PARAMS:
+    # Carpeta con los CSV de las tablas de lookup (una por archivo COBOL).
+    DATA_DIR = os.environ.get("BNX_DATA_DIR", "./data")
+
+
+# Archivos leidos por el programa (READ ... INVALID KEY). Se cargan como
+# diccionarios indexados por su primera columna (clave). Ajusta la columna
+# clave si tu CSV usa otra. Clave del dict = nombre normalizado del archivo.
+_LOOKUP_FILES = {files_list}
+
+
+def load_lookups(data_dir=None):
+    """Carga cada CSV de _LOOKUP_FILES como dict indexado por su clave (primera
+    columna). Devuelve {{NOMBRE: {{clave: fila_dict}}}}. Si no hay pandas o el
+    CSV no existe, deja el lookup vacio (equivale a INVALID KEY siempre)."""
+    data_dir = data_dir or PARAMS.DATA_DIR
+    out = {{}}
+    for name in _LOOKUP_FILES:
+        path = os.path.join(data_dir, name.lower() + ".csv")
+        if pd is None or not os.path.exists(path):
+            out[name.upper()] = {{}}
+            continue
+        df = pd.read_csv(path, dtype=str)
+        key = df.columns[0]  # primera columna = clave de acceso
+        out[name.upper()] = df.set_index(key).to_dict("index")
+    return out
+
+
+# Lookups globales: se cargan UNA sola vez al importar el modulo.
+LOOKUPS = load_lookups()
+
+
+class _Zero:
+    """Valor por defecto POLIMORFICO para campos no inicializados. En COBOL una
+    variable WORKING-STORAGE no inicializada vale 0 (numerico) o espacios
+    (alfanumerico); como no sabemos el tipo, este objeto se comporta como 0 en
+    aritmetica y como '' al convertir a texto, para no romper ni `x + 1` ni
+    `x + "s"` ni comparaciones."""
+    def __add__(self, o): return o if isinstance(o, str) else (o + 0)
+    def __radd__(self, o): return o if isinstance(o, str) else (0 + o)
+    def __sub__(self, o): return -o
+    def __rsub__(self, o): return o
+    def __mul__(self, o): return 0 if not isinstance(o, str) else ""
+    __rmul__ = __mul__
+    def __truediv__(self, o): return 0
+    def __rtruediv__(self, o): return 0
+    def __eq__(self, o): return o in (0, "", None) or isinstance(o, _Zero)
+    def __ne__(self, o): return not self.__eq__(o)
+    def __lt__(self, o): return 0 < o if not isinstance(o, str) else "" < o
+    def __gt__(self, o): return 0 > o if not isinstance(o, str) else "" > o
+    def __le__(self, o): return not self.__gt__(o)
+    def __ge__(self, o): return not self.__lt__(o)
+    def __bool__(self): return False
+    def __str__(self): return ""
+    def __repr__(self): return "0"
+    def __hash__(self): return 0
+
+
+class _Ctx(dict):
+    """Estado del programa. Un acceso a un campo no inicializado NO debe romper
+    (en COBOL tendria valor inicial 0/espacios); devolvemos un _Zero polimorfico."""
+    def __missing__(self, key):
+        return _Zero()
+
+
+def new_ctx():
+    return _Ctx()
+'''
+
+FOOTER_PURE = '''
+# ---------------------------------------------------------------------------
+# ENTRADA: procesa UN mensaje de entrada y devuelve la respuesta.
+# ---------------------------------------------------------------------------
+def procesa_entidad(mensaje_input: dict, lookups=None) -> dict:
+    """Procesa un mensaje transaccional (equivalente a una ejecucion del
+    programa COBOL para una transaccion). Ejecuta los parrafos en el orden del
+    fuente y devuelve el estado resultante (ctx)."""
+    ctx = new_ctx()
+    ctx["_lookups"] = lookups if lookups is not None else LOOKUPS
+    ctx["ws_mensaje"] = mensaje_input
+    # Sembrar los campos del mensaje en ctx (claves normalizadas).
+    for k, v in (mensaje_input or {{}}).items():
+        ctx[str(k).replace("-", "_").lower()] = v
+{calls}
+    # Respuesta: WS-RESPUESTA si el programa la define, si no el ctx completo.
+    return ctx.get("ws_respuesta", ctx)
+
+
+def main():
+    # Prueba local con un mensaje de ejemplo. Ajusta los campos a tu entrada.
+    ejemplo = {{"campo1": "valor"}}
+    salida = procesa_entidad(ejemplo)
+    print("[ok] procesa_entidad -> claves en respuesta:",
+          list(salida.keys())[:20] if isinstance(salida, dict) else salida)
+
+
+if __name__ == "__main__":
+    main()
+'''
+
+
 # ---------------------------------------------------------------------------
 # COBOL
 # ---------------------------------------------------------------------------
@@ -225,6 +344,18 @@ def _cobol_stmt(line, lang="cobol"):
         return []
     if up in ("STOP RUN", "GOBACK", "EXIT PROGRAM", "EXIT"):
         return [("raw_py", "return")]
+
+    # OPEN / CLOSE de archivos: no aplican en Python puro / lookups en memoria.
+    if re.match(r"(OPEN|CLOSE)\s+", up):
+        return []
+
+    # READ archivo [INTO destino] INVALID KEY / AT END -> lookup en memoria.
+    # Transaccional (INVALID KEY): es un acceso indexado tipo diccionario.
+    m = re.match(r"READ\s+([\w-]+)(?:\s+INTO\s+([\w-]+))?", s, re.I)
+    if m and ("INVALID" in up or "KEY" in up or "AT END" in up):
+        fname = _col(m.group(1))
+        dest = _col(m.group(2)) if m.group(2) else fname
+        return [("read_lookup", (fname, dest))]
 
     # DISPLAY ... -> print(...)
     m = re.match(r"DISPLAY\s+(.+)$", s, re.I)
@@ -291,41 +422,46 @@ def _cobol_stmt(line, lang="cobol"):
 
 
 def _translate_expr(expr):
-    """Expresion aritmetica -> Python sobre ctx (identificadores a ctx['x'])."""
+    """Expresion aritmetica -> Python sobre ctx. Solo los IDENTIFICADORES se
+    vuelven ctx['x']; los numeros se dejan tal cual (el patron \\d+ ya los
+    excluye porque empieza por [A-Za-z])."""
     def repl(m):
         tok = m.group(0)
-        if re.fullmatch(r"\d+(\.\d+)?", tok):
-            return tok
         return f"ctx[{_col(tok)!r}]"
     e = expr.strip().rstrip(".")
+    # Importante: el patron exige inicio con letra, asi un numero como '1' NO
+    # entra (no se convierte en ctx['1']).
     return re.sub(r"[A-Za-z][\w-]*", repl, e)
 
 
 def _cobol_arith(s):
     """ADD/SUBTRACT/MULTIPLY/DIVIDE ... GIVING -> (target, expr_py). None si no."""
+    def ref(tok):
+        # Operando aritmetico: literal numerico tal cual, si no columna de ctx.
+        lit = _py_literal(tok)
+        if lit is not None and re.fullmatch(r"[+-]?\d+(\.\d+)?", lit):
+            return lit
+        return f"ctx[{_col(tok)!r}]"
+
     m = re.match(r"ADD\s+(.+?)\s+TO\s+([\w-]+)\s+GIVING\s+([\w-]+)$", s, re.I)
     if m:
         terms = [t for t in re.split(r"\s+", m.group(1).strip())] + [m.group(2)]
-        return (_col(m.group(3)), " + ".join(f"ctx[{_col(t)!r}]" for t in terms))
+        return (_col(m.group(3)), " + ".join(ref(t) for t in terms))
     m = re.match(r"ADD\s+([\w-]+)\s+TO\s+([\w-]+)$", s, re.I)
     if m:
-        a, b = _col(m.group(1)), _col(m.group(2))
-        return (b, f"ctx[{b!r}] + ctx[{a!r}]")
+        return (_col(m.group(2)), f"{ref(m.group(2))} + {ref(m.group(1))}")
     m = re.match(r"SUBTRACT\s+([\w-]+)\s+FROM\s+([\w-]+)(?:\s+GIVING\s+([\w-]+))?$", s, re.I)
     if m:
-        a, b = _col(m.group(1)), _col(m.group(2))
-        tgt = _col(m.group(3)) if m.group(3) else b
-        return (tgt, f"ctx[{b!r}] - ctx[{a!r}]")
+        tgt = _col(m.group(3)) if m.group(3) else _col(m.group(2))
+        return (tgt, f"{ref(m.group(2))} - {ref(m.group(1))}")
     m = re.match(r"MULTIPLY\s+([\w-]+)\s+BY\s+([\w-]+)(?:\s+GIVING\s+([\w-]+))?$", s, re.I)
     if m:
-        a, b = _col(m.group(1)), _col(m.group(2))
-        tgt = _col(m.group(3)) if m.group(3) else b
-        return (tgt, f"ctx[{a!r}] * ctx[{b!r}]")
+        tgt = _col(m.group(3)) if m.group(3) else _col(m.group(2))
+        return (tgt, f"{ref(m.group(1))} * {ref(m.group(2))}")
     m = re.match(r"DIVIDE\s+([\w-]+)\s+(?:INTO|BY)\s+([\w-]+)(?:\s+GIVING\s+([\w-]+))?$", s, re.I)
     if m:
-        a, b = _col(m.group(1)), _col(m.group(2))
-        tgt = _col(m.group(3)) if m.group(3) else b
-        return (tgt, f"ctx[{b!r}] / ctx[{a!r}]")
+        tgt = _col(m.group(3)) if m.group(3) else _col(m.group(2))
+        return (tgt, f"{ref(m.group(2))} / {ref(m.group(1))}")
     return None
 
 
@@ -478,6 +614,15 @@ def _emit_body(ops):
                 pending_cond = None
         elif op == "call":
             _emit_stmt(f"{_fname(arg)}(ctx)")
+        elif op == "read_lookup":
+            # READ archivo INTO destino INVALID KEY -> lookup en memoria.
+            # La clave se toma de ctx['<file>_key'] (ajustable); si no existe,
+            # devuelve None (equivalente al INVALID KEY / registro no hallado).
+            fname, dest = arg
+            key_var = f"{fname}_key"
+            _emit_stmt(
+                f"ctx[{dest!r}] = ctx.get('_lookups', {{}}).get({fname.upper()!r}, {{}})"
+                f".get(ctx.get({key_var!r}))")
         elif op == "raw_py":
             if arg == "return":
                 lines.append("    return")
@@ -537,8 +682,52 @@ def _dispatch(lang):
     return _algol_proc, _algol_stmt, _algol_files
 
 
-def transpile_direct(src, lang="cobol"):
-    """Traduce el fuente completo a un modulo PySpark procedural.
+FASTAPI_APP = '''"""
+app.py — API FastAPI que expone el programa transaccional traducido.
+Arranca con:  uvicorn app:app --reload
+Requiere:     pip install fastapi uvicorn pandas
+"""
+from fastapi import FastAPI
+from pydantic import BaseModel
+
+# El modulo generado (main.py) expone procesa_entidad(mensaje) -> dict.
+from {module} import procesa_entidad
+
+app = FastAPI(title="BNX {lang} transaccional")
+
+
+class Mensaje(BaseModel):
+    # Campos del mensaje de entrada. Ajusta a tu layout real.
+    data: dict
+
+
+@app.get("/health")
+def health():
+    return {{"ok": True}}
+
+
+@app.post("/procesa")
+def procesa(msg: Mensaje):
+    """Procesa UN mensaje transaccional y devuelve el estado/respuesta."""
+    salida = procesa_entidad(msg.data)
+    # Serializable: convertir a str los valores no-JSON (p.ej. Decimals).
+    return {{"respuesta": {{str(k): str(v) for k, v in salida.items()}}
+             if isinstance(salida, dict) else salida}}
+'''
+
+
+def fastapi_app_code(module_name="main", lang="cobol"):
+    """Genera un app.py (FastAPI) que importa procesa_entidad del modulo puro."""
+    return FASTAPI_APP.format(module=module_name, lang=lang.upper())
+
+
+def transpile_direct(src, lang="cobol", pure=False):
+    """Traduce el fuente completo a un modulo procedural.
+
+    pure=False -> PySpark (lee los archivos como DataFrames; flujo tipo job).
+    pure=True  -> PYTHON PURO (COBOL/ALGOL transaccional CICS): sin Spark, los
+                  READ se vuelven lookups en memoria (pandas) y se expone una
+                  funcion procesa_entidad(mensaje) para procesar 1 mensaje.
 
     Devuelve {"code": str, "stats": {paragraphs, assigns, ifs, calls, lines}}.
     """
@@ -594,16 +783,8 @@ def transpile_direct(src, lang="cobol"):
         body = _emit_body(ops)
         func_blocks.append(f"def {name}(ctx):\n" + "\n".join(body) + "\n")
 
-    # Lecturas de archivos de entrada (datasets).
-    src_lines = []
-    for f in files:
-        src_lines.append(
-            f'    ctx["df_{f}"] = (spark.read.option("header", True)'
-            f'.csv(f"{{PARAMS.BASE_PATH}}/{f}.csv"))')
-    if not src_lines:
-        src_lines.append("    # (el programa no declara archivos de entrada explicitos)")
-
-    # Llamadas en orden (el flujo principal).
+    # Llamadas en orden (el flujo principal). 'init' (lo previo al primer
+    # parrafo) solo son declaraciones; se omite de las llamadas.
     call_lines = []
     for name, ops in uniq:
         if ops and name != "init":
@@ -611,13 +792,34 @@ def transpile_direct(src, lang="cobol"):
     if not call_lines:
         call_lines.append("    pass")
 
-    app = f"BNX_{lang.upper()}_Direct"
-    title = f"BNX JOB — traduccion directa {lang.upper()} -> PySpark"
-    header = HEADER.format(title=title, lang=lang.upper(),
-                           ts=datetime.now().isoformat(timespec="seconds"), app=app)
-    footer = FOOTER.format(sources="\n".join(src_lines),
-                           calls="\n".join(call_lines), lang=lang.upper())
-    code = header + "\n\n" + "\n\n".join(func_blocks) + "\n" + footer
+    ts = datetime.now().isoformat(timespec="seconds")
+
+    if pure:
+        # --- PYTHON PURO (transaccional) ---
+        title = f"BNX JOB — traduccion directa {lang.upper()} -> Python puro"
+        files_list = "[" + ", ".join(repr(f.upper()) for f in files) + "]"
+        header = HEADER_PURE.format(title=title, lang=lang.upper(), ts=ts,
+                                    files_list=files_list)
+        footer = FOOTER_PURE.format(calls="\n".join(call_lines))
+        code = header + "\n\n" + "\n\n".join(func_blocks) + "\n" + footer
+        stats["mode"] = "pure"
+    else:
+        # --- PYSPARK ---
+        src_lines = []
+        for f in files:
+            src_lines.append(
+                f'    ctx["df_{f}"] = (spark.read.option("header", True)'
+                f'.csv(f"{{PARAMS.BASE_PATH}}/{f}.csv"))')
+        if not src_lines:
+            src_lines.append("    # (el programa no declara archivos de entrada explicitos)")
+        app = f"BNX_{lang.upper()}_Direct"
+        title = f"BNX JOB — traduccion directa {lang.upper()} -> PySpark"
+        header = HEADER.format(title=title, lang=lang.upper(), ts=ts, app=app)
+        footer = FOOTER.format(sources="\n".join(src_lines),
+                               calls="\n".join(call_lines), lang=lang.upper())
+        code = header + "\n\n" + "\n\n".join(func_blocks) + "\n" + footer
+        stats["mode"] = "spark"
+
     stats["lines"] = code.count("\n") + 1
     stats["files"] = len(files)
     return {"code": code, "stats": stats}

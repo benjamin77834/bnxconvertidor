@@ -2357,9 +2357,24 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         traductor y 'mode':'direct' para que la UI muestre la vista terminal.
         El codigo COMPLETO se descarga por token (igual que el flujo de grafo).
         """
-        out = transpile_direct(src_code, lang)
+        # TRANSACCIONAL (tipo CICS) vs BATCH: si el fuente lee por clave
+        # (INVALID KEY / READ ... KEY) y NO recorre un archivo (PERFORM UNTIL +
+        # AT END), es transaccional -> Python PURO (procesa 1 mensaje), no Spark.
+        up = src_code.upper()
+        is_transactional = ("INVALID KEY" in up and "PERFORM" in up
+                             and "AT END" not in up) or (
+            "INVALID KEY" in up and up.count("INVALID KEY") >= 3
+            and "PERFORM UNTIL" not in up)
+        pure = is_transactional
+        out = transpile_direct(src_code, lang, pure=pure)
         code = out["code"]
         stats = out["stats"]
+        # En modo puro, acompañar un app.py FastAPI (opcional) que expone
+        # procesa_entidad por HTTP.
+        fastapi_app = None
+        if pure:
+            from src.direct_transpiler import fastapi_app_code
+            fastapi_app = fastapi_app_code(module_name="main", lang=lang)
 
         CODE_GUI_LIMIT = 80_000
         code_full_bytes = len(code)
@@ -2386,9 +2401,10 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         self._json_response(200, {
             "ok": True,
             "mode": "direct",             # <- la GUI usa esto para la vista terminal
+            "transpile_mode": stats.get("mode", "spark"),  # 'pure' | 'spark'
             "detected_language": lang,
             "detect_scores": scores,
-            "target": "spark",
+            "target": "python" if pure else "spark",
             "code": code_for_gui,
             "code_truncated": code_truncated,
             "code_full_bytes": code_full_bytes,
@@ -2405,6 +2421,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             "errors": [],
             "direct_stats": stats,
             "graph_name": f"{lang}_direct_job",
+            "fastapi_app": fastapi_app,   # app.py FastAPI (solo modo puro)
         })
 
     def _attach_optimized(self, result, target):
