@@ -71,7 +71,158 @@ def review_code(code, language="python"):
             continue
         seen.add(key)
         uniq.append(f)
-    return {"ok": True, "findings": uniq, "summary": _summary(uniq)}
+    # Enriquecer con el modelo SonarQube/SonarLint (type, severidad Sonar, clave
+    # de regla, esfuerzo de remediacion) sin tocar las reglas: compatibilidad
+    # total con lo que ya consumen la UI y el VSIX (rule/category/severity/...).
+    _sonarize(uniq)
+    return {
+        "ok": True,
+        "findings": uniq,
+        "summary": _summary(uniq),
+        "sonar": _sonar_report(uniq),
+    }
+
+
+# ============================================================
+# Modelo SonarQube/SonarLint
+# ============================================================
+# category interna -> type Sonar.
+_CATEGORY_TO_TYPE = {
+    "bug": "BUG",
+    "security": "VULNERABILITY",
+    "performance": "CODE_SMELL",
+    "smell": "CODE_SMELL",
+}
+# severity interna -> severity Sonar.
+_SEVERITY_TO_SONAR = {
+    "critical": "BLOCKER",
+    "major": "CRITICAL",
+    "minor": "MAJOR",
+    "info": "MINOR",
+}
+# Esfuerzo de remediacion (minutos) por severidad interna — estimacion simple
+# estilo Sonar para calcular la "deuda tecnica" total.
+_EFFORT_MIN = {"critical": 30, "major": 15, "minor": 10, "info": 5}
+
+# Algunas reglas de seguridad son SECURITY_HOTSPOT (requieren revision manual)
+# mas que VULNERABILITY confirmada. Credenciales hardcodeadas = hotspot.
+_HOTSPOT_RULES = {"security:HardcodedSecret", "security:JdbcPassword"}
+
+# Mapa de regla interna -> clave estilo Sonar (python:Sxxxx). Es un alias
+# legible/estable; no son las claves oficiales de Sonar pero siguen su formato.
+_SONAR_KEY = {
+    "python:SyntaxError": "python:S2201",
+    "python:BareExcept": "python:S5754",
+    "python:SilentExcept": "python:S1066",
+    "python:CompareToNone": "python:S5727",
+    "python:LongFunction": "python:S138",
+    "python:ShadowBuiltin": "python:S5806",
+    "python:SoftKeywordName": "python:S1542",
+    "python:PrintStatement": "python:S106",
+    "python:LineTooLong": "python:S103",
+    "python:TodoComment": "python:S1135",
+    "spark:CollectToDriver": "python:S5042",
+    "spark:ToPandas": "python:S5042",
+    "spark:CountAction": "python:S3776",
+    "security:HardcodedSecret": "python:S2068",
+    "security:JdbcPassword": "python:S2068",
+    "pyflakes": "python:S1481",
+}
+
+
+def _sonarize(findings):
+    """Anade a cada hallazgo los campos del modelo Sonar (in-place).
+
+    Agrega: type (BUG|CODE_SMELL|VULNERABILITY|SECURITY_HOTSPOT),
+    sonar_severity (BLOCKER..INFO), rule_key (python:Sxxxx) y effort_min."""
+    for f in findings:
+        cat = f.get("category", "smell")
+        sev = f.get("severity", "info")
+        rule = f.get("rule", "")
+        if rule in _HOTSPOT_RULES:
+            f["type"] = "SECURITY_HOTSPOT"
+        else:
+            f["type"] = _CATEGORY_TO_TYPE.get(cat, "CODE_SMELL")
+        f["sonar_severity"] = _SEVERITY_TO_SONAR.get(sev, "MINOR")
+        f["rule_key"] = _SONAR_KEY.get(rule, rule)
+        f["effort_min"] = _EFFORT_MIN.get(sev, 5)
+
+
+def _fmt_debt(total_min):
+    """Formatea minutos de deuda como lo hace Sonar: '1h 30min', '45min', '2d'."""
+    if total_min <= 0:
+        return "0min"
+    # Sonar usa jornadas de 8h para 'd'.
+    days, rem = divmod(total_min, 8 * 60)
+    hours, mins = divmod(rem, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if mins:
+        parts.append(f"{mins}min")
+    return " ".join(parts) if parts else "0min"
+
+
+def _rating(bad_count, thresholds=(1, 2, 5, 10)):
+    """Rating A..E estilo Sonar segun cuantos problemas hay (0=A)."""
+    letters = ["A", "B", "C", "D", "E"]
+    t = thresholds
+    if bad_count == 0:
+        return "A"
+    for i, lim in enumerate(t):
+        if bad_count < lim:
+            return letters[min(i + 1, 4)]
+    return "E"
+
+
+def _sonar_report(findings):
+    """Resumen estilo dashboard de SonarQube: conteos por type, deuda tecnica,
+    ratings (Reliability/Security/Maintainability) y Quality Gate."""
+    by_type = {"BUG": 0, "CODE_SMELL": 0, "VULNERABILITY": 0, "SECURITY_HOTSPOT": 0}
+    by_sev = {"BLOCKER": 0, "CRITICAL": 0, "MAJOR": 0, "MINOR": 0, "INFO": 0}
+    debt_min = 0
+    for f in findings:
+        by_type[f.get("type", "CODE_SMELL")] = by_type.get(f.get("type", "CODE_SMELL"), 0) + 1
+        by_sev[f.get("sonar_severity", "MINOR")] = by_sev.get(f.get("sonar_severity", "MINOR"), 0) + 1
+        debt_min += f.get("effort_min", 0)
+
+    bugs = by_type["BUG"]
+    vulns = by_type["VULNERABILITY"]
+    hotspots = by_type["SECURITY_HOTSPOT"]
+    smells = by_type["CODE_SMELL"]
+    blockers = by_sev["BLOCKER"]
+
+    # Quality Gate estilo Sonar (condiciones configurables en espiritu): pasa si
+    # NO hay bugs, ni vulnerabilidades, ni blockers. Los hotspots se "revisan"
+    # (no bloquean por si solos, como en Sonar) pero se reportan.
+    conditions = [
+        {"metric": "bugs", "op": "=", "threshold": 0, "actual": bugs, "passed": bugs == 0},
+        {"metric": "vulnerabilities", "op": "=", "threshold": 0, "actual": vulns, "passed": vulns == 0},
+        {"metric": "blocker_issues", "op": "=", "threshold": 0, "actual": blockers, "passed": blockers == 0},
+    ]
+    gate_passed = all(c["passed"] for c in conditions)
+
+    return {
+        "quality_gate": "PASSED" if gate_passed else "FAILED",
+        "quality_gate_conditions": conditions,
+        "counts": {
+            "bugs": bugs, "vulnerabilities": vulns, "security_hotspots": hotspots,
+            "code_smells": smells, "total": len(findings),
+        },
+        "by_severity": by_sev,
+        "technical_debt": _fmt_debt(debt_min),
+        "technical_debt_min": debt_min,
+        "ratings": {
+            # A..E: Reliability (bugs), Security (vulns), Maintainability (deuda).
+            "reliability": _rating(bugs),
+            "security": _rating(vulns),
+            "maintainability": "A" if debt_min <= 60 else "B" if debt_min <= 240 else
+                               "C" if debt_min <= 480 else "D" if debt_min <= 960 else "E",
+            "security_review": _rating(hotspots),
+        },
+    }
 
 
 def _summary(findings):

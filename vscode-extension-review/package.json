@@ -2,7 +2,7 @@
   "name": "bnx-code-review",
   "displayName": "BNX Code Review (estilo Sonar)",
   "description": "Analiza calidad de PySpark/Python por reglas (palabras reservadas, shadowing de built-ins, performance, seguridad) usando el motor del portal BNX. Marca los hallazgos como diagnosticos en el editor.",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "publisher": "bnx",
   "engines": {
     "vscode": "^1.75.0"
