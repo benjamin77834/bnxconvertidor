@@ -236,11 +236,16 @@ export default function App() {
   // pantalla en blanco) y se muestra SOLO el código. Es determinista: no depende
   // del toggle "Solo código". Un grafo asi es ilegible como diagrama de todos
   // modos; el valor esta en el codigo generado (visible y descargable).
+  // "Enorme" = por TAMAÑO real, no por ser COBOL/ALGOL. Un COBOL chico debe
+  // mostrar su DAG normal; solo los gigantes (miles de nodos o código pesado
+  // que satura el navegador) pasan a la vista tipo terminal + descarga total.
+  const HUGE_CODE_BYTES = 80_000  // ~2000 líneas: a partir de aquí el <pre> sufre
   const isHugeGraph = Boolean(
     result && result.code && (
       result.nodes_truncated ||
       (Array.isArray(result.nodes) && result.nodes.length > DAG_RENDER_LIMIT) ||
-      result.generated_mp
+      result.code_truncated ||
+      (typeof result.code_full_bytes === 'number' && result.code_full_bytes > HUGE_CODE_BYTES)
     )
   )
 
@@ -343,6 +348,44 @@ export default function App() {
     }
     if (result?.code) download(result.code, target === 'spark' ? 'pyspark_job.py' : target === 'flink' ? 'flink_job.py' : 'glue_job.py')
   }, [result, target])
+
+  // Descarga del PAQUETE COMPLETO ("todo el software"): job PySpark entero +
+  // harness de prueba + datos de entrada/salida + README, en un solo ZIP. Para
+  // COBOL/ALGOL enormes mandamos el fuente del editor al backend, que regenera
+  // el grafo COMPLETO (sin el truncado de la vista) y arma el bundle.
+  const [bundleState, setBundleState] = useState('idle') // idle | preparing | error
+  const downloadBundle = useCallback(async () => {
+    const base = COMPILE_URL.replace('/compile', '')
+    const lang = (result?.detected_language || detectEditorLanguage(editorMp) || '').toLowerCase()
+    try {
+      setBundleState('preparing')
+      // Cuerpo: si el editor trae COBOL/ALGOL, lo mandamos como tal (el backend
+      // lo convierte entero). Si no, mandamos mp/xfr para un grafo normal.
+      const body = { target: 'spark', prepare: true }
+      if (lang === 'cobol') body.cobol = editorMp
+      else if (lang === 'algol') body.algol = editorMp
+      else { body.mp = editorMp; if (editorXfr?.trim()) body.xfr = editorXfr }
+
+      const res = await fetch(base + '/export/bundle', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const data = await res.json()
+      if (!res.ok || !data.ok || !data.download_url) {
+        throw new Error(data.error || `Error ${res.status}`)
+      }
+      // Descarga nativa por GET (streaming): no carga el ZIP en memoria.
+      const a = document.createElement('a')
+      a.href = base + data.download_url
+      a.download = data.filename || 'bnx_export.zip'
+      document.body.appendChild(a); a.click(); document.body.removeChild(a)
+      setBundleState('idle')
+    } catch (e) {
+      console.error('bundle error', e)
+      setBundleState('error')
+      setTimeout(() => setBundleState('idle'), 4000)
+    }
+  }, [result, editorMp, editorXfr])
 
   const downloadReport = useCallback(() => {
     if (!result) return
@@ -1669,19 +1712,66 @@ export default function App() {
               diagrama de miles de nodos es ilegible y ReactFlow cuelga el
               navegador. Mostramos SOLO el código (abajo) con un aviso compacto. */}
           {isHugeGraph ? (
-            <div style={{
-              padding: '10px 20px', borderBottom: `1px solid ${t.border}`,
-              background: t.sidebar, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
-            }}>
-              <span style={{ fontSize: 18 }}>🗺️</span>
-              <span style={{ fontSize: 13, color: t.text, fontWeight: 600 }}>
-                Grafo grande ({result.nodes_truncated ? result.total_nodes : result.nodes.length} nodos)
-              </span>
-              <span style={{ fontSize: 12, color: t.muted }}>
-                — se muestra solo el código generado (el diagrama de miles de nodos no es legible).
-                Usa 📥 Descargar para el código completo.
-              </span>
-            </div>
+            /* CONVERSIÓN ENORME: en vez del DAG (ilegible y cuelga el navegador)
+               mostramos una CONSOLA tipo terminal con el resultado del proceso y
+               la descarga del paquete COMPLETO. El código de abajo es solo una
+               vista previa truncada; lo entero va en la descarga. */
+            (() => {
+              const totalNodes = result.nodes_truncated ? result.total_nodes : (result.nodes?.length || 0)
+              const totalLines = result.code_full_bytes
+                ? Math.round(result.code_full_bytes / 50) // aprox líneas (~50 bytes/línea)
+                : (result.code || '').split('\n').length
+              const kb = result.code_full_bytes ? Math.round(result.code_full_bytes / 1024) : null
+              const nWith = (result.code || '').match(/withColumn/g)?.length || 0
+              const nWhere = (result.code || '').match(/\.where\(/g)?.length || 0
+              const nRead = (result.code || '').match(/spark\.read/g)?.length || 0
+              const term = isDark ? '#0b0f14' : '#0b0f14'
+              const green = '#22ff88', dim = '#5b6b7a', amber = '#ffcc66', cyan = '#67e8f9'
+              return (
+              <div style={{ padding: 16, borderBottom: `1px solid ${t.border}`, background: t.sidebar }}>
+                <div style={{
+                  background: term, borderRadius: 10, border: '1px solid #1c2733',
+                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12.5,
+                  lineHeight: 1.7, padding: '14px 16px', color: '#cfe', boxShadow: '0 2px 14px #0006',
+                }}>
+                  <div style={{ color: dim }}>$ bnx convert <span style={{ color: cyan }}>
+                    {(result.detected_language || 'cobol').toUpperCase()}</span> → <span style={{ color: cyan }}>
+                    {target.toUpperCase()}</span></div>
+                  <div style={{ color: green }}>✓ Fuente decodificada y parseada</div>
+                  <div style={{ color: green }}>✓ Grafo construido: <b>{totalNodes}</b> nodos · {result.total_edges ?? result.edges?.length ?? 0} aristas</div>
+                  <div style={{ color: green }}>✓ Lecturas de origen: <b>{nRead || '—'}</b> · filtros (where): <b>{nWhere}</b> · columnas (withColumn): <b>{nWith}</b> <span style={{ color: dim }}>(muestra visible)</span></div>
+                  <div style={{ color: green }}>✓ Código {target.toUpperCase()} generado: <b>~{totalLines.toLocaleString()}</b> líneas{kb ? <> · <b>{kb.toLocaleString()} KB</b></> : null}</div>
+                  {result.warnings_total > 0 && (
+                    <div style={{ color: amber }}>⚠ {result.warnings_total} advertencia(s) — revisa el panel de warnings</div>
+                  )}
+                  <div style={{ color: dim, marginTop: 6 }}>
+                    # El diagrama de {totalNodes} nodos no se dibuja (ilegible y pesado).
+                  </div>
+                  <div style={{ color: dim }}>
+                    # Debajo verás una <b>vista previa</b>; descarga el paquete para el software completo.
+                  </div>
+                  <div style={{ marginTop: 12, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                    <button onClick={downloadBundle} disabled={bundleState === 'preparing'} style={{
+                      padding: '9px 16px', borderRadius: 8, fontSize: 13, fontWeight: 700,
+                      cursor: bundleState === 'preparing' ? 'wait' : 'pointer', border: 'none',
+                      background: bundleState === 'error' ? '#ef4444' : '#22c55e', color: '#04210f',
+                    }}>
+                      {bundleState === 'preparing' ? '⏳ Preparando paquete…'
+                        : bundleState === 'error' ? '✕ Error — reintentar'
+                        : '📦 Descargar software completo (.zip)'}
+                    </button>
+                    <button onClick={downloadCode} style={{
+                      padding: '9px 16px', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: 'pointer',
+                      background: 'transparent', border: `1px solid ${t.border}`, color: t.text,
+                    }}>📥 Solo el código ({target === 'spark' ? '.py' : target === 'flink' ? 'flink.py' : 'glue.py'})</button>
+                  </div>
+                  <div style={{ color: dim, marginTop: 8, fontSize: 11 }}>
+                    El .zip trae el job completo, el harness de prueba (setup.sh/run.sh) y datos de ejemplo.
+                  </div>
+                </div>
+              </div>
+              )
+            })()
           ) : (
           <div ref={dagRef} style={{
             flex: codeOnly ? '0 0 0' : 1, position: 'relative', minHeight: 0,
