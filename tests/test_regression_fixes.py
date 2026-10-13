@@ -547,3 +547,86 @@ def test_dataset_template_subgraph_island_removed():
     # El sink cuelga del Join.
     sink = next((n for n in dag.execution_order if n.type == "SINK"), None)
     assert sink is not None and sink.parents == ["Join"]
+
+
+# ---------------------------------------------------------------------------
+# BUG — COBOL: un .CBL que en realidad es un ZIP + joins falsos
+# ---------------------------------------------------------------------------
+import io
+import zipfile
+from src.cobol_parser import (
+    extract_source_from_bytes,
+    parse_cobol,
+    cobol_to_graph,
+    _parse_joins,
+)
+
+
+_SAMPLE_COBOL = (
+    "       IDENTIFICATION DIVISION.\n"
+    "       PROGRAM-ID. SAMPLE.\n"
+    "       ENVIRONMENT DIVISION.\n"
+    "       INPUT-OUTPUT SECTION.\n"
+    "       FILE-CONTROL.\n"
+    "           SELECT CUENTAS ASSIGN TO DISK.\n"
+    "       DATA DIVISION.\n"
+    "       FILE SECTION.\n"
+    "       FD  CUENTAS.\n"
+    "       01  REG-CUENTA.\n"
+    "           05 ID-CTA     PIC 9(8).\n"
+    "           05 SALDO      PIC 9(7)V99 COMP-3.\n"
+    "       PROCEDURE DIVISION.\n"
+    "       0100-PROCESO.\n"
+    "           IF SALDO > 0\n"
+    "               PERFORM 0200-FILTRA\n"
+    "           END-IF.\n"
+    "       0200-FILTRA.\n"
+    "           IF ID-CTA = SALDO\n"      # mismo fichero: NO es join
+    "               MOVE 1 TO SW\n"
+    "           END-IF.\n"
+)
+
+
+def test_cobol_cbl_que_es_zip_se_extrae(tmp_path):
+    """Un .CBL que llega como ZIP (firma PK) debe extraerse al COBOL real."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("basura.txt", "no soy cobol")
+        zf.writestr("REAL.CBL", _SAMPLE_COBOL)
+    raw = buf.getvalue()
+    assert raw[:2] == b"PK"
+    src = extract_source_from_bytes(raw)
+    assert "PROCEDURE DIVISION" in src.upper()
+    assert "PROGRAM-ID" in src.upper()
+
+
+def test_cobol_texto_plano_pasa_tal_cual():
+    """Bytes de texto normal (no ZIP) se decodifican sin tocar el contenido."""
+    src = extract_source_from_bytes(_SAMPLE_COBOL.encode("utf-8"))
+    assert "IDENTIFICATION DIVISION" in src
+
+
+def test_cobol_if_mismo_fichero_no_es_join():
+    """`IF a = b` entre campos del MISMO fichero no debe producir un JOIN."""
+    lines = _SAMPLE_COBOL.splitlines()
+    fields = {"CUENTAS": {"id_cta": "long", "saldo": "decimal"}}
+    joins = _parse_joins(lines, fields)
+    assert joins == {}
+
+
+def test_cobol_graph_no_genera_joins_sin_llave():
+    """El grafo COBOL no debe emitir nodos JOIN cuando no hay union real."""
+    import tempfile
+    import os
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".cbl", mode="w", encoding="utf-8")
+    tmp.write(_SAMPLE_COBOL)
+    tmp.close()
+    try:
+        parsed = parse_cobol(tmp.name)
+        g = cobol_to_graph(parsed)
+    finally:
+        os.unlink(tmp.name)
+    assert ": JOIN" not in g["mp"]
+    # Debe seguir habiendo al menos un SOURCE (el fichero CUENTAS).
+    assert ": SOURCE" in g["mp"]
