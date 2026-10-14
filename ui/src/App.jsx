@@ -1847,8 +1847,42 @@ export default function App() {
                         </div>
                       )}
                       {txTest.error && <div style={{ color: '#ff8a8a' }}># {String(txTest.error).slice(0, 160)}</div>}
-                      {(txTest.runs || []).filter(r => !r.ok).slice(0, 3).map((r, i) => (
-                        <div key={i} style={{ color: amber }}>⚠ msg {r.i}: {r.error}</div>
+
+                      {/* QUÉ se probó: tablas de lookup generadas */}
+                      {txTest.lookups?.length > 0 && (
+                        <div style={{ marginTop: 8 }}>
+                          <div style={{ color: dim, textTransform: 'uppercase', fontSize: 10, letterSpacing: 1 }}>Tablas de lookup generadas (CSV sintéticos)</div>
+                          <div style={{ color: cyan, fontFamily: 'monospace', fontSize: 11 }}>
+                            {txTest.lookups.join(' · ')}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* QUÉ se probó: mensaje de entrada de ejemplo */}
+                      {txTest.messages?.[0] && (
+                        <div style={{ marginTop: 8 }}>
+                          <div style={{ color: dim, textTransform: 'uppercase', fontSize: 10, letterSpacing: 1 }}>Mensaje de entrada (ejemplo)</div>
+                          <pre style={{ margin: '2px 0 0', color: '#cfe', fontSize: 11, whiteSpace: 'pre-wrap',
+                            maxHeight: 90, overflowY: 'auto', background: '#0b0f14', padding: '6px 8px', borderRadius: 6 }}>
+{JSON.stringify(
+  Object.fromEntries(Object.entries(txTest.messages[0]).slice(0, 10)), null, 1
+)}</pre>
+                        </div>
+                      )}
+
+                      {/* QUÉ produjo: salida de muestra por mensaje */}
+                      {(txTest.runs || []).map((r, i) => (
+                        <div key={i} style={{ marginTop: 8 }}>
+                          <div style={{ color: r.ok ? green : amber, fontSize: 11, fontWeight: 700 }}>
+                            {r.ok ? '✓' : '⚠'} Mensaje {r.i}{r.error ? `: ${r.error}` : ''}
+                          </div>
+                          {r.ok && r.resp_sample && Object.keys(r.resp_sample).length > 0 && (
+                            <pre style={{ margin: '2px 0 0', color: '#9fe', fontSize: 11, whiteSpace: 'pre-wrap',
+                              maxHeight: 120, overflowY: 'auto', background: '#0b0f14', padding: '6px 8px', borderRadius: 6 }}>
+{Object.entries(r.resp_sample).slice(0, 12).map(([k, v]) => `${k} = ${v}`).join('\n')}
+{Object.keys(r.resp_sample).length > 12 ? `\n… +${Object.keys(r.resp_sample).length - 12} campos más` : ''}</pre>
+                          )}
+                        </div>
                       ))}
                     </div>
                   )}
