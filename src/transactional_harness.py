@@ -119,12 +119,25 @@ try:
     with open(msgs_path) as f:
         messages = json.load(f)
     for idx, m in enumerate(messages):
-        r = {"i": idx, "ok": False, "resp_keys": [], "error": None}
+        r = {"i": idx, "ok": False, "resp_keys": [], "resp_sample": {}, "error": None}
         try:
             out = mod.procesa_entidad(m, lookups) if lookups is not None else mod.procesa_entidad(m)
             r["ok"] = True
             if isinstance(out, dict):
-                r["resp_keys"] = [str(k) for k in list(out.keys())[:25]]
+                # Campos internos del harness que no son 'salida de negocio'.
+                _skip = {"_lookups", "ws_mensaje"}
+                keys = [k for k in out.keys() if str(k) not in _skip]
+                r["resp_keys"] = [str(k) for k in keys[:40]]
+                # Muestra de valores (clave -> valor serializable) para VER que
+                # produjo la transaccion, no solo los nombres de campo.
+                sample = {}
+                for k in keys[:25]:
+                    try:
+                        v = out[k]
+                        sample[str(k)] = str(v)[:60]
+                    except Exception:
+                        sample[str(k)] = "<no serializable>"
+                r["resp_sample"] = sample
         except Exception as e:
             r["error"] = f"{type(e).__name__}: {e}"
         report["runs"].append(r)
