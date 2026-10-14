@@ -231,6 +231,11 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         if path == "/code/download" or path == "/api/code/download":
             self._handle_code_download()
             return
+        # Paginacion del CODIGO COMPLETO para verlo en la GUI sin truncar ni
+        # colgar el navegador: sirve una pagina de lineas del archivo por token.
+        if path == "/code/page" or path == "/api/code/page":
+            self._handle_code_page()
+            return
         if path == "/export/download" or path == "/api/export/download":
             self._handle_export_download()
             return
@@ -1014,6 +1019,51 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             return
         self._binary_response(data, "pyspark_job.py", content_type="text/x-python")
 
+    def _handle_code_page(self):
+        """Devuelve UNA pagina de lineas del codigo completo guardado por token.
+
+        Query: ?token=<hex>&page=<n>&size=<lineas_por_pagina>. Permite ver un
+        codigo enorme en la GUI por paginas (sin truncar ni cargar 2 MB en un
+        <pre>). Respuesta JSON: {page, pages, size, total_lines, start, code}.
+        """
+        from urllib.parse import urlparse as _up, parse_qs as _pq
+        qs = _pq(_up(self.path).query)
+        token = (qs.get("token", [""])[0] or "").strip()
+        if not token or not re.fullmatch(r"[0-9a-f]{8,64}", token):
+            self._json_response(400, {"error": "token invalido"})
+            return
+        try:
+            page = max(1, int(qs.get("page", ["1"])[0]))
+        except ValueError:
+            page = 1
+        try:
+            size = min(max(int(qs.get("size", ["2000"])[0]), 200), 10000)
+        except ValueError:
+            size = 2000
+        fp = os.path.join(tempfile.gettempdir(), "bnx_code_full", token + ".py")
+        if not os.path.isfile(fp):
+            self._json_response(404, {"error": "codigo no encontrado o expirado"})
+            return
+        try:
+            with open(fp, "r", encoding="utf-8", errors="replace") as f:
+                all_lines = f.read().splitlines()
+        except OSError:
+            self._json_response(404, {"error": "codigo no accesible"})
+            return
+        total = len(all_lines)
+        pages = max(1, (total + size - 1) // size)
+        page = min(page, pages)
+        start = (page - 1) * size
+        chunk = all_lines[start:start + size]
+        self._json_response(200, {
+            "page": page,
+            "pages": pages,
+            "size": size,
+            "total_lines": total,
+            "start": start,                 # indice 0-based de la primera linea
+            "code": "\n".join(chunk),
+        })
+
     def _handle_export_download(self):
         """Sirve por STREAMING un bundle preparado (token) y lo borra tras enviar.
         Lee ?token=<hex>. Descarga nativa del navegador, sin blob en memoria."""
@@ -1726,10 +1776,10 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             # navegador al renderizar). Se envia un prefijo + aviso; la descarga
             # (y el envio a AWS / prueba local) usan el codigo COMPLETO desde el
             # backend, no esta version recortada de visualizacion.
-            # 80 KB (~2000 lineas): tamaño que un <pre> renderiza sin colgar el
+            # 200 KB (~5000 lineas): tamaño que un <pre> renderiza sin colgar el
             # navegador. El codigo COMPLETO se descarga por token
             # (code_download_url); esta version recortada es solo para la vista.
-            CODE_GUI_LIMIT = 80_000
+            CODE_GUI_LIMIT = 200_000
             code_full_bytes = len(code or "")
             code_truncated = code_full_bytes > CODE_GUI_LIMIT
             code_for_gui = code
@@ -2385,10 +2435,14 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             from src.direct_transpiler import fastapi_app_code
             fastapi_app = fastapi_app_code(module_name="main", lang=lang)
 
-        CODE_GUI_LIMIT = 80_000
+        # Vista en la GUI: la 1a "pagina" (~100 KB). El resto se navega con
+        # /code/page?token=... (paginacion), y el .py completo con code_download_url.
+        CODE_GUI_LIMIT = 100_000
         code_full_bytes = len(code)
         code_truncated = code_full_bytes > CODE_GUI_LIMIT
         code_download_url = None
+        code_page_url = None
+        code_total_lines = code.count("\n") + 1
         code_for_gui = code
         if code_truncated:
             try:
@@ -2399,13 +2453,14 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 with open(os.path.join(_dir, _tok + ".py"), "w", encoding="utf-8") as _f:
                     _f.write(code)
                 code_download_url = f"/code/download?token={_tok}"
+                code_page_url = f"/code/page?token={_tok}"  # para paginar en la GUI
             except Exception as _e:
                 print(f"  [direct] no se pudo preparar descarga completa: {_e}")
             code_for_gui = (code[:CODE_GUI_LIMIT] +
-                f"\n\n# ... [CÓDIGO TRUNCADO PARA VISUALIZACIÓN] ...\n"
+                f"\n\n# ... [MOSTRANDO SOLO EL INICIO] ...\n"
                 f"# El job completo tiene {code_full_bytes:,} bytes "
                 f"(~{stats.get('lines', 0):,} líneas).\n"
-                f"# Usa 📥 Descargar para el archivo COMPLETO.\n")
+                f"# Usa ◀ ▶ para paginar o 📥 para descargar el archivo COMPLETO.\n")
 
         self._json_response(200, {
             "ok": True,
@@ -2417,7 +2472,9 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             "code": code_for_gui,
             "code_truncated": code_truncated,
             "code_full_bytes": code_full_bytes,
+            "code_total_lines": code_total_lines,
             "code_download_url": code_download_url,
+            "code_page_url": code_page_url,
             # Sin grafo: nodes/edges vacios + total_nodes para que isHugeGraph
             # y la consola muestren el tamaño real.
             "nodes": [],

@@ -407,6 +407,27 @@ export default function App() {
     }
   }, [result, editorMp])
 
+  // Paginacion del codigo COMPLETO (cuando es enorme y la vista inicial solo
+  // trae el inicio). Pide /code/page?token=...&page=N y muestra esa pagina.
+  const [codePage, setCodePage] = useState(null)   // { page, pages, code, start } | null
+  const [codePageLoading, setCodePageLoading] = useState(false)
+  const fetchCodePage = useCallback(async (page) => {
+    if (!result?.code_page_url) return
+    const base = COMPILE_URL.replace('/compile', '')
+    try {
+      setCodePageLoading(true)
+      const res = await fetch(`${base}${result.code_page_url}&page=${page}&size=2000`)
+      const data = await res.json()
+      if (data.code != null) setCodePage(data)
+    } catch (e) {
+      console.error('code page error', e)
+    } finally {
+      setCodePageLoading(false)
+    }
+  }, [result])
+  // Al cambiar de resultado, resetear la paginacion.
+  useEffect(() => { setCodePage(null) }, [result])
+
   const downloadReport = useCallback(() => {
     if (!result) return
     const counts = {}
@@ -2050,11 +2071,47 @@ export default function App() {
                           onApply={(c) => setResult(prev => ({ ...prev, code: c }))} />
                       </div>
                     )}
+                    {/* PAGINACION del codigo completo (cuando es enorme). La vista
+                        inicial trae el inicio; estos controles navegan el resto
+                        sin truncar ni colgar el navegador. */}
+                    {result.code_truncated && result.code_page_url && (
+                      <div style={{
+                        display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+                        padding: '8px 16px', borderBottom: `1px solid ${t.border}`,
+                        background: t.sidebar, fontSize: 12, color: t.muted,
+                      }}>
+                        <button disabled={codePageLoading || (codePage?.page || 1) <= 1}
+                          onClick={() => fetchCodePage((codePage?.page || 1) - 1)}
+                          style={{ padding: '4px 10px', borderRadius: 6, cursor: 'pointer',
+                            background: t.card, border: `1px solid ${t.border}`, color: t.text }}>
+                          ◀ Anterior
+                        </button>
+                        <span>
+                          {codePage
+                            ? <>Página <b>{codePage.page}</b> / {codePage.pages} · líneas {codePage.start + 1}–{codePage.start + codePage.code.split('\n').length}</>
+                            : <>Mostrando el inicio · {(result.code_total_lines || 0).toLocaleString()} líneas en total</>}
+                        </span>
+                        <button disabled={codePageLoading || (codePage && codePage.page >= codePage.pages)}
+                          onClick={() => fetchCodePage(codePage ? codePage.page + 1 : 2)}
+                          style={{ padding: '4px 10px', borderRadius: 6, cursor: 'pointer',
+                            background: t.card, border: `1px solid ${t.border}`, color: t.text }}>
+                          Siguiente ▶
+                        </button>
+                        {codePage && (
+                          <button onClick={() => setCodePage(null)}
+                            style={{ padding: '4px 10px', borderRadius: 6, cursor: 'pointer',
+                              background: 'transparent', border: `1px solid ${t.border}`, color: t.dim }}>
+                            ↩ Volver al inicio
+                          </button>
+                        )}
+                        {codePageLoading && <span style={{ color: t.accent }}>cargando…</span>}
+                      </div>
+                    )}
                     <pre style={{
                       padding: 16, fontSize: 14, color: t.muted,
                       fontFamily: 'monospace', whiteSpace: 'pre', overflowY: 'auto',
                       flex: 1, lineHeight: 1.6, margin: 0,
-                    }}>{result.code}</pre>
+                    }}>{codePage ? codePage.code : result.code}</pre>
                   </div>
                 )
               )}
