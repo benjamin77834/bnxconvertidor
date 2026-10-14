@@ -2426,8 +2426,27 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         else:
             pure = is_transactional
         out = transpile_direct(src_code, lang, pure=pure)
-        code = out["code"]
         stats = out["stats"]
+
+        # AUTO-CORRECCION de lenguaje: la señal mas fiable de buen parseo son las
+        # ASIGNACIONES (MOVE/:=). Un lenguaje mal elegido da ~0 asignaciones
+        # (aunque el parser invente 'ifs' sobre texto que no entiende). Si las
+        # asignaciones son pobres, probamos el OTRO lenguaje y nos quedamos con el
+        # que de MAS asignaciones. Evita la pantalla "vacia" por mala deteccion.
+        _n_src = src_code.count("\n") + 1
+        _assigns = stats.get("assigns", 0)
+        if _n_src > 20 and _assigns < max(3, _n_src // 100):
+            other = "algol" if lang == "cobol" else "cobol"
+            alt = transpile_direct(src_code, other, pure=pure)
+            if alt["stats"].get("assigns", 0) > _assigns:
+                print(f"  [direct] parseo pobre como '{lang}' (assigns={_assigns}); "
+                      f"'{other}' dio {alt['stats'].get('assigns',0)} -> uso '{other}'")
+                lang = other
+                out = alt
+                stats = alt["stats"]
+                scores = dict(scores or {})
+                scores["_auto_corrected_to"] = other
+        code = out["code"]
         # En modo puro, acompañar un app.py FastAPI (opcional) que expone
         # procesa_entidad por HTTP.
         fastapi_app = None
@@ -2462,6 +2481,20 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 f"(~{stats.get('lines', 0):,} líneas).\n"
                 f"# Usa ◀ ▶ para paginar o 📥 para descargar el archivo COMPLETO.\n")
 
+        # AVISO de parseo pobre: si el fuente tiene varias lineas pero casi no se
+        # extrajo logica (asignaciones/condiciones/llamadas ~0), la conversion
+        # salio "vacia" -> probablemente el formato del COBOL/ALGOL no se
+        # reconocio (columnas, encoding, fragmento sin PROCEDURE, o no es COBOL).
+        src_lines = src_code.count("\n") + 1
+        assigns = stats.get("assigns", 0)
+        warnings = []
+        if src_lines > 20 and assigns < max(3, src_lines // 100):
+            warnings.append(
+                f"⚠ Parseo pobre: el fuente tiene {src_lines:,} líneas pero solo se "
+                f"reconocieron {assigns} asignaciones. Revisa el formato (columnas "
+                f"7-72, encoding) o que incluya PROCEDURE DIVISION completa; puede "
+                f"que el lenguaje no se haya detectado bien.")
+
         self._json_response(200, {
             "ok": True,
             "mode": "direct",             # <- la GUI usa esto para la vista terminal
@@ -2482,8 +2515,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             "nodes_truncated": True,
             "total_nodes": stats.get("paragraphs", 0),
             "total_edges": 0,
-            "warnings": [],
-            "warnings_total": 0,
+            "warnings": warnings,
+            "warnings_total": len(warnings),
             "errors": [],
             "direct_stats": stats,
             "graph_name": f"{lang}_direct_job",
