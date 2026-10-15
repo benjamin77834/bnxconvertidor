@@ -176,6 +176,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_transactional_test()
         elif "/emulate" in path:
             self._handle_emulate()
+        elif "/pure/bundle" in path:
+            self._handle_pure_bundle()
         elif "/convert" in path:
             self._handle_convert()
         elif "/cobol" in path:
@@ -2691,6 +2693,58 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             from src.cics_emulator import emulate
             report = emulate(code, src_code, lang, timeout=timeout)
             self._json_response(200, report)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": str(e)})
+
+    def _handle_pure_bundle(self):
+        """Arma un ZIP del job Python PURO para correrlo fuera: main.py + app.py
+        (FastAPI) + README.md (guia 'como correr') + data/ con CSV de lookup
+        sinteticos de ejemplo. Body JSON: {source|source_token|code, lang}."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        try:
+            data = json.loads(body.decode("utf-8", errors="replace"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._json_response(400, {"error": "Invalid JSON body"})
+            return
+        try:
+            src_code, lang = self._resolve_source_and_lang(data)
+            if not src_code.strip():
+                self._json_response(400, {"error": "Se requiere el fuente (source o source_token)."})
+                return
+            from src.direct_transpiler import (transpile_direct as _td,
+                                               fastapi_app_code, readme_text)
+            code = data.get("code") or _td(src_code, lang, pure=True)["code"]
+            # Schema para listar lookups + generar CSV de ejemplo.
+            from src.transactional_harness import _extract_lookup_schema, _write_lookup_csvs
+            try:
+                schema = _extract_lookup_schema(src_code, lang)
+            except Exception:
+                schema = {}
+            lookups = list(schema.keys())
+
+            import io as _io, zipfile as _zip, tempfile as _tf, os as _os, shutil as _sh
+            buf = _io.BytesIO()
+            with _zip.ZipFile(buf, "w", _zip.ZIP_DEFLATED) as z:
+                z.writestr("main.py", code)
+                z.writestr("app.py", fastapi_app_code("main", lang))
+                z.writestr("README.md", readme_text(lang, lookups))
+                z.writestr("requirements.txt", "pandas\nfastapi\nuvicorn\n")
+                # CSV de lookup sinteticos de ejemplo en data/.
+                tmpd = _tf.mkdtemp(prefix="bnx_pb_")
+                try:
+                    written = _write_lookup_csvs(_os.path.join(tmpd, "data"), schema, 5) if schema else {}
+                    for name, info in written.items():
+                        p = info.get("path")
+                        if p and _os.path.isfile(p):
+                            with open(p, "r", encoding="utf-8") as cf:
+                                z.writestr("data/" + name.lower() + ".csv", cf.read())
+                finally:
+                    _sh.rmtree(tmpd, ignore_errors=True)
+            data_bytes = buf.getvalue()
+            self._binary_response(data_bytes, f"bnx_{lang}_pure_job.zip")
         except Exception as e:
             import traceback
             traceback.print_exc()
