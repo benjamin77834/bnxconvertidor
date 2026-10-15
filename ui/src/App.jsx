@@ -121,9 +121,28 @@ export default function App() {
     // = la ultima accion del usuario: compilar un grafo).
     if (val && val.code) setPy2sparkCode('')
     try {
-      if (val && val.code) localStorage.setItem('bnx_last_result', JSON.stringify(val))
-      else if (!val) localStorage.removeItem('bnx_last_result')
-    } catch { /* localStorage lleno o no disponible: ignorar */ }
+      if (val && val.code) {
+        // Persistir en localStorage, PERO no un codigo gigante: si el code pesa
+        // mucho (modo directo COBOL/ALGOL ~1-2 MB) revienta la cuota (~5 MB) y
+        // al restaurar queda un result corrupto/vacio (parecia "2 funciones").
+        // Para esos, guardamos una version LIGERA sin el code completo; el
+        // codigo se vuelve a pedir del server (code_page_url / descarga).
+        const LS_CODE_LIMIT = 300000  // ~300 KB
+        let toSave = val
+        if ((val.code || '').length > LS_CODE_LIMIT || val.mode === 'direct') {
+          toSave = { ...val, code: (val.code || '').slice(0, LS_CODE_LIMIT),
+                     _code_persist_truncated: true }
+        }
+        try {
+          localStorage.setItem('bnx_last_result', JSON.stringify(toSave))
+        } catch {
+          // Aun asi no cupo: no dejar un resultado viejo que confunda.
+          localStorage.removeItem('bnx_last_result')
+        }
+      } else if (!val) {
+        localStorage.removeItem('bnx_last_result')
+      }
+    } catch { /* localStorage no disponible: ignorar */ }
   }
   const [loading, setLoading]   = useState(false)
   const [codeOpen, setCodeOpen] = useState(false)
