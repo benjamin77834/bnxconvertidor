@@ -275,7 +275,14 @@ def build_test_script(pyspark_code, inputs, required_cols=None, output_dir=None,
 
     # 1. Reemplazar asignaciones de lectura:
     #    Nombre_df = spark.read.<fmt>(...)   →   Nombre_df = _bnx_read("Nombre_df")
-    read_re = re.compile(r'^(\s*)(\w+)\s*=\s*spark\.read\.[\w.]+\(.*\)\s*$')
+    read_re = re.compile(r'^(\s*)(\w+)\s*=\s*\(?\s*spark\.read\.[\w.]+\(.*\)\s*\)?\s*$')
+    # Variante del traductor DIRECTO (COBOL/ALGOL -> PySpark procedural): las
+    # lecturas se asignan a ctx["df_<nombre>"] y pueden venir entre parentesis:
+    #   ctx["df_rtads"] = (spark.read.option("header", True).csv(f"{...}/rtads.csv"))
+    # Se neutralizan igual: inyectamos el dataset sintetico por <nombre> (sin el
+    # prefijo df_) para no leer de s3:// en la prueba local.
+    read_ctx_re = re.compile(
+        r'^(\s*)ctx\[(["\'])(?:df_)?(\w+)\2\]\s*=\s*\(?\s*spark\.read\.[\w.]+\(.*\)\s*\)?\s*$')
     # 2. Reemplazar escrituras:
     #    X_df.write.mode(...).<fmt>("<destino>")  →  _bnx_write(X_df, "X_df", "<destino>")
     #    X_df.write.<fmt>(...)                    →  _bnx_write(X_df, "X_df", "<destino>")
@@ -306,6 +313,12 @@ def build_test_script(pyspark_code, inputs, required_cols=None, output_dir=None,
     )
 
     for ln in lines:
+        m_read_ctx = read_ctx_re.match(ln)
+        if m_read_ctx:
+            indent, q, name = m_read_ctx.group(1), m_read_ctx.group(2), m_read_ctx.group(3)
+            # Mantener la misma clave ctx["df_<name>"]; inyectar dataset por <name>.
+            out.append(f'{indent}ctx[{q}df_{name}{q}] = _bnx_read("{name}")')
+            continue
         m_read = read_re.match(ln)
         if m_read:
             indent, var = m_read.group(1), m_read.group(2)
