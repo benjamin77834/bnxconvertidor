@@ -399,6 +399,30 @@ export default function App() {
       setBundleState('preparing')
       // Cuerpo: si el editor trae COBOL/ALGOL, lo mandamos como tal (el backend
       // lo convierte entero). Si no, mandamos mp/xfr para un grafo normal.
+      // MODO PYTHON PURO: bundle ligero (main.py + app.py + README + data/) via
+      // /pure/bundle, usando el source_token (el backend tiene el fuente completo).
+      if (result?.transpile_mode === 'pure') {
+        const res = await fetch(base + '/pure/bundle', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            source_token: result?.source_token || undefined,
+            source: editorMp || undefined,
+            lang: result?.detected_language || lang || 'cobol',
+          }),
+        })
+        if (!res.ok) throw new Error(`Error ${res.status}`)
+        const blob = await res.blob()
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `bnx_${(result?.detected_language || 'cobol')}_pure_job.zip`
+        document.body.appendChild(a); a.click(); document.body.removeChild(a)
+        URL.revokeObjectURL(url)
+        setBundleState('idle')
+        return
+      }
+
+      // MODO PYSPARK: bundle completo (job + harness + datos) via /export/bundle.
       const body = { target: 'spark', prepare: true }
       if (lang === 'cobol') body.cobol = editorMp
       else if (lang === 'algol') body.algol = editorMp

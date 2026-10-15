@@ -318,6 +318,44 @@ COBOL/ALGOL TRANSACCIONAL (tipo CICS): procesa UN mensaje a la vez. No usa
 Spark. Cada parrafo es una funcion que opera sobre `ctx` (estado del programa).
 Los READ ... INVALID KEY se traducen a lookups en memoria (dict), cargados UNA
 sola vez desde CSV con pandas. Corre con `python <archivo>.py` sin cluster.
+
+===========================================================================
+COMO CORRER
+===========================================================================
+1) Estructura de carpetas:
+       mi_proyecto/
+       |- main.py          <- este archivo
+       |- data/            <- tus CSV de lookup (una por tabla READ)
+          |- rtads.csv
+          |- suc_bc.csv
+          |- ...
+   (Cada CSV se indexa por su PRIMERA columna = la clave de busqueda.)
+
+2) Instalar dependencia:
+       pip install pandas
+
+3) Correr directo (ejecuta main() con un mensaje de prueba):
+       python main.py
+
+4) Usarlo con tus datos reales:
+       from main import procesa_entidad
+       mensaje = {{
+           "anz_ctr_idtran": "ALTA01",   # campos del mensaje de entrada
+           "suc_bc_key": "001234",       # clave para el lookup SUC_BC
+       }}
+       salida = procesa_entidad(mensaje)   # devuelve el ctx final (dict)
+       print(salida.get("ws_respuesta"))
+
+5) Como API (si descargaste app.py):
+       pip install fastapi uvicorn
+       uvicorn app:app --reload
+       # POST http://localhost:8000/procesa  body: {{"data": {{...}}}}
+
+AJUSTES MANUALES (el COBOL no los da automatico):
+ - Pon los CSV reales en ./data/ (o BNX_DATA_DIR), uno por tabla de lookup.
+ - Antes de cada READ, el codigo usa ctx['<tabla>_key'] como clave; asignalo
+   con el valor real (en el COBOL venia de un MOVE ... TO KEY previo).
+===========================================================================
 """
 import os
 import datetime as _dt
@@ -989,6 +1027,66 @@ def procesa(msg: Mensaje):
 def fastapi_app_code(module_name="main", lang="cobol"):
     """Genera un app.py (FastAPI) que importa procesa_entidad del modulo puro."""
     return FASTAPI_APP.format(module=module_name, lang=lang.upper())
+
+
+def readme_text(lang="cobol", lookups=None):
+    """README.md con la guia de 'como correr' el modulo Python puro generado.
+    `lookups` es la lista de tablas de lookup (para listar los CSV esperados)."""
+    lk = lookups or []
+    csv_lines = "\n".join(f"      - data/{n.lower()}.csv" for n in lk[:30]) or "      - (ninguna tabla de lookup detectada)"
+    return f"""# BNX — Job {lang.upper()} transaccional (Python puro)
+
+Traduccion directa del fuente {lang.upper()} a **Python puro** (sin Spark).
+Procesa UN mensaje transaccional a la vez (modelo tipo CICS).
+
+## Archivos
+- `main.py` — el job: funciones por parrafo + `procesa_entidad(mensaje)`.
+- `app.py` — (opcional) API FastAPI que expone `POST /procesa`.
+- `data/` — CSV de las tablas de lookup (una por `READ ... INVALID KEY`).
+
+## Requisitos
+```
+pip install pandas            # para los lookups
+pip install fastapi uvicorn   # solo si usas app.py
+```
+
+## Datos de lookup
+Pon un CSV por tabla en `data/` (indexado por su PRIMERA columna = la clave):
+{csv_lines}
+
+Puedes cambiar la carpeta con la variable `BNX_DATA_DIR`.
+
+## Correr
+```bash
+python main.py                # ejecuta main() con un mensaje de prueba
+```
+
+## Usar con datos reales
+```python
+from main import procesa_entidad
+
+mensaje = {{
+    "anz_ctr_idtran": "ALTA01",   # campos del mensaje de entrada
+    "suc_bc_key": "001234",       # clave del lookup SUC_BC (ejemplo)
+}}
+salida = procesa_entidad(mensaje)  # dict con el estado final (ctx)
+print(salida.get("ws_respuesta"))
+```
+
+## Como API
+```bash
+uvicorn app:app --reload
+# POST http://localhost:8000/procesa   body: {{"data": {{...}}}}
+```
+
+## Ajustes manuales (el {lang.upper()} no los da automatico)
+1. Los CSV reales en `data/` (uno por tabla de lookup).
+2. Antes de cada `READ`, el codigo usa `ctx['<tabla>_key']` como clave de
+   busqueda; asignala con el valor real (en el fuente venia de un
+   `MOVE ... TO KEY` previo al READ).
+
+Generado por BNX Convertidor.
+"""
 
 
 def transpile_direct(src, lang="cobol", pure=False):
