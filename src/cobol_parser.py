@@ -84,6 +84,16 @@ def extract_source_from_bytes(raw, prefer_name=None):
     if isinstance(raw, str):
         return raw
 
+    # ZIP CORRUPTO: empieza con 'PK' pero zipfile no lo reconoce. Suele pasar
+    # cuando el .CBL (que es un ZIP) se guardo/convirtio a UTF-8 y se mutilaron
+    # sus bytes binarios (aparecen \xef\xbf\xbd = U+FFFD). No se puede extraer;
+    # lanzamos un error claro para que la GUI avise (en vez de parsear basura).
+    if raw[:2] == b"PK" and not zipfile.is_zipfile(io.BytesIO(raw)):
+        raise ValueError(
+            "El archivo es un ZIP CORRUPTO (empieza con 'PK' pero no se puede "
+            "descomprimir). Probablemente se daño al guardarlo/convertirlo a UTF-8 "
+            "(bytes binarios mutilados). Usa el archivo .CBL ORIGINAL sin reconvertir.")
+
     # Firma de ZIP: 'PK\x03\x04'. Tambien aceptamos ZIP vacio ('PK\x05\x06').
     if raw[:2] == b"PK" and zipfile.is_zipfile(io.BytesIO(raw)):
         try:
