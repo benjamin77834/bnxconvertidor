@@ -361,10 +361,9 @@ LOOKUPS = load_lookups()
 
 
 def _n(v):
-    """Coercion numerica tolerante para aritmetica COBOL. Un campo puede venir
-    como str (del CSV/mensaje), _Zero (no inicializado) o numero. Devuelve float
-    si parece decimal, int si es entero, 0 si no se puede convertir. Asi
-    `_n(a) - _n(b)` nunca rompe por 'str - str'."""
+    """Coercion numerica tolerante para aritmetica COBOL. Devuelve float si
+    parece decimal, int si es entero, 0 si no se puede. Asi `_n(a) - _n(b)`
+    nunca rompe por 'str - str' (los campos vienen como texto del CSV/mensaje)."""
     if isinstance(v, bool):
         return int(v)
     if isinstance(v, (int, float)):
@@ -375,11 +374,8 @@ def _n(v):
     if not s:
         return 0
     try:
-        if "." in s:
-            return float(s)
-        return int(s)
+        return float(s) if "." in s else int(s)
     except ValueError:
-        # Extraer digitos iniciales (p.ej. '0012ABC' -> 12); si no, 0.
         import re as _re
         m = _re.match(r"[+-]?\\d+", s)
         return int(m.group(0)) if m else 0
@@ -391,59 +387,32 @@ def _div(a, b):
     return a / b if b else 0
 
 
-# Guarda de profundidad: evita RecursionError por recursion mutua entre parrafos
-# (el flujo plano no reproduce el retorno exacto del PERFORM COBOL).
-_BNX_MAX_DEPTH = 50
-_bnx_depth = {{"n": 0}}
+# PERFORM se traduce como llamada de funcion normal (p_xxx(ctx)). Como el flujo
+# plano no reproduce el retorno exacto del PERFORM COBOL, dos parrafos pueden
+# llamarse mutuamente y causar recursion infinita. En vez de decorar CADA
+# funcion, instalamos UN limite de recursion razonable: Python lanzara
+# RecursionError de forma controlada y procesa_entidad lo captura como fin del
+# flujo (no un crash). Asi el codigo se lee limpio y ademas corre.
+import sys as _sys
+_sys.setrecursionlimit(8000)
 
 
-def _guard_depth(fn):
-    def _wrap(ctx):
-        if _bnx_depth["n"] >= _BNX_MAX_DEPTH:
-            return
-        _bnx_depth["n"] += 1
-        try:
-            return fn(ctx)
-        finally:
-            _bnx_depth["n"] -= 1
-    return _wrap
-
-
-class _Zero:
-    """Valor por defecto POLIMORFICO para campos no inicializados. En COBOL una
-    variable WORKING-STORAGE no inicializada vale 0 (numerico) o espacios
-    (alfanumerico); como no sabemos el tipo, este objeto se comporta como 0 en
-    aritmetica y como '' al convertir a texto, para no romper ni `x + 1` ni
-    `x + "s"` ni comparaciones."""
-    def __add__(self, o): return o if isinstance(o, str) else (o + 0)
-    def __radd__(self, o): return o if isinstance(o, str) else (0 + o)
-    def __sub__(self, o): return -o
-    def __rsub__(self, o): return o
-    def __mul__(self, o): return 0 if not isinstance(o, str) else ""
-    __rmul__ = __mul__
-    def __truediv__(self, o): return 0
-    def __rtruediv__(self, o): return 0
-    def __eq__(self, o): return o in (0, "", None) or isinstance(o, _Zero)
-    def __ne__(self, o): return not self.__eq__(o)
-    def __lt__(self, o): return 0 < o if not isinstance(o, str) else "" < o
-    def __gt__(self, o): return 0 > o if not isinstance(o, str) else "" > o
-    def __le__(self, o): return not self.__gt__(o)
-    def __ge__(self, o): return not self.__lt__(o)
-    def __bool__(self): return False
-    def __str__(self): return ""
-    def __repr__(self): return "0"
-    def __hash__(self): return 0
+# Campos de WORKING-STORAGE con su valor inicial COBOL (0 numerico, "" texto).
+# Se usan para inicializar ctx EXPLICITAMENTE con los campos reales del programa.
+WORKING_STORAGE = {ws_fields}
 
 
 class _Ctx(dict):
-    """Estado del programa. Un acceso a un campo no inicializado NO debe romper
-    (en COBOL tendria valor inicial 0/espacios); devolvemos un _Zero polimorfico."""
+    """Estado del programa. Es un dict normal; los campos conocidos vienen de
+    WORKING_STORAGE con su valor inicial COBOL. Un acceso a un campo NO declarado
+    (temporales, subindices) devuelve '' en vez de KeyError — equivalente a un
+    alfanumerico vacio, sin objetos 'magicos'."""
     def __missing__(self, key):
-        return _Zero()
+        return ""
 
 
 def new_ctx():
-    return _Ctx()
+    return _Ctx(WORKING_STORAGE)
 '''
 
 FOOTER_PURE = '''
@@ -460,17 +429,43 @@ def procesa_entidad(mensaje_input: dict, lookups=None) -> dict:
     # Sembrar los campos del mensaje en ctx (claves normalizadas).
     for k, v in (mensaje_input or {{}}).items():
         ctx[str(k).replace("-", "_").lower()] = v
-{calls}
+    # Ejecuta los parrafos en el orden del programa. Si el flujo plano produce
+    # recursion profunda (PERFORM que ciclan sin el retorno real del COBOL), se
+    # corta de forma controlada y se devuelve el estado alcanzado (no un crash).
+    try:
+        _run_flow(ctx)
+    except RecursionError:
+        ctx["_bnx_recursion_cortada"] = True
     # Respuesta: WS-RESPUESTA si el programa la define, si no el ctx completo.
     return ctx.get("ws_respuesta", ctx)
 
 
+def _run_flow(ctx):
+    """Llama a los parrafos en el orden del programa original."""
+{calls}
+
+
 def main():
-    # Prueba local con un mensaje de ejemplo. Ajusta los campos a tu entrada.
-    ejemplo = {{"campo1": "valor"}}
-    salida = procesa_entidad(ejemplo)
-    print("[ok] procesa_entidad -> claves en respuesta:",
-          list(salida.keys())[:20] if isinstance(salida, dict) else salida)
+    # Prueba local: hidrata un mensaje de entrada con datos de ejemplo. Ajusta
+    # estos campos al layout real de tu transaccion. Las claves '<tabla>_key'
+    # apuntan a los lookups; ponles valores que existan en tus CSV.
+    mensaje = {{"campo1": "valor"}}
+    for _f in _LOOKUP_FILES:
+        mensaje[_f.lower() + "_key"] = "VAL0000"
+    salida = procesa_entidad(mensaje)
+    print("[ok] procesa_entidad ejecutado. Muestra de la respuesta:")
+    if isinstance(salida, dict):
+        _shown = 0
+        for _k, _v in salida.items():
+            if _k in ("_lookups", "ws_mensaje"):
+                continue
+            print(f"    {{_k}} = {{str(_v)[:60]}}")
+            _shown += 1
+            if _shown >= 20:
+                print(f"    ... (+{{len(salida) - _shown}} campos mas)")
+                break
+    else:
+        print("   ", salida)
 
 
 if __name__ == "__main__":
@@ -503,6 +498,43 @@ def _cobol_selects(lines):
         if m:
             files.append(_col(m.group(1)))
     return files
+
+
+def _cobol_working_storage(lines):
+    """Extrae los campos de datos COBOL (01-49/77 con PIC) y su VALOR INICIAL
+    segun el tipo, para inicializar ctx EXPLICITAMENTE (sin _Zero).
+
+    Reglas COBOL de valor por defecto:
+      - PIC 9 / S9 / COMP / COMP-3 (numerico)  -> 0
+      - PIC X / A (alfanumerico)               -> ""
+      - clausula VALUE explicita               -> ese literal
+    Devuelve dict {campo_normalizado: valor_inicial_python}. Omite FILLER y 88.
+    """
+    fields = {}
+    for raw in lines:
+        l = raw.strip()
+        if not l or l.startswith("*"):
+            continue
+        # Nivel 01-49 o 77, nombre, ... PIC ...
+        m = re.match(r"(0[1-9]|[1-4]\d|77)\s+([A-Za-z][\w-]*)\s+.*?\bPIC(?:TURE)?\s+(\S+)", l, re.I)
+        if not m:
+            continue
+        name = m.group(2)
+        if name.upper() == "FILLER":
+            continue
+        pic = m.group(3).upper().rstrip(".")
+        col = _col(name)
+        # VALUE explicito?
+        mv = re.search(r"\bVALUE\s+(?:IS\s+)?('[^']*'|\"[^\"]*\"|[+-]?\d+(?:\.\d+)?|ZEROS?|ZEROES?|SPACES?)",
+                       l, re.I)
+        if mv:
+            lit = _py_literal(mv.group(1))
+            fields[col] = lit if lit is not None else '""'
+            continue
+        # Tipo por PIC: numerico (9/S/V y COMP) -> 0; alfanumerico (X/A) -> "".
+        is_num = bool(re.search(r"[9S]", pic)) and not re.search(r"[XA]", pic)
+        fields[col] = "0" if is_num else '""'
+    return fields
 
 
 def _cobol_stmt(line, lang="cobol"):
@@ -1026,7 +1058,10 @@ def transpile_direct(src, lang="cobol", pure=False):
             elif op in ("call", "loop_until"):
                 stats["calls"] += 1
         body = _emit_body(ops, valid_funcs=valid_funcs)
-        func_blocks.append(f"@_guard_depth\ndef {name}(ctx):\n" + "\n".join(body) + "\n")
+        # Modo PURO: PERFORM = llamada normal (sin decorador de guarda). Modo
+        # PySpark: mantiene @_guard_depth por si el flujo plano cicla.
+        deco = "" if pure else "@_guard_depth\n"
+        func_blocks.append(f"{deco}def {name}(ctx):\n" + "\n".join(body) + "\n")
 
     # Llamadas en orden (el flujo principal). 'init' (lo previo al primer
     # parrafo) solo son declaraciones; se omite de las llamadas.
@@ -1043,8 +1078,15 @@ def transpile_direct(src, lang="cobol", pure=False):
         # --- PYTHON PURO (transaccional) ---
         title = f"BNX JOB — traduccion directa {lang.upper()} -> Python puro"
         files_list = "[" + ", ".join(repr(f.upper()) for f in files) + "]"
+        # Campos de WORKING-STORAGE con su valor inicial COBOL (0/"").
+        ws = _cobol_working_storage(raw_lines) if lang == "cobol" else {}
+        if ws:
+            ws_items = ",\n".join(f"    {k!r}: {v}" for k, v in sorted(ws.items()))
+            ws_fields = "{\n" + ws_items + ",\n}"
+        else:
+            ws_fields = "{}"
         header = HEADER_PURE.format(title=title, lang=lang.upper(), ts=ts,
-                                    files_list=files_list)
+                                    files_list=files_list, ws_fields=ws_fields)
         footer = FOOTER_PURE.format(calls="\n".join(call_lines))
         code = header + "\n\n" + "\n\n".join(func_blocks) + "\n" + footer
         stats["mode"] = "pure"
