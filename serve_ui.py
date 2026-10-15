@@ -2460,27 +2460,26 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 scores = dict(scores or {})
                 scores["_auto_corrected_to"] = other
         code = out["code"]
-        # En modo puro, acompañar un app.py FastAPI (opcional) que expone
-        # procesa_entidad por HTTP, y guardar el FUENTE por token para que la
-        # prueba transaccional lo recupere sin depender del editor de la GUI.
+        # app.py FastAPI solo en modo puro. El FUENTE se guarda por token SIEMPRE
+        # (spark o pure): asi el Emulador y 'Probar transaccion' pueden regenerar
+        # el Python puro desde el fuente aunque se haya convertido a PySpark.
         fastapi_app = None
         source_token = None
         if pure:
             from src.direct_transpiler import fastapi_app_code
             fastapi_app = fastapi_app_code(module_name="main", lang=lang)
-            try:
-                import uuid as _u
-                _sdir = os.path.join(tempfile.gettempdir(), "bnx_src_full")
-                os.makedirs(_sdir, exist_ok=True)
-                source_token = _u.uuid4().hex
-                with open(os.path.join(_sdir, source_token + ".txt"), "w",
-                          encoding="utf-8", errors="replace") as _sf:
-                    _sf.write(src_code)
-                # recordar el lang para la prueba
-                with open(os.path.join(_sdir, source_token + ".lang"), "w") as _lf:
-                    _lf.write(lang)
-            except Exception as _e:
-                print(f"  [direct] no se pudo guardar el fuente para prueba: {_e}")
+        try:
+            import uuid as _u
+            _sdir = os.path.join(tempfile.gettempdir(), "bnx_src_full")
+            os.makedirs(_sdir, exist_ok=True)
+            source_token = _u.uuid4().hex
+            with open(os.path.join(_sdir, source_token + ".txt"), "w",
+                      encoding="utf-8", errors="replace") as _sf:
+                _sf.write(src_code)
+            with open(os.path.join(_sdir, source_token + ".lang"), "w") as _lf:
+                _lf.write(lang)
+        except Exception as _e:
+            print(f"  [direct] no se pudo guardar el fuente para prueba: {_e}")
 
         # Vista en la GUI: la 1a "pagina" (~100 KB). El resto se navega con
         # /code/page?token=... (paginacion), y el .py completo con code_download_url.
@@ -2688,7 +2687,13 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             if not src_code.strip():
                 self._json_response(400, {"error": "Se requiere el fuente COBOL/ALGOL (source o source_token)."})
                 return
-            code = data.get("code") or transpile_direct(src_code, lang, pure=True)["code"]
+            # El emulador EXIGE codigo Python PURO (con procesa_entidad). Si el
+            # 'code' recibido no lo tiene (p.ej. venia PySpark de otro target),
+            # regeneramos en modo pure desde el fuente. Asi nunca falla con
+            # "no attribute 'procesa_entidad'".
+            code = data.get("code") or ""
+            if "def procesa_entidad" not in code:
+                code = transpile_direct(src_code, lang, pure=True)["code"]
             timeout = min(int(data.get("timeout", 60)), 120)
             from src.cics_emulator import emulate
             report = emulate(code, src_code, lang, timeout=timeout)
@@ -2716,7 +2721,9 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 return
             from src.direct_transpiler import (transpile_direct as _td,
                                                fastapi_app_code, readme_text)
-            code = data.get("code") or _td(src_code, lang, pure=True)["code"]
+            code = data.get("code") or ""
+            if "def procesa_entidad" not in code:
+                code = _td(src_code, lang, pure=True)["code"]  # exige Python puro
             # Schema para listar lookups + generar CSV de ejemplo.
             from src.transactional_harness import _extract_lookup_schema, _write_lookup_csvs
             try:
