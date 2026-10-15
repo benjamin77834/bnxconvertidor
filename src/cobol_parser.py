@@ -97,32 +97,42 @@ def extract_source_from_bytes(raw, prefer_name=None):
                         continue
                     decoded.append((name, text))
 
-                # 0) PRIORIDAD MAXIMA: el miembro cuyo nombre coincide con el del
-                #    archivo contenedor. Resuelve ZIPs que empaquetan varios
-                #    fuentes (ALGOL + COBOL + ...) bajo distintos nombres: abrir
-                #    el .alg devuelve el .alg, abrir el .CBL devuelve el .CBL.
+                # Un miembro "sirve" si parece codigo fuente real (tiene
+                # estructura COBOL/ALGOL), no basura binaria ni un fragmento.
+                def _looks_source(text):
+                    up = text[:50000].upper()
+                    return any(k in up for k in (
+                        "DIVISION", "SECTION", "PROCEDURE", "PERFORM", "MOVE ",
+                        "PROGRAM-ID", "BEGIN", "$SET", "FILE ", "PIC "))
+
+                # 0) El miembro cuyo nombre coincide con el archivo contenedor,
+                #    PERO solo si su contenido parece codigo fuente (si no, un
+                #    nombre que casa con un miembro basura devolveria basura).
                 if prefer_name:
                     want_full = prefer_name.replace("\\", "/").rsplit("/", 1)[-1].lower()
                     want_stem = _basename_noext(prefer_name)
-                    # match exacto por nombre completo del miembro
                     for name, text in decoded:
-                        if name.replace("\\", "/").rsplit("/", 1)[-1].lower() == want_full:
+                        mn = name.replace("\\", "/").rsplit("/", 1)[-1].lower()
+                        if mn == want_full and _looks_source(text):
                             return text
-                    # match por nombre sin extension (p.ej. '.alg_m' vs '.alg_mux')
                     for name, text in decoded:
-                        if _basename_noext(name) == want_stem:
+                        if _basename_noext(name) == want_stem and _looks_source(text):
                             return text
 
-                # 1) Preferir el miembro cuyo contenido parezca COBOL.
+                # 1) El miembro que parezca COBOL (DIVISION/PROGRAM-ID...).
                 for name, text in decoded:
                     if _looks_like_cobol(text):
                         return text
-                # 2) Si no, el primero con extension de codigo fuente conocida.
+                # 2) El miembro que parezca codigo fuente (COBOL o ALGOL).
+                for name, text in decoded:
+                    if _looks_source(text):
+                        return text
+                # 3) El primero con extension de codigo fuente conocida.
                 for name, text in decoded:
                     low = name.lower()
                     if any(low.endswith(ext) for ext in _SOURCE_EXTS):
                         return text
-                # 3) Si no, el miembro mas grande (suele ser el fuente).
+                # 4) El miembro mas grande (suele ser el fuente).
                 if decoded:
                     return max(decoded, key=lambda nt: len(nt[1]))[1]
         except (zipfile.BadZipFile, OSError):
