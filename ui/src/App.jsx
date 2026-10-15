@@ -398,7 +398,13 @@ export default function App() {
       setTxTest('running')
       const res = await fetch(base + '/transactional/test', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source: editorMp, lang, num_messages: 3, timeout: 60 }),
+        // Preferir source_token (el backend tiene el fuente completo); si no,
+        // el editor. Asi funciona aunque el COBOL no este en el editor.
+        body: JSON.stringify({
+          source_token: result?.source_token || undefined,
+          source: editorMp || undefined,
+          lang, num_messages: 3, timeout: 60,
+        }),
       })
       const data = await res.json()
       setTxTest(data)

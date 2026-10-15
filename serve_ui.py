@@ -2448,11 +2448,26 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 scores["_auto_corrected_to"] = other
         code = out["code"]
         # En modo puro, acompañar un app.py FastAPI (opcional) que expone
-        # procesa_entidad por HTTP.
+        # procesa_entidad por HTTP, y guardar el FUENTE por token para que la
+        # prueba transaccional lo recupere sin depender del editor de la GUI.
         fastapi_app = None
+        source_token = None
         if pure:
             from src.direct_transpiler import fastapi_app_code
             fastapi_app = fastapi_app_code(module_name="main", lang=lang)
+            try:
+                import uuid as _u
+                _sdir = os.path.join(tempfile.gettempdir(), "bnx_src_full")
+                os.makedirs(_sdir, exist_ok=True)
+                source_token = _u.uuid4().hex
+                with open(os.path.join(_sdir, source_token + ".txt"), "w",
+                          encoding="utf-8", errors="replace") as _sf:
+                    _sf.write(src_code)
+                # recordar el lang para la prueba
+                with open(os.path.join(_sdir, source_token + ".lang"), "w") as _lf:
+                    _lf.write(lang)
+            except Exception as _e:
+                print(f"  [direct] no se pudo guardar el fuente para prueba: {_e}")
 
         # Vista en la GUI: la 1a "pagina" (~100 KB). El resto se navega con
         # /code/page?token=... (paginacion), y el .py completo con code_download_url.
@@ -2521,6 +2536,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             "direct_stats": stats,
             "graph_name": f"{lang}_direct_job",
             "fastapi_app": fastapi_app,   # app.py FastAPI (solo modo puro)
+            "source_token": source_token, # para 'Probar transaccion' sin editor
         })
 
     def _verify_lang(self, src_code, detected):
@@ -2572,8 +2588,23 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             lang = (data.get("lang") or "cobol").lower()
             src_code = (data.get("cobol") or data.get("algol")
                         or data.get("source") or data.get("code_source") or "")
+            # Fallback: recuperar el fuente por token (lo guarda la conversion
+            # directa). Asi 'Probar transaccion' funciona aunque el fuente no
+            # este en el editor (p.ej. conversion por el boton 'Convertir .cbl').
             if not src_code.strip():
-                self._json_response(400, {"error": "Se requiere el fuente COBOL/ALGOL (campo 'cobol'/'algol'/'source')."})
+                tok = (data.get("source_token") or "").strip()
+                if tok and re.fullmatch(r"[0-9a-f]{8,64}", tok):
+                    sdir = os.path.join(tempfile.gettempdir(), "bnx_src_full")
+                    sp = os.path.join(sdir, tok + ".txt")
+                    lp = os.path.join(sdir, tok + ".lang")
+                    if os.path.isfile(sp):
+                        with open(sp, "r", encoding="utf-8", errors="replace") as _f:
+                            src_code = _f.read()
+                        if os.path.isfile(lp):
+                            with open(lp) as _lf:
+                                lang = (_lf.read().strip() or lang)
+            if not src_code.strip():
+                self._json_response(400, {"error": "Se requiere el fuente COBOL/ALGOL (campo 'cobol'/'algol'/'source' o 'source_token')."})
                 return
             # Si no mandan el python puro, lo generamos del fuente.
             code = data.get("code") or ""
