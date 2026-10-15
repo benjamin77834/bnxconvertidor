@@ -178,6 +178,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_emulate()
         elif "/pure/bundle" in path:
             self._handle_pure_bundle()
+        elif "/pyspark/from_token" in path:
+            self._handle_pyspark_from_token()
         elif "/convert" in path:
             self._handle_convert()
         elif "/cobol" in path:
@@ -2698,6 +2700,35 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             from src.cics_emulator import emulate
             report = emulate(code, src_code, lang, timeout=timeout)
             self._json_response(200, report)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": str(e)})
+
+    def _handle_pyspark_from_token(self):
+        """Devuelve el PySpark equivalente de un COBOL/ALGOL ya convertido,
+        regenerado desde el fuente (source_token). Se usa para 'Enviar a Data
+        Sintetica' desde el Emulador: DataGen trabaja con PySpark (spark.read.*),
+        no con el Python puro transaccional (que usa lookups).
+
+        Body JSON: {source_token | source, lang}. Respuesta: {code, source, lang}.
+        """
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        try:
+            data = json.loads(body.decode("utf-8", errors="replace"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._json_response(400, {"error": "Invalid JSON body"})
+            return
+        try:
+            src_code, lang = self._resolve_source_and_lang(data)
+            if not src_code.strip():
+                self._json_response(400, {"error": "Se requiere source o source_token."})
+                return
+            # PySpark (modo NO puro): tiene spark.read.* por fichero -> DataGen
+            # puede inferir el esquema y generar datos sinteticos.
+            code = transpile_direct(src_code, lang, pure=False)["code"]
+            self._json_response(200, {"code": code, "source": src_code, "lang": lang})
         except Exception as e:
             import traceback
             traceback.print_exc()
