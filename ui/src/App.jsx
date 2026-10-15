@@ -1839,7 +1839,25 @@ export default function App() {
                   )}
                   <div style={{ color: green }}>✓ Código {target.toUpperCase()} generado: <b>~{(isDirect ? (ds.lines||totalLines) : totalLines).toLocaleString()}</b> líneas{kb ? <> · <b>{kb.toLocaleString()} KB</b></> : null}</div>
                   {result.warnings_total > 0 && (
-                    <div style={{ color: amber }}>⚠ {result.warnings_total} advertencia(s) — revisa el panel de warnings</div>
+                    <>
+                      <div style={{ color: amber }}>⚠ {result.warnings_total} advertencia(s):</div>
+                      {(result.warnings || []).slice(0, 3).map((w, i) => (
+                        <div key={i} style={{ color: amber, paddingLeft: 14 }}>{w}</div>
+                      ))}
+                    </>
+                  )}
+                  {/* Aviso FUERTE cuando la conversion salio casi vacia: el archivo
+                      no se reconocio como COBOL/ALGOL (archivo equivocado o no es
+                      codigo fuente legacy). */}
+                  {isDirect && ds && (ds.assigns || 0) === 0 && (ds.paragraphs || 0) <= 3 && (
+                    <div style={{
+                      marginTop: 8, padding: '8px 10px', borderRadius: 6,
+                      background: '#3a1414', border: '1px solid #ef4444', color: '#ffd4d4',
+                    }}>
+                      ⛔ No se extrajo lógica (0 asignaciones). Este archivo no se reconoció como
+                      COBOL/ALGOL. Verifica que sea el <b>.CBL/.alg correcto</b> (no un .ipynb, .txt
+                      u otro) y que sea código fuente legacy, no un binario.
+                    </div>
                   )}
                   <div style={{ color: dim, marginTop: 6 }}>
                     # {isDirect
