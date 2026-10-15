@@ -1064,12 +1064,28 @@ export default function App() {
             sourceToken={result?.source_token || ''}
             code={result?.transpile_mode === 'pure' ? (result?.code || '') : ''}
             lang={result?.detected_language || 'cobol'}
-            onSendToDataGen={(code, emu) => {
-              // Enviar el Python puro convertido a Data Sintetica, igual que
-              // Py->Spark. DataGen genera datos y lo ejecuta en el harness.
-              setPy2sparkCode(code || result?.code || '')
-              setPy2sparkSource('')
-              setPage('datagen')
+            onSendToDataGen={async (code, emu) => {
+              // Data Sintetica trabaja con PySpark (spark.read.* por fichero),
+              // NO con el Python puro transaccional (lookups). Pedimos el PySpark
+              // equivalente al backend (desde el source_token) y lo mandamos a
+              // DataGen, que genera datos para cada lectura.
+              try {
+                const base = COMPILE_URL.replace('/compile', '')
+                const res = await fetch(base + '/pyspark/from_token', {
+                  method: 'POST', headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    source_token: result?.source_token || undefined,
+                    lang: result?.detected_language || 'cobol',
+                  }),
+                })
+                const d = await res.json()
+                if (!res.ok || d.error || !d.code) throw new Error(d.error || `Error ${res.status}`)
+                setPy2sparkCode(d.code)
+                setPy2sparkSource('')
+                setPage('datagen')
+              } catch (e) {
+                alert('No se pudo preparar Data Sintética: ' + e.message)
+              }
             }} />
         ) : page === 'py2spark' ? (
           <Py2SparkPage theme={t} onSendToDataGen={(code, source) => {
