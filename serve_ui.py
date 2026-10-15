@@ -377,11 +377,20 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                     if os.path.isdir(dp) and d != "_flat":
                         # Contar grafos .mp y tambien fuentes legacy .cbl/.alg, para
                         # que proyectos de solo COBOL/ALGOL aparezcan en la lista.
-                        count = (len(_glob.glob(os.path.join(dp, "*.mp")))
-                                 + len(_glob.glob(os.path.join(dp, "*.cbl")))
-                                 + len(_glob.glob(os.path.join(dp, "*.cob")))
-                                 + len(_glob.glob(os.path.join(dp, "*.alg")))
-                                 + len(_glob.glob(os.path.join(dp, "*.algol"))))
+                        # Contar fuentes legacy sin importar mayus/minus ni
+                        # variantes (.CBL, .alg_m, .dma_m, etc.). Antes el conteo
+                        # ignoraba esas extensiones y el badge salia bajo.
+                        _src_exts = (".mp", ".cbl", ".cob", ".cobol",
+                                     ".alg", ".algol", ".alg_m", ".dma_m",
+                                     ".cpy", ".dml", ".xfr")
+                        count = 0
+                        try:
+                            for _fn in os.listdir(dp):
+                                if os.path.isfile(os.path.join(dp, _fn)) and \
+                                   _fn.lower().endswith(_src_exts):
+                                    count += 1
+                        except OSError:
+                            count = 0
                         projects.append({"name": d, "graphs": count})
                 self._json_response(200, {"projects": projects})
                 return
