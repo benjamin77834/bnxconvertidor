@@ -306,6 +306,13 @@ export default function App() {
     ;[cobolRef, algolRef, autoRef, planRef, psetRef, planXfrRef, mpFilesRef, refactorRef].forEach(r => {
       if (r && r.current) { try { r.current.value = '' } catch { /* ignore */ } }
     })
+    // Barrido total de estado persistido (mata cualquier resultado fantasma de
+    // conversiones viejas que reaparecia al recargar).
+    try {
+      Object.keys(localStorage).forEach(k => {
+        if (k.startsWith('bnx_')) localStorage.removeItem(k)
+      })
+    } catch { /* ignore */ }
   }
 
   const compile = async (selected) => {
@@ -920,7 +927,7 @@ export default function App() {
         <span style={{
           fontSize: 13, padding: '3px 10px', borderRadius: 99,
           background: t.accentBg, color: t.accent, border: `1px solid ${t.accentBorder}`,
-        }}>V54</span>
+        }} title="Sello del build cargado. Si no cambia tras recargar, el navegador tiene cache.">V54 · build {typeof __BUILD_ID__ !== 'undefined' ? __BUILD_ID__ : '?'}</span>
 
         {result && (
           <span style={{
