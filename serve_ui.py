@@ -2523,6 +2523,36 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             "fastapi_app": fastapi_app,   # app.py FastAPI (solo modo puro)
         })
 
+    def _verify_lang(self, src_code, detected):
+        """Confirma el lenguaje probando el PARSEO real de ambos (COBOL/ALGOL) y
+        quedandose con el que extrae mas ASIGNACIONES — la señal mas fiable de
+        buen parseo. Un ALGOL ruteado como COBOL (o viceversa) da ~0 asignaciones;
+        esto lo corrige ANTES de cualquier flujo (spark, glue, python, directo).
+
+        Devuelve (lang_confirmado, corregido_bool). Solo actua para cobol/algol.
+        """
+        if detected not in ("cobol", "algol"):
+            return detected, False
+        n = src_code.count("\n") + 1
+        if n < 20:
+            return detected, False
+        try:
+            from src.direct_transpiler import transpile_direct as _td
+            a = _td(src_code, "cobol", pure=True)["stats"].get("assigns", 0)
+            b = _td(src_code, "algol", pure=True)["stats"].get("assigns", 0)
+        except Exception:
+            return detected, False
+        best = "cobol" if a >= b else "algol"
+        # Solo corregir si el detectado parsea MUCHO peor que el otro (evita
+        # cambiar por diferencias menores).
+        cur = a if detected == "cobol" else b
+        alt = b if detected == "cobol" else a
+        if best != detected and alt > max(5, cur * 3):
+            print(f"  [lang] '{detected}' parsea pobre (assigns={cur}); "
+                  f"'{best}' da {alt} -> corrijo a '{best}'")
+            return best, True
+        return detected, False
+
     def _handle_transactional_test(self):
         """Prueba el PYTHON PURO transaccional: genera lookups + mensajes
         sinteticos y ejecuta procesa_entidad, devolviendo un reporte.
@@ -2666,6 +2696,11 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 scores = {}
             else:
                 lang, scores = detect_language(src_code, filename=filename)
+                # Verificar por parseo real: corrige COBOL<->ALGOL mal detectado
+                # (p.ej. un .dma/.alg que llega como COBOL y saldria vacio).
+                lang, _corr = self._verify_lang(src_code, lang)
+                if _corr:
+                    scores = dict(scores or {}); scores["_corrected_to"] = lang
 
             print(f"  [convert] detectado='{lang}' scores={scores} archivo='{filename}'")
 
@@ -2764,6 +2799,17 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
 
             if not cobol_src.strip():
                 self._json_response(400, {"error": "Se requiere codigo COBOL (campo 'cobol')."})
+                return
+
+            # Verificar lenguaje por parseo real: si el 'cobol' recibido en
+            # realidad parsea mucho mejor como ALGOL (p.ej. un .dma/.alg que
+            # saldria vacio como COBOL), redirigir al flujo ALGOL.
+            _lang, _corr = self._verify_lang(cobol_src, "cobol")
+            if _corr and _lang == "algol":
+                print("  [cobol] el fuente es ALGOL -> redirijo a _direct ALGOL")
+                self._direct_transpile_response(cobol_src, "algol",
+                                                {"cobol": 0, "algol": 1, "abinitio": 0},
+                                                target=target)
                 return
 
             # COBOL GRANDE: traduccion DIRECTA a PySpark (sin grafo).
