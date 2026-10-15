@@ -227,6 +227,19 @@ def infer_input_schema(code, n_default_cols=3):
                 "node": node, "node_type": "SOURCE", "io": "input",
                 "columns": _mk_cols(),
             })
+        # Variante del traductor DIRECTO (COBOL/ALGOL -> PySpark): las lecturas
+        # se asignan a ctx["df_<nombre>"] y pueden venir entre parentesis:
+        #   ctx["df_rtads"] = (spark.read.option("header", True).csv(...))
+        for m in re.finditer(
+                r'ctx\[["\'](?:df_)?(\w+)["\']\]\s*=\s*\(?\s*spark\s*\.\s*read\b', code):
+            node = m.group(1)
+            if node.lower() in seen:
+                continue
+            seen.add(node.lower())
+            datasets.append({
+                "node": node, "node_type": "SOURCE", "io": "input",
+                "columns": _mk_cols(),
+            })
 
     # ULTIMO RECURSO: es un job PySpark generado por py2spark (tiene el marcador o
     # SparkSession) pero no se detecto ninguna fuente. En vez de bloquear Data
