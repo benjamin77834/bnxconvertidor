@@ -97,7 +97,17 @@ export default function App() {
   const [result, _setResult]    = useState(() => {
     try {
       const saved = localStorage.getItem('bnx_last_result')
-      return saved ? capResult(JSON.parse(saved)) : null
+      if (!saved) return null
+      const parsed = JSON.parse(saved)
+      // NO restaurar resultados del modo DIRECTO (COBOL/ALGOL grande): su code
+      // puede haberse guardado truncado por la cuota de localStorage y
+      // reaparecer "vacio"/parcial al recargar, confundiendo. Esos se regeneran
+      // convirtiendo de nuevo. Solo restauramos grafos normales.
+      if (parsed && (parsed.mode === 'direct' || parsed._code_persist_truncated)) {
+        localStorage.removeItem('bnx_last_result')
+        return null
+      }
+      return capResult(parsed)
     } catch { return null }
   })
   const setResult = (raw) => {

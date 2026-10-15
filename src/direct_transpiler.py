@@ -1079,10 +1079,38 @@ def transpile_direct(src, lang="cobol", pure=False):
         title = f"BNX JOB — traduccion directa {lang.upper()} -> Python puro"
         files_list = "[" + ", ".join(repr(f.upper()) for f in files) + "]"
         # Campos de WORKING-STORAGE con su valor inicial COBOL (0/"").
+        # COMPACTO: agrupamos por valor (los que valen 0 y los que valen "") en
+        # dict.fromkeys para NO ocupar 8000+ lineas (eso empujaba las funciones
+        # p_* fuera de la vista previa y parecia que el codigo estaba vacio).
         ws = _cobol_working_storage(raw_lines) if lang == "cobol" else {}
         if ws:
-            ws_items = ",\n".join(f"    {k!r}: {v}" for k, v in sorted(ws.items()))
-            ws_fields = "{\n" + ws_items + ",\n}"
+            nums = sorted(k for k, v in ws.items() if v == "0")
+            strs = sorted(k for k, v in ws.items() if v == '""')
+            others = {k: v for k, v in sorted(ws.items()) if v not in ("0", '""')}
+
+            def _wrap_names(names, per_line=12):
+                # Lista de nombres partida en varias lineas cortas (legible, no
+                # una sola linea de 150 KB que arruina la vista previa).
+                out = []
+                for i in range(0, len(names), per_line):
+                    out.append("        " + ", ".join(repr(n) for n in names[i:i+per_line]) + ",")
+                return "\n".join(out)
+
+            lines_ws = ["{"]
+            if nums:
+                lines_ws.append("    # campos numericos -> 0")
+                lines_ws.append("    **dict.fromkeys([")
+                lines_ws.append(_wrap_names(nums))
+                lines_ws.append("    ], 0),")
+            if strs:
+                lines_ws.append("    # campos alfanumericos -> ''")
+                lines_ws.append("    **dict.fromkeys([")
+                lines_ws.append(_wrap_names(strs))
+                lines_ws.append("    ], ''),")
+            for k, v in others.items():
+                lines_ws.append(f"    {k!r}: {v},")
+            lines_ws.append("}")
+            ws_fields = "\n".join(lines_ws)
         else:
             ws_fields = "{}"
         header = HEADER_PURE.format(title=title, lang=lang.upper(), ts=ts,

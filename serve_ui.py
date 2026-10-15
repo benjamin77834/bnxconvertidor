@@ -2490,11 +2490,27 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 code_page_url = f"/code/page?token={_tok}"  # para paginar en la GUI
             except Exception as _e:
                 print(f"  [direct] no se pudo preparar descarga completa: {_e}")
-            code_for_gui = (code[:CODE_GUI_LIMIT] +
-                f"\n\n# ... [MOSTRANDO SOLO EL INICIO] ...\n"
-                f"# El job completo tiene {code_full_bytes:,} bytes "
-                f"(~{stats.get('lines', 0):,} líneas).\n"
-                f"# Usa ◀ ▶ para paginar o 📥 para descargar el archivo COMPLETO.\n")
+            # La vista previa debe mostrar la LOGICA (funciones de parrafo), no
+            # el enorme WORKING_STORAGE del inicio. Buscamos la primera funcion
+            # de parrafo y empezamos la previa ahi, para que se vean los def p_...
+            _marker = code.find("\ndef p_")
+            if _marker == -1:
+                _marker = code.find("\ndef procesa_entidad")
+            if _marker > 0 and _marker < code_full_bytes - 2000:
+                _head = (f"# [VISTA PREVIA] El job completo tiene "
+                         f"{stats.get('lines', 0):,} líneas / {code_full_bytes:,} bytes.\n"
+                         f"# Se omite aqui el bloque de imports + WORKING_STORAGE "
+                         f"({code[:_marker].count(chr(10))} líneas de inicializacion de campos).\n"
+                         f"# Debajo, las FUNCIONES de los parrafos (la logica). "
+                         f"Usa ◀ ▶ para paginar o 📥 para el archivo COMPLETO.\n\n")
+                code_for_gui = _head + code[_marker:_marker + CODE_GUI_LIMIT] + (
+                    "\n\n# ... [continua] usa ◀ ▶ para paginar o 📥 para descargar.\n")
+            else:
+                code_for_gui = (code[:CODE_GUI_LIMIT] +
+                    f"\n\n# ... [MOSTRANDO SOLO EL INICIO] ...\n"
+                    f"# El job completo tiene {code_full_bytes:,} bytes "
+                    f"(~{stats.get('lines', 0):,} líneas).\n"
+                    f"# Usa ◀ ▶ para paginar o 📥 para descargar el archivo COMPLETO.\n")
 
         # AVISO de parseo pobre: si el fuente tiene varias lineas pero casi no se
         # extrajo logica (asignaciones/condiciones/llamadas ~0), la conversion
