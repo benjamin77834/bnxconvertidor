@@ -2886,6 +2886,10 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._attach_optimized(result, target)
             self._json_response(200, result)
 
+        except ValueError as ve:
+            # ZIP corrupto u otro problema de entrada -> 400 con mensaje claro.
+            self._json_response(400, {"error": str(ve), "errors": [str(ve)],
+                                      "nodes": [], "edges": [], "warnings": []})
         except Exception as e:
             import traceback
             traceback.print_exc()
