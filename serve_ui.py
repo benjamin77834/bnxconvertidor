@@ -174,6 +174,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_py2spark()
         elif "/transactional/test" in path:
             self._handle_transactional_test()
+        elif "/emulate" in path:
+            self._handle_emulate()
         elif "/convert" in path:
             self._handle_convert()
         elif "/cobol" in path:
@@ -2640,6 +2642,54 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             from src.transactional_harness import run_transactional_test
             report = run_transactional_test(code, src_code, lang,
                                             num_messages=num_messages, timeout=timeout)
+            self._json_response(200, report)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": str(e)})
+
+    def _resolve_source_and_lang(self, data):
+        """Obtiene (src_code, lang) de un body: campo directo o source_token."""
+        lang = (data.get("lang") or "cobol").lower()
+        src_code = (data.get("cobol") or data.get("algol")
+                    or data.get("source") or data.get("code_source") or "")
+        if not src_code.strip():
+            tok = (data.get("source_token") or "").strip()
+            if tok and re.fullmatch(r"[0-9a-f]{8,64}", tok):
+                sdir = os.path.join(tempfile.gettempdir(), "bnx_src_full")
+                sp = os.path.join(sdir, tok + ".txt")
+                lp = os.path.join(sdir, tok + ".lang")
+                if os.path.isfile(sp):
+                    with open(sp, "r", encoding="utf-8", errors="replace") as _f:
+                        src_code = _f.read()
+                    if os.path.isfile(lp):
+                        with open(lp) as _lf:
+                            lang = (_lf.read().strip() or lang)
+        return src_code, lang
+
+    def _handle_emulate(self):
+        """EMULADOR CICS: ejecuta el COBOL/ALGOL convertido con datos sinteticos,
+        tracea el flujo de parrafos y devuelve un grafo (Mermaid) + la traza +
+        los datasets sinteticos (para llevar a Data Sintetica).
+
+        Body JSON: {source|cobol|algol|source_token, lang, timeout}.
+        """
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        try:
+            data = json.loads(body.decode("utf-8", errors="replace"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._json_response(400, {"error": "Invalid JSON body"})
+            return
+        try:
+            src_code, lang = self._resolve_source_and_lang(data)
+            if not src_code.strip():
+                self._json_response(400, {"error": "Se requiere el fuente COBOL/ALGOL (source o source_token)."})
+                return
+            code = data.get("code") or transpile_direct(src_code, lang, pure=True)["code"]
+            timeout = min(int(data.get("timeout", 60)), 120)
+            from src.cics_emulator import emulate
+            report = emulate(code, src_code, lang, timeout=timeout)
             self._json_response(200, report)
         except Exception as e:
             import traceback

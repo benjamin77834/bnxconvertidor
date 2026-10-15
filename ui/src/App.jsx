@@ -13,6 +13,7 @@ import HistoryPage from './components/HistoryPage'
 import PipelinePage from './components/PipelinePage'
 import GraphLibrary from './components/GraphLibrary'
 import GrafosPage from './components/GrafosPage'
+import EmulatorPage from './components/EmulatorPage'
 import ModelFrameworkPage from './components/ModelFrameworkPage'
 import QualityPage from './components/QualityPage'
 import CodeQualityPanel from './components/CodeQualityPanel'
@@ -951,6 +952,7 @@ export default function App() {
             { id: 'roadmap', label: '🗺️ Roadmap' },
             { id: 'pipeline', label: '🧪 Pipeline' },
             { id: 'grafos', label: '📁 Grafos' },
+            { id: 'emulator', label: '🔬 Emulador CICS' },
             { id: 'py2spark', label: '🐍 Py→Spark' },
             { id: 'datagen', label: '🧪 Data Sintética' },
             { id: 'datasource', label: '🛢️ Datos Remotos' },
@@ -1033,6 +1035,18 @@ export default function App() {
               if (compileBtn) compileBtn.click()
             }, 500)
           }} />
+        ) : page === 'emulator' ? (
+          <EmulatorPage theme={t}
+            sourceToken={result?.source_token || ''}
+            code={result?.transpile_mode === 'pure' ? (result?.code || '') : ''}
+            lang={result?.detected_language || 'cobol'}
+            onSendToDataGen={(code, emu) => {
+              // Enviar el Python puro convertido a Data Sintetica, igual que
+              // Py->Spark. DataGen genera datos y lo ejecuta en el harness.
+              setPy2sparkCode(code || result?.code || '')
+              setPy2sparkSource('')
+              setPage('datagen')
+            }} />
         ) : page === 'py2spark' ? (
           <Py2SparkPage theme={t} onSendToDataGen={(code, source) => {
             // Enviar el PySpark generado a Data Redactada. Se pasa como
