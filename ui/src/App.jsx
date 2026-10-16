@@ -167,6 +167,7 @@ export default function App() {
     try { localStorage.setItem('bnx_last_target', val) } catch { /* ignore */ }
   }
   const [page, setPage]         = useState('compiler')
+  const [menuOpen, setMenuOpen] = useState(false)  // menú hamburguesa de secciones
   const [expandedPanel, setExpandedPanel] = useState(null)  // 'code' | 'dag' | 'editor-mp' | 'editor-xfr' | 'editor-pset' | null
   // Grafos MUY grandes (COBOL/ALGOL productivos: 1000+ nodos) congelan ReactFlow.
   // Por defecto NO los renderizamos; el usuario puede forzarlo bajo su riesgo.
@@ -207,7 +208,7 @@ export default function App() {
   // Cerrar fullscreen con Escape
   useEffect(() => {
     const handleKeyDown = (e) => {
-      if (e.key === 'Escape') setExpandedPanel(null)
+      if (e.key === 'Escape') { setExpandedPanel(null); setMenuOpen(false) }
     }
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
@@ -753,6 +754,55 @@ export default function App() {
     display: 'flex', alignItems: 'center', gap: 4,
   }
 
+  // Secciones agrupadas por categoría para el menú hamburguesa.
+  const NAV_GROUPS = [
+    {
+      group: 'Principal',
+      items: [
+        { id: 'executive', label: '🎯 Executive' },
+        { id: 'compiler', label: '🔧 Compiler' },
+        { id: 'designer', label: '🎨 Designer' },
+        { id: 'grafos', label: '📁 Grafos' },
+      ],
+    },
+    {
+      group: 'Conversión',
+      items: [
+        { id: 'py2spark', label: '🐍 Py→Spark' },
+        { id: 'emulator', label: '🔬 Emulador CICS' },
+        { id: 'ocr', label: '📷 OCR' },
+      ],
+    },
+    {
+      group: 'Datos y Calidad',
+      items: [
+        { id: 'datagen', label: '🧪 Data Sintética' },
+        { id: 'datasource', label: '🛢️ Datos Remotos' },
+        { id: 'quality', label: '🛡️ Calidad de Código' },
+        { id: 'dataquality', label: '⚖️ Comparador de Datos' },
+      ],
+    },
+    {
+      group: 'Modelos y Negocio',
+      items: [
+        { id: 'banking', label: '🏦 Banking' },
+        { id: 'models', label: '🔐 Modelos' },
+      ],
+    },
+    {
+      group: 'Análisis',
+      items: [
+        { id: 'architecture', label: '🏗️ Architecture' },
+        { id: 'metrics', label: '📊 Metrics' },
+        { id: 'roadmap', label: '🗺️ Roadmap' },
+        { id: 'pipeline', label: '🧪 Pipeline' },
+        { id: 'history', label: '📜 History' },
+      ],
+    },
+  ]
+  const ALL_NAV = NAV_GROUPS.flatMap(g => g.items)
+  const currentNav = ALL_NAV.find(i => i.id === page)
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: t.bg, color: t.text, transition: 'background .4s ease, color .4s ease' }}>
       <style>{`@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.4} }
@@ -964,40 +1014,21 @@ export default function App() {
           </span>
         )}
 
-        {/* Page tabs */}
-        <div style={{ display: 'flex', gap: 4, marginLeft: 8 }}>
-          {[
-            { id: 'executive', label: '🎯 Executive' },
-            { id: 'compiler', label: '🔧 Compiler' },
-            { id: 'designer', label: '🎨 Designer' },
-            { id: 'ocr', label: '📷 OCR' },
-            { id: 'banking', label: '🏦 Banking' },
-            { id: 'architecture', label: '🏗️ Architecture' },
-            { id: 'metrics', label: '📊 Metrics' },
-            { id: 'roadmap', label: '🗺️ Roadmap' },
-            { id: 'pipeline', label: '🧪 Pipeline' },
-            { id: 'grafos', label: '📁 Grafos' },
-            { id: 'emulator', label: '🔬 Emulador CICS' },
-            { id: 'py2spark', label: '🐍 Py→Spark' },
-            { id: 'datagen', label: '🧪 Data Sintética' },
-            { id: 'datasource', label: '🛢️ Datos Remotos' },
-            { id: 'quality', label: '🛡️ Calidad' },
-            { id: 'dataquality', label: '⚖️ Comparador de Datos' },
-            { id: 'models', label: '🔐 Modelos' },
-            { id: 'history', label: '📜 History' },
-          ].map(tab => (
-            <button key={tab.id}
-              onClick={() => setPage(tab.id)}
-              style={{
-                padding: '6px 14px', borderRadius: 6, cursor: 'pointer', fontSize: 13,
-                background: page === tab.id ? t.accent + '20' : 'transparent',
-                border: `1px solid ${page === tab.id ? t.accent : 'transparent'}`,
-                color: page === tab.id ? (t.headerText || t.accent) : (t.headerText || t.muted),
-                fontWeight: page === tab.id ? 600 : 400,
-              }}
-            >{tab.label}</button>
-          ))}
-        </div>
+        {/* Menú hamburguesa: botón que muestra la sección activa y abre el drawer */}
+        <button
+          onClick={() => setMenuOpen(o => !o)}
+          title="Secciones"
+          style={{
+            display: 'flex', alignItems: 'center', gap: 8, marginLeft: 8,
+            padding: '6px 14px', borderRadius: 8, cursor: 'pointer', fontSize: 13,
+            background: t.accent + '20', border: `1px solid ${t.accent}`,
+            color: t.headerText || t.accent, fontWeight: 600,
+          }}
+        >
+          <span style={{ fontSize: 15, lineHeight: 1 }}>☰</span>
+          <span>{currentNav?.label || 'Secciones'}</span>
+          <span style={{ fontSize: 10, opacity: 0.7 }}>▾</span>
+        </button>
 
         <div style={{ flex: 1 }} />
 
@@ -1024,6 +1055,63 @@ export default function App() {
           {isDark ? '☀️' : '🌙'}
         </button>
       </header>
+
+      {/* Drawer del menú hamburguesa */}
+      {menuOpen && (
+        <>
+          {/* Backdrop: clic fuera cierra */}
+          <div
+            onClick={() => setMenuOpen(false)}
+            style={{
+              position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 40,
+            }}
+          />
+          <nav style={{
+            position: 'fixed', top: 0, left: 0, bottom: 0, width: 288, zIndex: 50,
+            background: t.card, borderRight: `1px solid ${t.border}`,
+            boxShadow: '2px 0 16px rgba(0,0,0,0.3)', overflowY: 'auto',
+            display: 'flex', flexDirection: 'column',
+          }}>
+            <div style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '14px 16px', borderBottom: `1px solid ${t.border}`,
+            }}>
+              <span style={{ fontSize: 15, fontWeight: 800, color: t.text }}>Secciones</span>
+              <button onClick={() => setMenuOpen(false)} style={{
+                background: 'transparent', border: 'none', cursor: 'pointer',
+                color: t.muted, fontSize: 18, lineHeight: 1, padding: 2,
+              }}>✕</button>
+            </div>
+            <div style={{ padding: '8px 8px 16px' }}>
+              {NAV_GROUPS.map(({ group, items }) => (
+                <div key={group} style={{ marginBottom: 10 }}>
+                  <div style={{
+                    fontSize: 10, fontWeight: 800, letterSpacing: 0.6, textTransform: 'uppercase',
+                    color: t.muted, padding: '8px 10px 4px',
+                  }}>{group}</div>
+                  {items.map(item => {
+                    const active = page === item.id
+                    return (
+                      <button key={item.id}
+                        onClick={() => { setPage(item.id); setMenuOpen(false) }}
+                        style={{
+                          display: 'flex', alignItems: 'center', width: '100%', textAlign: 'left',
+                          gap: 8, padding: '9px 12px', borderRadius: 8, cursor: 'pointer',
+                          fontSize: 13, marginBottom: 2,
+                          background: active ? t.accent + '20' : 'transparent',
+                          border: `1px solid ${active ? t.accent : 'transparent'}`,
+                          color: active ? (t.accent) : t.text,
+                          fontWeight: active ? 700 : 500,
+                        }}
+                      >{item.label}</button>
+                    )
+                  })}
+                </div>
+              ))}
+            </div>
+          </nav>
+        </>
+      )}
 
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         {page === 'executive' ? (
