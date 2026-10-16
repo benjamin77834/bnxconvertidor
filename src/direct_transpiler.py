@@ -105,9 +105,16 @@ def _strip_subscripts(s):
     cur = s
     # 'ident(...)' donde dentro NO hay otro parentesis sin cerrar: quitar '(...)'.
     pat = re.compile(r"([A-Za-z][\w-]*)\s*\([^()]*\)")
+    # 'ident[...]' (subindice de ARRAY ALGOL, p.ej. ARTICULOS[CONTADOR]): mismo
+    # tratamiento. En el modelo ctx plano no hay arreglos reales, asi que un
+    # subindice con corchetes dejaria 'ctx["articulos"][ctx["contador"]]' =
+    # indexar un string con string -> TypeError en runtime. Lo neutralizamos
+    # al campo base. [^\[\]] evita tragar subindices anidados A[B[I]].
+    pat_br = re.compile(r"([A-Za-z][\w-]*)\s*\[[^\[\]]*\]")
     while prev != cur:
         prev = cur
         cur = pat.sub(r"\1", cur)
+        cur = pat_br.sub(r"\1", cur)
     return cur
 
 
