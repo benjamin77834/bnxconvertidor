@@ -16,6 +16,7 @@ import GrafosPage from './components/GrafosPage'
 import EmulatorPage from './components/EmulatorPage'
 import ModelFrameworkPage from './components/ModelFrameworkPage'
 import QualityPage from './components/QualityPage'
+import DataQualityPage from './components/DataQualityPage'
 import CodeQualityPanel from './components/CodeQualityPanel'
 import DataGenPage from './components/DataGenPage'
 import DataSourcePanel from './components/DataSourcePanel'
@@ -981,6 +982,7 @@ export default function App() {
             { id: 'datagen', label: '🧪 Data Sintética' },
             { id: 'datasource', label: '🛢️ Datos Remotos' },
             { id: 'quality', label: '🛡️ Calidad' },
+            { id: 'dataquality', label: '⚖️ Comparador de Datos' },
             { id: 'models', label: '🔐 Modelos' },
             { id: 'history', label: '📜 History' },
           ].map(tab => (
@@ -1120,6 +1122,8 @@ export default function App() {
           </div>
         ) : page === 'quality' ? (
           <QualityPage theme={t} compiledCode={py2sparkCode || result?.code || ''} />
+        ) : page === 'dataquality' ? (
+          <DataQualityPage theme={t} />
         ) : page === 'models' ? (
           <ModelFrameworkPage theme={t} />
         ) : page === 'designer' ? (

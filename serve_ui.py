@@ -180,6 +180,12 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_pure_bundle()
         elif "/pyspark/from_token" in path:
             self._handle_pyspark_from_token()
+        elif "/quality/compare" in path:
+            self._handle_quality_compare()
+        elif "/quality/list" in path:
+            self._handle_quality_list()
+        elif "/quality/get" in path:
+            self._handle_quality_get()
         elif "/convert" in path:
             self._handle_convert()
         elif "/cobol" in path:
@@ -241,6 +247,10 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         # colgar el navegador: sirve una pagina de lineas del archivo por token.
         if path == "/code/page" or path == "/api/code/page":
             self._handle_code_page()
+            return
+        # Descarga de un reporte de calidad guardado (?id=..&fmt=html|csv|json).
+        if path == "/quality/download" or path == "/api/quality/download":
+            self._handle_quality_download()
             return
         if path == "/export/download" or path == "/api/export/download":
             self._handle_export_download()
@@ -2733,6 +2743,140 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             import traceback
             traceback.print_exc()
             self._json_response(500, {"error": str(e)})
+
+    def _quality_dir(self):
+        d = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "bnx_library", "quality_reports")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _handle_quality_compare(self):
+        """Compara dos salidas (A=Ab Initio baseline, B=convertidor), guarda el
+        reporte (local + S3) y lo devuelve. Body JSON:
+          {name, key?, tol_pct?, a:{filename,content_b64|content},
+           b:{filename,content_b64|content}}
+        'content' es texto (CSV); 'content_b64' es base64 (para parquet/binario).
+        """
+        import base64
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        try:
+            data = json.loads(body.decode("utf-8", errors="replace"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._json_response(400, {"error": "Invalid JSON body"})
+            return
+        try:
+            from src.data_quality import load_table, compare, report_to_csv, report_to_html
+
+            def _raw(side):
+                s = data.get(side) or {}
+                if s.get("content_b64"):
+                    return base64.b64decode(s["content_b64"]), s.get("filename", "")
+                return (s.get("content", "") or "").encode("utf-8"), s.get("filename", "")
+
+            rawA, fnA = _raw("a")
+            rawB, fnB = _raw("b")
+            if not rawA or not rawB:
+                self._json_response(400, {"error": "Se requieren los dos datasets (a y b)."})
+                return
+            cA, rA = load_table(rawA, fnA)
+            cB, rB = load_table(rawB, fnB)
+            key = (data.get("key") or "").strip() or None
+            tol = float(data.get("tol_pct", 5.0))
+            report = compare(cA, rA, cB, rB, key=key, tol_pct=tol)
+
+            # Metadata y persistencia.
+            import uuid as _uuid
+            from datetime import datetime as _datetime
+            rid = _datetime.now().strftime("%Y%m%d_%H%M%S_") + _uuid.uuid4().hex[:6]
+            name = (data.get("name") or "comparacion").strip()
+            report["id"] = rid
+            report["name"] = name
+            report["source_a"] = fnA
+            report["source_b"] = fnB
+            payload = json.dumps(report, default=str)
+            qdir = self._quality_dir()
+            with open(os.path.join(qdir, rid + ".json"), "w", encoding="utf-8") as f:
+                f.write(payload)
+            # Guardar tambien HTML y CSV listos para bajar.
+            with open(os.path.join(qdir, rid + ".html"), "w", encoding="utf-8") as f:
+                f.write(report_to_html(report, title=f"Calidad: {name}"))
+            with open(os.path.join(qdir, rid + ".csv"), "w", encoding="utf-8") as f:
+                f.write(report_to_csv(report))
+            # Subida a S3 (best-effort, mismo patron que la biblioteca).
+            try:
+                _s3_upload_library_file(os.path.join("quality_reports", rid + ".json"), payload)
+            except Exception as _e:
+                print(f"  [quality] S3 upload omitido: {_e}")
+            self._json_response(200, report)
+        except ValueError as ve:
+            self._json_response(400, {"error": str(ve)})
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": str(e)})
+
+    def _handle_quality_list(self):
+        """Lista los reportes de calidad guardados (metadata ligera)."""
+        import glob as _glob
+        qdir = self._quality_dir()
+        items = []
+        for fp in sorted(_glob.glob(os.path.join(qdir, "*.json")), reverse=True):
+            try:
+                with open(fp, "r", encoding="utf-8") as f:
+                    r = json.load(f)
+                v = r.get("verdict", {})
+                items.append({
+                    "id": r.get("id") or os.path.splitext(os.path.basename(fp))[0],
+                    "name": r.get("name", ""),
+                    "generated_at": r.get("generated_at", ""),
+                    "grade": v.get("grade"),
+                    "quality_pct": v.get("quality_pct"),
+                    "columns_total": v.get("columns_total"),
+                    "columns_drift": v.get("columns_drift"),
+                    "source_a": r.get("source_a", ""),
+                    "source_b": r.get("source_b", ""),
+                })
+            except Exception:
+                continue
+        self._json_response(200, {"reports": items})
+
+    def _handle_quality_get(self):
+        """Devuelve el reporte COMPLETO de un id (para reimprimir en la GUI)."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length) if content_length else b""
+        try:
+            data = json.loads(body.decode("utf-8", errors="replace")) if body else {}
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            data = {}
+        rid = (data.get("id") or "").strip()
+        if not re.fullmatch(r"[0-9A-Za-z_]+", rid or ""):
+            self._json_response(400, {"error": "id invalido"})
+            return
+        fp = os.path.join(self._quality_dir(), rid + ".json")
+        if not os.path.isfile(fp):
+            self._json_response(404, {"error": "reporte no encontrado"})
+            return
+        with open(fp, "r", encoding="utf-8") as f:
+            self._json_response(200, json.load(f))
+
+    def _handle_quality_download(self):
+        """Descarga un reporte guardado en html/csv/json. ?id=..&fmt=.."""
+        from urllib.parse import urlparse as _up, parse_qs as _pq
+        qs = _pq(_up(self.path).query)
+        rid = (qs.get("id", [""])[0] or "").strip()
+        fmt = (qs.get("fmt", ["html"])[0] or "html").lower()
+        if not re.fullmatch(r"[0-9A-Za-z_]+", rid or "") or fmt not in ("html", "csv", "json"):
+            self._json_response(400, {"error": "parametros invalidos"})
+            return
+        fp = os.path.join(self._quality_dir(), rid + "." + fmt)
+        if not os.path.isfile(fp):
+            self._json_response(404, {"error": "archivo no encontrado"})
+            return
+        with open(fp, "rb") as f:
+            data = f.read()
+        ctype = {"html": "text/html", "csv": "text/csv", "json": "application/json"}[fmt]
+        self._binary_response(data, f"calidad_{rid}.{fmt}", content_type=ctype)
 
     def _handle_pure_bundle(self):
         """Arma un ZIP del job Python PURO para correrlo fuera: main.py + app.py
