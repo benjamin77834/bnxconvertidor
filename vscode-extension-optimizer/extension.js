@@ -1,57 +1,17 @@
 // Extension VS Code: BNX PySpark Optimizer — optimiza PySpark por reglas.
 //
-// Llama al endpoint /optimize del portal BNX (mismo motor que la CLI y la GUI),
-// que aplica reglas de performance SIN IA: cache de DataFrames reusados con
-// linaje costoso, broadcast en joins con lado pequeno y coalesce en escritura.
-// No requiere Python en la maquina del usuario. La URL del portal es
-// configurable (psparkOptimizer.serverUrl).
+// 100% OFFLINE: el motor de optimizacion corre DENTRO de la extension
+// (optimizer.js, port de src/perf_optimizer.py). NO se conecta a ningun
+// servidor ni requiere el portal BNX corriendo ni Python en la maquina.
+// Aplica reglas de performance SIN IA: cache de DataFrames reusados con linaje
+// costoso, broadcast en joins con lado pequeno y coalesce en escritura.
 
 const vscode = require("vscode");
-const http = require("http");
-const https = require("https");
-const { URL } = require("url");
+const { optimizePyspark } = require("./optimizer");
 
-/** POST JSON al endpoint /optimize y devuelve el objeto de respuesta. */
-function optimizeViaServer(serverUrl, code) {
-  return new Promise((resolve, reject) => {
-    let base;
-    try {
-      base = new URL(serverUrl.replace(/\/+$/, "") + "/optimize");
-    } catch (e) {
-      return reject(new Error("URL de servidor invalida: " + serverUrl));
-    }
-    const payload = JSON.stringify({ code });
-    const lib = base.protocol === "https:" ? https : http;
-    const req = lib.request(
-      base,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Content-Length": Buffer.byteLength(payload),
-        },
-        timeout: 30000,
-      },
-      (res) => {
-        let body = "";
-        res.on("data", (c) => (body += c));
-        res.on("end", () => {
-          try {
-            resolve(JSON.parse(body));
-          } catch (e) {
-            reject(new Error("Respuesta no valida del servidor: " + body.slice(0, 200)));
-          }
-        });
-      }
-    );
-    req.on("error", (e) =>
-      reject(new Error("No se pudo conectar a " + base.href + " (" + e.message + "). " +
-        "Revisa que el portal BNX este corriendo y la config psparkOptimizer.serverUrl."))
-    );
-    req.on("timeout", () => { req.destroy(); reject(new Error("Timeout al contactar el servidor.")); });
-    req.write(payload);
-    req.end();
-  });
+/** Optimiza localmente (sin red). Devuelve una promesa por compatibilidad. */
+function optimizeLocal(code) {
+  return Promise.resolve().then(() => optimizePyspark(code, true));
 }
 
 /** Resumen legible de los cambios aplicados. */
@@ -94,9 +54,6 @@ async function showResult(editor, result, replaceRange) {
 }
 
 function activate(context) {
-  const serverUrl = () =>
-    vscode.workspace.getConfiguration("psparkOptimizer").get("serverUrl", "http://127.0.0.1:8081");
-
   const run = async (code, editor, range) => {
     if (!code || !code.trim()) {
       vscode.window.showErrorMessage("PySpark Optimizer: no hay codigo para optimizar.");
@@ -106,7 +63,7 @@ function activate(context) {
       { location: vscode.ProgressLocation.Notification, title: "PySpark Optimizer: optimizando…" },
       async () => {
         try {
-          const result = await optimizeViaServer(serverUrl(), code);
+          const result = await optimizeLocal(code);
           await showResult(editor, result, range);
         } catch (e) {
           vscode.window.showErrorMessage("PySpark Optimizer: " + e.message);

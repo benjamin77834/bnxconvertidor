@@ -2,7 +2,7 @@
   "name": "pyspark-optimizer",
   "displayName": "BNX PySpark Optimizer",
   "description": "Optimiza codigo PySpark por reglas de performance (cache, broadcast join, coalesce) usando el motor del portal BNX.",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "publisher": "bnx",
   "engines": {
     "vscode": "^1.75.0"
@@ -48,11 +48,6 @@
     "configuration": {
       "title": "PySpark Optimizer",
       "properties": {
-        "psparkOptimizer.serverUrl": {
-          "type": "string",
-          "default": "http://127.0.0.1:8081",
-          "description": "URL base del portal BNX que expone el endpoint /optimize. Usa 127.0.0.1 (IPv4) por defecto para evitar que 'localhost' se resuelva a ::1 y falle la conexión."
-        },
         "psparkOptimizer.openInNewEditor": {
           "type": "boolean",
           "default": true,

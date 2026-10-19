@@ -1,58 +1,18 @@
 // Extension VS Code: BNX Code Review (estilo Sonar).
 //
-// Llama al endpoint /analyze del portal BNX (mismo motor que la GUI de Data
-// Sintetica) y pinta los hallazgos como DIAGNOSTICOS nativos del editor
-// (subrayado + panel Problems). Reglas: palabras reservadas / shadowing de
-// built-ins, performance (.collect/.toPandas/.count), seguridad (secretos
-// hardcodeados), smells (except desnudo, print, lineas largas, etc.).
-// No requiere Python local. La URL del portal es configurable (bnxReview.serverUrl).
+// 100% OFFLINE: el motor de analisis corre DENTRO de la extension (reviewer.js,
+// port de src/code_review.py). NO se conecta a ningun servidor ni requiere el
+// portal BNX ni Python. Pinta los hallazgos como DIAGNOSTICOS nativos del editor
+// (subrayado + panel Problems). Reglas: shadowing de built-ins, performance
+// (.collect/.toPandas/.count), seguridad (secretos hardcodeados), smells
+// (except desnudo, except:pass, == None, print, funciones largas, lineas largas).
 
 const vscode = require("vscode");
-const http = require("http");
-const https = require("https");
-const { URL } = require("url");
+const { reviewCode } = require("./reviewer");
 
-/** POST JSON al endpoint /analyze y devuelve el objeto de respuesta. */
-function analyzeViaServer(serverUrl, code) {
-  return new Promise((resolve, reject) => {
-    let base;
-    try {
-      base = new URL(serverUrl.replace(/\/+$/, "") + "/analyze");
-    } catch (e) {
-      return reject(new Error("URL de servidor invalida: " + serverUrl));
-    }
-    const payload = JSON.stringify({ code });
-    const lib = base.protocol === "https:" ? https : http;
-    const req = lib.request(
-      base,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Content-Length": Buffer.byteLength(payload),
-        },
-        timeout: 30000,
-      },
-      (res) => {
-        let body = "";
-        res.on("data", (c) => (body += c));
-        res.on("end", () => {
-          try {
-            resolve(JSON.parse(body));
-          } catch (e) {
-            reject(new Error("Respuesta no valida del servidor: " + body.slice(0, 200)));
-          }
-        });
-      }
-    );
-    req.on("error", (e) =>
-      reject(new Error("No se pudo conectar a " + base.href + " (" + e.message + "). " +
-        "Revisa que el portal BNX este corriendo y la config bnxReview.serverUrl."))
-    );
-    req.on("timeout", () => { req.destroy(); reject(new Error("Timeout al contactar el servidor.")); });
-    req.write(payload);
-    req.end();
-  });
+/** Analiza localmente (sin red). Devuelve una promesa por compatibilidad. */
+function analyzeLocal(code) {
+  return Promise.resolve().then(() => reviewCode(code));
 }
 
 /** Mapea la severidad BNX a la severidad de diagnostico de VS Code. */
@@ -90,7 +50,7 @@ function buildDiagnostics(doc, findings) {
   return diags;
 }
 
-async function analyzeDocument(doc, collection, serverUrl, silent) {
+async function analyzeDocument(doc, collection, silent) {
   if (!doc || doc.languageId !== "python") {
     if (!silent) vscode.window.showErrorMessage("BNX Review: abre un archivo Python/PySpark primero.");
     return;
@@ -98,7 +58,7 @@ async function analyzeDocument(doc, collection, serverUrl, silent) {
   const code = doc.getText();
   if (!code.trim()) { collection.set(doc.uri, []); return; }
   try {
-    const result = await analyzeViaServer(serverUrl, code);
+    const result = await analyzeLocal(code);
     if (result.error) {
       if (!silent) vscode.window.showErrorMessage("BNX Review: " + result.error);
       return;
@@ -131,8 +91,6 @@ function activate(context) {
   const collection = vscode.languages.createDiagnosticCollection("bnxReview");
   context.subscriptions.push(collection);
 
-  const serverUrl = () =>
-    vscode.workspace.getConfiguration("bnxReview").get("serverUrl", "http://127.0.0.1:8081");
   const analyzeOnSave = () =>
     vscode.workspace.getConfiguration("bnxReview").get("analyzeOnSave", true);
 
@@ -142,7 +100,7 @@ function activate(context) {
     if (!editor) { vscode.window.showErrorMessage("BNX Review: abre un archivo Python primero."); return; }
     await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: "BNX Review: analizando…" },
-      async () => { await analyzeDocument(editor.document, collection, serverUrl(), false); }
+      async () => { await analyzeDocument(editor.document, collection, false); }
     );
   });
 
@@ -155,7 +113,7 @@ function activate(context) {
   // Analisis automatico al guardar (silencioso).
   const onSave = vscode.workspace.onDidSaveTextDocument((doc) => {
     if (analyzeOnSave() && doc.languageId === "python") {
-      analyzeDocument(doc, collection, serverUrl(), true);
+      analyzeDocument(doc, collection, true);
     }
   });
 

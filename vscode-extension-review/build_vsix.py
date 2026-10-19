@@ -17,7 +17,8 @@ import zipfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # Archivos de la extension que van dentro de extension/ (excluye artefactos).
-_INCLUDE = ["package.json", "extension.js", "README.md", "CHANGELOG.md", "LICENSE.txt"]
+# reviewer.js = motor OFFLINE requerido por extension.js (require('./reviewer')).
+_INCLUDE = ["package.json", "extension.js", "reviewer.js", "README.md", "CHANGELOG.md", "LICENSE.txt"]
 
 
 def _manifest(pkg):

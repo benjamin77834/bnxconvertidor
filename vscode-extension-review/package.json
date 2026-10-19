@@ -1,8 +1,8 @@
 {
   "name": "bnx-code-review",
   "displayName": "BNX Code Review (estilo Sonar)",
-  "description": "Analiza calidad de PySpark/Python por reglas (palabras reservadas, shadowing de built-ins, performance, seguridad) usando el motor del portal BNX. Marca los hallazgos como diagnosticos en el editor.",
-  "version": "0.2.0",
+  "description": "Analiza calidad de PySpark/Python por reglas (shadowing de built-ins, performance, seguridad, smells) con un motor OFFLINE integrado (sin servidor ni Python). Marca los hallazgos como diagnosticos en el editor.",
+  "version": "0.3.0",
   "publisher": "bnx",
   "engines": {
     "vscode": "^1.75.0"
@@ -47,11 +47,6 @@
     "configuration": {
       "title": "BNX Code Review",
       "properties": {
-        "bnxReview.serverUrl": {
-          "type": "string",
-          "default": "http://127.0.0.1:8081",
-          "description": "URL base del portal BNX que expone el endpoint /analyze. Usa 127.0.0.1 (IPv4) por defecto para evitar que 'localhost' se resuelva a ::1 y falle la conexión."
-        },
         "bnxReview.analyzeOnSave": {
           "type": "boolean",
           "default": true,

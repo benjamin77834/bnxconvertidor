@@ -1,5 +1,14 @@
 # Changelog — BNX Code Review
 
+## 0.3.0
+- OFFLINE total: el motor de análisis ahora corre dentro de la extensión
+  (`reviewer.js`, port de `src/code_review.py`). Ya NO llama al endpoint
+  `/analyze` ni requiere el portal BNX corriendo ni Python en la máquina.
+- Eliminada la configuración `bnxReview.serverUrl` (ya no aplica).
+- Mismas reglas y modelo Sonar que el motor Python (type, severidad, rule_key,
+  deuda técnica, Quality Gate). Las reglas estructurales se detectan por texto
+  (JavaScript no tiene el módulo `ast` de Python) con resultados equivalentes.
+
 ## 0.2.0
 - Modelo **SonarQube/SonarLint**: cada hallazgo trae su `type`
   (BUG / CODE_SMELL / VULNERABILITY / SECURITY_HOTSPOT), su severidad Sonar y la
