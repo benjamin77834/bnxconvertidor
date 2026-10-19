@@ -1,0 +1,1646 @@
+# py2spark.converter — nucleo de conversion Python (pandas) -> PySpark 3.
+#
+# Estrategia: parsear el codigo a AST, detectar los "nombres" que son DataFrames
+# de pandas (por asignaciones desde pd.read_* o desde operaciones de otro df) y
+# reescribir las construcciones idiomaticas de pandas a PySpark:
+#
+#   pd.read_csv("f.csv")            -> spark.read.option("header",True).option("inferSchema",True).csv("f.csv")
+#   pd.read_parquet("f")           -> spark.read.parquet("f")
+#   df[df["x"] > 0]                -> df.filter(F.col("x") > 0)
+#   df["x"]                        -> F.col("x")            (dentro de expresiones)
+#   df["y"] = expr                 -> df = df.withColumn("y", expr)
+#   df.groupby("k").agg(...)       -> df.groupBy("k").agg(...)
+#   df.merge(o, on="k", how=...)   -> df.join(o, on="k", how=...)
+#   df.drop(columns=[...])         -> df.drop(...)
+#   df.rename(columns={a:b})       -> df.withColumnRenamed(a,b)...
+#   df.sort_values("x", asc=False) -> df.orderBy(F.col("x").desc())
+#   df.head(n) / df.limit(n)       -> df.limit(n)
+#   df.fillna(v) / dropna()        -> df.fillna(v) / df.dropna()
+#   df.to_csv("o") / to_parquet    -> df.write...csv("o") / parquet("o")
+#   len(df) / df.shape[0]          -> df.count()
+#
+# Lo no soportado (apply con lambda arbitraria, iterrows, loops sobre filas,
+# numpy elementwise, etc.) se deja igual y se anota un TODO.
+
+import ast
+import re
+
+from . import mllib as _mllib
+from ._unparse import unparse as _unparse
+
+
+# --------- utilidades de deteccion ---------
+
+_PANDAS_READERS = {
+    "read_csv": "csv",
+    "read_parquet": "parquet",
+    "read_json": "json",
+    "read_table": "csv",
+    "read_orc": "orc",
+    # read_excel no tiene equivalente nativo en Spark; lo mapeamos a CSV como
+    # aproximacion (Spark no lee .xlsx sin el conector com.crealytics.spark.excel).
+    # Se avisa en warnings. Mejor una fuente detectable que dejar pd.read_excel crudo.
+    "read_excel": "csv",
+}
+
+# Metodos que devuelven otro DataFrame (para propagar el "es df").
+_DF_RETURNING = {
+    "filter", "select", "where", "groupby", "groupBy", "agg", "merge", "join",
+    "drop", "rename", "sort_values", "orderBy", "sort", "head", "limit",
+    "fillna", "dropna", "withColumn", "withColumnRenamed", "distinct",
+    "drop_duplicates", "assign", "copy", "reset_index", "tail", "sample",
+    "union", "unionByName", "withColumnRenamed",
+}
+
+# Agregaciones pandas -> funciones F.
+_AGG_MAP = {
+    "sum": "sum", "mean": "avg", "avg": "avg", "min": "min", "max": "max",
+    "count": "count", "std": "stddev", "var": "variance", "median": "percentile_approx",
+    "nunique": "countDistinct", "first": "first", "last": "last",
+}
+
+
+# Modulos de ML cuyo entrenamiento NO se traduce 1:1 a Spark (se usa MLlib).
+# joblib/pickle: persistencia de modelos sklearn; en Spark se usa Model.save().
+_ML_MODULES = ("sklearn", "xgboost", "lightgbm", "catboost", "tensorflow",
+               "keras", "torch", "statsmodels", "joblib")
+
+# Nombres de clases/funciones ML tipicas (para detectar uso sin import explicito).
+_ML_CALLABLES = {
+    "train_test_split", "cross_val_score", "GridSearchCV", "StandardScaler",
+    "MinMaxScaler", "LabelEncoder", "OneHotEncoder", "LogisticRegression",
+    "LinearRegression", "RandomForestClassifier", "RandomForestRegressor",
+    "GradientBoostingClassifier", "DecisionTreeClassifier", "KMeans", "SVC",
+    "XGBClassifier", "XGBRegressor", "LGBMClassifier", "Pipeline",
+}
+
+# Cargadores de datasets de sklearn: NO tienen equivalente en Spark (los datos
+# vienen de una fuente real: CSV/parquet/tabla). Los reconocemos para traducirlos
+# a un spark.read con TODO, y NO dejarlos crudos (que daria NameError al borrar
+# el import 'from sklearn.datasets import ...').
+_ML_DATA_LOADERS = {
+    "fetch_openml", "fetch_california_housing", "fetch_covtype", "fetch_20newsgroups",
+    "load_iris", "load_digits", "load_wine", "load_breast_cancer", "load_diabetes",
+    "load_boston", "load_linnerud", "make_classification", "make_regression",
+    "make_blobs", "make_moons", "make_circles",
+}
+
+# Sugerencia de equivalente en Spark MLlib por clase sklearn.
+_MLLIB_HINT = {
+    "LogisticRegression": "pyspark.ml.classification.LogisticRegression",
+    "LinearRegression": "pyspark.ml.regression.LinearRegression",
+    "RandomForestClassifier": "pyspark.ml.classification.RandomForestClassifier",
+    "RandomForestRegressor": "pyspark.ml.regression.RandomForestRegressor",
+    "GradientBoostingClassifier": "pyspark.ml.classification.GBTClassifier",
+    "DecisionTreeClassifier": "pyspark.ml.classification.DecisionTreeClassifier",
+    "KMeans": "pyspark.ml.clustering.KMeans",
+    "StandardScaler": "pyspark.ml.feature.StandardScaler (+ VectorAssembler)",
+    "MinMaxScaler": "pyspark.ml.feature.MinMaxScaler (+ VectorAssembler)",
+    "OneHotEncoder": "pyspark.ml.feature.StringIndexer + OneHotEncoder",
+    "train_test_split": "df.randomSplit([0.8, 0.2], seed=42)",
+    "get_dummies": "pyspark.ml.feature.StringIndexer + OneHotEncoder",
+}
+
+
+def _is_ml_module(mod):
+    mod = (mod or "").split(".")[0]
+    return mod in _ML_MODULES
+
+
+def _names_in_target(tgt):
+    """Nombres de variable simples de un target de asignacion.
+
+    - Name           -> [id]
+    - Tuple/List      -> nombres de sus elementos Name
+    - Subscript (df[cols]) u otros -> [] (sin nombre simple)
+    """
+    if isinstance(tgt, ast.Name):
+        return [tgt.id]
+    if isinstance(tgt, (ast.Tuple, ast.List)):
+        out = []
+        for e in tgt.elts:
+            if isinstance(e, ast.Name):
+                out.append(e.id)
+        return out
+    return []
+
+
+# Accesos de pandas basados en el INDICE de fila / posicion. Spark no tiene
+# indice de fila, asi que estos no son traducibles 1:1.
+_PANDAS_INDEX_ATTRS = {"loc", "iloc", "ix", "at", "iat", "index", "values", "reset_index", "set_index"}
+
+# Atributos de un Bunch de sklearn (fetch_openml/load_*): no existen en Spark.
+_SKLEARN_BUNCH_ATTRS = {"data", "target", "feature_names", "target_names", "DESCR", "frame"}
+
+# astype de pandas -> cast de Spark. Mapea el tipo Python/numpy/str al tipo Spark.
+_ASTYPE_MAP = {
+    "int": "int", "int32": "int", "int64": "bigint", "long": "bigint",
+    "float": "double", "float32": "float", "float64": "double",
+    "str": "string", "string": "string", "object": "string",
+    "bool": "boolean", "boolean": "boolean",
+    "int8": "tinyint", "int16": "smallint",
+}
+
+
+def _astype_to_spark(arg):
+    """Devuelve el nombre de tipo Spark para el argumento de pandas .astype(...).
+    Acepta int/float/str (Name), 'int64' (str const) o np.int64 (Attribute)."""
+    name = None
+    if isinstance(arg, ast.Name):
+        name = arg.id
+    elif isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+        name = arg.value
+    elif isinstance(arg, ast.Attribute):
+        name = arg.attr  # np.int64 -> 'int64'
+    if name is None:
+        return None
+    return _ASTYPE_MAP.get(name, _ASTYPE_MAP.get(name.lower()))
+
+
+def _uses_pandas_index(node):
+    """True si el nodo AST usa un accesor de indice/posicion de pandas
+    (.loc, .iloc, .at, .iat, .ix, .index, .values, set_index/reset_index)."""
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Attribute) and sub.attr in _PANDAS_INDEX_ATTRS:
+            return sub.attr
+    return None
+
+
+def _sklearn_bunch_attr(node):
+    """Si el nodo es <name>.data / .target / .feature_names / ... (atributo de un
+    Bunch de sklearn), devuelve el atributo. Estos no existen en un DataFrame de
+    Spark (los datos vienen de una fuente real)."""
+    if isinstance(node, ast.Attribute) and node.attr in _SKLEARN_BUNCH_ATTRS \
+            and isinstance(node.value, ast.Name):
+        return node.attr
+    return None
+
+
+class _Warnings:
+    def __init__(self):
+        self.warnings = []
+        self.unsupported = []
+
+    def warn(self, msg):
+        if msg not in self.warnings:
+            self.warnings.append(msg)
+
+    def unsup(self, msg):
+        if msg not in self.unsupported:
+            self.unsupported.append(msg)
+
+
+def _is_str_const(node):
+    return isinstance(node, ast.Constant) and isinstance(node.value, str)
+
+
+def _kw(call, name):
+    """Devuelve el nodo del keyword `name` de un ast.Call, o None."""
+    for k in call.keywords:
+        if k.arg == name:
+            return k.value
+    return None
+
+
+class PandasToSparkTransformer(ast.NodeTransformer):
+    """Reescribe el AST de pandas a PySpark.
+
+    Mantiene un conjunto `df_names` con los nombres de variable que son
+    DataFrames (Spark tras la conversion). Se siembra con las asignaciones
+    `x = pd.read_*` y se propaga cuando `x = <df>.<metodo_que_devuelve_df>()`.
+    """
+
+    def __init__(self, diag):
+        self.diag = diag
+        self.df_names = set()
+        self.pandas_alias = {"pd", "pandas"}  # se ajusta al leer imports
+        # Nombres importados de sklearn/ML (clases y funciones) para detectar su
+        # uso mas abajo y marcarlo con TODO hacia Spark MLlib.
+        self.ml_names = set()
+        # Variables que son estimadores ML (x = LogisticRegression(...)) para
+        # neutralizar sus .fit()/.predict()/.transform() posteriores.
+        self.ml_vars = set()
+        # Bloques MLlib generados: id_placeholder -> texto multi-linea. Se emiten
+        # como un statement placeholder y se sustituyen tras ast.unparse.
+        self.mllib_blocks = {}
+        self.mllib_kinds = set()      # tipos de import MLlib a asegurar
+        self._mllib_seq = 0
+        # Nombre del ultimo DataFrame "principal" visto (para df_hint de MLlib).
+        self.last_df = "df"
+        # Variables "muertas": provienen de un statement no traducible que se
+        # neutralizo a TODO (p.ej. y = adult.target). Cualquier statement que las
+        # use tambien se neutraliza para no romper con NameError.
+        self.dead_vars = set()
+        # True si el codigo usa pd.DataFrame(<variable>): inyectamos el helper
+        # _py2spark_rows en el preambulo.
+        self.needs_rows_helper = False
+        # Alias de numpy (import numpy as np) para traducir np.where/np.random.
+        self.numpy_alias = {"np", "numpy"}
+        # Reconocedor de pipeline sklearn (Pipeline + ColumnTransformer). Si el
+        # modulo contiene ese patron completo con piezas soportadas, se llena en
+        # convert_code ANTES de transformar: sklearn_pipeline = {code, kinds, ...}
+        # emit_var = la variable del Pipeline final (donde se inyecta el bloque),
+        # suppress = nombres intermedios (sub-pipelines, preprocessor) que se
+        # neutralizan SIN TODO (ya quedan cubiertos por el bloque unico).
+        self.sklearn_pipeline = None
+        self.sklearn_emit_var = None
+        self.sklearn_suppress = set()
+
+    # ---- imports: detectar alias de pandas, y neutralizar 'import pandas' ----
+    def visit_Import(self, node):
+        new_names = []
+        for alias in node.names:
+            if alias.name == "pandas":
+                self.pandas_alias.add(alias.asname or "pandas")
+                # se reemplaza por el import de pyspark (lo agrega el preambulo);
+                # marcamos para omitir esta linea.
+                continue
+            if _is_ml_module(alias.name):
+                _alias = alias.asname or alias.name.split(".")[0]
+                # registrar el nombre del modulo para detectar usos tipo
+                # joblib.dump(...), xgb.XGBClassifier(...), etc.
+                self.ml_names.add(_alias)
+                self._note_ml_import(_alias)
+                continue  # se omite el import de sklearn/ML
+            new_names.append(alias)
+        if not new_names:
+            return None  # elimina 'import pandas as pd'
+        node.names = new_names
+        return node
+
+    def visit_ImportFrom(self, node):
+        if node.module == "pandas":
+            return None  # 'from pandas import ...' -> se omite
+        if node.module and _is_ml_module(node.module):
+            # from sklearn.linear_model import LogisticRegression, ...
+            for alias in node.names:
+                self.ml_names.add(alias.asname or alias.name)
+            self._note_ml_import(node.module)
+            return None  # se omite el import; el uso se marca con TODO
+        return node
+
+    def _note_ml_import(self, mod):
+        self.diag.warn(
+            f"Libreria ML detectada ('{mod}'): se genero el esqueleto equivalente "
+            f"en Spark MLlib (pyspark.ml). Revisa 'featuresCol'/'labelCol' y ensambla "
+            f"las columnas de features con VectorAssembler antes de entrenar."
+        )
+
+    # ---- Subscript: df[...] ----
+    def visit_Subscript(self, node):
+        self.generic_visit(node)
+        val = node.value
+        sl = node.slice
+        # df["col"]  -> F.col("col")   (solo si `val` es un df conocido)
+        if self._is_df(val) and _is_str_const(sl):
+            return self._f_col(sl.value)
+        # df[["a","b"]] -> df.select("a","b")
+        if self._is_df(val) and isinstance(sl, ast.List) and all(_is_str_const(e) for e in sl.elts):
+            cols = [e.value for e in sl.elts]
+            return ast.Call(
+                func=ast.Attribute(value=val, attr="select", ctx=ast.Load()),
+                args=[ast.Constant(c) for c in cols], keywords=[],
+            )
+        # df[<bool expr>] -> df.filter(<bool expr>)
+        if self._is_df(val) and not _is_str_const(sl) and not isinstance(sl, ast.Slice):
+            return ast.Call(
+                func=ast.Attribute(value=val, attr="filter", ctx=ast.Load()),
+                args=[sl], keywords=[],
+            )
+        return node
+
+    # ---- Call: pd.read_*, df.metodo(...) ----
+    def visit_Call(self, node):
+        self.generic_visit(node)
+        f = node.func
+
+        # pd.read_csv(...) / pd.read_parquet(...)
+        if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) \
+                and f.value.id in self.pandas_alias and f.attr in _PANDAS_READERS:
+            if f.attr == "read_excel":
+                self.diag.warn("pd.read_excel -> spark.read.csv (aproximado): Spark no lee "
+                               ".xlsx sin conector; ajusta el formato/fuente real del archivo.")
+            return self._read(node, _PANDAS_READERS[f.attr])
+
+        # pd.DataFrame(...) -> spark.createDataFrame(...) (aprox)
+        if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) \
+                and f.value.id in self.pandas_alias and f.attr == "DataFrame":
+            return self._pd_dataframe(node)
+
+        # np.<fn>(...): traducir las que tienen equivalente de columna en Spark.
+        if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) \
+                and f.value.id in self.numpy_alias:
+            np_tr = self._numpy_call(node, f.attr)
+            if np_tr is not None:
+                return np_tr
+
+        # np.random.<fn>(...) -> F.rand() escalado (valor aleatorio por fila).
+        # Sirve tanto en expresiones de columna (df["c"] = ... + np.random...)
+        # como dentro de pd.DataFrame({col: np.random...}). En este ultimo caso
+        # _py2spark_rows genera datos reales a partir de esas columnas F.*.
+        if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Attribute) \
+                and f.value.attr == "random" and isinstance(f.value.value, ast.Name) \
+                and f.value.value.id in self.numpy_alias:
+            np_tr = self._numpy_random_call(node, f.attr)
+            if np_tr is not None:
+                return np_tr
+
+        # df.metodo(...)
+        if isinstance(f, ast.Attribute) and self._is_df(f.value):
+            return self._df_method(node, f)
+
+        # col.astype(tipo) -> col.cast('tipo_spark')   (sobre expresion de columna)
+        if isinstance(f, ast.Attribute) and f.attr == "astype":
+            arg = node.args[0] if node.args else (node.keywords[0].value if node.keywords else None)
+            spark_type = _astype_to_spark(arg) if arg is not None else None
+            if spark_type is not None:
+                return ast.Call(
+                    func=ast.Attribute(value=f.value, attr="cast", ctx=ast.Load()),
+                    args=[ast.Constant(spark_type)], keywords=[],
+                )
+            self.diag.warn("astype(...) con tipo no reconocido: revisa el .cast() manualmente.")
+            return ast.Call(
+                func=ast.Attribute(value=f.value, attr="cast", ctx=ast.Load()),
+                args=[arg] if arg is not None else [], keywords=[],
+            )
+
+        # Series.apply/map/applymap (sobre columnas F.col(...) o df["x"]): logica
+        # elementwise no traducible directamente. Se marca aunque el receptor no
+        # sea un df completo (p.ej. df["x"].apply(...)).
+        if isinstance(f, ast.Attribute) and f.attr in ("apply", "applymap", "map"):
+            recv_is_col = (
+                isinstance(f.value, ast.Call) and isinstance(f.value.func, ast.Attribute)
+                and f.value.func.attr == "col"
+            )
+            if recv_is_col:
+                self.diag.unsup(
+                    f".{f.attr}(...) sobre una columna (Series.{f.attr}) no es "
+                    f"traducible directo: usa funciones de columna (F.*) o define "
+                    f"una UDF: F.udf(...)."
+                )
+            return node
+
+        # len(df) -> df.count()
+        if isinstance(f, ast.Name) and f.id == "len" and len(node.args) == 1 and self._is_df(node.args[0]):
+            return ast.Call(
+                func=ast.Attribute(value=node.args[0], attr="count", ctx=ast.Load()),
+                args=[], keywords=[],
+            )
+        return node
+
+    # ---- Assign: x = pd.read_*  |  df["c"] = expr  |  x = <df>.metodo() ----
+    def visit_Assign(self, node):
+        # --- Patron sklearn Pipeline + ColumnTransformer reconocido ---
+        # Si este modulo lo detecto (convert_code), los statements intermedios
+        # (sub-pipelines, preprocessor) se neutralizan SIN TODO, y el bloque
+        # pyspark.ml completo se emite en el lugar del Pipeline final.
+        if self.sklearn_pipeline is not None and len(node.targets) == 1 \
+                and isinstance(node.targets[0], ast.Name):
+            _nm = node.targets[0].id
+            if _nm == self.sklearn_emit_var:
+                self._mllib_seq += 1
+                pid = f"__PY2SPARK_MLLIB_{self._mllib_seq}__"
+                self.mllib_blocks[pid] = self.sklearn_pipeline["code"]
+                self.mllib_kinds |= self.sklearn_pipeline["kinds"]
+                return ast.Expr(value=ast.Name(pid, ast.Load()))
+            if _nm in self.sklearn_suppress:
+                return None  # se omite el statement (cubierto por el bloque)
+
+        # Con el patron activo, suprimir SIN TODO los statements auxiliares que el
+        # bloque unico ya reemplaza: el train_test_split (el bloque hace su propio
+        # randomSplit sobre df) y las asignaciones X = df[...] / y = df[...] (en
+        # Spark el label es una columna de df, no una variable aparte).
+        if self.sklearn_pipeline is not None and isinstance(node.value, ast.Call):
+            _fn = node.value.func
+            _cn = _fn.id if isinstance(_fn, ast.Name) else (
+                _fn.attr if isinstance(_fn, ast.Attribute) else None)
+            if _cn == "train_test_split":
+                return None
+        if self.sklearn_pipeline is not None and isinstance(node.value, ast.Subscript):
+            # X = df[...] / y = df['col'] -> redundante con el bloque.
+            _base = node.value.value
+            if isinstance(_base, ast.Name) and (_base.id in self.df_names or _base.id == self.last_df):
+                return None
+
+        # Si el valor usa una variable "muerta" (proveniente de un statement no
+        # traducible), este statement tambien se neutraliza a TODO.
+        dead = self._refs_dead_var(node.value)
+        if dead is not None:
+            try:
+                orig = _unparse(node)
+            except Exception:
+                orig = "<statement>"
+            self._kill_targets(node)
+            return self._emit_comment([
+                f"TODO py2spark: no traducible (depende de '{dead}', que no tiene",
+                f"equivalente en Spark).",
+                f"Original: {orig}",
+            ])
+
+        # --- Deteccion de ML (sklearn/xgboost/etc.): el entrenamiento no se
+        # traduce 1:1. Neutralizamos el statement a una asignacion a None y
+        # registramos un TODO con el equivalente MLlib, para que el resto del
+        # codigo (preparacion pandas) siga compilando. Cubre p.ej.:
+        #   X_tr, X_te, y_tr, y_te = train_test_split(...)
+        #   model = LogisticRegression(...)
+        #   df[cols] = scaler.fit_transform(...)   (el caso que rompia el unparse)
+        ml_snippet = self._ml_snippet_for_assign(node)
+        if ml_snippet is not None:
+            # Registrar como estimador las variables asignadas (para resolver sus
+            # .fit()/.predict()/.transform() posteriores como MLlib).
+            for tgt in node.targets:
+                for nm in _names_in_target(tgt):
+                    self.ml_vars.add(nm)
+            return self._emit_mllib(ml_snippet)
+
+        # Atributos de un Bunch de sklearn: X = adult.data / y = adult.target ...
+        # No existen en Spark. '.data' y '.frame' -> el DataFrame completo (util
+        # para seguir el pipeline). '.target' y demas -> TODO honesto.
+        bunch_attr = _sklearn_bunch_attr(node.value)
+        if bunch_attr is not None:
+            base = node.value.value  # el Name del Bunch (p.ej. 'adult')
+            base_is_df = isinstance(base, ast.Name) and self._is_df(base)
+            if bunch_attr in ("data", "frame") and base_is_df:
+                self.diag.warn(
+                    f"'.{bunch_attr}' (Bunch de sklearn) -> se usa el DataFrame "
+                    f"completo. Selecciona/elimina la columna objetivo segun tu caso."
+                )
+                # x = adult  (marcar x como df)
+                if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                    self.df_names.add(node.targets[0].id)
+                    self.last_df = node.targets[0].id
+                return ast.Assign(targets=node.targets, value=base)
+            # .target / .feature_names / .DESCR / .target_names: sin equivalente.
+            try:
+                orig = _unparse(node)
+            except Exception:
+                orig = "<statement>"
+            self.diag.unsup(
+                f"'.{bunch_attr}' es un atributo del Bunch de sklearn (no existe en "
+                f"Spark). En Spark la columna objetivo es una columna del DataFrame; "
+                f"ajusta labelCol y selecciona la columna real."
+            )
+            self._kill_targets(node)
+            return self._emit_comment([
+                f"TODO py2spark: no traducible ('.{bunch_attr}' es atributo de sklearn.Bunch).",
+                f"Original: {orig}",
+            ])
+
+        # Accesos por indice/posicion de pandas (.loc/.iloc/.index/...): Spark no
+        # tiene indice de fila. En vez de emitir codigo que rompe (NameError /
+        # AttributeError), neutralizamos el statement a un comentario TODO honesto.
+        idx_attr = _uses_pandas_index(node.value)
+        if idx_attr is not None:
+            try:
+                orig = _unparse(node)
+            except Exception:
+                orig = "<statement>"
+            self.diag.unsup(
+                f"'.{idx_attr}' usa el indice/posicion de fila de pandas, que no "
+                f"existe en Spark. Revisa manualmente: en Spark 'X' e 'y' suelen "
+                f"ser columnas del mismo DataFrame (no se alinean por indice)."
+            )
+            self._kill_targets(node)
+            return self._emit_comment([
+                f"TODO py2spark: no traducible ('.{idx_attr}' depende del indice de pandas).",
+                f"Original: {orig}",
+            ])
+
+        # visitar primero el valor (transforma pd.read_*, etc.)
+        node.value = self.visit(node.value)
+
+        # df["c"] = expr   -> df = df.withColumn("c", expr)
+        if len(node.targets) == 1 and isinstance(node.targets[0], ast.Subscript):
+            tgt = node.targets[0]
+            if self._is_df(tgt.value) and _is_str_const(tgt.slice):
+                colname = tgt.slice.value
+                df_expr = tgt.value
+                new_val = ast.Call(
+                    func=ast.Attribute(value=df_expr, attr="withColumn", ctx=ast.Load()),
+                    args=[ast.Constant(colname), node.value], keywords=[],
+                )
+                # asignar de vuelta al mismo df (df = df.withColumn(...))
+                if isinstance(df_expr, ast.Name):
+                    return ast.Assign(targets=[ast.Name(df_expr.id, ast.Store())], value=new_val)
+                return ast.Expr(value=new_val)
+
+        # visitar los targets (por si hay subscripts df["x"] en el LHS de otra forma)
+        node.targets = [self.visit(t) for t in node.targets]
+
+        # marcar el target como df si el valor es un df (propagacion de tipo)
+        if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            if self._value_is_df(node.value):
+                self.df_names.add(node.targets[0].id)
+                # recordar el ultimo df principal para usarlo como hint en MLlib
+                self.last_df = node.targets[0].id
+        # El target se reasigno con un valor traducible: "revive" (ya no es muerto).
+        for tgt in node.targets:
+            for nm in _names_in_target(tgt):
+                self.dead_vars.discard(nm)
+        return node
+
+    # ---- Expr suelto: model.fit(...) / model.predict(...) sin asignacion ----
+    def visit_Expr(self, node):
+        # Patron sklearn reconocido: los statements que referencian el modelo
+        # suprimido (model.fit(...), print(classification_report(...)) sobre sus
+        # predicciones) ya los cubre el bloque unico -> se omiten SIN TODO.
+        if self.sklearn_pipeline is not None and self.sklearn_suppress:
+            for _sub in ast.walk(node.value):
+                if isinstance(_sub, ast.Name) and _sub.id in self.sklearn_suppress:
+                    return None
+
+        snip = self._ml_snippet_for_expr(node.value, out_targets=[])
+        if snip is not None:
+            return self._emit_mllib(snip)
+        # print(classification_report(y_test, y_pred)) / classification_report(...)
+        # -> reporte con Evaluators (accuracy/f1/weightedPrecision/weightedRecall).
+        if self._calls_named_fn(node.value, "classification_report"):
+            snip, kinds = _mllib.snippet_classification_report()
+            self.mllib_kinds |= kinds
+            self.diag.warn("classification_report -> metricas MLlib (Evaluator) + preds.show().")
+            return self._emit_mllib(snip)
+        dead = self._refs_dead_var(node.value)
+        if dead is not None:
+            try:
+                orig = _unparse(node)
+            except Exception:
+                orig = "<statement>"
+            return self._emit_comment([
+                f"TODO py2spark: no traducible (depende de '{dead}', sin equivalente en Spark).",
+                f"Original: {orig}",
+            ])
+        # Statement (p.ej. print(...)) que llama a una funcion ML no traducible
+        # anidada: accuracy_score/classification_report/etc. Se neutraliza a TODO.
+        ml_fn = self._calls_ml_function(node.value)
+        if ml_fn is not None:
+            try:
+                orig = _unparse(node)
+            except Exception:
+                orig = "<statement>"
+            self.diag.unsup(
+                f"'{ml_fn}(...)' (scikit-learn) no tiene equivalente 1:1 en Spark: "
+                f"usa los Evaluators de pyspark.ml.evaluation."
+            )
+            return self._emit_comment([
+                f"TODO py2spark: no traducible (usa '{ml_fn}' de scikit-learn).",
+                f"Original: {orig}",
+            ])
+        idx_attr = _uses_pandas_index(node.value)
+        if idx_attr is not None:
+            try:
+                orig = _unparse(node)
+            except Exception:
+                orig = "<statement>"
+            self.diag.unsup(
+                f"'.{idx_attr}' usa el indice/posicion de fila de pandas, que no "
+                f"existe en Spark. Revisa manualmente."
+            )
+            return self._emit_comment([
+                f"TODO py2spark: no traducible ('.{idx_attr}' depende del indice de pandas).",
+                f"Original: {orig}",
+            ])
+        self.generic_visit(node)
+        return node
+
+    # =====================================================================
+    # MLlib: generar el codigo pyspark.ml equivalente (esqueleto) por patron
+    # =====================================================================
+    def _emit_mllib(self, snippet_text):
+        """Registra un bloque MLlib y devuelve un statement placeholder que se
+        sustituye por el texto real tras ast.unparse."""
+        self._mllib_seq += 1
+        pid = f"__PY2SPARK_MLLIB_{self._mllib_seq}__"
+        self.mllib_blocks[pid] = snippet_text
+        # Statement placeholder valido: `pid`  (un Name suelto). El post-proceso
+        # reemplaza la linea completa por el bloque MLlib multi-linea.
+        return ast.Expr(value=ast.Name(pid, ast.Load()))
+
+    def _calls_named_fn(self, node, name):
+        """True si el nodo contiene una llamada a la funcion `name` (por Name o
+        Attribute), y ese nombre esta importado de ML (o es conocido)."""
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Call):
+                f = sub.func
+                fn = f.id if isinstance(f, ast.Name) else (f.attr if isinstance(f, ast.Attribute) else None)
+                if fn == name and (name in self.ml_names or name in _ML_CALLABLES):
+                    return True
+        return False
+
+    def _calls_ml_function(self, node):
+        """Nombre de una funcion ML de sklearn (metrica/util) llamada dentro del
+        nodo, o None. Detecta accuracy_score(...), classification_report(...), etc.
+        para neutralizar statements como print(classification_report(...))."""
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Call):
+                f = sub.func
+                # <ml_module>.<algo>(...)  p.ej. joblib.dump(...), xgb.plot(...)
+                if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) \
+                        and f.value.id in self.ml_names:
+                    return f"{f.value.id}.{f.attr}"
+                name = f.id if isinstance(f, ast.Name) else (f.attr if isinstance(f, ast.Attribute) else None)
+                if not name:
+                    continue
+                if name in self.ml_names and (
+                    name.endswith(("_score", "_report", "_error", "_matrix", "_curve", "_loss"))
+                    or name in ("classification_report", "confusion_matrix")
+                ):
+                    return name
+        return None
+
+    def _refs_dead_var(self, node):
+        """Nombre de la primera variable 'muerta' referenciada en el nodo, o None."""
+        if not self.dead_vars:
+            return None
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Name) and sub.id in self.dead_vars \
+                    and isinstance(sub.ctx, ast.Load):
+                return sub.id
+        return None
+
+    def _kill_targets(self, node):
+        """Marca los targets de una asignacion como variables muertas."""
+        for tgt in getattr(node, "targets", []):
+            for nm in _names_in_target(tgt):
+                self.dead_vars.add(nm)
+
+    def _comment_lines(self, lines):
+        """Texto multi-linea de comentarios (para usarse como snippet MLlib)."""
+        return "\n".join(f"# {ln}" if ln else "#" for ln in lines)
+
+    def _emit_comment(self, lines):
+        """Neutraliza un statement no traducible dejando comentarios en su lugar.
+
+        Reusa el mecanismo de placeholders (mllib_blocks) para inyectar texto
+        multi-linea preservando la indentacion. `lines` es una lista de strings
+        (sin el '#'); cada una se emite como comentario."""
+        self._mllib_seq += 1
+        pid = f"__PY2SPARK_MLLIB_{self._mllib_seq}__"
+        block = self._comment_lines(lines)
+        self.mllib_blocks[pid] = block
+        return ast.Expr(value=ast.Name(pid, ast.Load()))
+
+    def _ml_snippet_for_assign(self, node):
+        """Si el assign es un patron ML, devuelve el texto MLlib equivalente."""
+        value = node.value
+        if not isinstance(value, ast.Call):
+            return None
+        func = value.func
+        targets_names = []
+        for tgt in node.targets:
+            targets_names.extend(_names_in_target(tgt))
+        # Target subscript df[cols] = ... -> el destino es el df base.
+        out_target = targets_names[0] if targets_names else self.last_df
+        called = func.id if isinstance(func, ast.Name) else (func.attr if isinstance(func, ast.Attribute) else None)
+
+        # Cargador de datos sklearn: fetch_openml/load_iris/make_classification...
+        # En Spark los datos vienen de una fuente real. Traducimos a spark.read
+        # (placeholder) y marcamos los targets como DataFrame. Sin esto quedaba
+        # 'X, y = fetch_openml(...)' crudo -> NameError (el import se elimino).
+        if called in _ML_DATA_LOADERS or (called and called in self.ml_names
+                                          and called.startswith(("fetch_", "load_", "make_"))):
+            df_name = targets_names[0] if targets_names else "df"
+            self.last_df = df_name
+            self.df_names.add(df_name)
+            self.diag.warn(
+                f"'{called}(...)' es un cargador de datos de sklearn: en Spark los "
+                f"datos vienen de una fuente real. Se reemplazo por spark.read.* "
+                f"(ajusta la ruta/tabla). Si separabas X, y: la columna label viaja "
+                f"dentro del DataFrame."
+            )
+            lines = [
+                f"# Origen de datos: reemplaza sklearn.datasets.{called} por tu fuente real.",
+                f'{df_name} = spark.read.option("header", True).option("inferSchema", True).csv("datos.csv")',
+            ]
+            # Si habia mas de un target (X, y), avisar que en Spark es un solo df.
+            # Los targets extra (y, etc.) NO existen como variable en Spark: los
+            # marcamos como muertos para que usos posteriores (df['label'] = y)
+            # se neutralicen a TODO en vez de romper con NameError.
+            if len(targets_names) > 1:
+                lines.append(f"# NOTA: {', '.join(targets_names[1:])} no aplican en Spark; "
+                             f"la columna label es una columna mas de {df_name}.")
+                for _extra in targets_names[1:]:
+                    self.dead_vars.add(_extra)
+            return "\n".join(lines)
+
+        # train_test_split(...)
+        if called == "train_test_split" and (called in self.ml_names or called in _ML_CALLABLES):
+            snip, kinds = _mllib.snippet_train_test_split(value, targets_names, self.last_df)
+            self.mllib_kinds |= kinds
+            self.diag.warn("train_test_split -> DataFrame.randomSplit (MLlib). Revisa la columna label.")
+            return snip
+
+        # Estimadores: var = LogisticRegression(...)/KMeans(...)/RandomForest...(...)
+        if called in ("LogisticRegression", "LinearRegression", "RandomForestClassifier",
+                      "RandomForestRegressor", "GradientBoostingClassifier",
+                      "DecisionTreeClassifier", "KMeans") and \
+                (called in self.ml_names or called in _ML_CALLABLES):
+            snip, kinds = _mllib.snippet_estimator(value, out_target, called, self.last_df)
+            if snip:
+                self.mllib_kinds |= kinds
+                return snip
+
+        # Escaladores: var = StandardScaler()/MinMaxScaler()
+        if called in ("StandardScaler", "MinMaxScaler") and \
+                (called in self.ml_names or called in _ML_CALLABLES):
+            snip, kinds = _mllib.snippet_scaler(value, out_target, called)
+            if snip:
+                self.mllib_kinds |= kinds
+                return snip
+
+        # pd.get_dummies(...)
+        if isinstance(func, ast.Attribute) and func.attr == "get_dummies" \
+                and isinstance(func.value, ast.Name) and func.value.id in self.pandas_alias:
+            snip, kinds = _mllib.snippet_get_dummies(value, out_target, self.last_df)
+            self.mllib_kinds |= kinds
+            return snip
+
+        # Metricas de sklearn -> Evaluators de Spark (codigo real, no TODO).
+        #   acc = accuracy_score(y_test, y_pred) -> MulticlassClassificationEvaluator
+        if called == "accuracy_score" and (called in self.ml_names or called in _ML_CALLABLES):
+            snip, kinds = _mllib.snippet_metric([out_target], metric="accuracy")
+            self.mllib_kinds |= kinds
+            self.diag.warn("accuracy_score -> MulticlassClassificationEvaluator(accuracy).")
+            return snip
+        if called in ("f1_score", "precision_score", "recall_score") \
+                and (called in self.ml_names or called in _ML_CALLABLES):
+            _mn = {"f1_score": "f1", "precision_score": "weightedPrecision",
+                   "recall_score": "weightedRecall"}[called]
+            snip, kinds = _mllib.snippet_metric([out_target], metric=_mn)
+            self.mllib_kinds |= kinds
+            self.diag.warn(f"{called} -> MulticlassClassificationEvaluator({_mn}).")
+            return snip
+
+        # Constructor de un framework ML SIN equivalente en pyspark.ml estandar:
+        #   xgb.XGBClassifier(...), lgb.LGBMClassifier(...), nn.Sequential(...),
+        #   torch.optim.Adam(...), StackingClassifier(...), etc.
+        # Estos quedaban crudos y rompian con NameError (su import se elimino).
+        # Los neutralizamos a TODO honesto y marcamos el target como ml_var para
+        # neutralizar sus .fit()/.predict() posteriores.
+        recv_mod = func.value.id if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) else None
+        is_ext_ml_ctor = (
+            (recv_mod is not None and recv_mod in self.ml_names)          # xgb.X / lgb.X / nn.X
+            or (called in self.ml_names or called in _ML_CALLABLES)        # importado directo
+        )
+        # Funciones de sklearn.metrics y utilidades (minusculas): accuracy_score,
+        # classification_report, precision_score, roc_auc_score, etc. Sin
+        # equivalente 1:1 (en Spark se usan los Evaluators de pyspark.ml.evaluation).
+        is_metric_fn = (called in self.ml_names or called in _ML_CALLABLES) and \
+            (called.endswith(("_score", "_report", "_error", "_matrix", "_curve", "_loss"))
+             or called in ("classification_report", "confusion_matrix", "roc_auc_score",
+                           "mean_squared_error", "mean_absolute_error", "r2_score"))
+        if is_ext_ml_ctor and called and (called[:1].isupper() or is_metric_fn):
+            try:
+                orig = _unparse(node)
+            except Exception:
+                orig = "<statement>"
+            hint = _MLLIB_HINT.get(called)
+            extra = f" Equivalente aproximado en Spark: {hint}." if hint else \
+                    " No existe en pyspark.ml estandar (XGBoost/LightGBM/PyTorch/etc.)."
+            self.diag.unsup(
+                f"'{called}(...)' es de un framework ML sin equivalente 1:1 en Spark "
+                f"MLlib.{extra} Considera GBTClassifier (MLlib) o el conector Spark del "
+                f"framework."
+            )
+            for tgt in node.targets:
+                for nm in _names_in_target(tgt):
+                    self.ml_vars.add(nm)
+                    self.dead_vars.add(nm)
+            return self._comment_lines([
+                f"TODO py2spark: '{called}(...)' no tiene equivalente en Spark MLlib estandar.",
+                f"Original: {orig}",
+            ])
+
+        # Metodos de estimador: X = scaler.fit_transform(...) / model.predict(...)
+        if isinstance(func, ast.Attribute) and func.attr in (
+                "fit", "fit_transform", "transform", "predict", "predict_proba",
+                "fit_predict", "score"):
+            recv = func.value.id if isinstance(func.value, ast.Name) else None
+            if recv in self.ml_vars:
+                return self._method_snippet(recv, func.attr, targets_names)
+        return None
+
+    def _ml_snippet_for_expr(self, value, out_targets):
+        if not isinstance(value, ast.Call):
+            return None
+        func = value.func
+        if isinstance(func, ast.Attribute) and func.attr in (
+                "fit", "fit_transform", "transform", "predict", "predict_proba",
+                "fit_predict", "score"):
+            recv = func.value.id if isinstance(func.value, ast.Name) else None
+            if recv in self.ml_vars:
+                return self._method_snippet(recv, func.attr, out_targets)
+        return None
+
+    def _method_snippet(self, recv, attr, out_targets):
+        if attr in ("fit_transform", "transform"):
+            snip, k = _mllib.snippet_fit_transform(recv, out_targets, self.last_df)
+        elif attr == "fit":
+            snip, k = _mllib.snippet_fit(recv, self.last_df)
+        elif attr in ("predict", "predict_proba"):
+            snip, k = _mllib.snippet_predict(recv, out_targets, self.last_df)
+        elif attr == "fit_predict":
+            snip, k = _mllib.snippet_fit_predict(recv, out_targets, self.last_df)
+        elif attr == "score":
+            snip, k = _mllib.snippet_score(recv, out_targets)
+        else:
+            return None
+        self.mllib_kinds |= k
+        return snip
+
+    def _ml_expr_info(self, value):
+        """Si `value` es una expresion ML no traducible, devuelve el mensaje TODO
+        (con sugerencia MLlib). Si no, devuelve None."""
+        if not isinstance(value, ast.Call):
+            return None
+        func = value.func
+        # Nombre de la funcion/clase llamada.
+        called = None
+        recv_name = None
+        if isinstance(func, ast.Name):
+            called = func.id
+        elif isinstance(func, ast.Attribute):
+            called = func.attr
+            if isinstance(func.value, ast.Name):
+                recv_name = func.value.id
+
+        # 1) Llamada directa a una clase/funcion ML importada o conocida.
+        if called and (called in self.ml_names or called in _ML_CALLABLES):
+            hint = _MLLIB_HINT.get(called)
+            extra = f" Equivalente Spark: {hint}." if hint else ""
+            return (f"'{called}(...)' es scikit-learn/ML: no se traduce a Spark 1:1."
+                    f"{extra} Usa pyspark.ml (VectorAssembler + estimador).")
+
+        # 2) Metodo de un estimador ML: model.fit(...)/predict(...)/transform(...).
+        if isinstance(func, ast.Attribute) and func.attr in (
+                "fit", "predict", "predict_proba", "fit_transform", "fit_predict",
+                "transform", "score"):
+            if recv_name in self.ml_vars:
+                return (f"'{recv_name}.{func.attr}(...)' opera sobre un modelo ML de "
+                        f"scikit-learn: en Spark usa el estimador de pyspark.ml "
+                        f"(.fit() devuelve un Model; .transform() para predecir).")
+        # 3) pd.get_dummies(...) -> one-hot: MLlib usa StringIndexer+OneHotEncoder.
+        if isinstance(func, ast.Attribute) and func.attr == "get_dummies" \
+                and isinstance(func.value, ast.Name) and func.value.id in self.pandas_alias:
+            return ("pd.get_dummies(...) (one-hot) no tiene equivalente directo en "
+                    "Spark: usa pyspark.ml.feature.StringIndexer + OneHotEncoder.")
+        return None
+
+    # =====================================================================
+    # helpers de reescritura
+    # =====================================================================
+    def _is_df(self, node):
+        """True si el nodo evalua (heuristicamente) a un DataFrame Spark."""
+        if isinstance(node, ast.Name):
+            return node.id in self.df_names
+        # <df>.metodo_que_devuelve_df(...)  -> tambien es df
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr in _DF_RETURNING and self._is_df(node.func.value):
+                return True
+        # <df>[...]  (slice de columnas / filtro) sigue siendo df en algunos casos
+        return False
+
+    def _value_is_df(self, value):
+        # spark.read... (aunque haya .option(...).option(...) intermedios) o
+        # spark.createDataFrame(...). Recorremos la cadena bajando por .value,
+        # atravesando tanto Attribute como Call, hasta encontrar la raiz Name.
+        cur = value
+        seen_read = False
+        while isinstance(cur, (ast.Attribute, ast.Call)):
+            if isinstance(cur, ast.Attribute):
+                if cur.attr == "read":
+                    seen_read = True
+                cur = cur.value
+            else:  # ast.Call -> bajar por el func
+                cur = cur.func
+        if isinstance(cur, ast.Name) and cur.id == "spark" and seen_read:
+            return True
+        # spark.createDataFrame(...)
+        if isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute) \
+                and value.func.attr == "createDataFrame" \
+                and isinstance(value.func.value, ast.Name) and value.func.value.id == "spark":
+            return True
+        # _py2spark_df(...) (helper que construye un DataFrame desde pd.DataFrame)
+        if isinstance(value, ast.Call) and isinstance(value.func, ast.Name) \
+                and value.func.id == "_py2spark_df":
+            return True
+        # <df>.<metodo que devuelve df>(...)
+        if isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute) \
+                and value.func.attr in _DF_RETURNING and self._is_df(value.func.value):
+            return True
+        if self._is_df(value):
+            return True
+        return False
+
+    def _f_col(self, name):
+        # F.col("name")
+        return ast.Call(
+            func=ast.Attribute(value=ast.Name("F", ast.Load()), attr="col", ctx=ast.Load()),
+            args=[ast.Constant(name)], keywords=[],
+        )
+
+    def _read(self, node, fmt):
+        # spark.read[.option(header,inferSchema)].<fmt>(path)
+        path_arg = node.args[0] if node.args else _kw(node, "filepath_or_buffer") or _kw(node, "path")
+        reader = ast.Attribute(value=ast.Name("spark", ast.Load()), attr="read", ctx=ast.Load())
+        if fmt == "csv":
+            # .option("header", True).option("inferSchema", True)
+            reader = ast.Call(
+                func=ast.Attribute(value=reader, attr="option", ctx=ast.Load()),
+                args=[ast.Constant("header"), ast.Constant(True)], keywords=[],
+            )
+            reader = ast.Call(
+                func=ast.Attribute(value=reader, attr="option", ctx=ast.Load()),
+                args=[ast.Constant("inferSchema"), ast.Constant(True)], keywords=[],
+            )
+            # sep=... -> .option("sep", ...)
+            sep = _kw(node, "sep") or _kw(node, "delimiter")
+            if sep is not None:
+                reader = ast.Call(
+                    func=ast.Attribute(value=reader, attr="option", ctx=ast.Load()),
+                    args=[ast.Constant("sep"), sep], keywords=[],
+                )
+        call = ast.Call(
+            func=ast.Attribute(value=reader, attr=fmt, ctx=ast.Load()),
+            args=[path_arg] if path_arg else [], keywords=[],
+        )
+        return call
+
+    def _pd_dataframe(self, node):
+        """pd.DataFrame(...) -> spark.createDataFrame(...) preservando el esquema.
+
+        Spark NO infiere esquema de escalares sueltos (lista de str/int) ni de un
+        dict {col: [valores]} como lo hace pandas. Ajustamos la estructura:
+          - dict {col: [v...]} -> filas [(v0a, v0b), ...] + schema=[cols]
+          - lista de escalares  -> [(v,) ...] + schema=["value"]
+        Lista de tuplas/listas/dicts se deja tal cual (Spark ya la entiende)."""
+        data = node.args[0] if node.args else _kw(node, "data")
+        cols_kw = _kw(node, "columns")
+
+        def _make(create_args, create_kws):
+            return ast.Call(
+                func=ast.Attribute(value=ast.Name("spark", ast.Load()),
+                                   attr="createDataFrame", ctx=ast.Load()),
+                args=create_args, keywords=create_kws,
+            )
+
+        # Caso dict {"a": <valores>, "b": <valores>}: Spark NO acepta un dict de
+        # columnas. Transponemos a filas. Si TODOS los valores son listas/tuplas
+        # literales lo hacemos en tiempo de conversion; si son arrays/expresiones
+        # (p.ej. np.random.randint(...)) generamos un zip defensivo en runtime.
+        if isinstance(data, ast.Dict) and data.keys and \
+                all(_is_str_const(k) for k in data.keys):
+            col_names = [k.value for k in data.keys]
+            value_exprs = list(data.values)
+            schema = ast.List(elts=[ast.Constant(c) for c in col_names], ctx=ast.Load())
+
+            if all(isinstance(v, (ast.List, ast.Tuple)) for v in value_exprs):
+                # Literales: transponer directamente.
+                n = min(len(v.elts) for v in value_exprs)
+                rows = [ast.Tuple(elts=[v.elts[i] for v in value_exprs], ctx=ast.Load())
+                        for i in range(n)]
+                self.diag.warn("pd.DataFrame({col:[...]}) -> spark.createDataFrame(filas, schema): "
+                               "revisa tipos si mezclas numeros y texto.")
+                return _make([ast.List(elts=rows, ctx=ast.Load())],
+                             [ast.keyword(arg="schema", value=schema)])
+
+            # Valores no literales (arrays/expresiones o Columns de Spark tras
+            # traducir np.random.*/np.where): delegamos al helper de runtime
+            # _py2spark_df, que sabe distinguir:
+            #   - Column de Spark (tiene ._jc): usa spark.range(N).withColumn(col, C)
+            #     para MATERIALIZAR valores reales por fila (F.rand() etc.).
+            #   - secuencia Python/numpy: transpone por posicion y convierte
+            #     escalares numpy a nativos.
+            # Antes generabamos un zip(<columnas>) inline, pero un F.Column NO es
+            # iterable en Python -> 'Column is not iterable'. El helper lo evita.
+            self.needs_rows_helper = True
+            dict_arg = ast.Dict(
+                keys=[ast.Constant(c) for c in col_names],
+                values=value_exprs,
+            )
+            self.diag.warn("pd.DataFrame({col: <array/Column>}) -> _py2spark_df({...}): "
+                           "materializa filas en runtime (spark.range+withColumn si son "
+                           "columnas Spark; transpone si son secuencias). Revisa tipos.")
+            return ast.Call(
+                func=ast.Name("_py2spark_df", ast.Load()),
+                args=[dict_arg, schema], keywords=[])
+
+        # Caso lista/tupla de ESCALARES: envolver cada uno en (v,) y dar columna.
+        if isinstance(data, (ast.List, ast.Tuple)) and data.elts and \
+                all(not isinstance(e, (ast.List, ast.Tuple, ast.Dict)) for e in data.elts):
+            wrapped = ast.List(
+                elts=[ast.Tuple(elts=[e], ctx=ast.Load()) for e in data.elts], ctx=ast.Load())
+            if isinstance(cols_kw, ast.List) and cols_kw.elts:
+                schema = cols_kw
+            else:
+                schema = ast.List(elts=[ast.Constant("value")], ctx=ast.Load())
+            self.diag.warn("pd.DataFrame([escalares]) -> spark.createDataFrame([(v,) ...], schema): "
+                           "Spark no infiere esquema de escalares sueltos.")
+            return _make([wrapped], [ast.keyword(arg="schema", value=schema)])
+
+        # Caso data = <variable> (no literal): no conocemos su forma en tiempo de
+        # conversion. Generamos una normalizacion defensiva que envuelve cada
+        # escalar en (v,) pero respeta filas que ya son list/tuple. Asi Spark
+        # puede inferir el esquema tanto de escalares como de tuplas.
+        if isinstance(data, ast.Name):
+            # data es una variable: no sabemos si es dict {col:[...]}, lista de
+            # escalares o lista de tuplas. Delegamos a un helper de runtime
+            # (_py2spark_rows) que normaliza cualquiera de esas formas a
+            # (rows, schema) que Spark entiende. Cubre el caso 'data = {..}'
+            # (dict) que antes se iteraba por claves -> columna '_1'.
+            self.needs_rows_helper = True
+            schema_arg = cols_kw if (isinstance(cols_kw, ast.List) and cols_kw.elts) else ast.Constant(None)
+            self.diag.warn("pd.DataFrame(<variable>) -> _py2spark_df(...): se normaliza en runtime "
+                           "(dict de columnas, columnas Spark, lista de tuplas o escalares).")
+            # _py2spark_df devuelve directamente un DataFrame de Spark.
+            return ast.Call(
+                func=ast.Name("_py2spark_df", ast.Load()),
+                args=[data, schema_arg], keywords=[])
+
+        # Otros casos (lista de tuplas/dicts): dejar createDataFrame.
+        self.diag.warn("pd.DataFrame(...) -> spark.createDataFrame(...): revisa el esquema/estructura "
+                       "de entrada (Spark no infiere esquema de escalares sueltos).")
+        kws = list(node.keywords)
+        # pandas usa 'columns='; Spark usa 'schema='. Renombrar si viene columns=.
+        if cols_kw is not None:
+            kws = [ast.keyword(arg="schema", value=k.value) if k.arg == "columns" else k
+                   for k in kws]
+        return _make(list(node.args), kws)
+
+    def _numpy_call(self, node, fn):
+        """Traduce np.<fn>(...) con equivalente de columna en Spark.
+        np.where(cond, a, b) -> F.when(cond, a).otherwise(b).
+        np.log/exp/sqrt/abs/... -> F.<fn>(col). Devuelve None si no aplica."""
+        if fn == "where" and len(node.args) == 3:
+            cond, a, b = node.args
+            when_call = ast.Call(
+                func=ast.Attribute(value=ast.Name("F", ast.Load()), attr="when", ctx=ast.Load()),
+                args=[cond, a], keywords=[])
+            return ast.Call(
+                func=ast.Attribute(value=when_call, attr="otherwise", ctx=ast.Load()),
+                args=[b], keywords=[])
+        # funciones matematicas elementwise con equivalente directo en F.
+        _np_math = {"log": "log", "log1p": "log1p", "exp": "exp", "sqrt": "sqrt",
+                    "abs": "abs", "floor": "floor", "ceil": "ceil", "round": "round",
+                    "sin": "sin", "cos": "cos", "tan": "tan", "power": "pow"}
+        if fn in _np_math and node.args:
+            return ast.Call(
+                func=ast.Attribute(value=ast.Name("F", ast.Load()), attr=_np_math[fn], ctx=ast.Load()),
+                args=list(node.args), keywords=[])
+        if fn == "maximum" and len(node.args) == 2:
+            return ast.Call(func=ast.Attribute(value=ast.Name("F", ast.Load()), attr="greatest", ctx=ast.Load()),
+                            args=list(node.args), keywords=[])
+        if fn == "minimum" and len(node.args) == 2:
+            return ast.Call(func=ast.Attribute(value=ast.Name("F", ast.Load()), attr="least", ctx=ast.Load()),
+                            args=list(node.args), keywords=[])
+        self.diag.warn(f"np.{fn}(...) no tiene equivalente directo en Spark: revisa manualmente "
+                       f"(usa funciones de columna F.* o una UDF).")
+        return None
+
+    def _numpy_random_call(self, node, fn):
+        """np.random.<fn>(...) dentro de una expresion de columna -> F.rand().
+        randint(a,b[,n]) -> (F.floor(F.rand()*(b-a))+a); rand/random -> F.rand()."""
+        if fn == "randint" and len(node.args) >= 2:
+            a, b = node.args[0], node.args[1]
+            # F.floor(F.rand() * (b - a)) + a   (aprox de enteros aleatorios [a,b))
+            span = ast.BinOp(left=b, op=ast.Sub(), right=a)
+            rand = ast.Call(func=ast.Attribute(value=ast.Name("F", ast.Load()), attr="rand", ctx=ast.Load()),
+                            args=[], keywords=[])
+            scaled = ast.BinOp(left=rand, op=ast.Mult(), right=span)
+            floored = ast.Call(func=ast.Attribute(value=ast.Name("F", ast.Load()), attr="floor", ctx=ast.Load()),
+                               args=[scaled], keywords=[])
+            self.diag.warn("np.random.randint(...) -> F.floor(F.rand()*(b-a))+a: valores aleatorios "
+                           "por fila (aprox; en Spark no es el mismo generador que numpy).")
+            return ast.BinOp(left=floored, op=ast.Add(), right=a)
+        if fn in ("rand", "random", "random_sample", "uniform"):
+            self.diag.warn(f"np.random.{fn}(...) -> F.rand() (valor aleatorio por fila).")
+            return ast.Call(func=ast.Attribute(value=ast.Name("F", ast.Load()), attr="rand", ctx=ast.Load()),
+                            args=[], keywords=[])
+        # np.random.choice([a, b, ...], n) -> elige uno por fila:
+        #   F.element_at(F.array(lit(a), lit(b), ...), (F.floor(F.rand()*k)+1).cast('int'))
+        if fn == "choice" and node.args:
+            opts = node.args[0]
+            if isinstance(opts, (ast.List, ast.Tuple)) and opts.elts:
+                k = len(opts.elts)
+                arr = ast.Call(func=ast.Attribute(value=ast.Name("F", ast.Load()), attr="array", ctx=ast.Load()),
+                               args=[ast.Call(func=ast.Attribute(value=ast.Name("F", ast.Load()), attr="lit", ctx=ast.Load()),
+                                              args=[e], keywords=[]) for e in opts.elts],
+                               keywords=[])
+                rand = ast.Call(func=ast.Attribute(value=ast.Name("F", ast.Load()), attr="rand", ctx=ast.Load()),
+                                args=[], keywords=[])
+                idx = ast.Call(func=ast.Attribute(value=ast.Name("F", ast.Load()), attr="floor", ctx=ast.Load()),
+                               args=[ast.BinOp(left=rand, op=ast.Mult(), right=ast.Constant(k))], keywords=[])
+                idx1 = ast.Call(func=ast.Attribute(value=ast.BinOp(left=idx, op=ast.Add(), right=ast.Constant(1)),
+                                                   attr="cast", ctx=ast.Load()),
+                                args=[ast.Constant("int")], keywords=[])
+                self.diag.warn("np.random.choice([...], n) -> F.element_at(F.array(...), rand): "
+                               "elige un valor por fila (aprox).")
+                return ast.Call(func=ast.Attribute(value=ast.Name("F", ast.Load()), attr="element_at", ctx=ast.Load()),
+                                args=[arr, idx1], keywords=[])
+        self.diag.warn(f"np.random.{fn}(...) no tiene equivalente directo en Spark: revisa manualmente.")
+        return None
+
+    def _df_method(self, node, f):
+        """Reescribe <df>.<metodo>(...)."""
+        m = f.attr
+        recv = f.value
+
+        # merge -> join
+        if m == "merge":
+            other = node.args[0] if node.args else None
+            on = _kw(node, "on")
+            left_on = _kw(node, "left_on")
+            how = _kw(node, "how")
+            kws = []
+            if on is not None:
+                kws.append(ast.keyword(arg="on", value=on))
+            elif left_on is not None:
+                # left_on/right_on con nombres iguales -> on; si difieren, TODO.
+                right_on = _kw(node, "right_on")
+                if right_on is not None and ast.dump(left_on) == ast.dump(right_on):
+                    kws.append(ast.keyword(arg="on", value=left_on))
+                else:
+                    self.diag.unsup("merge con left_on!=right_on: usa condicion explicita df1.k1==df2.k2 (revisar).")
+                    if left_on is not None:
+                        kws.append(ast.keyword(arg="on", value=left_on))
+            howval = how.value if _is_str_const(how) else "inner"
+            kws.append(ast.keyword(arg="how", value=ast.Constant(howval)))
+            return ast.Call(
+                func=ast.Attribute(value=recv, attr="join", ctx=ast.Load()),
+                args=[other] if other else [], keywords=kws,
+            )
+
+        # groupby -> groupBy
+        if m == "groupby":
+            return ast.Call(
+                func=ast.Attribute(value=recv, attr="groupBy", ctx=ast.Load()),
+                args=node.args, keywords=[k for k in node.keywords if k.arg not in ("as_index", "sort")],
+            )
+
+        # sort_values -> orderBy (respeta ascending)
+        if m == "sort_values":
+            by = node.args[0] if node.args else _kw(node, "by")
+            asc = _kw(node, "ascending")
+            cols = []
+            names = []
+            if _is_str_const(by):
+                names = [by.value]
+            elif isinstance(by, ast.List):
+                names = [e.value for e in by.elts if _is_str_const(e)]
+            descending = (isinstance(asc, ast.Constant) and asc.value is False)
+            for nm in names:
+                c = self._f_col(nm)
+                if descending:
+                    c = ast.Call(func=ast.Attribute(value=c, attr="desc", ctx=ast.Load()), args=[], keywords=[])
+                cols.append(c)
+            if not cols and by is not None:
+                cols = [by]
+            return ast.Call(
+                func=ast.Attribute(value=recv, attr="orderBy", ctx=ast.Load()),
+                args=cols, keywords=[],
+            )
+
+        # head(n) / tail(n) -> limit(n)
+        if m in ("head", "tail"):
+            n = node.args[0] if node.args else ast.Constant(5)
+            if m == "tail":
+                self.diag.warn("df.tail(n): Spark no garantiza orden; se traduce como limit(n).")
+            return ast.Call(
+                func=ast.Attribute(value=recv, attr="limit", ctx=ast.Load()),
+                args=[n], keywords=[],
+            )
+
+        # rename(columns={a:b, ...}) -> withColumnRenamed encadenado
+        if m == "rename":
+            cols = _kw(node, "columns")
+            if isinstance(cols, ast.Dict):
+                cur = recv
+                for kk, vv in zip(cols.keys, cols.values):
+                    cur = ast.Call(
+                        func=ast.Attribute(value=cur, attr="withColumnRenamed", ctx=ast.Load()),
+                        args=[kk, vv], keywords=[],
+                    )
+                return cur
+            self.diag.unsup("rename sin columns={...} literal: revisar manualmente.")
+            return node
+
+        # drop(columns=[...]) o drop([...], axis=1) -> drop(*cols)
+        if m == "drop":
+            cols = _kw(node, "columns")
+            args = []
+            if isinstance(cols, ast.List):
+                args = list(cols.elts)
+            elif node.args and isinstance(node.args[0], ast.List):
+                args = list(node.args[0].elts)
+            elif node.args:
+                args = [node.args[0]]
+            return ast.Call(
+                func=ast.Attribute(value=recv, attr="drop", ctx=ast.Load()),
+                args=args, keywords=[],
+            )
+
+        # drop_duplicates -> dropDuplicates
+        if m == "drop_duplicates":
+            subset = _kw(node, "subset") or (node.args[0] if node.args else None)
+            args = []
+            if isinstance(subset, ast.List):
+                args = [subset]
+            return ast.Call(
+                func=ast.Attribute(value=recv, attr="dropDuplicates", ctx=ast.Load()),
+                args=args, keywords=[],
+            )
+
+        # to_csv / to_parquet -> write
+        if m in ("to_csv", "to_parquet", "to_json", "to_orc"):
+            fmt = m.replace("to_", "")
+            path = node.args[0] if node.args else _kw(node, "path_or_buf") or _kw(node, "path")
+            writer = ast.Attribute(value=recv, attr="write", ctx=ast.Load())
+            writer = ast.Call(
+                func=ast.Attribute(value=writer, attr="mode", ctx=ast.Load()),
+                args=[ast.Constant("overwrite")], keywords=[],
+            )
+            if fmt == "csv":
+                writer = ast.Call(
+                    func=ast.Attribute(value=writer, attr="option", ctx=ast.Load()),
+                    args=[ast.Constant("header"), ast.Constant(True)], keywords=[],
+                )
+            return ast.Call(
+                func=ast.Attribute(value=writer, attr=fmt, ctx=ast.Load()),
+                args=[path] if path else [], keywords=[],
+            )
+
+        # sample: pandas df.sample(n=..., frac=..., random_state=...) ->
+        #   Spark df.sample(withReplacement, fraction, seed)
+        # OJO: pandas 'n' es NUMERO de filas; Spark solo acepta 'fraction'.
+        if m == "sample":
+            frac = _kw(node, "frac")
+            n = _kw(node, "n")
+            if n is None and node.args and not _kw(node, "frac"):
+                # primer posicional en pandas es 'n' (numero de filas)
+                n = node.args[0]
+            rs = _kw(node, "random_state") or _kw(node, "seed")
+            replace = _kw(node, "replace")
+
+            kws = []
+            if replace is not None:
+                kws.append(ast.keyword(arg="withReplacement", value=replace))
+
+            if frac is not None:
+                kws.append(ast.keyword(arg="fraction", value=frac))
+                if rs is not None:
+                    kws.append(ast.keyword(arg="seed", value=rs))
+                return ast.Call(
+                    func=ast.Attribute(value=recv, attr="sample", ctx=ast.Load()),
+                    args=[], keywords=kws,
+                )
+
+            if n is not None:
+                # Spark no toma numero de filas: tomamos una fraccion segura (1.0)
+                # con el mismo seed y luego .limit(n) para obtener n filas.
+                self.diag.warn(
+                    "df.sample(n): Spark.sample usa fraccion, no numero de filas. "
+                    "Se traduce a .sample(fraction=1.0, seed=...).limit(n)."
+                )
+                kws.append(ast.keyword(arg="fraction", value=ast.Constant(1.0)))
+                if rs is not None:
+                    kws.append(ast.keyword(arg="seed", value=rs))
+                sampled = ast.Call(
+                    func=ast.Attribute(value=recv, attr="sample", ctx=ast.Load()),
+                    args=[], keywords=kws,
+                )
+                return ast.Call(
+                    func=ast.Attribute(value=sampled, attr="limit", ctx=ast.Load()),
+                    args=[n], keywords=[],
+                )
+
+            # sin n ni frac: traducir random_state->seed si existe
+            if rs is not None:
+                kws.append(ast.keyword(arg="seed", value=rs))
+            return ast.Call(
+                func=ast.Attribute(value=recv, attr="sample", ctx=ast.Load()),
+                args=[], keywords=kws,
+            )
+
+        # fillna / dropna / distinct: mismos nombres en Spark (fillna, dropna, distinct)
+        if m in ("fillna", "dropna", "distinct"):
+            return node
+
+        # agg: pandas .agg({"col":"sum"}) -> F.sum("col").alias("col")
+        if m == "agg":
+            return self._agg(node, recv)
+
+        # apply / applymap / map / iterrows / itertuples: NO traducible fielmente
+        if m in ("apply", "applymap", "map", "iterrows", "itertuples", "transform", "pipe"):
+            self.diag.unsup(f"df.{m}(...) no es traducible automaticamente a Spark "
+                            f"(logica fila-a-fila). Reescribe con funciones de columna "
+                            f"(F.*) o una UDF de Spark.")
+            return node
+
+        # metodos que ya existen en Spark con el mismo nombre: dejar igual.
+        return node
+
+    def _agg(self, node, recv):
+        """Traduce .agg(...) de pandas a .agg(F.<fun>('col').alias('col'), ...)."""
+        # .agg({"col": "sum", ...})
+        if node.args and isinstance(node.args[0], ast.Dict):
+            d = node.args[0]
+            items = []
+            for kk, vv in zip(d.keys, d.values):
+                if _is_str_const(kk) and _is_str_const(vv):
+                    fun = _AGG_MAP.get(vv.value, vv.value)
+                    items.append(self._agg_call(fun, kk.value))
+                else:
+                    self.diag.warn("agg con clave/valor no literal: revisar.")
+            return ast.Call(
+                func=ast.Attribute(value=recv, attr="agg", ctx=ast.Load()),
+                args=items, keywords=[],
+            )
+        # .agg("sum") o .agg(["sum","mean"]) sobre un groupby: aproximacion
+        self.diag.warn("agg(...) con forma no-dict: revisar la traduccion de agregaciones.")
+        return node
+
+    def _agg_call(self, fun, colname):
+        """Construye F.<fun>(<col>).alias(<col>).
+
+        Para funciones NUMERICAS (sum/avg/stddev/variance) casteamos la columna a
+        double: pandas suma booleanos como 0/1, pero Spark.sum(boolean) rompe con
+        DATATYPE_MISMATCH. El cast replica el comportamiento de pandas y tolera
+        columnas boolean/string numericas. count/min/max NO se castean."""
+        if fun in ("sum", "avg", "stddev", "variance"):
+            arg = ast.Call(
+                func=ast.Attribute(
+                    value=ast.Call(func=ast.Attribute(value=ast.Name("F", ast.Load()),
+                                                       attr="col", ctx=ast.Load()),
+                                   args=[ast.Constant(colname)], keywords=[]),
+                    attr="cast", ctx=ast.Load()),
+                args=[ast.Constant("double")], keywords=[],
+            )
+        else:
+            arg = ast.Constant(colname)
+        call = ast.Call(
+            func=ast.Attribute(value=ast.Name("F", ast.Load()), attr=fun, ctx=ast.Load()),
+            args=[arg], keywords=[],
+        )
+        return ast.Call(
+            func=ast.Attribute(value=call, attr="alias", ctx=ast.Load()),
+            args=[ast.Constant(colname)], keywords=[],
+        )
+
+
+def _detect_pandas(source):
+    """True si el codigo importa/usa pandas (para decidir si convertir)."""
+    return bool(re.search(r'\bimport\s+pandas\b|\bfrom\s+pandas\b|\bpd\.', source))
+
+
+_PREAMBLE = '''\
+# Generado por py2spark — Python (pandas) -> PySpark 3
+# Revisa los comentarios "# TODO py2spark:" donde la traduccion no es 1:1.
+from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
+
+spark = SparkSession.builder.appName("py2spark_job").getOrCreate()
+'''
+
+
+_ROWS_HELPER = '''\
+def _py2spark_df(data, schema=None, _n_rows=100):
+    """Construye un DataFrame de Spark desde pd.DataFrame(data).
+    Soporta: DataFrame de Spark (se devuelve tal cual), dict {col: secuencia|Column},
+    lista de dicts, lista de tuplas/listas, lista de escalares. Si algun valor del
+    dict es una Column de Spark (tras traducir np.random.*/np.where), genera
+    _n_rows filas evaluando esas columnas. Convierte escalares numpy a nativos."""
+    # Ya es un DataFrame de Spark (p.ej. pd.DataFrame(X) donde X vino de spark.read):
+    # devolverlo tal cual (opcionalmente renombrando columnas si se dio schema).
+    if hasattr(data, "columns") and hasattr(data, "schema") and hasattr(data, "select"):
+        if schema and isinstance(schema, (list, tuple)) and len(schema) == len(data.columns):
+            return data.toDF(*schema)
+        return data
+    def _n(v):
+        # numpy escalar -> nativo; NO llamar .item si es una Column de Spark.
+        if hasattr(v, "_jc"):
+            return v
+        it = getattr(v, "item", None)
+        return it() if callable(it) else v
+    if isinstance(data, dict):
+        cols = list(data.keys())
+        # Column de Spark presente -> materializar filas con spark.range + withColumn.
+        # Las columnas Spark (F.rand()...) se evaluan por fila; las secuencias
+        # literales (listas/arrays numpy) se materializan por posicion de fila via
+        # un mapa element_at sobre un array literal (NO F.lit(secuencia), que
+        # colapsaria el array a un escalar constante).
+        if any(hasattr(v, "_jc") for v in data.values()):
+            # nro de filas = longitud de las secuencias presentes (si las hay);
+            # si solo hay columnas Spark, usar _n_rows.
+            _lens = [len(v) for v in data.values()
+                     if not hasattr(v, "_jc") and hasattr(v, "__len__")]
+            _rows = min(_lens) if _lens else _n_rows
+            _rng = spark.range(_rows)
+            _idx = (F.col("id") + 1).cast("int")  # 1-based para element_at
+            for _c, _v in data.items():
+                if hasattr(_v, "_jc"):
+                    _rng = _rng.withColumn(_c, _v)
+                elif hasattr(_v, "__len__") and not isinstance(_v, (str, bytes)):
+                    _arr = F.array(*[F.lit(_n(_x)) for _x in _v])
+                    _rng = _rng.withColumn(_c, F.element_at(_arr, _idx))
+                else:
+                    _rng = _rng.withColumn(_c, F.lit(_n(_v)))
+            return _rng.select(*cols)
+        vals = [list(v) for v in data.values()]
+        m = min((len(c) for c in vals), default=0)
+        rows = [tuple(_n(vals[j][i]) for j in range(len(cols))) for i in range(m)]
+        return spark.createDataFrame(rows, schema or cols)
+    data = list(data)
+    if not data:
+        return spark.createDataFrame([], schema or "value string")
+    first = data[0]
+    if isinstance(first, dict):
+        cols = list(first.keys())
+        rows = [tuple(_n(d.get(c)) for c in cols) for d in data]
+        return spark.createDataFrame(rows, schema or cols)
+    if isinstance(first, (list, tuple)):
+        rows = [tuple(_n(x) for x in r) for r in data]
+        return spark.createDataFrame(rows, schema)
+    return spark.createDataFrame([(_n(x),) for x in data], schema or ["value"])
+'''
+
+
+def convert_code(source, add_preamble=True):
+    """Convierte codigo Python (pandas) a PySpark 3.
+
+    Devuelve dict: {ok, code, warnings, unsupported}.
+    - ok: False si el codigo de entrada no es Python valido (no se toca).
+    - code: PySpark generado (o el original si no se detecto pandas).
+    - warnings: notas de traduccion no exacta.
+    - unsupported: construcciones que requieren intervencion manual.
+    """
+    diag = _Warnings()
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as e:
+        return {
+            "ok": False,
+            "code": source,
+            "warnings": [],
+            "unsupported": [f"El codigo de entrada no es Python valido: {e}"],
+        }
+
+    used_pandas = _detect_pandas(source)
+    transformer = PandasToSparkTransformer(diag)
+
+    # Reconocedor del patron sklearn Pipeline + ColumnTransformer (opcional).
+    # Si el modulo lo contiene con piezas soportadas, se emite un unico bloque
+    # pyspark.ml.Pipeline equivalente en el lugar del Pipeline final, y los
+    # statements intermedios/posteriores que ya cubre se suprimen SIN TODO.
+    # Si NO se reconoce, no hace nada: el convertidor sigue su camino normal.
+    try:
+        from . import sklearn_pipeline as _skp
+        _sk = _skp.detect_and_build(tree)
+    except Exception:
+        _sk = None
+    if _sk:
+        _final = _skp._find_final_pipeline(_skp._scan_module(tree))
+        if _final:
+            model_var, _pre_ref, _est = _final
+            transformer.sklearn_pipeline = _sk
+            transformer.sklearn_emit_var = model_var
+            # Suprimir (sin TODO) los sub-pipelines/preprocessor y el .fit/.predict/
+            # report posteriores sobre el modelo: todo eso ya lo hace el bloque.
+            _sc = _skp._scan_module(tree)
+            _supp = set()
+            for _n, _call in _sc.assigns.items():
+                _cn = _skp._call_name(_call)
+                if _cn in ("Pipeline", "ColumnTransformer") and _n != model_var:
+                    _supp.add(_n)
+            # El modelo tambien se suprime (sin TODO): sus .fit()/.predict()/
+            # classification_report() posteriores ya los cubre el bloque unico.
+            _supp.add(model_var)
+            transformer.sklearn_suppress = _supp
+            diag.warn(
+                "sklearn Pipeline + ColumnTransformer -> pyspark.ml.Pipeline "
+                "(Imputer/StandardScaler/StringIndexer/OneHotEncoder aplanados en "
+                "stages). Ajusta la ruta del CSV y la columna label si difieren."
+            )
+
+    new_tree = transformer.visit(tree)
+    ast.fix_missing_locations(new_tree)
+
+    try:
+        body_code = _unparse(new_tree)
+    except Exception as e:  # pragma: no cover - unparse muy raro que falle
+        return {
+            "ok": False,
+            "code": source,
+            "warnings": diag.warnings,
+            "unsupported": diag.unsupported + [f"No se pudo regenerar el codigo: {e}"],
+        }
+
+    # Sustituir los placeholders MLlib por sus bloques de codigo reales,
+    # respetando la indentacion de la linea donde aparece el placeholder.
+    if transformer.mllib_blocks:
+        body_code = _expand_mllib_placeholders(body_code, transformer.mllib_blocks)
+
+    used_ml = bool(transformer.mllib_blocks)
+
+    # Si el MLlib generado referencia un DataFrame (df_hint) que nunca se define
+    # en el codigo (p.ej. el entrenamiento partia de arrays numpy, sin pd.read_*),
+    # inyectamos una fuente placeholder para ese df. Sin esto el job rompe con
+    # NameError y Data Redactada no detecta ninguna fuente (schema vacio).
+    if used_ml:
+        body_code = _ensure_mllib_source(body_code, transformer)
+    if not used_pandas and not used_ml:
+        diag.warn("No se detecto uso de pandas; el codigo se dejo casi intacto. "
+                  "py2spark hoy traduce principalmente pandas->PySpark.")
+
+    code = body_code
+    if add_preamble and (used_pandas or used_ml):
+        preamble = _PREAMBLE
+        # Imports de pyspark.ml necesarios para los bloques MLlib generados.
+        ml_imports = _mllib.imports_for(transformer.mllib_kinds)
+        if ml_imports:
+            preamble = preamble + "\n" + "\n".join(ml_imports) + "\n"
+        # Helper para pd.DataFrame(<variable>): normaliza dict/lista/escalares.
+        if transformer.needs_rows_helper:
+            preamble = preamble + "\n" + _ROWS_HELPER + "\n"
+        code = preamble + "\n" + body_code
+
+    # Inyectar comentarios TODO por cada 'unsupported' al inicio, para que queden
+    # visibles en el archivo generado.
+    if diag.unsupported:
+        todo_block = "\n".join(f"# TODO py2spark: {u}" for u in diag.unsupported)
+        code = todo_block + "\n" + code
+
+    return {
+        "ok": True,
+        "code": code,
+        "warnings": diag.warnings,
+        "unsupported": diag.unsupported,
+    }
+
+
+def _ensure_mllib_source(body_code, transformer):
+    """Garantiza que el DataFrame usado por el MLlib exista.
+
+    El MLlib usa `transformer.last_df` como df_hint. Si ese nombre nunca se
+    asigna en el codigo (porque el original partia de arrays numpy / datos en
+    memoria y no de un pd.read_*), inyectamos una fuente placeholder para que el
+    job ejecute y Data Redactada infiera un esquema."""
+    df_hint = getattr(transformer, "last_df", "df") or "df"
+    try:
+        tree = ast.parse(body_code)
+    except SyntaxError:
+        return body_code
+
+    # Buscamos una definicion INICIAL valida de df_hint: una asignacion a nivel
+    # de modulo (no dentro de if/for/try) cuyo valor NO dependa del propio
+    # df_hint. Las reasignaciones como `df = df.withColumn(...)` dentro del bloque
+    # MLlib NO cuentan como definicion (df aun no existe ahi).
+    def _value_uses(node, name):
+        return any(isinstance(s, ast.Name) and s.id == name for s in ast.walk(node))
+
+    defined = False
+    for stmt in tree.body:  # solo statements top-level
+        if isinstance(stmt, ast.Assign):
+            names = []
+            for tgt in stmt.targets:
+                names.extend(_names_in_target(tgt))
+            if df_hint in names and not _value_uses(stmt.value, df_hint):
+                defined = True
+                break
+
+    if defined:
+        return body_code  # ya se define en el codigo
+
+    reader = (
+        f"# Origen de datos: define aqui tu fuente real (el codigo original no\n"
+        f"# leia de un archivo/tabla; usaba datos en memoria).\n"
+        f'{df_hint} = spark.read.option("header", True).option("inferSchema", True).csv("datos.csv")'
+    )
+    transformer.df_names.add(df_hint)
+    transformer.diag.warn(
+        f"El entrenamiento MLlib usa '{df_hint}' pero el codigo no leia de una "
+        f"fuente real (datos en memoria/numpy). Se inyecto un spark.read.* "
+        f"placeholder: ajusta la ruta/tabla."
+    )
+    return reader + "\n" + body_code
+
+
+def _expand_mllib_placeholders(body_code, blocks):
+    """Reemplaza cada linea con un placeholder __PY2SPARK_MLLIB_N__ por su bloque
+    de texto MLlib, preservando la indentacion de la linea."""
+    out_lines = []
+    for line in body_code.splitlines():
+        stripped = line.strip()
+        if stripped in blocks:
+            indent = line[:len(line) - len(line.lstrip())]
+            block = blocks[stripped]
+            for bl in block.splitlines():
+                out_lines.append(indent + bl if bl else bl)
+        else:
+            out_lines.append(line)
+    return "\n".join(out_lines)
+
+
+def convert_file(path, add_preamble=True):
+    """Convierte un archivo .py y devuelve el mismo dict que convert_code."""
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        src = f.read()
+    return convert_code(src, add_preamble=add_preamble)

@@ -17,7 +17,12 @@ import zipfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # Archivos de la extension que van dentro de extension/ (excluye artefactos).
-_INCLUDE = ["package.json", "extension.js", "README.md", "CHANGELOG.md", "LICENSE.txt"]
+# run_py2spark.py = runner OFFLINE; la carpeta py2spark/ (motor) se agrega aparte.
+_INCLUDE = ["package.json", "extension.js", "run_py2spark.py",
+            "README.md", "CHANGELOG.md", "LICENSE.txt"]
+
+# Carpetas Python a empaquetar recursivamente dentro de extension/ (motor offline).
+_INCLUDE_DIRS = ["py2spark"]
 
 
 def _manifest(pkg):
@@ -56,6 +61,7 @@ _CONTENT_TYPES = '''<?xml version="1.0" encoding="utf-8"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="json" ContentType="application/json" />
   <Default Extension="js" ContentType="application/javascript" />
+  <Default Extension="py" ContentType="text/x-python" />
   <Default Extension="md" ContentType="text/markdown" />
   <Default Extension="txt" ContentType="text/plain" />
   <Default Extension="vsixmanifest" ContentType="text/xml" />
@@ -77,6 +83,19 @@ def build(out_path=None):
             fpath = os.path.join(HERE, fname)
             if os.path.isfile(fpath):
                 z.write(fpath, arcname=f"extension/{fname}")
+        # Carpetas del motor Python (recursivo, omitiendo __pycache__/.pyc).
+        for d in _INCLUDE_DIRS:
+            droot = os.path.join(HERE, d)
+            if not os.path.isdir(droot):
+                continue
+            for base, dirs, files in os.walk(droot):
+                dirs[:] = [x for x in dirs if x != "__pycache__"]
+                for f in files:
+                    if f.endswith(".pyc"):
+                        continue
+                    fpath = os.path.join(base, f)
+                    rel = os.path.relpath(fpath, HERE)
+                    z.write(fpath, arcname=f"extension/{rel}")
     return out_path
 
 

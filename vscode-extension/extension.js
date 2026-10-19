@@ -1,56 +1,93 @@
 // Extension VS Code: py2spark — convierte Python (pandas) a PySpark 3.
 //
-// Llama al endpoint /py2spark del portal BNX (mismo motor que la CLI y la GUI),
-// asi no requiere Python instalado en la maquina del usuario. La URL del portal
-// es configurable (py2spark.serverUrl).
+// OFFLINE: ejecuta el motor py2spark con el PYTHON LOCAL del usuario (sin portal
+// BNX ni red). El motor (paquete ./py2spark + run_py2spark.py) va EMPAQUETADO
+// dentro del .vsix; es 100% stdlib y compatible con Python 3.8+. Requisito:
+// tener Python 3 instalado (configurable con py2spark.pythonPath).
 
 const vscode = require("vscode");
-const http = require("http");
-const https = require("https");
-const { URL } = require("url");
+const cp = require("child_process");
+const path = require("path");
+const fs = require("fs");
 
-/** POST JSON al endpoint /py2spark y devuelve el objeto de respuesta. */
-function convertViaServer(serverUrl, code) {
+// Carpeta de la extension (donde viven run_py2spark.py y ./py2spark).
+let EXT_DIR = __dirname;
+
+/** Lista de candidatos a intérprete Python, en orden de preferencia. */
+function pythonCandidates() {
+  const cfg = vscode.workspace.getConfiguration("py2spark").get("pythonPath", "").trim();
+  const list = [];
+  if (cfg) list.push(cfg);
+  // Interprete seleccionado por la extension oficial de Python, si existe.
+  try {
+    const pyExt = vscode.extensions.getExtension("ms-python.python");
+    const execCmd = pyExt && pyExt.exports && pyExt.exports.settings &&
+      pyExt.exports.settings.getExecutionDetails &&
+      pyExt.exports.settings.getExecutionDetails().execCommand;
+    if (Array.isArray(execCmd) && execCmd.length) list.push(execCmd[0]);
+  } catch (_e) { /* ignore */ }
+  list.push("python3", "python", "py");
+  return [...new Set(list)];
+}
+
+/** Ejecuta run_py2spark.py con un interprete, pasando code por stdin. */
+function runWithPython(pythonBin, code) {
   return new Promise((resolve, reject) => {
-    let base;
-    try {
-      base = new URL(serverUrl.replace(/\/+$/, "") + "/py2spark");
-    } catch (e) {
-      return reject(new Error("URL de servidor invalida: " + serverUrl));
-    }
-    const payload = JSON.stringify({ code });
-    const lib = base.protocol === "https:" ? https : http;
-    const req = lib.request(
-      base,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Content-Length": Buffer.byteLength(payload),
-        },
-        timeout: 30000,
-      },
-      (res) => {
-        let body = "";
-        res.on("data", (c) => (body += c));
-        res.on("end", () => {
-          try {
-            const data = JSON.parse(body);
-            resolve(data);
-          } catch (e) {
-            reject(new Error("Respuesta no valida del servidor: " + body.slice(0, 200)));
-          }
-        });
+    const script = path.join(EXT_DIR, "run_py2spark.py");
+    const child = cp.spawn(pythonBin, [script], { cwd: EXT_DIR });
+    let out = "", err = "";
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { child.kill(); } catch (_e) { /* ignore */ }
+      reject(new Error("Timeout: la conversion tardo demasiado."));
+    }, 60000);
+
+    child.on("error", (e) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(e); // ENOENT => interprete no encontrado; probamos el siguiente
+    });
+    child.stdout.on("data", (d) => (out += d));
+    child.stderr.on("data", (d) => (err += d));
+    child.on("close", (codeExit) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try {
+        resolve(JSON.parse(out));
+      } catch (e) {
+        reject(new Error("Respuesta no valida del motor" +
+          (err ? (": " + err.slice(0, 300)) : ("; salida: " + out.slice(0, 200)))));
       }
-    );
-    req.on("error", (e) =>
-      reject(new Error("No se pudo conectar a " + base.href + " (" + e.message + "). " +
-        "Revisa que el portal BNX este corriendo y la config py2spark.serverUrl."))
-    );
-    req.on("timeout", () => { req.destroy(); reject(new Error("Timeout al contactar el servidor.")); });
-    req.write(payload);
-    req.end();
+    });
+    child.stdin.on("error", () => { /* el close/error ya maneja el flujo */ });
+    child.stdin.write(JSON.stringify({ code }));
+    child.stdin.end();
   });
+}
+
+/** Convierte localmente probando los interpretes Python disponibles. */
+async function convertLocal(code) {
+  const candidates = pythonCandidates();
+  let lastErr = null;
+  for (const bin of candidates) {
+    try {
+      return await runWithPython(bin, code);
+    } catch (e) {
+      lastErr = e;
+      // ENOENT: interprete inexistente -> probar el siguiente candidato.
+      if (e && (e.code === "ENOENT" || /ENOENT/.test(e.message || ""))) continue;
+      // Otro error (p.ej. del propio script) -> no tiene sentido reintentar.
+      throw e;
+    }
+  }
+  throw new Error(
+    "No se encontro Python 3. Instala Python 3.8+ o define la ruta en la config " +
+    "'py2spark.pythonPath'. (Interpretes probados: " + candidates.join(", ") + ")" +
+    (lastErr ? " — " + lastErr.message : ""));
 }
 
 /** Muestra el resultado: abre editor nuevo o reemplaza la seleccion. */
@@ -89,15 +126,14 @@ async function showResult(editor, result, replaceRange) {
 }
 
 function activate(context) {
-  const serverUrl = () =>
-    vscode.workspace.getConfiguration("py2spark").get("serverUrl", "http://127.0.0.1:8081");
+  EXT_DIR = context.extensionPath || __dirname;
 
   const run = async (code, editor, range) => {
     await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: "py2spark: convirtiendo a PySpark…" },
       async () => {
         try {
-          const result = await convertViaServer(serverUrl(), code);
+          const result = await convertLocal(code);
           await showResult(editor, result, range);
         } catch (e) {
           vscode.window.showErrorMessage("py2spark: " + e.message);

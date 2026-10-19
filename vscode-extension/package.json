@@ -1,8 +1,8 @@
 {
   "name": "py2spark",
   "displayName": "py2spark — Python a PySpark 3",
-  "description": "Convierte codigo Python (pandas + sklearn) a PySpark 3 usando el motor py2spark del portal BNX. Incluye traduccion de sklearn Pipeline + ColumnTransformer a pyspark.ml.Pipeline.",
-  "version": "0.2.0",
+  "description": "Convierte codigo Python (pandas + sklearn) a PySpark 3 con un motor OFFLINE que corre con tu Python local (sin portal ni red). Incluye traduccion de sklearn Pipeline + ColumnTransformer a pyspark.ml.Pipeline. Requiere Python 3.8+.",
+  "version": "0.3.0",
   "publisher": "bnx",
   "engines": {
     "vscode": "^1.75.0"
@@ -49,10 +49,10 @@
     "configuration": {
       "title": "py2spark",
       "properties": {
-        "py2spark.serverUrl": {
+        "py2spark.pythonPath": {
           "type": "string",
-          "default": "http://127.0.0.1:8081",
-          "description": "URL base del portal BNX que expone el endpoint /py2spark. Usa 127.0.0.1 (IPv4) por defecto para evitar que 'localhost' se resuelva a ::1 y falle la conexión."
+          "default": "",
+          "description": "Ruta al interprete Python 3.8+ para correr el motor OFFLINE. Si se deja vacio, usa el interprete de la extension oficial de Python, o busca python3/python/py en el PATH."
         },
         "py2spark.openInNewEditor": {
           "type": "boolean",
