@@ -95,7 +95,7 @@ async function showResult(editor, result, replaceRange) {
 
 function activate(context) {
   const serverUrl = () =>
-    vscode.workspace.getConfiguration("psparkOptimizer").get("serverUrl", "http://localhost:8081");
+    vscode.workspace.getConfiguration("psparkOptimizer").get("serverUrl", "http://127.0.0.1:8081");
 
   const run = async (code, editor, range) => {
     if (!code || !code.trim()) {

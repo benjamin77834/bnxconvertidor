@@ -3810,11 +3810,34 @@ if __name__ == "__main__":
         _push_library_to_s3()     # local -> S3 (subida incremental)
     _threading.Thread(target=_library_bidirectional_sync, daemon=True).start()
 
+    import socket as _socket
+
     class _BNXServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         allow_reuse_address = True  # evita "Address already in use" al reiniciar
         daemon_threads = True
 
-    with _BNXServer(("", PORT), BNXHandler) as httpd:
+    # DUAL-STACK: escuchar en IPv6 ('::') con IPV6_V6ONLY=0 atiende TANTO IPv6
+    # (::1) como IPv4 (127.0.0.1) mapeado. Esto importa porque Node/VS Code en
+    # macOS resuelve 'localhost' a ::1 primero; si el server fuera solo IPv4 las
+    # extensiones (.vsix) darian ECONNREFUSED ("No se pudo conectar"). Si el SO
+    # no soporta dual-stack, caemos a IPv4 puro.
+    def _make_server():
+        try:
+            class _V6(_BNXServer):
+                address_family = _socket.AF_INET6
+            srv = _V6(("::", PORT), BNXHandler, bind_and_activate=False)
+            try:
+                srv.socket.setsockopt(_socket.IPPROTO_IPV6, _socket.IPV6_V6ONLY, 0)
+            except (AttributeError, OSError):
+                pass  # algunas plataformas no exponen V6ONLY; seguimos igual
+            srv.server_bind()
+            srv.server_activate()
+            return srv
+        except OSError:
+            # Fallback: IPv4 puro (p.ej. IPv6 deshabilitado en el host).
+            return _BNXServer(("0.0.0.0", PORT), BNXHandler)
+
+    with _make_server() as httpd:
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:

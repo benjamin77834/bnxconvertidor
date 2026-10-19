@@ -132,7 +132,7 @@ function activate(context) {
   context.subscriptions.push(collection);
 
   const serverUrl = () =>
-    vscode.workspace.getConfiguration("bnxReview").get("serverUrl", "http://localhost:8081");
+    vscode.workspace.getConfiguration("bnxReview").get("serverUrl", "http://127.0.0.1:8081");
   const analyzeOnSave = () =>
     vscode.workspace.getConfiguration("bnxReview").get("analyzeOnSave", true);
 

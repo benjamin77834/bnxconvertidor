@@ -51,8 +51,8 @@
       "properties": {
         "py2spark.serverUrl": {
           "type": "string",
-          "default": "http://localhost:8081",
-          "description": "URL base del portal BNX que expone el endpoint /py2spark."
+          "default": "http://127.0.0.1:8081",
+          "description": "URL base del portal BNX que expone el endpoint /py2spark. Usa 127.0.0.1 (IPv4) por defecto para evitar que 'localhost' se resuelva a ::1 y falle la conexión."
         },
         "py2spark.openInNewEditor": {
           "type": "boolean",
