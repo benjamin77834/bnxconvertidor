@@ -65,3 +65,7 @@ drivers/*.jar
 
 # Artefactos de empaquetado/distribucion (se regeneran; no versionar)
 *.7z
+
+# Kiro: configuracion, specs, hooks y steering del IDE (no versionar).
+# Siguen existiendo en local para Kiro; solo no se suben a GitHub.
+.kiro/
