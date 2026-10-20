@@ -9,6 +9,7 @@ const GET_URL = `${API_BASE}/quality/get`
 const DOWNLOAD_URL = (id, fmt) => `${API_BASE}/quality/download?id=${encodeURIComponent(id)}&fmt=${fmt}`
 
 const GRADE_COLOR = { A: '#16a34a', B: '#65a30d', C: '#d97706', D: '#dc2626' }
+const PREVIEW_ROWS = 50  // filas de vista previa por dataset
 
 function GradeBadge({ letter }) {
   const c = GRADE_COLOR[letter] || '#64748b'
@@ -43,16 +44,94 @@ function readFileAsB64(file) {
   })
 }
 
-function DropFile({ label, file, onPick, theme }) {
+// Parser CSV minimo para la VISTA PREVIA (cliente). Detecta separador comun y
+// respeta comillas dobles. No pretende cubrir todo CSV: solo previsualizar.
+function parseCsvPreview(text, maxRows = PREVIEW_ROWS) {
+  const sample = text.slice(0, 4000)
+  let delim = ','
+  for (const d of [',', ';', '\t', '|']) {
+    if ((sample.split(d).length) > (sample.split(delim).length)) delim = d
+  }
+  const rows = []
+  let i = 0, field = '', row = [], inQ = false
+  const pushField = () => { row.push(field); field = '' }
+  const pushRow = () => { rows.push(row); row = [] }
+  while (i < text.length && rows.length <= maxRows) {
+    const ch = text[i]
+    if (inQ) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { field += '"'; i += 2; continue }
+        inQ = false; i++; continue
+      }
+      field += ch; i++; continue
+    }
+    if (ch === '"') { inQ = true; i++; continue }
+    if (ch === delim) { pushField(); i++; continue }
+    if (ch === '\n') { pushField(); pushRow(); i++; continue }
+    if (ch === '\r') { i++; continue }
+    field += ch; i++
+  }
+  if (field.length || row.length) { pushField(); pushRow() }
+  const nonEmpty = rows.filter(r => r.length && !(r.length === 1 && r[0] === ''))
+  if (!nonEmpty.length) return { columns: [], rows: [], total: 0 }
+  const columns = nonEmpty[0].map(c => String(c).trim())
+  const dataRows = nonEmpty.slice(1)
+  // Conteo total de filas de datos (barato: contar saltos de linea).
+  let total = 0
+  for (let k = 0; k < text.length; k++) if (text[k] === '\n') total++
+  total = Math.max(total - 1, dataRows.length) // menos el header (aprox)
+  return { columns, rows: dataRows.slice(0, maxRows), total }
+}
+
+// Tabla de vista previa de un dataset (scroll propio, no empuja la pagina).
+function PreviewTable({ data, theme, accent }) {
+  const t = theme || {}
+  if (!data) return (
+    <div style={{ fontSize: 12, color: t.muted || '#94a3b8', padding: 12 }}>
+      Elige un archivo CSV para ver sus datos aquí.
+    </div>
+  )
+  if (!data.columns.length) return (
+    <div style={{ fontSize: 12, color: t.muted || '#94a3b8', padding: 12 }}>
+      (archivo binario/parquet: la vista previa se omite; sí se usa al comparar)
+    </div>
+  )
+  return (
+    <div style={{ overflow: 'auto', maxHeight: 320, border: `1px solid ${t.border || '#334155'}`, borderRadius: 8 }}>
+      <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 11 }}>
+        <thead style={{ position: 'sticky', top: 0 }}>
+          <tr>
+            <th style={{ ...phStyle(t), color: t.dim || '#64748b', width: 36 }}>#</th>
+            {data.columns.map((c, i) => (
+              <th key={i} style={{ ...phStyle(t), color: accent }}>{c}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {data.rows.map((r, ri) => (
+            <tr key={ri} style={{ borderBottom: `1px solid ${(t.border || '#334155')}44` }}>
+              <td style={{ ...pcStyle(t), color: t.dim || '#64748b' }}>{ri + 1}</td>
+              {data.columns.map((_, ci) => (
+                <td key={ci} style={pcStyle(t)}>{r[ci] != null ? String(r[ci]) : ''}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function DropFile({ label, file, onPick, theme, accent }) {
   const t = theme || {}
   return (
     <label style={{
-      flex: 1, minWidth: 220, cursor: 'pointer',
-      border: `1px dashed ${t.border || '#334155'}`, borderRadius: 10, padding: 14,
-      background: t.codeBg || '#081220', display: 'flex', flexDirection: 'column', gap: 6,
+      cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10,
+      border: `1px dashed ${t.border || '#334155'}`, borderRadius: 8, padding: '8px 12px',
+      background: t.codeBg || '#081220',
     }}>
-      <span style={{ fontSize: 12, fontWeight: 700, color: t.text || '#e2e8f0' }}>{label}</span>
-      <span style={{ fontSize: 12, color: file ? '#22c55e' : (t.muted || '#94a3b8') }}>
+      <span style={{ fontSize: 12, fontWeight: 700, color: accent }}>{label}</span>
+      <span style={{ fontSize: 12, color: file ? '#22c55e' : (t.muted || '#94a3b8'), marginLeft: 'auto' }}>
         {file ? `✓ ${file.name} (${(file.size / 1024).toFixed(1)} KB)` : 'Clic para elegir CSV / Parquet'}
       </span>
       <input type="file" accept=".csv,.tsv,.txt,.parquet" style={{ display: 'none' }}
@@ -68,6 +147,8 @@ export default function DataQualityPage({ theme }) {
   const [tol, setTol] = useState(5)
   const [fileA, setFileA] = useState(null)
   const [fileB, setFileB] = useState(null)
+  const [prevA, setPrevA] = useState(null)   // {columns, rows, total}
+  const [prevB, setPrevB] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [report, setReport] = useState(null)
@@ -84,6 +165,18 @@ export default function DataQualityPage({ theme }) {
   }, [])
 
   useEffect(() => { loadHistory() }, [loadHistory])
+
+  // Al elegir archivo: guardarlo y generar la vista previa (CSV en cliente).
+  const pickFile = async (file, setFile, setPrev) => {
+    setFile(file)
+    setPrev(null)
+    if (!file) return
+    if (/\.parquet$/i.test(file.name)) { setPrev({ columns: [], rows: [], total: 0 }); return }
+    try {
+      const text = await readFileAsText(file)
+      setPrev(parseCsvPreview(text))
+    } catch (e) { setPrev({ columns: [], rows: [], total: 0 }) }
+  }
 
   const buildSide = async (file) => {
     const isBin = /\.parquet$/i.test(file.name)
@@ -145,7 +238,7 @@ export default function DataQualityPage({ theme }) {
   )
 
   return (
-    <div style={{ flex: 1, overflowY: 'auto', padding: 24, display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div style={{ flex: 1, overflowY: 'auto', padding: 20, display: 'flex', flexDirection: 'column', gap: 14, width: '100%', boxSizing: 'border-box' }}>
       <div>
         <h2 style={{ margin: 0, fontSize: 22, color: t.text || '#e2e8f0' }}>⚖️ Comparador de calidad de datos</h2>
         <p style={{ margin: '4px 0 0', fontSize: 13, color: t.muted || '#94a3b8' }}>
@@ -155,36 +248,53 @@ export default function DataQualityPage({ theme }) {
         </p>
       </div>
 
-      {/* Entrada */}
-      <div style={{ ...card, display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-          <DropFile label="📄 Dataset A — Ab Initio (baseline)" file={fileA} onPick={setFileA} theme={t} />
-          <DropFile label="📄 Dataset B — Convertidor" file={fileB} onPick={setFileB} theme={t} />
+      {/* Controles de comparacion (una sola fila ancha) */}
+      <div style={{ ...card, display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 2, minWidth: 220 }}>
+          <label style={{ fontSize: 11, color: t.muted || '#94a3b8' }}>Nombre del reporte</label>
+          <input value={name} onChange={e => setName(e.target.value)}
+            placeholder="p.ej. settlement_oct" style={inputStyle(t)} />
         </div>
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 180 }}>
-            <label style={{ fontSize: 11, color: t.muted || '#94a3b8' }}>Nombre del reporte</label>
-            <input value={name} onChange={e => setName(e.target.value)}
-              placeholder="p.ej. settlement_oct"
-              style={inputStyle(t)} />
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 140 }}>
-            <label style={{ fontSize: 11, color: t.muted || '#94a3b8' }}>Columna llave (opcional)</label>
-            <input value={keyCol} onChange={e => setKeyCol(e.target.value)}
-              placeholder="p.ej. id" style={inputStyle(t)} />
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, width: 120 }}>
-            <label style={{ fontSize: 11, color: t.muted || '#94a3b8' }}>Tolerancia %</label>
-            <input type="number" value={tol} min={0} step={0.5}
-              onChange={e => setTol(e.target.value)} style={inputStyle(t)} />
-          </div>
-          <button onClick={compare} disabled={loading}
-            style={{
-              padding: '10px 20px', borderRadius: 8, fontSize: 13, fontWeight: 700,
-              cursor: loading ? 'wait' : 'pointer', background: '#6366f1', color: '#fff', border: 'none',
-            }}>{loading ? '⏳ Comparando...' : '⚖️ Comparar'}</button>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 140 }}>
+          <label style={{ fontSize: 11, color: t.muted || '#94a3b8' }}>Columna llave (opcional)</label>
+          <input value={keyCol} onChange={e => setKeyCol(e.target.value)}
+            placeholder="p.ej. id" style={inputStyle(t)} />
         </div>
-        {error && <div style={{ fontSize: 12, color: '#f87171' }}>⚠️ {error}</div>}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, width: 110 }}>
+          <label style={{ fontSize: 11, color: t.muted || '#94a3b8' }}>Tolerancia %</label>
+          <input type="number" value={tol} min={0} step={0.5}
+            onChange={e => setTol(e.target.value)} style={inputStyle(t)} />
+        </div>
+        <button onClick={compare} disabled={loading}
+          style={{
+            padding: '10px 24px', borderRadius: 8, fontSize: 13, fontWeight: 700,
+            cursor: loading ? 'wait' : 'pointer', background: '#6366f1', color: '#fff', border: 'none',
+          }}>{loading ? '⏳ Comparando...' : '⚖️ Comparar'}</button>
+        {error && <div style={{ fontSize: 12, color: '#f87171', flexBasis: '100%' }}>⚠️ {error}</div>}
+      </div>
+
+      {/* Vistas previas A y B LADO A LADO (aprovecha todo el ancho) */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+        <div style={{ ...card, display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
+          <DropFile label="📄 A — Ab Initio (baseline)" file={fileA} accent="#38bdf8"
+            onPick={(f) => pickFile(f, setFileA, setPrevA)} theme={t} />
+          {prevA?.columns?.length > 0 && (
+            <div style={{ fontSize: 11, color: t.muted || '#94a3b8' }}>
+              {prevA.columns.length} columnas · ~{prevA.total} filas · mostrando {Math.min(prevA.rows.length, PREVIEW_ROWS)}
+            </div>
+          )}
+          <PreviewTable data={prevA} theme={t} accent="#38bdf8" />
+        </div>
+        <div style={{ ...card, display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
+          <DropFile label="📄 B — Convertidor" file={fileB} accent="#a78bfa"
+            onPick={(f) => pickFile(f, setFileB, setPrevB)} theme={t} />
+          {prevB?.columns?.length > 0 && (
+            <div style={{ fontSize: 11, color: t.muted || '#94a3b8' }}>
+              {prevB.columns.length} columnas · ~{prevB.total} filas · mostrando {Math.min(prevB.rows.length, PREVIEW_ROWS)}
+            </div>
+          )}
+          <PreviewTable data={prevB} theme={t} accent="#a78bfa" />
+        </div>
       </div>
 
       {/* Resultado */}
@@ -215,71 +325,72 @@ export default function DataQualityPage({ theme }) {
             </div>
           )}
 
-          {/* Tabla por columna */}
-          <div style={{ ...card, overflowX: 'auto' }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: t.text || '#e2e8f0', marginBottom: 8 }}>
-              Comparación por columna
-            </div>
-            <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 12 }}>
-              <thead>
-                <tr style={{ color: t.muted || '#94a3b8', textAlign: 'left' }}>
-                  {['Columna', 'Estado', 'media A', 'media B', 'Δ media', 'stdev A', 'stdev B', 'p50 A', 'p50 B', 'nulos A%', 'nulos B%']
-                    .map(h => <th key={h} style={{ padding: '6px 8px', borderBottom: `1px solid ${t.border || '#334155'}` }}>{h}</th>)}
-                </tr>
-              </thead>
-              <tbody>
-                {cols.map((e, i) => {
-                  const a = e.A || {}, b = e.B || {}, d = e.diff || {}
-                  const ok = e.status === 'ok'
-                  const sc = ok ? '#22c55e' : '#ef4444'
-                  return (
-                    <tr key={i} style={{ borderBottom: `1px solid ${(t.border || '#334155')}44` }}>
-                      <td style={cellStyle(t)}><b>{e.column}</b> {!e.numeric && <span style={{ color: t.dim || '#64748b' }}>(cat)</span>}</td>
-                      <td style={{ ...cellStyle(t), color: sc, fontWeight: 700 }}>{ok ? 'OK' : 'DRIFT'}</td>
-                      <td style={cellStyle(t)}>{fmt(a.mean)}</td>
-                      <td style={cellStyle(t)}>{fmt(b.mean)}</td>
-                      <td style={{ ...cellStyle(t), color: (d.mean_pct ?? 0) > tol ? '#f97316' : (t.text || '#e2e8f0') }}>
-                        {d.mean_pct != null ? `${d.mean_pct}%` : '—'}
-                      </td>
-                      <td style={cellStyle(t)}>{fmt(a.stdev)}</td>
-                      <td style={cellStyle(t)}>{fmt(b.stdev)}</td>
-                      <td style={cellStyle(t)}>{fmt(a.p50)}</td>
-                      <td style={cellStyle(t)}>{fmt(b.p50)}</td>
-                      <td style={cellStyle(t)}>{a.null_pct != null ? `${a.null_pct}%` : '—'}</td>
-                      <td style={cellStyle(t)}>{b.null_pct != null ? `${b.null_pct}%` : '—'}</td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Apareo por llave */}
-          {kc && (
-            <div style={{ ...card, overflowX: 'auto' }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: t.text || '#e2e8f0', marginBottom: 6 }}>
-                Apareo por llave: <code>{kc.key}</code>
+          {/* Comparacion por columna (ancho completo) + apareo por llave al lado */}
+          <div style={{ display: 'grid', gridTemplateColumns: kc ? '2fr 1fr' : '1fr', gap: 14, alignItems: 'start' }}>
+            <div style={{ ...card, overflowX: 'auto', minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: t.text || '#e2e8f0', marginBottom: 8 }}>
+                Comparación por columna
               </div>
-              <div style={{ fontSize: 12, color: t.muted || '#94a3b8', marginBottom: 8 }}>
-                Filas apareadas: <b style={{ color: t.text || '#e2e8f0' }}>{kc.matched_rows}</b> (A={kc.rows_a}, B={kc.rows_b})
-              </div>
-              <table style={{ borderCollapse: 'collapse', width: '100%', maxWidth: 420, fontSize: 12 }}>
-                <thead><tr style={{ color: t.muted || '#94a3b8', textAlign: 'left' }}>
-                  <th style={{ padding: '6px 8px' }}>Columna</th><th style={{ padding: '6px 8px' }}>% celdas idénticas</th>
-                </tr></thead>
+              <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 12 }}>
+                <thead>
+                  <tr style={{ color: t.muted || '#94a3b8', textAlign: 'left' }}>
+                    {['Columna', 'Estado', 'media A', 'media B', 'Δ media', 'stdev A', 'stdev B', 'p50 A', 'p50 B', 'nulos A%', 'nulos B%']
+                      .map(h => <th key={h} style={{ padding: '6px 8px', borderBottom: `1px solid ${t.border || '#334155'}` }}>{h}</th>)}
+                  </tr>
+                </thead>
                 <tbody>
-                  {(kc.columns || []).map((c, i) => (
-                    <tr key={i} style={{ borderBottom: `1px solid ${(t.border || '#334155')}44` }}>
-                      <td style={cellStyle(t)}>{c.column}</td>
-                      <td style={{ ...cellStyle(t), color: (c.match_pct ?? 0) >= 95 ? '#22c55e' : '#f97316', fontWeight: 700 }}>
-                        {c.match_pct != null ? `${c.match_pct}%` : '—'}
-                      </td>
-                    </tr>
-                  ))}
+                  {cols.map((e, i) => {
+                    const a = e.A || {}, b = e.B || {}, d = e.diff || {}
+                    const ok = e.status === 'ok'
+                    const sc = ok ? '#22c55e' : '#ef4444'
+                    return (
+                      <tr key={i} style={{ borderBottom: `1px solid ${(t.border || '#334155')}44` }}>
+                        <td style={cellStyle(t)}><b>{e.column}</b> {!e.numeric && <span style={{ color: t.dim || '#64748b' }}>(cat)</span>}</td>
+                        <td style={{ ...cellStyle(t), color: sc, fontWeight: 700 }}>{ok ? 'OK' : 'DRIFT'}</td>
+                        <td style={cellStyle(t)}>{fmt(a.mean)}</td>
+                        <td style={cellStyle(t)}>{fmt(b.mean)}</td>
+                        <td style={{ ...cellStyle(t), color: (d.mean_pct ?? 0) > tol ? '#f97316' : (t.text || '#e2e8f0') }}>
+                          {d.mean_pct != null ? `${d.mean_pct}%` : '—'}
+                        </td>
+                        <td style={cellStyle(t)}>{fmt(a.stdev)}</td>
+                        <td style={cellStyle(t)}>{fmt(b.stdev)}</td>
+                        <td style={cellStyle(t)}>{fmt(a.p50)}</td>
+                        <td style={cellStyle(t)}>{fmt(b.p50)}</td>
+                        <td style={cellStyle(t)}>{a.null_pct != null ? `${a.null_pct}%` : '—'}</td>
+                        <td style={cellStyle(t)}>{b.null_pct != null ? `${b.null_pct}%` : '—'}</td>
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
             </div>
-          )}
+
+            {kc && (
+              <div style={{ ...card, overflowX: 'auto', minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: t.text || '#e2e8f0', marginBottom: 6 }}>
+                  Apareo por llave: <code>{kc.key}</code>
+                </div>
+                <div style={{ fontSize: 12, color: t.muted || '#94a3b8', marginBottom: 8 }}>
+                  Filas apareadas: <b style={{ color: t.text || '#e2e8f0' }}>{kc.matched_rows}</b> (A={kc.rows_a}, B={kc.rows_b})
+                </div>
+                <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 12 }}>
+                  <thead><tr style={{ color: t.muted || '#94a3b8', textAlign: 'left' }}>
+                    <th style={{ padding: '6px 8px' }}>Columna</th><th style={{ padding: '6px 8px' }}>% celdas idénticas</th>
+                  </tr></thead>
+                  <tbody>
+                    {(kc.columns || []).map((c, i) => (
+                      <tr key={i} style={{ borderBottom: `1px solid ${(t.border || '#334155')}44` }}>
+                        <td style={cellStyle(t)}>{c.column}</td>
+                        <td style={{ ...cellStyle(t), color: (c.match_pct ?? 0) >= 95 ? '#22c55e' : '#f97316', fontWeight: 700 }}>
+                          {c.match_pct != null ? `${c.match_pct}%` : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         </>
       )}
 
@@ -372,4 +483,18 @@ function inputStyle(t) {
 }
 function cellStyle(t) {
   return { padding: '6px 8px', color: t.text || '#e2e8f0', whiteSpace: 'nowrap' }
+}
+// Cabecera de tabla de vista previa (sticky).
+function phStyle(t) {
+  return {
+    padding: '6px 8px', textAlign: 'left', fontSize: 11, fontWeight: 700,
+    background: t.card || '#1e2433', borderBottom: `1px solid ${t.border || '#334155'}`,
+    whiteSpace: 'nowrap',
+  }
+}
+function pcStyle(t) {
+  return {
+    padding: '4px 8px', color: t.text || '#e2e8f0', whiteSpace: 'nowrap',
+    maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis',
+  }
 }
