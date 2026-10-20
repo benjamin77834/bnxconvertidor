@@ -66,8 +66,8 @@ def _resolve_python():
 
 
 def fetch_masked(source_type, conn, query=None, table=None, limit=50,
-                 driver_jar=None, columns=None, timeout=180):
-    """Lee de la fuente via JDBC (con LIMIT) y devuelve filas YA ENMASCARADAS.
+                 driver_jar=None, columns=None, timeout=180, apply_pii=True):
+    """Lee de la fuente via JDBC (con LIMIT) y devuelve las filas.
 
     source_type: 'teradata' | 'hive' | 'impala' | 'jdbc'
     conn: dict con url|host|port|database|user|password (password no se loguea).
@@ -75,9 +75,12 @@ def fetch_masked(source_type, conn, query=None, table=None, limit=50,
     limit: maximo de filas (pruebas puntuales).
     driver_jar: ruta al .jar del driver JDBC (requerido en el destino).
     columns: opcional [{name,pii}] para dirigir el enmascaramiento.
+    apply_pii: si True (por defecto) ENMASCARA las columnas PII antes de
+        devolver; si False devuelve los datos TAL CUAL (crudos). El default
+        seguro es True: solo se omite cuando el usuario lo pide explicitamente.
 
-    Devuelve {"ok", "rows": [...enmascaradas...], "columns": [...], "n": N}
-    o {"ok": False, "error": ...}. NUNCA devuelve datos reales en claro."""
+    Devuelve {"ok", "rows": [...], "columns": [...], "n": N, "pii_applied": bool}
+    o {"ok": False, "error": ...}."""
     preset = _PRESETS.get(source_type, {})
     url = conn.get("url") or (preset.get("url", "").format(
         host=conn.get("host", ""), port=conn.get("port", ""),
@@ -174,13 +177,17 @@ finally:
             except OSError:
                 pass
 
-    # ENMASCARAR INMEDIATAMENTE. A partir de aqui no existe el dato real.
     cols = raw.get("columns", [])
     rows = raw.get("rows", [])
-    masked = mask_records(rows, columns=columns)
-    # Liberar las filas crudas de memoria.
+    if apply_pii:
+        # ENMASCARAR INMEDIATAMENTE. A partir de aqui no existe el dato real.
+        out_rows = mask_records(rows, columns=columns)
+    else:
+        # El usuario pidio NO enmascarar: se devuelven los datos crudos tal cual.
+        out_rows = rows
+    # Liberar las filas crudas de memoria (si se enmascaro, ya no se necesitan).
     del rows, raw
-    # Marcar que columnas quedaron enmascaradas (para la UI).
+    # Marcar que columnas SON PII (para la UI: destacar aunque no se enmascaren).
     col_meta = []
     for c in cols:
         cat = None
@@ -189,7 +196,8 @@ finally:
                 if cc.get("name") == c:
                     cat = cc.get("pii"); break
         col_meta.append({"name": c, "pii": cat or _detect(c)})
-    return {"ok": True, "n": len(masked), "columns": col_meta, "rows": masked}
+    return {"ok": True, "n": len(out_rows), "columns": col_meta,
+            "rows": out_rows, "pii_applied": bool(apply_pii)}
 
 
 # imports diferidos para evitar ciclos y mantener el modulo ligero al cargar.

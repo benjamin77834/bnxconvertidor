@@ -3388,6 +3388,10 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             return
         try:
             from src.datasource import fetch_masked
+            # apply_pii: por defecto True (enmascara). Solo False si la GUI lo
+            # pide explicitamente (el usuario desactivo el PII a propósito).
+            apply_pii = data.get("apply_pii")
+            apply_pii = True if apply_pii is None else bool(apply_pii)
             result = fetch_masked(
                 source_type=(data.get("source_type") or "jdbc"),
                 conn=data.get("conn") or {},
@@ -3396,8 +3400,10 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 driver_jar=data.get("driver_jar"),
                 columns=data.get("columns"),
                 timeout=int(data.get("timeout", 180)),
+                apply_pii=apply_pii,
             )
-            # Nunca devolvemos el password ni datos crudos; result ya viene enmascarado.
+            # Nunca devolvemos el password. Las filas vienen enmascaradas salvo que
+            # el usuario haya desactivado el PII (apply_pii=False) a propósito.
             self._json_response(200, result)
         except Exception as e:
             import traceback

@@ -57,6 +57,15 @@ export default function DataSourcePanel({ theme, onImport }) {
   const [table, setTable] = useState('')
   const [query, setQuery] = useState('')
   const [limit, setLimit] = useState(50)
+  // Aplicar enmascaramiento PII (ON por defecto = seguro). Se persiste.
+  const [applyPii, _setApplyPii] = useState(() => {
+    try { return localStorage.getItem('bnx_datasource_pii') !== '0' } catch { return true }
+  })
+  const setApplyPii = (v) => {
+    const nv = typeof v === 'function' ? v(applyPii) : v
+    _setApplyPii(nv)
+    try { localStorage.setItem('bnx_datasource_pii', nv ? '1' : '0') } catch { /* ignore */ }
+  }
   const [driverJar, setDriverJar] = useState('')
   const [targetNode, setTargetNode] = useState('')
   const [loading, setLoading] = useState(false)
@@ -132,6 +141,7 @@ export default function DataSourcePanel({ theme, onImport }) {
           source_type: sourceType, conn,
           table: table.trim() || undefined, query: query.trim() || undefined,
           limit: Number(limit) || 50, driver_jar: driverJar.trim() || undefined,
+          apply_pii: applyPii,
         }),
       })
       const data = await res.json()
@@ -173,7 +183,8 @@ export default function DataSourcePanel({ theme, onImport }) {
     const blob = new Blob([content], { type: mime })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
-    a.href = url; a.download = `${name}_enmascarado.${ext}`; a.click()
+    const suffix = preview.pii_applied === false ? 'crudo' : 'enmascarado'
+    a.href = url; a.download = `${name}_${suffix}.${ext}`; a.click()
     URL.revokeObjectURL(url)
   }
 
@@ -186,7 +197,8 @@ export default function DataSourcePanel({ theme, onImport }) {
     const columns = (preview.columns || []).map(c => ({ name: c.name, type: 'string', pii: c.pii || null }))
     onImport && onImport({
       node, node_type: 'SOURCE', io: 'input', format: 'csv',
-      content, rows: preview.rows, columns, external: true, masked: true,
+      content, rows: preview.rows, columns, external: true,
+      masked: preview.pii_applied !== false,
     })
   }
 
@@ -291,11 +303,44 @@ export default function DataSourcePanel({ theme, onImport }) {
             <div style={{ minWidth: 0 }}><label style={lbl}>Nombre del nodo/fuente</label><input style={field} value={targetNode} onChange={e => setTargetNode(e.target.value)} placeholder="external_source" /></div>
           </div>
 
+          {/* Toggle PII: decide si enmascarar (ON, seguro) o traer datos crudos */}
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+            padding: '8px 12px', borderRadius: 8,
+            background: applyPii ? '#22c55e12' : '#f9731612',
+            border: `1px solid ${applyPii ? '#22c55e55' : '#f9731655'}`,
+          }}>
+            <button onClick={() => setApplyPii(v => !v)}
+              role="switch" aria-checked={applyPii}
+              title={applyPii ? 'Enmascaramiento PII ACTIVADO' : 'Enmascaramiento PII DESACTIVADO'}
+              style={{
+                position: 'relative', width: 44, height: 24, borderRadius: 999, cursor: 'pointer',
+                border: 'none', flexShrink: 0, transition: 'background .15s',
+                background: applyPii ? '#22c55e' : (t.border || '#475569'),
+              }}>
+              <span style={{
+                position: 'absolute', top: 3, left: applyPii ? 23 : 3, width: 18, height: 18,
+                borderRadius: '50%', background: '#fff', transition: 'left .15s',
+              }} />
+            </button>
+            <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.3 }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: applyPii ? '#22c55e' : '#fb923c' }}>
+                {applyPii ? '🔒 Enmascarar PII (recomendado)' : '⚠️ PII desactivado — datos reales'}
+              </span>
+              <span style={{ fontSize: 10, color: t.dim || '#64748b' }}>
+                {applyPii
+                  ? 'Tarjetas, nombres, emails, etc. se redactan antes de salir del server.'
+                  : 'Los datos llegan TAL CUAL de la fuente, sin redactar. Úsalo con cuidado.'}
+              </span>
+            </div>
+          </div>
+
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <button onClick={fetchData} disabled={loading}
               style={{ padding: '8px 14px', borderRadius: 8, fontSize: 13, fontWeight: 700,
-                cursor: loading ? 'wait' : 'pointer', background: '#0ea5e9', color: '#fff', border: 'none' }}>
-              {loading ? '⏳ Conectando...' : '🔌 Traer datos (enmascarados)'}
+                cursor: loading ? 'wait' : 'pointer',
+                background: applyPii ? '#0ea5e9' : '#f97316', color: '#fff', border: 'none' }}>
+              {loading ? '⏳ Conectando...' : (applyPii ? '🔌 Traer datos (enmascarados)' : '🔌 Traer datos (SIN enmascarar)')}
             </button>
             {preview && preview.rows?.length > 0 && (
               <>
@@ -324,8 +369,12 @@ export default function DataSourcePanel({ theme, onImport }) {
 
           {preview && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              <span style={{ fontSize: 11, color: '#22c55e' }}>
-                ✅ {preview.n} fila(s) enmascaradas · columnas PII marcadas: {(preview.columns || []).filter(c => c.pii).map(c => c.name).join(', ') || 'ninguna'}
+              <span style={{ fontSize: 11, color: preview.pii_applied === false ? '#fb923c' : '#22c55e' }}>
+                {preview.pii_applied === false
+                  ? `⚠️ ${preview.n} fila(s) SIN enmascarar (datos reales)`
+                  : `✅ ${preview.n} fila(s) enmascaradas`}
+                {' · columnas PII detectadas: '}
+                {(preview.columns || []).filter(c => c.pii).map(c => c.name).join(', ') || 'ninguna'}
               </span>
               <div style={{ maxHeight: 180, overflow: 'auto', border: '1px solid #33415530', borderRadius: 6 }}>
                 <table style={{ borderCollapse: 'collapse', fontSize: 11, width: '100%' }}>
