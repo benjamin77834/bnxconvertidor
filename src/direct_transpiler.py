@@ -991,6 +991,78 @@ def _is_valid_py_expr(expr):
         return False
 
 
+def _algol_group_paragraphs(raw_lines):
+    """Agrupa un fuente ALGOL en (nombre, [ops]) respetando la estructura
+    BEGIN/END, y SEPARA el programa principal del cuerpo de los PROCEDURE.
+
+    En ALGOL el cuerpo de un PROCEDURE es el bloque BEGIN..END que le sigue;
+    cuando ese bloque cierra, el PROCEDURE termina. Lo que viene DESPUES del
+    ultimo PROCEDURE (hasta el END. del programa) es el PROGRAMA PRINCIPAL, y
+    debe ir a un parrafo aparte ('main'), NO acumularse dentro del ultimo
+    PROCEDURE (bug que metia todo el main en el ultimo proc y causaba recursion).
+
+    Devuelve (paragraphs, has_main):
+      paragraphs: lista de (nombre, [ops]); 'init' = lo previo al primer proc.
+      has_main:   True si se detecto un programa principal con sentencias; en
+                  ese caso el flujo _run_flow debe llamar SOLO a 'main'.
+    """
+    init_ops = []          # declaraciones/sentencias previas al primer PROCEDURE
+    procs = []             # [(nombre, [ops])] cuerpos de PROCEDURE, en orden
+    main_ops = []          # sentencias del PROGRAMA PRINCIPAL (tras los procs)
+    depth = 0              # profundidad de BEGIN/END
+    in_proc = False        # dentro del cuerpo de un PROCEDURE
+    proc_depth = 0         # profundidad de BEGIN en que arranco el proc actual
+    cur_name = None        # nombre del PROCEDURE en curso
+    cur_ops = []           # ops del PROCEDURE en curso
+    saw_proc = False       # ya vimos al menos un PROCEDURE
+
+    for line in raw_lines:
+        up = line[:72].strip().rstrip(";").upper()
+        label = _algol_proc(line)
+
+        if label and not in_proc:
+            # Inicio de un PROCEDURE (en el nivel del programa, no anidado).
+            cur_name = label
+            cur_ops = []
+            in_proc = True
+            proc_depth = depth
+            saw_proc = True
+            continue
+
+        is_begin = up in ("BEGIN", "BEGIN.")
+        is_end = up in ("END", "END.")
+        if is_begin:
+            depth += 1
+            # El BEGIN que abre el cuerpo del proc no emite op.
+            if in_proc and depth == proc_depth + 1:
+                continue
+
+        ops = _algol_stmt(line, "algol")
+        if in_proc:
+            cur_ops.extend(ops)
+        elif saw_proc:
+            main_ops.extend(ops)   # sentencias del programa principal
+        else:
+            init_ops.extend(ops)   # preambulo antes del primer proc
+
+        if is_end:
+            depth -= 1
+            # Cierre del bloque del PROCEDURE actual: termina el proc.
+            if in_proc and depth == proc_depth:
+                procs.append((cur_name, cur_ops))
+                in_proc = False
+                cur_name, cur_ops = None, []
+
+    # Ensamblar: init (preambulo) + procedures + programa principal ('_bnx_main',
+    # no 'main' para no colisionar con el def main() del footer del modulo).
+    paragraphs = [("init", init_ops)]
+    paragraphs.extend(procs)
+    has_main = bool(main_ops)
+    if has_main:
+        paragraphs.append(("_bnx_main", main_ops))
+    return paragraphs, has_main
+
+
 def _dispatch(lang):
     if lang == "cobol":
         return _cobol_paragraph, _cobol_stmt, _cobol_selects
@@ -1113,18 +1185,25 @@ def transpile_direct(src, lang="cobol", pure=False):
     files = files_fn(raw_lines)
 
     # Agrupar en parrafos/procedures. Lo previo al primer label va a 'init'.
-    paragraphs = []  # (nombre, [ops])
-    current = "init"
-    cur_ops = []
-    for line in raw_lines:
-        label = para_fn(line)
-        if label:
-            paragraphs.append((current, cur_ops))
-            current = label
-            cur_ops = []
-            continue
-        cur_ops.extend(stmt_fn(line, lang))
-    paragraphs.append((current, cur_ops))
+    # ALGOL: usa el agrupador que respeta BEGIN/END y separa el programa
+    # principal ('main') del cuerpo de los PROCEDURE (evita la recursion en que
+    # el ultimo proc se tragaba todo el main). COBOL: agrupacion plana por label.
+    has_main = False
+    if lang == "algol":
+        paragraphs, has_main = _algol_group_paragraphs(raw_lines)
+    else:
+        paragraphs = []  # (nombre, [ops])
+        current = "init"
+        cur_ops = []
+        for line in raw_lines:
+            label = para_fn(line)
+            if label:
+                paragraphs.append((current, cur_ops))
+                current = label
+                cur_ops = []
+                continue
+            cur_ops.extend(stmt_fn(line, lang))
+        paragraphs.append((current, cur_ops))
 
     # Dedup de nombres (COBOL/ALGOL pueden repetir labels raramente): sufijo _N.
     # Prefijo 'p_' si empieza con digito (no es identificador Python valido).
@@ -1171,9 +1250,15 @@ def transpile_direct(src, lang="cobol", pure=False):
     # Llamadas en orden (el flujo principal). 'init' (lo previo al primer
     # parrafo) solo son declaraciones; se omite de las llamadas.
     call_lines = []
-    for name, ops in uniq:
-        if ops and name != "init" and name in valid_funcs:
-            call_lines.append(f"    {name}(ctx)")
+    if has_main and "_bnx_main" in valid_funcs:
+        # ALGOL con programa principal explicito: '_bnx_main' ya llama a cada
+        # PROCEDURE en su orden. El flujo invoca SOLO '_bnx_main' (llamar ademas a
+        # cada proc los duplicaria).
+        call_lines.append("    _bnx_main(ctx)")
+    else:
+        for name, ops in uniq:
+            if ops and name != "init" and name in valid_funcs:
+                call_lines.append(f"    {name}(ctx)")
     if not call_lines:
         call_lines.append("    pass")
 

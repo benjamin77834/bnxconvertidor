@@ -44,11 +44,27 @@ mod = importlib.util.module_from_spec(spec)
 report = {"import_ok": False, "error": None, "order": [], "edges": [],
           "counts": {}, "resp_sample": {}, "ok": False, "truncated": False}
 
-# Nombres de funciones del modulo que son "parrafos" (unidades de logica).
-PARA_PREFIXES = ("p_", "init", "file_control", "ws_", "procesa_entidad", "_run_flow")
+# Se consideran "parrafos" (unidades de logica del programa) TODAS las funciones
+# definidas a nivel top en el modulo generado, EXCEPTO los helpers de runtime y
+# el andamiaje. Esto funciona igual para COBOL (parrafos p_0100_* / nombres) que
+# para ALGOL (PROCEDURE con nombres alfabeticos: read_card_tx, filter_approved),
+# que antes NO se trazaban porque no empezaban con 'p_'.
+_NON_PARA = {
+    "_n", "_div", "_guard_depth", "new_ctx", "load_lookups",
+    "procesa_entidad", "_run_flow", "main",
+}
+# Nombres de funciones del propio modulo (se llena tras importar el modulo).
+_MODULE_FUNCS = set()
 
 def _is_para(name):
-    return any(name == p or name.startswith(p) for p in PARA_PREFIXES)
+    # Andamiaje y helpers: nunca son parrafos.
+    if name in _NON_PARA or name.startswith("__"):
+        return False
+    # Si ya conocemos las funciones del modulo, exigimos pertenecer a el (evita
+    # trazar funciones internas de librerias). Si aun no, caemos al heuristico.
+    if _MODULE_FUNCS:
+        return name in _MODULE_FUNCS
+    return name.startswith(("p_", "init", "file_control", "ws_"))
 
 _events = []
 _edges = set()
@@ -60,8 +76,12 @@ def _tracer(frame, event, arg):
     if event != "call":
         return
     name = frame.f_code.co_name
-    if not _is_para(name) or name in ("procesa_entidad", "_run_flow"):
-        return _tracer if name in ("procesa_entidad", "_run_flow") else None
+    # procesa_entidad y _run_flow son el andamiaje: NO se dibujan como parrafos,
+    # pero hay que DESCENDER en ellos para ver las llamadas a los parrafos reales.
+    if name in ("procesa_entidad", "_run_flow"):
+        return _tracer
+    if not _is_para(name):
+        return None
     _stop["n"] += 1
     if _stop["n"] > max_events:
         report["truncated"] = True
@@ -79,6 +99,12 @@ def _tracer(frame, event, arg):
 try:
     spec.loader.exec_module(mod)
     report["import_ok"] = True
+    # Descubrir las funciones definidas EN el modulo generado (no importadas),
+    # para trazarlas como parrafos aunque no empiecen con 'p_' (caso ALGOL).
+    import types as _types
+    for _n_name, _n_obj in vars(mod).items():
+        if isinstance(_n_obj, _types.FunctionType) and getattr(_n_obj, "__module__", None) == mod.__name__:
+            _MODULE_FUNCS.add(_n_name)
     lookups = mod.load_lookups() if hasattr(mod, "load_lookups") else None
     with open(msg_path) as f:
         mensaje = json.load(f)
@@ -136,7 +162,9 @@ def _mermaid_from_trace(edges, counts, max_nodes=60):
 
     def _label(name):
         c = counts.get(name, 0)
-        short = name[:34]
+        # Nombre interno del programa principal ALGOL -> etiqueta legible.
+        disp = "PROGRAMA PRINCIPAL" if name == "_bnx_main" else name
+        short = disp[:34]
         return f"{short}" + (f" x{c}" if c > 1 else "")
 
     lines = ["flowchart TD"]

@@ -52,3 +52,61 @@ def test_emulate_datasets_para_data_sintetica():
     # Debe exponer los lookups sinteticos (para llevar a Data Sintetica).
     assert "CLIENTES" in (r.get("lookups") or [])
     assert isinstance(r.get("datasets"), dict)
+
+
+# ALGOL: regresion del flujo Mermaid. Antes los PROCEDURE no se trazaban (nombres
+# sin prefijo 'p_') y el programa principal se metia dentro del ultimo PROCEDURE,
+# causando recursion (conteos absurdos). Ahora cada proc se ejecuta 1 vez y el
+# flujo sale de un parrafo '_bnx_main'.
+_ALGOL = (
+    "BEGIN\n"
+    "  COMMENT batch ALGOL de prueba;\n"
+    "  FILE CARDTX (KIND=DISK);\n"
+    "  REAL TOTAL;\n"
+    "  PROCEDURE READ_TX;\n"
+    "  BEGIN\n"
+    "    READ (CARDTX, REC);\n"
+    "  END;\n"
+    "  PROCEDURE COMPUTE_TOTAL;\n"
+    "  BEGIN\n"
+    "    TOTAL := TOTAL + 1;\n"
+    "  END;\n"
+    "  PROCEDURE WRITE_OUT;\n"
+    "  BEGIN\n"
+    "    WRITE (CARDTX, REC);\n"
+    "  END;\n"
+    "  COMMENT Programa principal;\n"
+    "  READ_TX;\n"
+    "  COMPUTE_TOTAL;\n"
+    "  WRITE_OUT;\n"
+    "END.\n"
+)
+
+
+def test_emulate_algol_traza_flujo():
+    code = transpile_direct(_ALGOL, "algol", pure=True)["code"]
+    r = emulate(code, _ALGOL, "algol", timeout=30)
+    assert r.get("ok") is True
+    counts = r.get("counts", {})
+    # Los tres PROCEDURE deben trazarse y ejecutarse EXACTAMENTE 1 vez (sin
+    # recursion). Antes del fix: no aparecian o tenian conteos de miles.
+    for proc in ("read_tx", "compute_total", "write_out"):
+        assert counts.get(proc) == 1, f"{proc} deberia ejecutarse 1 vez, conteo={counts.get(proc)}"
+    # El Mermaid debe tener nodos reales (no 'Sin trace').
+    m = r.get("mermaid", "")
+    assert m.startswith("flowchart") and "Sin trace" not in m
+    assert "-->" in m
+
+
+def test_algol_programa_principal_no_recursa():
+    # El ultimo PROCEDURE NO debe contener las llamadas del programa principal
+    # (bug que causaba write_out -> read_tx -> ... recursivo).
+    code = transpile_direct(_ALGOL, "algol", pure=True)["code"]
+    import re
+    m = re.search(r"def write_out\(ctx\):(.*?)(?=\ndef |\Z)", code, re.S)
+    assert m is not None
+    body = m.group(1)
+    assert "read_tx(ctx)" not in body
+    assert "write_out(ctx)" not in body  # sin auto-llamada
+    # Debe existir el parrafo del programa principal con las 3 llamadas.
+    assert "def _bnx_main(ctx):" in code
