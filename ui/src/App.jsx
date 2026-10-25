@@ -23,6 +23,7 @@ import DataSourcePanel from './components/DataSourcePanel'
 import CostEstimateCard from './components/CostEstimateCard'
 import Py2SparkPage from './components/Py2SparkPage'
 import MLOpsFrameworkPage from './components/MLOpsFrameworkPage'
+import MLOpsPackagePage from './components/MLOpsPackagePage'
 import { metricsFromResult } from './costEstimator'
 import { COMPILE_URL } from './config'
 
@@ -771,6 +772,7 @@ export default function App() {
       items: [
         { id: 'py2spark', label: '🐍 Py→Spark' },
         { id: 'mlops', label: '🧬 Framework MLOps' },
+        { id: 'mlops_pkg', label: '📦 Framework MLOps v2' },
         { id: 'emulator', label: '🔬 Emulador CICS' },
         { id: 'ocr', label: '📷 OCR' },
       ],
@@ -1198,6 +1200,8 @@ export default function App() {
             setPy2sparkSource(source || '')
             setPage('datagen')
           }} />
+        ) : page === 'mlops_pkg' ? (
+          <MLOpsPackagePage theme={t} />
         ) : page === 'datagen' ? (
           <DataGenPage theme={t}
             graphMp={py2sparkCode ? '' : editorMp} graphXfr={py2sparkCode ? '' : editorXfr}

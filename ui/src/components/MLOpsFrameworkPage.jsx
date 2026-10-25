@@ -13,6 +13,7 @@ const OPTIMIZE_URL = `${API_BASE}/optimize`
 export default function MLOpsFrameworkPage({ theme, onSendToDataGen }) {
   const t = theme || {}
   const [steps, setSteps] = useState([])
+  const [findings, setFindings] = useState([])
   const [activeId, setActiveId] = useState(null)
   const [loadingSteps, setLoadingSteps] = useState(true)
   const stepRefs = useRef({})
@@ -23,6 +24,7 @@ export default function MLOpsFrameworkPage({ theme, onSendToDataGen }) {
       .then(d => {
         const s = d.steps || []
         setSteps(s)
+        setFindings(d.findings || [])
         if (s.length) setActiveId(s[0].id)
       })
       .catch(() => setSteps([]))
@@ -81,6 +83,9 @@ export default function MLOpsFrameworkPage({ theme, onSendToDataGen }) {
         </div>
       </div>
 
+      {/* Diagnóstico: lo que detectamos en el framework actual */}
+      {findings.length > 0 && <DiagnosticsPanel findings={findings} theme={t} />}
+
       {loadingSteps && (
         <div style={{ ...card, fontSize: 13, color: t.muted || '#94a3b8' }}>Cargando pasos del framework…</div>
       )}
@@ -94,6 +99,75 @@ export default function MLOpsFrameworkPage({ theme, onSendToDataGen }) {
 
       {/* Area libre: pega otro codigo y convierte/mejora */}
       <FreeForm theme={t} onSendToDataGen={onSendToDataGen} />
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Panel de diagnóstico: hallazgos detectados en el framework actual.
+// ---------------------------------------------------------------------------
+const SEV = {
+  critical: { color: '#ef4444', label: 'CRÍTICO' },
+  high: { color: '#f97316', label: 'ALTO' },
+  medium: { color: '#eab308', label: 'MEDIO' },
+  low: { color: '#38bdf8', label: 'BAJO' },
+}
+
+function DiagnosticsPanel({ findings, theme }) {
+  const t = theme || {}
+  const [open, setOpen] = useState(true)
+  const card = {
+    background: t.card || '#0f172a', border: `1px solid ${t.border || '#334155'}`,
+    borderRadius: 10, padding: 16,
+  }
+  const order = { critical: 0, high: 1, medium: 2, low: 3 }
+  const sorted = [...findings].sort((a, b) => (order[a.severity] ?? 9) - (order[b.severity] ?? 9))
+  const counts = sorted.reduce((m, f) => { m[f.severity] = (m[f.severity] || 0) + 1; return m }, {})
+
+  return (
+    <div style={{ ...card, borderColor: '#ef444455' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', cursor: 'pointer' }}
+        onClick={() => setOpen(v => !v)}>
+        <span style={{ fontSize: 15, fontWeight: 800, color: t.text || '#e2e8f0' }}>
+          🔍 Diagnóstico del framework actual
+        </span>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {['critical', 'high', 'medium', 'low'].filter(s => counts[s]).map(s => (
+            <span key={s} style={{
+              fontSize: 10.5, fontWeight: 700, padding: '2px 8px', borderRadius: 999,
+              background: SEV[s].color + '22', color: SEV[s].color, border: `1px solid ${SEV[s].color}55`,
+            }}>{counts[s]} {SEV[s].label}</span>
+          ))}
+        </div>
+        <span style={{ marginLeft: 'auto', fontSize: 12, color: t.muted || '#94a3b8' }}>{open ? '▲' : '▼'}</span>
+      </div>
+      <p style={{ margin: '6px 0 0', fontSize: 12, color: t.muted || '#94a3b8' }}>
+        Hallazgos del análisis del framework real (solo lectura, no se modifica nada). Priorizados por severidad.
+        El framework nuevo (sección aparte) nace corrigiendo estos puntos.
+      </p>
+      {open && (
+        <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {sorted.map(f => {
+            const sv = SEV[f.severity] || SEV.low
+            return (
+              <div key={f.id} style={{
+                display: 'flex', gap: 10, padding: 10, borderRadius: 8,
+                background: (t.codeBg || '#081220'), borderLeft: `3px solid ${sv.color}`,
+              }}>
+                <span style={{
+                  fontSize: 9.5, fontWeight: 800, padding: '2px 7px', borderRadius: 4, height: 'fit-content',
+                  background: sv.color + '22', color: sv.color, border: `1px solid ${sv.color}55`, whiteSpace: 'nowrap',
+                }}>{sv.label}</span>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: t.text || '#e2e8f0' }}>{f.title}</div>
+                  <div style={{ fontSize: 12, color: t.muted || '#94a3b8', marginTop: 2 }}>{f.detail}</div>
+                  <div style={{ fontSize: 12, color: '#22c55e', marginTop: 4 }}>✓ Mejora: {f.fix}</div>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }

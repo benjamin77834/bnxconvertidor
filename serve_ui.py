@@ -261,6 +261,14 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_mlops_framework()
             return
 
+        # Framework MLOps v2 (mejorado): manifiesto + descarga del paquete ZIP.
+        if path == "/mlops/package/manifest" or path == "/api/mlops/package/manifest":
+            self._handle_mlops_package_manifest()
+            return
+        if path.startswith("/mlops/package/download") or path.startswith("/api/mlops/package/download"):
+            self._handle_mlops_package_download()
+            return
+
         # Ejemplos de codigo ML (pandas) para la seccion Py->Spark.
         if path == "/py2spark/examples" or path == "/api/py2spark/examples":
             self._handle_py2spark_examples()
@@ -801,7 +809,32 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             spec = _ilu.spec_from_file_location("bnx_mlops_steps", steps_path)
             mod = _ilu.module_from_spec(spec)
             spec.loader.exec_module(mod)
-            self._json_response(200, {"steps": mod.get_steps()})
+            findings = mod.get_findings() if hasattr(mod, "get_findings") else []
+            self._json_response(200, {"steps": mod.get_steps(), "findings": findings})
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": str(e)})
+
+    def _handle_mlops_package_manifest(self):
+        """Describe el paquete Framework MLOps v2 (mejoras + arbol de archivos)."""
+        try:
+            from src.mlops_pkg import package_manifest
+            self._json_response(200, package_manifest(include_bank_libs=True))
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": str(e)})
+
+    def _handle_mlops_package_download(self):
+        """Genera y sirve el ZIP del Framework MLOps v2 (paquete mejorado)."""
+        try:
+            from urllib.parse import urlparse as _up, parse_qs as _pq
+            qs = _pq(_up(self.path).query)
+            include_bank = (qs.get("bank", ["1"])[0] or "1").lower() not in ("0", "false", "no")
+            from src.mlops_pkg import build_mlops_package
+            data, filename = build_mlops_package(include_bank_libs=include_bank)
+            self._binary_response(data, filename)
         except Exception as e:
             import traceback
             traceback.print_exc()

@@ -333,3 +333,101 @@ print("PSI total:", round(psi, 4))
 def get_steps():
     """Devuelve la lista de pasos (copia defensiva)."""
     return [dict(s) for s in STEPS]
+
+
+# ---------------------------------------------------------------------------
+# DIAGNOSTICO: hallazgos del analisis del framework real (solo lectura). Se
+# muestran en la seccion como "lo que detectamos" para priorizar mejoras. NO
+# se modifica el framework del banco; es informativo.
+# severity: critical | high | medium | low
+# ---------------------------------------------------------------------------
+FINDINGS = [
+    {
+        "id": "secrets",
+        "severity": "critical",
+        "title": "Credenciales en texto plano en el repositorio",
+        "detail": ("`.pypirc` y `pip.conf` contienen usuario y token de Artifactory "
+                   "en claro. Es una fuga activa: cualquiera con el repo tiene las "
+                   "credenciales."),
+        "fix": ("Rotar el token YA, borrarlo del historial de git y moverlo a "
+                "variables de entorno / gestor de secretos."),
+    },
+    {
+        "id": "validations_off",
+        "severity": "critical",
+        "title": "Validaciones de calidad comentadas (monitoreo ciego)",
+        "detail": ("En `checks.py` el assert de umbral de nulos esta comentado y en "
+                   "`emails.py` el conteo real de nulos esta comentado (reporta "
+                   "'Nulls total: 0' fijo). El pipeline PARECE validar pero no valida."),
+        "fix": ("Reactivar y verificar las validaciones; fallar el pipeline si se "
+                "superan los umbrales de nulos."),
+    },
+    {
+        "id": "no_tests",
+        "severity": "high",
+        "title": "Sin pruebas automatizadas reales",
+        "detail": ("Los metodos `test()` solo imprimen 'class is working!'. No hay "
+                   "una sola prueba unitaria/integracion en un pipeline que decide "
+                   "scoring crediticio."),
+        "fix": ("Anadir pytest + fixtures de Spark (chispa/spark-testing-base): un "
+                "test por aggregate con entrada y salida esperada."),
+    },
+    {
+        "id": "duplication",
+        "severity": "medium",
+        "title": "Codigo duplicado entre aggregates",
+        "detail": ("`atms_aggregate.py`, `s15_aggregate.py` y `s15_nf_aggregate.py` son "
+                   "casi identicos; `utils.py` y `evaluatePath.py` duplican la logica "
+                   "de HDFS."),
+        "fix": ("Extraer una clase base `BaseAggregate` con el contrato comun "
+                "(__init__/_save_parquet/aggregate) y unificar utils/evaluatePath."),
+    },
+    {
+        "id": "huge_files",
+        "severity": "medium",
+        "title": "Archivos enormes difíciles de mantener",
+        "detail": ("`feature_engineering.py` (~83 KB) y `weeks.py` (~69 KB) concentran "
+                   "demasiadas responsabilidades; son dificiles de testear y revisar."),
+        "fix": ("Modularizar por familia de transformacion (estadisticos, tendencias, "
+                "medias moviles, ratios...)."),
+    },
+    {
+        "id": "import_divergence",
+        "severity": "medium",
+        "title": "Código duplicado en 3 sitios (riesgo de divergencia)",
+        "detail": ("El mismo codigo vive como libreria, como copias locales en "
+                   "`2_datapull/libs/` del pipeline RPS, y como paquetes `mex-lib*`. "
+                   "Tarde o temprano divergen."),
+        "fix": ("Consolidar en una sola fuente versionada; que el pipeline consuma "
+                "solo las libs publicadas `mex-lib*`."),
+    },
+    {
+        "id": "silent_errors",
+        "severity": "medium",
+        "title": "Errores silenciados (try/except genéricos)",
+        "detail": ("Varios `try/except Exception: continue` esconden fallos de datos. "
+                   "Un error silenciado hoy es un modelo con scores malos manana."),
+        "fix": "Capturar excepciones especificas, loguearlas y no continuar en silencio.",
+    },
+    {
+        "id": "python_versions",
+        "severity": "low",
+        "title": "Versiones de Python mezcladas",
+        "detail": ("Jenkinsfile usa Python 3.6, setup.py exige >=3.9 y los .pyc de RPS "
+                   "son cpython-310. Tres versiones en juego."),
+        "fix": "Fijar una unica version objetivo de Python en todo el pipeline.",
+    },
+    {
+        "id": "obfuscation",
+        "severity": "low",
+        "title": "Ofuscación con PyArmor",
+        "detail": ("El deploy ofusca con PyArmor 7.7.4 y ata la ejecucion a un runtime "
+                   "binario (`_pytransform.so`). Dificulta auditoria y depuracion."),
+        "fix": "Es decision de negocio; documentar el runtime y versionarlo con cuidado.",
+    },
+]
+
+
+def get_findings():
+    """Devuelve los hallazgos del diagnostico (copia defensiva)."""
+    return [dict(f) for f in FINDINGS]
