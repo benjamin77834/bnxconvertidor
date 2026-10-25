@@ -256,6 +256,11 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_export_download()
             return
 
+        # Pasos + ejemplos del Framework MLOps (seccion educativa/operativa).
+        if path == "/mlops/framework" or path == "/api/mlops/framework":
+            self._handle_mlops_framework()
+            return
+
         # Ejemplos de codigo ML (pandas) para la seccion Py->Spark.
         if path == "/py2spark/examples" or path == "/api/py2spark/examples":
             self._handle_py2spark_examples()
@@ -779,6 +784,28 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             import traceback
             traceback.print_exc()
             self._json_response(500, {"error": f"No se pudo generar el .vsix: {e}"})
+
+    def _handle_mlops_framework(self):
+        """Devuelve los pasos del Framework MLOps (seccion educativa/operativa).
+
+        Respuesta: {"steps": [{id,title,emoji,summary,pandas,framework_ref,
+        sample_csv}]}. Cada paso trae un ejemplo PANDAS de negocio (convertible a
+        Spark con /py2spark) y una referencia del framework real en PySpark."""
+        try:
+            import importlib.util as _ilu
+            steps_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                      "examples", "mlops_framework", "steps.py")
+            if not os.path.isfile(steps_path):
+                self._json_response(200, {"steps": []})
+                return
+            spec = _ilu.spec_from_file_location("bnx_mlops_steps", steps_path)
+            mod = _ilu.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            self._json_response(200, {"steps": mod.get_steps()})
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": str(e)})
 
     def _handle_py2spark_examples(self):
         """Devuelve los ejemplos de codigo ML (pandas) de examples/py2spark/.

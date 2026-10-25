@@ -22,6 +22,7 @@ import DataGenPage from './components/DataGenPage'
 import DataSourcePanel from './components/DataSourcePanel'
 import CostEstimateCard from './components/CostEstimateCard'
 import Py2SparkPage from './components/Py2SparkPage'
+import MLOpsFrameworkPage from './components/MLOpsFrameworkPage'
 import { metricsFromResult } from './costEstimator'
 import { COMPILE_URL } from './config'
 
@@ -769,6 +770,7 @@ export default function App() {
       group: 'Conversión',
       items: [
         { id: 'py2spark', label: '🐍 Py→Spark' },
+        { id: 'mlops', label: '🧬 Framework MLOps' },
         { id: 'emulator', label: '🔬 Emulador CICS' },
         { id: 'ocr', label: '📷 OCR' },
       ],
@@ -1185,6 +1187,13 @@ export default function App() {
             // lo ejecuta en el harness local igual que un grafo compilado).
             // Tambien pasamos el Python ORIGINAL para que el runtest lo
             // reconvierta fresco en el servidor (nunca PySpark viejo cacheado).
+            setPy2sparkCode(code)
+            setPy2sparkSource(source || '')
+            setPage('datagen')
+          }} />
+        ) : page === 'mlops' ? (
+          <MLOpsFrameworkPage theme={t} onSendToDataGen={(code, source) => {
+            // Mismo flujo que Py->Spark: el PySpark generado va a Data Sintetica.
             setPy2sparkCode(code)
             setPy2sparkSource(source || '')
             setPage('datagen')
