@@ -14,6 +14,8 @@ export default function MLOpsPackagePage({ theme }) {
   const [manifest, setManifest] = useState(null)
   const [bankLibs, setBankLibs] = useState(true)
   const [extraSteps, setExtraSteps] = useState(false)
+  const [monitoring, setMonitoring] = useState(false)
+  const [separateMon, setSeparateMon] = useState(false)
   const [loading, setLoading] = useState(true)
 
   // Entrada del usuario: codigo pegado + archivos de carpeta.
@@ -61,7 +63,10 @@ export default function MLOpsPackagePage({ theme }) {
     try {
       const res = await fetch(BUILD_URL, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sources, include_bank_libs: bankLibs, optimize: true, extra_steps: extraSteps }),
+        body: JSON.stringify({
+          sources, include_bank_libs: bankLibs, optimize: true, extra_steps: extraSteps,
+          include_monitoring: monitoring, separate_monitoring: monitoring && separateMon,
+        }),
       })
       const data = await res.json()
       if (!res.ok || data.error) { setBuildError(data.error || `HTTP ${res.status}`); return }
@@ -183,11 +188,21 @@ export default function MLOpsPackagePage({ theme }) {
         </div>
 
         {/* Opciones de generación */}
-        <div style={{ display: 'flex', gap: 18, marginTop: 12, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
           <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: t.text || '#e2e8f0', cursor: 'pointer' }}>
             <input type="checkbox" checked={extraSteps} onChange={e => setExtraSteps(e.target.checked)} />
             Generar también los demás pasos (feature engineering, vector assembler, scoring + pipeline)
           </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: t.text || '#e2e8f0', cursor: 'pointer' }}>
+            <input type="checkbox" checked={monitoring} onChange={e => setMonitoring(e.target.checked)} />
+            Incluir monitoreo (PSI / CSI / Data Quality)
+          </label>
+          {monitoring && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: t.muted || '#94a3b8', cursor: 'pointer', marginLeft: 24 }}>
+              <input type="checkbox" checked={separateMon} onChange={e => setSeparateMon(e.target.checked)} />
+              …como <b style={{ color: t.text }}>&nbsp;paquete separado</b>&nbsp; (framework_mlops_metrics, como el lib_mkop_metrics del banco)
+            </label>
+          )}
           <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: t.text || '#e2e8f0', cursor: 'pointer' }}>
             <input type="checkbox" checked={bankLibs} onChange={e => setBankLibs(e.target.checked)} />
             Incluir libs internas del banco en requirements.txt

@@ -265,6 +265,72 @@ class Scorer:
         return df.withColumn(out_col, (expr / F.lit(float(len(feature_cols) or 1))))
 '''
 
+_MONITORING = '''# framework_mlops_v2/monitoring/monitor_metrics.py
+"""Monitoreo de modelos: PSI (Population Stability Index), CSI (Characteristic
+Stability Index) y Data Quality Check (DQC). Compara la distribucion ACTUAL
+contra la de DESARROLLO y alerta si hay drift. Reimplementacion limpia del
+lib_mkop_metrics del framework original (sin su codigo propietario)."""
+import logging
+from pyspark.sql import functions as F
+
+logger = logging.getLogger(__name__)
+
+# Reglas tipicas de interpretacion del PSI/CSI.
+PSI_STABLE = 0.10      # < 0.10 estable
+PSI_WARNING = 0.25     # 0.10-0.25 revisar; > 0.25 inestable
+
+
+class MonitorMetrics:
+    """Calcula PSI/CSI y DQC sobre un DataFrame de scores/features.
+
+    dist_dev: dict {bin: frecuencia_relativa_desarrollo} por variable, o un
+    DataFrame de referencia. Aqui se recibe como dict para simplicidad.
+    """
+
+    def psi(self, current_df, column, dist_dev, bins=None):
+        """PSI de una columna: suma de (rel_cur - rel_dev)*ln(rel_cur/rel_dev)."""
+        total = current_df.count()
+        if total == 0:
+            return 0.0
+        # Frecuencia relativa actual por bin (usa los mismos bins del desarrollo).
+        rows = (current_df.groupBy(column).count()
+                .withColumn("rel", F.col("count") / F.lit(float(total)))
+                .collect())
+        rel_cur = {str(r[column]): r["rel"] for r in rows}
+        import math
+        psi = 0.0
+        for b, rel_dev in dist_dev.items():
+            rc = rel_cur.get(str(b), 1e-6) or 1e-6
+            rd = rel_dev or 1e-6
+            psi += (rc - rd) * math.log(rc / rd)
+        return round(psi, 6)
+
+    def interpret(self, psi_value):
+        if psi_value < PSI_STABLE:
+            return "estable"
+        if psi_value < PSI_WARNING:
+            return "revisar"
+        return "inestable"
+
+    def dqc(self, df, columns):
+        """Data Quality Check: estadisticos por columna (conteo, media, std,
+        min, max, % nulos)."""
+        out = {}
+        total = df.count()
+        for c in columns:
+            agg = df.agg(
+                F.count(F.col(c)).alias("n"),
+                F.mean(F.col(c).cast("double")).alias("mean"),
+                F.stddev(F.col(c).cast("double")).alias("std"),
+                F.min(F.col(c)).alias("min"),
+                F.max(F.col(c)).alias("max"),
+                F.sum(F.col(c).isNull().cast("int")).alias("nulls"),
+            ).collect()[0].asDict()
+            agg["null_pct"] = round(100.0 * (agg["nulls"] or 0) / total, 2) if total else 0.0
+            out[c] = agg
+        return out
+'''
+
 _PIPELINE = '''# framework_mlops_v2/pipeline.py
 """Pipeline de referencia: encadena los pasos del framework v2 en orden.
 extract(ya en parquet) -> groupby (aggregates) -> features -> vector -> scoring.
@@ -543,23 +609,139 @@ class GroupBy:
 '''
 
 
-def _extra_step_files(extra_steps):
-    """Archivos de los pasos EXTRA segun el flag (opcional). Devuelve dict."""
+_TEST_MONITORING = '''# tests/test_monitoring.py
+"""Pruebas del monitoreo (PSI/CSI/DQC). Requiere pyspark."""
+import pytest
+
+pyspark = pytest.importorskip("pyspark")
+from pyspark.sql import SparkSession
+from framework_mlops_v2.monitoring.monitor_metrics import MonitorMetrics
+
+
+@pytest.fixture(scope="session")
+def spark():
+    s = SparkSession.builder.master("local[1]").appName("mon_tests").getOrCreate()
+    yield s
+    s.stop()
+
+
+def test_psi_cero_si_misma_distribucion(spark):
+    # Poblacion actual identica a la de desarrollo -> PSI ~ 0 (estable).
+    df = spark.createDataFrame([("a",)] * 50 + [("b",)] * 50, ["bin"])
+    dist_dev = {"a": 0.5, "b": 0.5}
+    m = MonitorMetrics()
+    psi = m.psi(df, "bin", dist_dev)
+    assert abs(psi) < 0.01
+    assert m.interpret(psi) == "estable"
+
+
+def test_psi_alto_si_cambia_distribucion(spark):
+    # La actual se corrio fuerte respecto al desarrollo -> PSI alto.
+    df = spark.createDataFrame([("a",)] * 95 + [("b",)] * 5, ["bin"])
+    dist_dev = {"a": 0.5, "b": 0.5}
+    m = MonitorMetrics()
+    psi = m.psi(df, "bin", dist_dev)
+    assert psi > 0.25
+    assert m.interpret(psi) == "inestable"
+
+
+def test_dqc_reporta_nulos(spark):
+    from pyspark.sql.types import StructType, StructField, IntegerType
+    schema = StructType([StructField("x", IntegerType(), True)])
+    df = spark.createDataFrame([(1,), (2,), (None,), (4,)], schema)
+    rep = MonitorMetrics().dqc(df, ["x"])
+    assert rep["x"]["null_pct"] == 25.0
+'''
+
+
+def _monitoring_files(target="package"):
+    """Archivos del monitoreo. target='package' -> dentro de framework_mlops_v2;
+    'separate' -> como paquete independiente framework_mlops_metrics."""
+    if target == "separate":
+        return {
+            "framework_mlops_metrics/__init__.py":
+                '"""Monitoreo de modelos (PSI/CSI/DQC) — paquete separado."""\n__version__ = "2.0.0"\n',
+            "framework_mlops_metrics/monitor_metrics.py":
+                _MONITORING.replace("framework_mlops_v2/monitoring/monitor_metrics.py",
+                                    "framework_mlops_metrics/monitor_metrics.py"),
+            "tests/test_monitoring.py":
+                _TEST_MONITORING.replace(
+                    "framework_mlops_v2.monitoring.monitor_metrics",
+                    "framework_mlops_metrics.monitor_metrics"),
+            "setup.py": _SETUP_METRICS,
+            "requirements.txt": "pyspark>=3.3,<4.0\npandas>=1.3\npytest>=7.0\n",
+            "README.md": _README_METRICS,
+            "run.sh": _RUN_SH,
+        }
+    return {
+        "framework_mlops_v2/monitoring/__init__.py": "",
+        "framework_mlops_v2/monitoring/monitor_metrics.py": _MONITORING,
+        "tests/test_monitoring.py": _TEST_MONITORING,
+    }
+
+
+_SETUP_METRICS = '''from setuptools import setup, find_packages
+
+setup(
+    name="framework_mlops_metrics",
+    version="2.0.0",
+    description="Monitoreo de modelos (PSI/CSI/DQC) — separado del datapull",
+    packages=find_packages(exclude=["tests*"]),
+    python_requires=">=3.9",
+    install_requires=["pyspark>=3.3,<4.0", "pandas>=1.3"],
+)
+'''
+
+_README_METRICS = '''# Framework MLOps — Monitoreo (paquete separado)
+
+Librería de monitoreo de modelos (PSI/CSI + Data Quality) extraída como paquete
+independiente, igual que el `lib_mkop_metrics` del framework original. Corre en
+producción, con su propio ciclo de vida, sin depender del datapull.
+
+## Uso
+```python
+from framework_mlops_metrics.monitor_metrics import MonitorMetrics
+m = MonitorMetrics()
+psi = m.psi(current_df, "score_bin", dist_dev={"0": 0.2, "1": 0.3, "2": 0.5})
+print(psi, m.interpret(psi))   # estable | revisar | inestable
+```
+
+## Correr pruebas
+```bash
+bash run.sh
+```
+'''
+
+
+def _extra_step_files(extra_steps, include_monitoring=False, monitoring_target="package"):
+    """Archivos de los pasos EXTRA segun el flag (opcional). Devuelve dict.
+
+    include_monitoring: anade el modulo de monitoreo.
+    monitoring_target: 'package' (dentro del framework) o 'separate' (se maneja
+        aparte, no aqui)."""
     files = {}
-    if not extra_steps:
-        return files
-    files["framework_mlops_v2/features/feature_engineering.py"] = _FEATURE_ENGINEERING
-    files["framework_mlops_v2/features/vector_assembler.py"] = _VECTOR_ASSEMBLER
-    files["framework_mlops_v2/scoring/__init__.py"] = ""
-    files["framework_mlops_v2/scoring/scorer.py"] = _SCORING
-    files["framework_mlops_v2/pipeline.py"] = _PIPELINE
+    if extra_steps:
+        files["framework_mlops_v2/features/feature_engineering.py"] = _FEATURE_ENGINEERING
+        files["framework_mlops_v2/features/vector_assembler.py"] = _VECTOR_ASSEMBLER
+        files["framework_mlops_v2/scoring/__init__.py"] = ""
+        files["framework_mlops_v2/scoring/scorer.py"] = _SCORING
+        files["framework_mlops_v2/pipeline.py"] = _PIPELINE
+    # Monitoreo DENTRO del paquete (cuando no se separa).
+    if include_monitoring and monitoring_target == "package":
+        files.update(_monitoring_files("package"))
     return files
 
 
 def build_package_from_sources(sources, convert_fn, optimize_fn=None,
                                include_bank_libs=True, optimize=True,
-                               extra_steps=False):
+                               extra_steps=False, include_monitoring=False,
+                               separate_monitoring=False):
     """Arma el Framework v2 EMPAQUETADO con la logica del usuario dentro.
+
+    include_monitoring: anade el modulo de monitoreo (PSI/CSI/DQC).
+    separate_monitoring: si True, el monitoreo va como PAQUETE APARTE
+        (framework_mlops_metrics_pkg/) dentro del mismo ZIP, con su propio
+        setup.py/run.sh/tests. Si False, va dentro del framework principal.
 
     sources: lista [{"name": "<archivo>.py", "code": "<pandas>"}].
     convert_fn: funcion pandas->PySpark (p.ej. py2spark convert_code). Debe
@@ -626,22 +808,31 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     files["framework_mlops_v2/aggregates/router.py"] = _router_from_sources(gen_sources)
     files["framework_mlops_v2/features/__init__.py"] = ""
     files["framework_mlops_v2/features/ratios.py"] = _RATIOS
-    # Pasos EXTRA opcionales (feature engineering, vector assembler, scoring, pipeline).
-    files.update(_extra_step_files(extra_steps))
+    # Pasos EXTRA opcionales + monitoreo DENTRO del paquete (si no se separa).
+    mon_in_pkg = include_monitoring and not separate_monitoring
+    files.update(_extra_step_files(
+        extra_steps, include_monitoring=mon_in_pkg, monitoring_target="package"))
     files["tests/test_aggregates.py"] = _TEST
     files["requirements.txt"] = _requirements(include_bank_libs, extra_steps)
     files["run.sh"] = _RUN_SH
     files["setup.py"] = _SETUP
-    files["README.md"] = _readme_custom(include_bank_libs, gen_sources, report, extra_steps)
+    files["README.md"] = _readme_custom(
+        include_bank_libs, gen_sources, report, extra_steps,
+        include_monitoring=include_monitoring, separate_monitoring=separate_monitoring)
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for path, content in files.items():
             z.writestr("framework_mlops_v2_pkg/" + path, content)
+        # Monitoreo como PAQUETE SEPARADO: carpeta hermana en el mismo ZIP.
+        if include_monitoring and separate_monitoring:
+            for path, content in _monitoring_files("separate").items():
+                z.writestr("framework_mlops_metrics_pkg/" + path, content)
     return buf.getvalue(), "framework_mlops_v2.zip", report
 
 
-def _readme_custom(include_bank_libs, sources, report, extra_steps=False):
+def _readme_custom(include_bank_libs, sources, report, extra_steps=False,
+                   include_monitoring=False, separate_monitoring=False):
     rows = "\n".join(
         f"- `{r.get('source', '?')}` ← {r['name']}"
         + (" ✅" if r.get("ok") else f" ⚠️ {r.get('reason', '')}")
@@ -660,7 +851,23 @@ módulos listos para usar/extender:
 - `scoring/scorer.py` — scoring con XGBoost (`.xgb`) o fallback lineal de prueba.
 - `pipeline.py` — encadena extract → groupby → features → vector → scoring.
 '''
-    return base + f'''
+    mon = ""
+    if include_monitoring and not separate_monitoring:
+        mon = '''
+
+## Monitoreo (incluido en el paquete)
+- `monitoring/monitor_metrics.py` — PSI/CSI y Data Quality (DQC). Compara la
+  distribución actual contra la de desarrollo y alerta si hay drift.
+'''
+    elif include_monitoring and separate_monitoring:
+        mon = '''
+
+## Monitoreo (paquete SEPARADO)
+El monitoreo se entrega aparte en `framework_mlops_metrics_pkg/`
+(`framework_mlops_metrics`), con su propio setup.py/tests, para que corra en
+producción con su propio ciclo de vida (igual que el `lib_mkop_metrics` original).
+'''
+    return base + mon + f'''
 
 ## Fuentes generadas desde tu código
 Cada archivo que subiste se convirtió a PySpark y se envolvió como un aggregate
@@ -677,7 +884,8 @@ Revisa los comentarios `# TODO py2spark` donde la conversión no fue 1:1.
 {extra}'''
 
 
-def build_mlops_package(include_bank_libs=True, extra_steps=False):
+def build_mlops_package(include_bank_libs=True, extra_steps=False,
+                        include_monitoring=False, separate_monitoring=False):
     """Arma el ZIP del Framework MLOps v2 (plantilla base). Devuelve (bytes, nombre)."""
     files = {
         "framework_mlops_v2/__init__.py": _INIT_ROOT,
@@ -697,11 +905,16 @@ def build_mlops_package(include_bank_libs=True, extra_steps=False):
         "README.md": _readme(include_bank_libs),
         "setup.py": _SETUP,
     }
-    files.update(_extra_step_files(extra_steps))
+    mon_in_pkg = include_monitoring and not separate_monitoring
+    files.update(_extra_step_files(
+        extra_steps, include_monitoring=mon_in_pkg, monitoring_target="package"))
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for path, content in files.items():
             z.writestr("framework_mlops_v2_pkg/" + path, content)
+        if include_monitoring and separate_monitoring:
+            for path, content in _monitoring_files("separate").items():
+                z.writestr("framework_mlops_metrics_pkg/" + path, content)
     return buf.getvalue(), "framework_mlops_v2.zip"
 
 

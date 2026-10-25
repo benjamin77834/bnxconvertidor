@@ -840,10 +840,13 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             include_bank = bool(data.get("include_bank_libs", True))
             optimize = bool(data.get("optimize", True))
             extra_steps = bool(data.get("extra_steps", False))
+            include_monitoring = bool(data.get("include_monitoring", False))
+            separate_monitoring = bool(data.get("separate_monitoring", False))
             zip_bytes, filename, report = build_package_from_sources(
                 sources, convert_fn=py2spark_convert, optimize_fn=optimize_pyspark,
                 include_bank_libs=include_bank, optimize=optimize,
-                extra_steps=extra_steps)
+                extra_steps=extra_steps, include_monitoring=include_monitoring,
+                separate_monitoring=separate_monitoring)
             # Guardar para descarga por streaming (igual que /export/bundle).
             import uuid as _uuid
             tmpdir = os.path.join(tempfile.gettempdir(), "bnx_bundles")
@@ -882,8 +885,12 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             qs = _pq(_up(self.path).query)
             include_bank = (qs.get("bank", ["1"])[0] or "1").lower() not in ("0", "false", "no")
             extra = (qs.get("extra", ["0"])[0] or "0").lower() in ("1", "true", "yes")
+            mon = (qs.get("mon", ["0"])[0] or "0").lower() in ("1", "true", "yes")
+            sep = (qs.get("sep", ["0"])[0] or "0").lower() in ("1", "true", "yes")
             from src.mlops_pkg import build_mlops_package
-            data, filename = build_mlops_package(include_bank_libs=include_bank, extra_steps=extra)
+            data, filename = build_mlops_package(
+                include_bank_libs=include_bank, extra_steps=extra,
+                include_monitoring=mon, separate_monitoring=sep)
             self._binary_response(data, filename)
         except Exception as e:
             import traceback
