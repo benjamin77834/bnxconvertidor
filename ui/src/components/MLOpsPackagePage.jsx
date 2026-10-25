@@ -6,6 +6,7 @@ import { COMPILE_URL } from '../config'
 // crea el venv + instala + prueba), ejemplos y pruebas reales.
 const API_BASE = COMPILE_URL.replace(/\/compile$/, '')
 const MANIFEST_URL = `${API_BASE}/mlops/package/manifest`
+const BUILD_URL = `${API_BASE}/mlops/package/build`
 const DOWNLOAD_URL = (bank) => `${API_BASE}/mlops/package/download?bank=${bank ? 1 : 0}`
 
 export default function MLOpsPackagePage({ theme }) {
@@ -14,6 +15,14 @@ export default function MLOpsPackagePage({ theme }) {
   const [bankLibs, setBankLibs] = useState(true)
   const [loading, setLoading] = useState(true)
 
+  // Entrada del usuario: codigo pegado + archivos de carpeta.
+  const [pasted, setPasted] = useState('')
+  const [pastedName, setPastedName] = useState('mi_fuente.py')
+  const [files, setFiles] = useState([])        // [{name, code}]
+  const [building, setBuilding] = useState(false)
+  const [buildResult, setBuildResult] = useState(null)  // {report, download_url, filename}
+  const [buildError, setBuildError] = useState('')
+
   useEffect(() => {
     fetch(MANIFEST_URL)
       .then(r => r.json())
@@ -21,6 +30,44 @@ export default function MLOpsPackagePage({ theme }) {
       .catch(() => setManifest(null))
       .finally(() => setLoading(false))
   }, [])
+
+  // Lee los .py de una carpeta o seleccion de archivos.
+  const onPickFiles = async (fileList) => {
+    const arr = Array.from(fileList || []).filter(f => /\.(py|txt)$/i.test(f.name))
+    const read = await Promise.all(arr.map(f => new Promise(resolve => {
+      const r = new FileReader()
+      r.onload = () => resolve({ name: f.webkitRelativePath || f.name, code: String(r.result || '') })
+      r.onerror = () => resolve(null)
+      r.readAsText(f)
+    })))
+    setFiles(prev => {
+      const map = new Map(prev.map(x => [x.name, x]))
+      for (const x of read) if (x) map.set(x.name, x)
+      return Array.from(map.values())
+    })
+  }
+
+  const sourcesToSend = () => {
+    const out = [...files]
+    if (pasted.trim()) out.unshift({ name: pastedName.trim() || 'mi_fuente.py', code: pasted })
+    return out
+  }
+
+  const buildMine = async () => {
+    const sources = sourcesToSend()
+    if (!sources.length) { setBuildError('Pega código o sube al menos un archivo .py.'); return }
+    setBuilding(true); setBuildError(''); setBuildResult(null)
+    try {
+      const res = await fetch(BUILD_URL, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sources, include_bank_libs: bankLibs, optimize: true }),
+      })
+      const data = await res.json()
+      if (!res.ok || data.error) { setBuildError(data.error || `HTTP ${res.status}`); return }
+      setBuildResult(data)
+    } catch (e) { setBuildError('Error de red: ' + e.message) }
+    finally { setBuilding(false) }
+  }
 
   const card = {
     background: t.card || '#0f172a', border: `1px solid ${t.border || '#334155'}`,
@@ -38,10 +85,137 @@ export default function MLOpsPackagePage({ theme }) {
         </p>
       </div>
 
+      {/* === SUBE TU CÓDIGO Y GENERA TU FRAMEWORK === */}
+      <div style={{ ...card, borderColor: (t.accent || '#6366f1') + '66' }}>
+        <div style={{ fontSize: 15, fontWeight: 800, color: t.text || '#e2e8f0' }}>
+          🚀 Genera TU framework desde tu código
+        </div>
+        <p style={{ margin: '4px 0 12px', fontSize: 12.5, color: t.muted || '#94a3b8', maxWidth: 900 }}>
+          Pega tu Python (pandas) del negocio o sube una carpeta de <code>.py</code> (una fuente por archivo).
+          BNX convierte cada uno a PySpark, lo envuelve en el contrato del framework v2 (hereda de
+          <code>BaseAggregate</code>), lo registra en el router y te entrega el paquete completo con venv y pruebas.
+        </p>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, alignItems: 'start' }}>
+          {/* Pegar codigo */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: '#38bdf8' }}>📋 Pegar código</span>
+              <input value={pastedName} onChange={e => setPastedName(e.target.value)}
+                placeholder="nombre.py"
+                style={{
+                  marginLeft: 'auto', padding: '4px 8px', borderRadius: 6, fontSize: 11,
+                  background: t.codeBg || '#081220', color: t.text || '#e2e8f0',
+                  border: `1px solid ${t.border || '#334155'}`, outline: 'none', width: 140,
+                }} />
+            </div>
+            <textarea value={pasted} onChange={e => setPasted(e.target.value)} spellCheck={false}
+              placeholder="import pandas as pd&#10;df = pd.read_csv('bureau.csv')&#10;g = df.groupby('cliente_id').agg({'saldo':'sum'})&#10;..."
+              style={{
+                width: '100%', minHeight: 180, padding: 10, borderRadius: 8, boxSizing: 'border-box',
+                background: t.codeBg || '#081220', border: `1px solid ${t.border || '#334155'}`,
+                color: t.text || '#e2e8f0', fontFamily: 'monospace', fontSize: 12, lineHeight: 1.5,
+                resize: 'vertical', outline: 'none', whiteSpace: 'pre',
+              }} />
+          </div>
+
+          {/* Subir carpeta / archivos */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: '#a78bfa' }}>📁 Subir carpeta o archivos .py</span>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <label style={{ ...uploadBtn(t) }}>
+                📁 Carpeta completa
+                <input type="file" webkitdirectory="" directory="" multiple style={{ display: 'none' }}
+                  onChange={e => onPickFiles(e.target.files)} />
+              </label>
+              <label style={{ ...uploadBtn(t) }}>
+                📄 Archivos .py
+                <input type="file" accept=".py,.txt" multiple style={{ display: 'none' }}
+                  onChange={e => onPickFiles(e.target.files)} />
+              </label>
+              {files.length > 0 && (
+                <button onClick={() => setFiles([])} style={{
+                  padding: '7px 12px', borderRadius: 8, fontSize: 12, cursor: 'pointer',
+                  background: 'transparent', color: t.muted || '#94a3b8', border: `1px solid ${t.border || '#334155'}`,
+                }}>Quitar todos</button>
+              )}
+            </div>
+            <div style={{
+              flex: 1, minHeight: 120, maxHeight: 180, overflow: 'auto', padding: 8, borderRadius: 8,
+              background: t.codeBg || '#081220', border: `1px solid ${t.border || '#334155'}`,
+            }}>
+              {files.length === 0 ? (
+                <span style={{ fontSize: 12, color: t.muted || '#94a3b8' }}>
+                  Los archivos .py detectados aparecerán aquí (uno = una fuente del framework).
+                </span>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                  {files.map((f, i) => (
+                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11.5 }}>
+                      <span style={{ color: '#22c55e' }}>•</span>
+                      <span style={{ color: t.text || '#e2e8f0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
+                      <span style={{ color: t.dim || '#64748b', marginLeft: 'auto' }}>{(f.code.length / 1024).toFixed(1)} KB</span>
+                      <button onClick={() => setFiles(prev => prev.filter((_, k) => k !== i))}
+                        style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', fontSize: 12 }}>✕</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 12, flexWrap: 'wrap' }}>
+          <button onClick={buildMine} disabled={building}
+            style={{
+              padding: '11px 22px', borderRadius: 8, fontSize: 14, fontWeight: 700,
+              cursor: building ? 'wait' : 'pointer', background: t.accent || '#6366f1', color: '#fff', border: 'none',
+            }}>
+            {building ? '⏳ Generando…' : '🚀 Generar mi framework'}
+          </button>
+          <span style={{ fontSize: 12, color: t.muted || '#94a3b8' }}>
+            {sourcesToSend().length} fuente(s) a procesar
+          </span>
+          {buildError && <span style={{ fontSize: 12, color: '#f87171' }}>⚠️ {buildError}</span>}
+        </div>
+
+        {/* Resultado de la generacion */}
+        {buildResult && (
+          <div style={{ marginTop: 12, padding: 12, borderRadius: 8, background: '#22c55e10', border: '1px solid #22c55e40' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: '#22c55e' }}>
+                ✅ Paquete generado ({(buildResult.size / 1024).toFixed(1)} KB)
+              </span>
+              <a href={`${API_BASE}${buildResult.download_url}`} download
+                style={{
+                  padding: '8px 16px', borderRadius: 8, fontSize: 13, fontWeight: 700, textDecoration: 'none',
+                  background: '#22c55e', color: '#000',
+                }}>📦 Descargar {buildResult.filename}</a>
+            </div>
+            {(buildResult.report || []).length > 0 && (
+              <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 3 }}>
+                {buildResult.report.map((r, i) => (
+                  <div key={i} style={{ fontSize: 11.5, color: t.text || '#e2e8f0' }}>
+                    {r.ok ? '✅' : '⚠️'} <b>{r.source || r.name}</b>
+                    <span style={{ color: t.muted || '#94a3b8' }}> ← {r.name}</span>
+                    {r.ok
+                      ? (r.unsupported ? <span style={{ color: '#f59e0b' }}> · {r.unsupported} requiere revisión manual</span> : <span style={{ color: '#22c55e' }}> · conversión limpia</span>)
+                      : <span style={{ color: '#f87171' }}> · {r.reason}</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
       {loading && <div style={{ ...card, fontSize: 13, color: t.muted }}>Cargando…</div>}
 
       {manifest && (
         <>
+          <div style={{ fontSize: 12, fontWeight: 700, color: t.muted || '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 4 }}>
+            O descarga la plantilla base (framework de ejemplo)
+          </div>
           {/* Mejoras: antes -> ahora */}
           <div style={{ ...card }}>
             <div style={{ fontSize: 14, fontWeight: 700, color: t.text || '#e2e8f0', marginBottom: 10 }}>
@@ -122,4 +296,12 @@ export default function MLOpsPackagePage({ theme }) {
       )}
     </div>
   )
+}
+
+function uploadBtn(t) {
+  return {
+    padding: '7px 12px', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+    background: (t.accent || '#6366f1') + '20', color: t.accent || '#818cf8',
+    border: `1px solid ${(t.accent || '#6366f1')}55`, display: 'inline-block',
+  }
 }

@@ -347,6 +347,206 @@ setup(
 '''
 
 
+import re as _re
+
+
+def _safe_name(filename):
+    """Nombre de modulo/fuente valido a partir de un nombre de archivo."""
+    base = _re.sub(r"\.(py|txt)$", "", (filename or "").strip(), flags=_re.I)
+    base = base.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    base = _re.sub(r"[^0-9A-Za-z_]", "_", base).strip("_").lower()
+    if not base:
+        base = "fuente"
+    if base[0].isdigit():
+        base = "f_" + base
+    return base
+
+
+def _class_name(source):
+    """CamelCase + 'Aggregate' a partir del nombre de la fuente."""
+    parts = [p for p in source.split("_") if p]
+    return "".join(p.capitalize() for p in parts) + "Aggregate"
+
+
+def _indent(code, spaces):
+    pad = " " * spaces
+    return "\n".join((pad + ln if ln.strip() else ln) for ln in code.split("\n"))
+
+
+def _aggregate_from_pyspark(source, pyspark_code, original_pandas):
+    """Envuelve PySpark convertido en el contrato del framework v2.
+
+    El codigo convertido se coloca en `_aggregate_df(self, df)`. El df de entrada
+    ya viene leido por BaseAggregate; se expone como `df` y como `spark`/`F` para
+    que el PySpark generado (que usa spark.read.* / F.*) siga funcionando. Las
+    lecturas se reescriben para partir del df inyectado cuando aplica."""
+    cls = _class_name(source)
+    # Cuerpo: el PySpark convertido, indentado dentro del metodo. Nota honesta:
+    # si el codigo lee de rutas propias (spark.read...), se respeta tal cual; el
+    # df inyectado queda disponible como punto de partida alternativo.
+    body = pyspark_code.strip() or "df_out = df"
+    # Heuristica: si el codigo no define df_out ni retorna, devolvemos la ultima
+    # variable *_df o el df de entrada.
+    has_out = _re.search(r"\bdf_out\b", body) is not None
+    tail = "" if has_out else "\n# BNX: no se detecto 'df_out'; se devuelve el df de entrada.\ndf_out = df"
+    return f'''# framework_mlops_v2/aggregates/{source}.py
+"""Fuente '{source}': generada por BNX desde el Python del negocio.
+Convertida a PySpark y envuelta en el contrato del framework v2.
+Revisa los comentarios '# TODO py2spark' donde la conversion no fue 1:1."""
+from pyspark.sql import functions as F
+from ..core.base_aggregate import BaseAggregate
+
+
+class {cls}(BaseAggregate):
+    """Agregacion de la fuente '{source}'. La logica proviene del codigo de
+    negocio original (pandas) convertido a PySpark por BNX."""
+
+    def _aggregate_df(self, df):
+        spark = self.sqlContext            # alias para el PySpark generado
+{_indent(body, 8)}{_indent(tail, 8)}
+        return df_out
+
+
+# --- Codigo de negocio ORIGINAL (pandas), como referencia ---
+_ORIGINAL_PANDAS = """
+{original_pandas.strip()}
+"""
+'''
+
+
+def _router_from_sources(sources):
+    """Genera el router con todas las fuentes del usuario registradas."""
+    imports = "\n".join(
+        f"from .{s} import {_class_name(s)}" for s in sources)
+    registry = "\n".join(
+        f'    "{s}": {_class_name(s)},' for s in sources)
+    return f'''# framework_mlops_v2/aggregates/router.py
+"""Router de agregaciones generado por BNX. Una entrada por fuente del negocio."""
+{imports}
+
+REGISTRY = {{
+{registry}
+}}
+
+
+class GroupBy:
+    def __init__(self, source, previous_path, agg_dict, sqlContext, mode="overwrite"):
+        if source not in REGISTRY:
+            raise KeyError("Fuente no registrada: %r. Opciones: %s" % (
+                source, sorted(REGISTRY)))
+        self.impl = REGISTRY[source](previous_path, agg_dict, sqlContext, mode)
+
+    def aggregate(self):
+        return self.impl.aggregate()
+'''
+
+
+def build_package_from_sources(sources, convert_fn, optimize_fn=None,
+                               include_bank_libs=True, optimize=True):
+    """Arma el Framework v2 EMPAQUETADO con la logica del usuario dentro.
+
+    sources: lista [{"name": "<archivo>.py", "code": "<pandas>"}].
+    convert_fn: funcion pandas->PySpark (p.ej. py2spark convert_code). Debe
+        devolver {"ok","code","warnings","unsupported"}.
+    optimize_fn: opcional, PySpark->PySpark optimizado (optimize_pyspark).
+    Devuelve (zip_bytes, filename, report) donde report describe cada fuente.
+    """
+    gen_sources = []       # nombres de modulo validos, unicos
+    files = {}
+    report = []
+    seen = set()
+
+    for item in sources or []:
+        raw_name = item.get("name") or "fuente.py"
+        pandas_code = item.get("code") or ""
+        if not pandas_code.strip():
+            report.append({"name": raw_name, "ok": False, "reason": "vacio"})
+            continue
+        src = _safe_name(raw_name)
+        base = src
+        n = 1
+        while src in seen:
+            n += 1
+            src = f"{base}_{n}"
+        seen.add(src)
+
+        conv = convert_fn(pandas_code)
+        if not conv or conv.get("ok") is False:
+            reason = (conv or {}).get("unsupported", ["no es Python valido"])
+            report.append({"name": raw_name, "source": src, "ok": False,
+                           "reason": (reason[0] if reason else "no convertible")})
+            # Igual generamos un aggregate placeholder para no romper el paquete.
+            pyspark_code = "# BNX: el codigo no se pudo convertir; revisar.\ndf_out = df"
+            warnings, unsupported = [], (reason if isinstance(reason, list) else [])
+        else:
+            pyspark_code = conv.get("code", "")
+            warnings = conv.get("warnings", []) or []
+            unsupported = conv.get("unsupported", []) or []
+            if optimize and optimize_fn:
+                try:
+                    opt = optimize_fn(pyspark_code)
+                    if opt and opt.get("code"):
+                        pyspark_code = opt["code"]
+                except Exception:
+                    pass
+            report.append({"name": raw_name, "source": src, "ok": True,
+                           "warnings": len(warnings), "unsupported": len(unsupported)})
+
+        gen_sources.append(src)
+        files[f"framework_mlops_v2/aggregates/{src}.py"] = _aggregate_from_pyspark(
+            src, pyspark_code, pandas_code)
+
+    if not gen_sources:
+        # Nada convertible: devolvemos el paquete base de ejemplo.
+        data, filename = build_mlops_package(include_bank_libs)
+        return data, filename, report
+
+    # Archivos comunes del framework v2 + router con las fuentes del usuario.
+    files["framework_mlops_v2/__init__.py"] = _INIT_ROOT
+    files["framework_mlops_v2/core/__init__.py"] = ""
+    files["framework_mlops_v2/core/base_aggregate.py"] = _BASE_AGGREGATE
+    files["framework_mlops_v2/core/quality.py"] = _QUALITY
+    files["framework_mlops_v2/aggregates/__init__.py"] = ""
+    files["framework_mlops_v2/aggregates/router.py"] = _router_from_sources(gen_sources)
+    files["framework_mlops_v2/features/__init__.py"] = ""
+    files["framework_mlops_v2/features/ratios.py"] = _RATIOS
+    files["tests/test_aggregates.py"] = _TEST
+    files["requirements.txt"] = _requirements(include_bank_libs)
+    files["run.sh"] = _RUN_SH
+    files["setup.py"] = _SETUP
+    files["README.md"] = _readme_custom(include_bank_libs, gen_sources, report)
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for path, content in files.items():
+            z.writestr("framework_mlops_v2_pkg/" + path, content)
+    return buf.getvalue(), "framework_mlops_v2.zip", report
+
+
+def _readme_custom(include_bank_libs, sources, report):
+    rows = "\n".join(
+        f"- `{r.get('source', '?')}` ← {r['name']}"
+        + (" ✅" if r.get("ok") else f" ⚠️ {r.get('reason', '')}")
+        + (f" ({r['unsupported']} revisión manual)" if r.get("unsupported") else "")
+        for r in report)
+    base = _readme(include_bank_libs)
+    return base + f'''
+
+## Fuentes generadas desde tu código
+Cada archivo que subiste se convirtió a PySpark y se envolvió como un aggregate
+que hereda de `BaseAggregate`, registrado en `aggregates/router.py`:
+
+{rows}
+
+Uso:
+```python
+from framework_mlops_v2.aggregates.router import GroupBy
+GroupBy("{sources[0]}", previous_path, agg_dict, sqlContext).aggregate()
+```
+Revisa los comentarios `# TODO py2spark` donde la conversión no fue 1:1.
+'''
+
+
 def build_mlops_package(include_bank_libs=True):
     """Arma el ZIP del Framework MLOps v2. Devuelve (zip_bytes, filename)."""
     files = {

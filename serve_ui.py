@@ -180,6 +180,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_pure_bundle()
         elif "/pyspark/from_token" in path:
             self._handle_pyspark_from_token()
+        elif "/mlops/package/build" in path:
+            self._handle_mlops_package_build()
         elif "/quality/compare" in path:
             self._handle_quality_compare()
         elif "/quality/list" in path:
@@ -815,6 +817,49 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             import traceback
             traceback.print_exc()
             self._json_response(500, {"error": str(e)})
+
+    def _handle_mlops_package_build(self):
+        """Arma el Framework MLOps v2 con la LOGICA DEL USUARIO dentro.
+
+        Body JSON: {"sources": [{"name","code"}], "include_bank_libs"?: bool,
+        "optimize"?: bool}. Devuelve un token para descargar el ZIP por GET
+        (streaming), mas un 'report' por fuente (ok/avisos/revision manual)."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length) if content_length else b""
+        try:
+            data = json.loads(body.decode("utf-8", errors="replace")) if body else {}
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._json_response(400, {"error": "Invalid JSON body"})
+            return
+        sources = data.get("sources") or []
+        if not sources:
+            self._json_response(400, {"error": "Se requiere al menos una fuente (sources)."})
+            return
+        try:
+            from src.mlops_pkg import build_package_from_sources
+            include_bank = bool(data.get("include_bank_libs", True))
+            optimize = bool(data.get("optimize", True))
+            zip_bytes, filename, report = build_package_from_sources(
+                sources, convert_fn=py2spark_convert, optimize_fn=optimize_pyspark,
+                include_bank_libs=include_bank, optimize=optimize)
+            # Guardar para descarga por streaming (igual que /export/bundle).
+            import uuid as _uuid
+            tmpdir = os.path.join(tempfile.gettempdir(), "bnx_bundles")
+            os.makedirs(tmpdir, exist_ok=True)
+            token = _uuid.uuid4().hex
+            with open(os.path.join(tmpdir, token + ".zip"), "wb") as fh:
+                fh.write(zip_bytes)
+            with open(os.path.join(tmpdir, token + ".name"), "w", encoding="utf-8") as fh:
+                fh.write(filename)
+            self._json_response(200, {
+                "ok": True, "token": token, "filename": filename,
+                "size": len(zip_bytes), "report": report,
+                "download_url": f"/export/download?token={token}",
+            })
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": f"{type(e).__name__}: {e}"})
 
     def _handle_mlops_package_manifest(self):
         """Describe el paquete Framework MLOps v2 (mejoras + arbol de archivos)."""
