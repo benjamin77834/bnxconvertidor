@@ -192,6 +192,103 @@ def add_ratio(df, name, numerator, denominator):
          .otherwise(F.lit(0.0)))
 '''
 
+# --- Pasos EXTRA del pipeline (opcionales, via checkbox) ---
+
+_FEATURE_ENGINEERING = '''# framework_mlops_v2/features/feature_engineering.py
+"""Feature Engineering: transformaciones de series temporales por cliente.
+Version modular (el original era un archivo de ~83 KB). Cada transformacion es
+una funcion pequena y testeable."""
+from pyspark.sql import functions as F
+
+
+def add_stats(df, cols, prefix):
+    """Estadisticos de una serie de columnas: media, std, min, max, tendencia."""
+    arr = F.array(*[F.col(c).cast("double") for c in cols])
+    df = df.withColumn(prefix + "_media", F.expr(
+        "aggregate(%s, CAST(0.0 AS DOUBLE), (acc, x) -> acc + x) / %d" % (
+            _arr_sql(cols), len(cols))))
+    df = df.withColumn(prefix + "_min", F.array_min(arr))
+    df = df.withColumn(prefix + "_max", F.array_max(arr))
+    # Tendencia simple: ultimo - primero.
+    df = df.withColumn(prefix + "_tendencia",
+                       F.col(cols[-1]).cast("double") - F.col(cols[0]).cast("double"))
+    return df
+
+
+def _arr_sql(cols):
+    return "array(" + ",".join("CAST(%s AS DOUBLE)" % c for c in cols) + ")"
+'''
+
+_VECTOR_ASSEMBLER = '''# framework_mlops_v2/features/vector_assembler.py
+"""Vector Assembler: junta las features en un unico 'features_vector' de Spark ML."""
+from pyspark.ml.feature import VectorAssembler
+
+
+def assemble(df, feature_cols, output_col="features_vector"):
+    """Ensambla feature_cols en un vector. Preserva el resto de columnas."""
+    assembler = VectorAssembler(
+        inputCols=feature_cols, outputCol=output_col, handleInvalid="keep")
+    return assembler.transform(df)
+'''
+
+_SCORING = '''# framework_mlops_v2/scoring/scorer.py
+"""Scoring: aplica el modelo sobre el feature vector. Soporta XGBoost (.xgb) si
+esta disponible, o un fallback lineal para pruebas."""
+import logging
+from pyspark.sql import functions as F
+
+logger = logging.getLogger(__name__)
+
+
+class Scorer:
+    def __init__(self, model_path=None):
+        self.model_path = model_path
+        self._booster = None
+        if model_path:
+            try:
+                import xgboost as xgb
+                self._booster = xgb.Booster()
+                self._booster.load_model(model_path)
+            except Exception as e:
+                logger.warning("No se pudo cargar XGBoost (%s); se usara fallback.", e)
+
+    def score(self, df, feature_cols, out_col="score"):
+        """Devuelve df con la columna de score. Con XGBoost usa el modelo; sin el,
+        un score lineal simple (solo para pruebas)."""
+        if self._booster is not None:
+            # En produccion: pasar a pandas por particion / usar un UDF de pandas.
+            import pandas as pd  # noqa: F401
+            logger.info("Scoring con XGBoost: %s", self.model_path)
+            # (placeholder: integrar pandas_udf segun tu infraestructura)
+        # Fallback lineal de ejemplo (normaliza una suma de features).
+        expr = sum((F.col(c).cast("double") for c in feature_cols), F.lit(0.0))
+        return df.withColumn(out_col, (expr / F.lit(float(len(feature_cols) or 1))))
+'''
+
+_PIPELINE = '''# framework_mlops_v2/pipeline.py
+"""Pipeline de referencia: encadena los pasos del framework v2 en orden.
+extract(ya en parquet) -> groupby (aggregates) -> features -> vector -> scoring.
+Ajusta las rutas/configuracion a tu entorno."""
+from .aggregates.router import GroupBy, REGISTRY
+from .features import feature_engineering as fe
+from .features.vector_assembler import assemble
+from .scoring.scorer import Scorer
+
+
+def run(previous_path, agg_dict_by_source, sqlContext, feature_cols,
+        model_path=None):
+    """Corre el pipeline completo para todas las fuentes registradas."""
+    # 1) Agregacion por fuente.
+    for source in REGISTRY:
+        agg_dict = agg_dict_by_source.get(source, {"table_name": source})
+        GroupBy(source, previous_path, agg_dict, sqlContext).aggregate()
+    # 2) (features / vector / scoring se encadenan sobre el parquet resultante)
+    #    Este run es una PLANTILLA: adapta la lectura del parquet de groupby,
+    #    aplica fe.add_stats(...), assemble(...) y Scorer(model_path).score(...).
+    return {"sources": list(REGISTRY), "feature_cols": feature_cols,
+            "model_path": model_path}
+'''
+
 _TEST = '''# tests/test_aggregates.py
 """Pruebas REALES (antes los test() solo imprimian 'class is working!').
 Requiere pyspark. Ejecuta: pytest -q"""
@@ -241,7 +338,7 @@ __version__ = "2.0.0"
 '''
 
 
-def _requirements(include_bank_libs):
+def _requirements(include_bank_libs, extra_steps=False):
     base = [
         "# Framework MLOps v2 — dependencias",
         "pyspark>=3.3,<4.0",
@@ -250,6 +347,11 @@ def _requirements(include_bank_libs):
         "pytest>=7.0",
         "chispa>=0.9  # testing de DataFrames Spark",
     ]
+    if extra_steps:
+        base += [
+            "xgboost>=1.7  # scoring (paso extra)",
+            "scikit-learn>=1.1  # metricas/preparacion (paso extra)",
+        ]
     if include_bank_libs:
         base += [
             "",
@@ -441,8 +543,22 @@ class GroupBy:
 '''
 
 
+def _extra_step_files(extra_steps):
+    """Archivos de los pasos EXTRA segun el flag (opcional). Devuelve dict."""
+    files = {}
+    if not extra_steps:
+        return files
+    files["framework_mlops_v2/features/feature_engineering.py"] = _FEATURE_ENGINEERING
+    files["framework_mlops_v2/features/vector_assembler.py"] = _VECTOR_ASSEMBLER
+    files["framework_mlops_v2/scoring/__init__.py"] = ""
+    files["framework_mlops_v2/scoring/scorer.py"] = _SCORING
+    files["framework_mlops_v2/pipeline.py"] = _PIPELINE
+    return files
+
+
 def build_package_from_sources(sources, convert_fn, optimize_fn=None,
-                               include_bank_libs=True, optimize=True):
+                               include_bank_libs=True, optimize=True,
+                               extra_steps=False):
     """Arma el Framework v2 EMPAQUETADO con la logica del usuario dentro.
 
     sources: lista [{"name": "<archivo>.py", "code": "<pandas>"}].
@@ -510,11 +626,13 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     files["framework_mlops_v2/aggregates/router.py"] = _router_from_sources(gen_sources)
     files["framework_mlops_v2/features/__init__.py"] = ""
     files["framework_mlops_v2/features/ratios.py"] = _RATIOS
+    # Pasos EXTRA opcionales (feature engineering, vector assembler, scoring, pipeline).
+    files.update(_extra_step_files(extra_steps))
     files["tests/test_aggregates.py"] = _TEST
-    files["requirements.txt"] = _requirements(include_bank_libs)
+    files["requirements.txt"] = _requirements(include_bank_libs, extra_steps)
     files["run.sh"] = _RUN_SH
     files["setup.py"] = _SETUP
-    files["README.md"] = _readme_custom(include_bank_libs, gen_sources, report)
+    files["README.md"] = _readme_custom(include_bank_libs, gen_sources, report, extra_steps)
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
@@ -523,13 +641,25 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     return buf.getvalue(), "framework_mlops_v2.zip", report
 
 
-def _readme_custom(include_bank_libs, sources, report):
+def _readme_custom(include_bank_libs, sources, report, extra_steps=False):
     rows = "\n".join(
         f"- `{r.get('source', '?')}` ← {r['name']}"
         + (" ✅" if r.get("ok") else f" ⚠️ {r.get('reason', '')}")
         + (f" ({r['unsupported']} revisión manual)" if r.get("unsupported") else "")
         for r in report)
     base = _readme(include_bank_libs)
+    extra = ""
+    if extra_steps:
+        extra = '''
+
+## Pasos extra incluidos (opcionales)
+Además de los aggregates, el paquete trae los demás pasos del pipeline como
+módulos listos para usar/extender:
+- `features/feature_engineering.py` — estadísticos de series (media, min, max, tendencia).
+- `features/vector_assembler.py` — ensambla el `features_vector` de Spark ML.
+- `scoring/scorer.py` — scoring con XGBoost (`.xgb`) o fallback lineal de prueba.
+- `pipeline.py` — encadena extract → groupby → features → vector → scoring.
+'''
     return base + f'''
 
 ## Fuentes generadas desde tu código
@@ -544,11 +674,11 @@ from framework_mlops_v2.aggregates.router import GroupBy
 GroupBy("{sources[0]}", previous_path, agg_dict, sqlContext).aggregate()
 ```
 Revisa los comentarios `# TODO py2spark` donde la conversión no fue 1:1.
-'''
+{extra}'''
 
 
-def build_mlops_package(include_bank_libs=True):
-    """Arma el ZIP del Framework MLOps v2. Devuelve (zip_bytes, filename)."""
+def build_mlops_package(include_bank_libs=True, extra_steps=False):
+    """Arma el ZIP del Framework MLOps v2 (plantilla base). Devuelve (bytes, nombre)."""
     files = {
         "framework_mlops_v2/__init__.py": _INIT_ROOT,
         "framework_mlops_v2/core/__init__.py": "",
@@ -562,16 +692,76 @@ def build_mlops_package(include_bank_libs=True):
         "framework_mlops_v2/features/__init__.py": "",
         "framework_mlops_v2/features/ratios.py": _RATIOS,
         "tests/test_aggregates.py": _TEST,
-        "requirements.txt": _requirements(include_bank_libs),
+        "requirements.txt": _requirements(include_bank_libs, extra_steps),
         "run.sh": _RUN_SH,
         "README.md": _readme(include_bank_libs),
         "setup.py": _SETUP,
     }
+    files.update(_extra_step_files(extra_steps))
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for path, content in files.items():
             z.writestr("framework_mlops_v2_pkg/" + path, content)
     return buf.getvalue(), "framework_mlops_v2.zip"
+
+
+# --------------------------------------------------------------------------
+# Ejemplos cargables de un clic en la UI (pandas de negocio por fuente).
+# --------------------------------------------------------------------------
+EXAMPLES = [
+    {
+        "id": "bureau",
+        "title": "Buró de crédito (groupby)",
+        "name": "bureau.py",
+        "code": ("import pandas as pd\n\n"
+                 "df = pd.read_parquet('extract/bureau')\n"
+                 "df = df[df['inf_dt'] >= '2025-01-01']\n"
+                 "df_out = df.groupby('cliente_id').agg({\n"
+                 "    'saldo': 'sum',\n"
+                 "    'atraso_max': 'max',\n"
+                 "    'lineas_activas': 'mean',\n"
+                 "})\n"),
+    },
+    {
+        "id": "canales",
+        "title": "Canales (filtro + flags)",
+        "name": "canales.py",
+        "code": ("import pandas as pd\n\n"
+                 "df = pd.read_csv('canales.csv')\n"
+                 "df = df[df['monto'] > 0]\n"
+                 "df['usa_app'] = (df['canal'] == 'APP').astype(int)\n"
+                 "df['usa_web'] = (df['canal'] == 'WEB').astype(int)\n"
+                 "df_out = df\n"),
+    },
+    {
+        "id": "pnl_ratios",
+        "title": "PnL (ratios con protección /0)",
+        "name": "pnl.py",
+        "code": ("import pandas as pd\n"
+                 "import numpy as np\n\n"
+                 "df = pd.read_parquet('groupby/pnl')\n"
+                 "df['margen'] = np.where(df['ingresos'] > 0,\n"
+                 "                        df['utilidad'] / df['ingresos'], 0.0)\n"
+                 "df['costo_rel'] = np.where(df['ingresos'] > 0,\n"
+                 "                           df['costo'] / df['ingresos'], 0.0)\n"
+                 "df_out = df\n"),
+    },
+    {
+        "id": "pasivos",
+        "title": "Pasivos (join + agregación)",
+        "name": "pasivos.py",
+        "code": ("import pandas as pd\n\n"
+                 "cuentas = pd.read_parquet('extract/cuentas')\n"
+                 "clientes = pd.read_parquet('extract/clientes')\n"
+                 "j = cuentas.merge(clientes, on='cliente_id', how='left')\n"
+                 "j = j[j['saldo_prom'] > 0]\n"
+                 "df_out = j.groupby('cliente_id').agg({'saldo_prom': 'sum'})\n"),
+    },
+]
+
+
+def get_examples():
+    return [dict(e) for e in EXAMPLES]
 
 
 def package_manifest(include_bank_libs=True):

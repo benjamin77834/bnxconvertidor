@@ -7,12 +7,13 @@ import { COMPILE_URL } from '../config'
 const API_BASE = COMPILE_URL.replace(/\/compile$/, '')
 const MANIFEST_URL = `${API_BASE}/mlops/package/manifest`
 const BUILD_URL = `${API_BASE}/mlops/package/build`
-const DOWNLOAD_URL = (bank) => `${API_BASE}/mlops/package/download?bank=${bank ? 1 : 0}`
+const DOWNLOAD_URL = (bank, extra) => `${API_BASE}/mlops/package/download?bank=${bank ? 1 : 0}&extra=${extra ? 1 : 0}`
 
 export default function MLOpsPackagePage({ theme }) {
   const t = theme || {}
   const [manifest, setManifest] = useState(null)
   const [bankLibs, setBankLibs] = useState(true)
+  const [extraSteps, setExtraSteps] = useState(false)
   const [loading, setLoading] = useState(true)
 
   // Entrada del usuario: codigo pegado + archivos de carpeta.
@@ -60,7 +61,7 @@ export default function MLOpsPackagePage({ theme }) {
     try {
       const res = await fetch(BUILD_URL, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sources, include_bank_libs: bankLibs, optimize: true }),
+        body: JSON.stringify({ sources, include_bank_libs: bankLibs, optimize: true, extra_steps: extraSteps }),
       })
       const data = await res.json()
       if (!res.ok || data.error) { setBuildError(data.error || `HTTP ${res.status}`); return }
@@ -90,11 +91,27 @@ export default function MLOpsPackagePage({ theme }) {
         <div style={{ fontSize: 15, fontWeight: 800, color: t.text || '#e2e8f0' }}>
           🚀 Genera TU framework desde tu código
         </div>
-        <p style={{ margin: '4px 0 12px', fontSize: 12.5, color: t.muted || '#94a3b8', maxWidth: 900 }}>
+        <p style={{ margin: '4px 0 10px', fontSize: 12.5, color: t.muted || '#94a3b8', maxWidth: 900 }}>
           Pega tu Python (pandas) del negocio o sube una carpeta de <code>.py</code> (una fuente por archivo).
           BNX convierte cada uno a PySpark, lo envuelve en el contrato del framework v2 (hereda de
           <code>BaseAggregate</code>), lo registra en el router y te entrega el paquete completo con venv y pruebas.
         </p>
+
+        {/* Ejemplos cargables de un clic */}
+        {(manifest?.examples || []).length > 0 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+            <span style={{ fontSize: 11.5, color: t.muted || '#94a3b8' }}>📚 Ejemplos:</span>
+            {manifest.examples.map(ex => (
+              <button key={ex.id} onClick={() => { setPasted(ex.code); setPastedName(ex.name) }}
+                title={`Cargar ejemplo: ${ex.title}`}
+                style={{
+                  padding: '4px 10px', borderRadius: 999, fontSize: 11.5, cursor: 'pointer',
+                  background: (t.accent || '#6366f1') + '18', color: t.accent || '#818cf8',
+                  border: `1px solid ${(t.accent || '#6366f1')}44`,
+                }}>{ex.title}</button>
+            ))}
+          </div>
+        )}
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, alignItems: 'start' }}>
           {/* Pegar codigo */}
@@ -165,7 +182,19 @@ export default function MLOpsPackagePage({ theme }) {
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 12, flexWrap: 'wrap' }}>
+        {/* Opciones de generación */}
+        <div style={{ display: 'flex', gap: 18, marginTop: 12, flexWrap: 'wrap' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: t.text || '#e2e8f0', cursor: 'pointer' }}>
+            <input type="checkbox" checked={extraSteps} onChange={e => setExtraSteps(e.target.checked)} />
+            Generar también los demás pasos (feature engineering, vector assembler, scoring + pipeline)
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: t.text || '#e2e8f0', cursor: 'pointer' }}>
+            <input type="checkbox" checked={bankLibs} onChange={e => setBankLibs(e.target.checked)} />
+            Incluir libs internas del banco en requirements.txt
+          </label>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 10, flexWrap: 'wrap' }}>
           <button onClick={buildMine} disabled={building}
             style={{
               padding: '11px 22px', borderRadius: 8, fontSize: 14, fontWeight: 700,
@@ -265,7 +294,7 @@ export default function MLOpsPackagePage({ theme }) {
                   ? 'El requirements.txt incluirá las libs del banco comentadas, listas para descomentar y apuntar a tu Artifactory interno.'
                   : 'Solo dependencias open source (PySpark, pandas, pytest). Corre en cualquier máquina sin la red del banco.'}
               </p>
-              <a href={DOWNLOAD_URL(bankLibs)} download
+              <a href={DOWNLOAD_URL(bankLibs, extraSteps)} download
                 style={{
                   display: 'inline-block', textDecoration: 'none', textAlign: 'center',
                   padding: '12px 20px', borderRadius: 8, fontSize: 14, fontWeight: 700,
