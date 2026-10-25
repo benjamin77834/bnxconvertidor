@@ -174,14 +174,16 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_py2spark()
         elif "/transactional/test" in path:
             self._handle_transactional_test()
+        elif "/mlops/emulate" in path:
+            self._handle_mlops_emulate()
+        elif "/mlops/package/build" in path:
+            self._handle_mlops_package_build()
         elif "/emulate" in path:
             self._handle_emulate()
         elif "/pure/bundle" in path:
             self._handle_pure_bundle()
         elif "/pyspark/from_token" in path:
             self._handle_pyspark_from_token()
-        elif "/mlops/package/build" in path:
-            self._handle_mlops_package_build()
         elif "/quality/compare" in path:
             self._handle_quality_compare()
         elif "/quality/list" in path:
@@ -817,6 +819,34 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             import traceback
             traceback.print_exc()
             self._json_response(500, {"error": str(e)})
+
+    def _handle_mlops_emulate(self):
+        """Emula el pipeline MLOps con datos sinteticos en Spark local, paso a
+        paso. Body JSON: {"steps":[{"id","name","code"}], "n_rows"?: int,
+        "seed_columns"?: [{"name","type"}]}. Devuelve trace + grafo + resultado."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length) if content_length else b""
+        try:
+            data = json.loads(body.decode("utf-8", errors="replace")) if body else {}
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._json_response(400, {"error": "Invalid JSON body"})
+            return
+        steps = data.get("steps") or []
+        if not steps:
+            self._json_response(400, {"error": "Se requiere al menos un paso (steps)."})
+            return
+        try:
+            from src.mlops_emulator import emulate_pipeline
+            report = emulate_pipeline(
+                steps, convert_fn=py2spark_convert,
+                seed_columns=data.get("seed_columns"),
+                n_rows=min(int(data.get("n_rows", 20)), 200),
+                timeout=min(int(data.get("timeout", 120)), 180))
+            self._json_response(200, report)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": f"{type(e).__name__}: {e}"})
 
     def _handle_mlops_package_build(self):
         """Arma el Framework MLOps v2 con la LOGICA DEL USUARIO dentro.
