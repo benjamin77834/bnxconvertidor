@@ -118,71 +118,104 @@ export default function MLOpsEmulatorPage({ theme }) {
 
       {/* Resultado */}
       {result && (
-        <>
-          {/* Grafo del pipeline */}
-          <div style={{ ...card }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: t.text || '#e2e8f0', marginBottom: 6 }}>
-              Flujo del pipeline {result.ok ? '✅' : '⚠️ se detuvo en un error'}
-            </div>
-            <PipelineGraph steps={result.steps || []} theme={t} />
+        <div style={{
+          ...card, borderColor: (result.ok ? '#22c55e' : '#f59e0b') + '66',
+          display: 'flex', flexDirection: 'column', gap: 14,
+        }}>
+          {/* Encabezado destacado de la zona de resultados */}
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+            paddingBottom: 10, borderBottom: `1px solid ${t.border || '#334155'}`,
+          }}>
+            <span style={{ fontSize: 18 }}>{result.ok ? '✅' : '⚠️'}</span>
+            <span style={{ fontSize: 16, fontWeight: 800, color: t.text || '#e2e8f0' }}>
+              Resultados de la emulación
+            </span>
+            <span style={{
+              fontSize: 11.5, fontWeight: 700, padding: '3px 10px', borderRadius: 999,
+              background: (result.ok ? '#22c55e' : '#f59e0b') + '22',
+              color: result.ok ? '#22c55e' : '#fbbf24',
+              border: `1px solid ${(result.ok ? '#22c55e' : '#f59e0b')}55`,
+            }}>
+              {result.ok ? 'pipeline completo' : 'se detuvo en un error'}
+            </span>
+            <span style={{ marginLeft: 'auto', fontSize: 12, color: t.muted || '#94a3b8' }}>
+              {(result.steps || []).filter(s => s.ok).length}/{(result.steps || []).length} pasos OK
+            </span>
           </div>
 
-          {/* Tabla por paso */}
-          <div style={{ ...card, overflowX: 'auto' }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: t.text || '#e2e8f0', marginBottom: 8 }}>
-              Qué pasa en cada paso (datos que entran → salen)
+          {/* 1) Grafo del pipeline */}
+          <section>
+            <SectionTitle t={t} n="1" title="Flujo del pipeline" />
+            <div style={{ overflowX: 'auto', paddingBottom: 6 }}>
+              <PipelineGraph steps={result.steps || []} theme={t} />
             </div>
-            <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 12 }}>
-              <thead><tr style={{ color: t.muted || '#94a3b8', textAlign: 'left' }}>
-                {['Paso', 'Estado', 'Entrada', 'Salida', 'Columnas nuevas', 'Tiempo'].map(h =>
-                  <th key={h} style={{ padding: '6px 8px', borderBottom: `1px solid ${t.border || '#334155'}` }}>{h}</th>)}
-              </tr></thead>
-              <tbody>
-                {(result.steps || []).map((s, i) => (
-                  <tr key={i} style={{ borderBottom: `1px solid ${(t.border || '#334155')}44` }}>
-                    <td style={cell(t)}><b>{s.name}</b></td>
-                    <td style={{ ...cell(t), color: s.ok ? '#22c55e' : '#ef4444', fontWeight: 700 }}>{s.ok ? 'OK' : 'ERROR'}</td>
-                    <td style={cell(t)}>{s.rows_in != null ? `${s.rows_in}f × ${s.cols_in}c` : '—'}</td>
-                    <td style={cell(t)}>{s.rows_out != null ? `${s.rows_out}f × ${s.cols_out}c` : '—'}</td>
-                    <td style={{ ...cell(t), color: '#38bdf8' }}>{(s.new_cols || []).join(', ') || '—'}</td>
-                    <td style={cell(t)}>{s.seconds != null ? `${s.seconds}s` : '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {(result.steps || []).some(s => s.error) && (
-              <div style={{ marginTop: 8, fontSize: 12, color: '#f87171' }}>
-                {result.steps.filter(s => s.error).map((s, i) => <div key={i}>⚠️ <b>{s.name}</b>: {s.error}</div>)}
-              </div>
-            )}
-          </div>
+          </section>
 
-          {/* Resultado final + DQC */}
-          {result.final?.columns?.length > 0 && (
-            <div style={{ ...card, overflowX: 'auto' }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: t.text || '#e2e8f0', marginBottom: 6 }}>
-                Resultado final · {result.final.total_rows}f × {result.final.total_cols}c (muestra)
-              </div>
-              <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 11.5 }}>
-                <thead><tr>
-                  {result.final.columns.map((c, i) => (
-                    <th key={i} style={{ padding: '5px 8px', textAlign: 'left', color: t.muted || '#94a3b8',
-                      borderBottom: `1px solid ${t.border || '#334155'}` }}>
-                      {c}{(result.metrics?.dqc?.[c]?.null_pct) ? ` (${result.metrics.dqc[c].null_pct}% nulos)` : ''}
-                    </th>
-                  ))}
+          {/* 2) Tabla por paso (scroll propio) */}
+          <section>
+            <SectionTitle t={t} n="2" title="Qué pasa en cada paso (entra → sale)" />
+            <div style={{
+              maxHeight: 320, overflow: 'auto',
+              border: `1px solid ${t.border || '#334155'}`, borderRadius: 8,
+            }}>
+              <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 12 }}>
+                <thead><tr style={{ textAlign: 'left' }}>
+                  {['Paso', 'Estado', 'Entrada', 'Salida', 'Columnas nuevas', 'Tiempo'].map(h =>
+                    <th key={h} style={stickyHead(t)}>{h}</th>)}
                 </tr></thead>
                 <tbody>
-                  {result.final.rows.map((r, ri) => (
-                    <tr key={ri} style={{ borderBottom: `1px solid ${(t.border || '#334155')}33` }}>
-                      {r.map((v, ci) => <td key={ci} style={{ ...cell(t), whiteSpace: 'nowrap' }}>{v}</td>)}
+                  {(result.steps || []).map((s, i) => (
+                    <tr key={i} style={{ borderBottom: `1px solid ${(t.border || '#334155')}44` }}>
+                      <td style={cell(t)}><b>{s.name}</b></td>
+                      <td style={{ ...cell(t), color: s.ok ? '#22c55e' : '#ef4444', fontWeight: 700 }}>{s.ok ? 'OK' : 'ERROR'}</td>
+                      <td style={cell(t)}>{s.rows_in != null ? `${s.rows_in}f × ${s.cols_in}c` : '—'}</td>
+                      <td style={cell(t)}>{s.rows_out != null ? `${s.rows_out}f × ${s.cols_out}c` : '—'}</td>
+                      <td style={{ ...cell(t), color: '#38bdf8' }}>{(s.new_cols || []).join(', ') || '—'}</td>
+                      <td style={cell(t)}>{s.seconds != null ? `${s.seconds}s` : '—'}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
+            {(result.steps || []).some(s => s.error) && (
+              <div style={{ marginTop: 8, fontSize: 12, color: '#f87171' }}>
+                {result.steps.filter(s => s.error).map((s, i) => <div key={i}>⚠️ <b>{s.name}</b>: {s.error}</div>)}
+              </div>
+            )}
+          </section>
+
+          {/* 3) Resultado final + DQC (scroll propio en ambos ejes) */}
+          {result.final?.columns?.length > 0 && (
+            <section>
+              <SectionTitle t={t} n="3"
+                title={`Resultado final · ${result.final.total_rows}f × ${result.final.total_cols}c (muestra de ${result.final.rows.length})`} />
+              <div style={{
+                maxHeight: 360, overflow: 'auto',
+                border: `1px solid ${t.border || '#334155'}`, borderRadius: 8,
+              }}>
+                <table style={{ borderCollapse: 'collapse', fontSize: 11.5 }}>
+                  <thead><tr>
+                    {result.final.columns.map((c, i) => (
+                      <th key={i} style={stickyHead(t)}>
+                        {c}{(result.metrics?.dqc?.[c]?.null_pct) ? (
+                          <span style={{ color: '#fbbf24', fontWeight: 400 }}> · {result.metrics.dqc[c].null_pct}% nulos</span>
+                        ) : null}
+                      </th>
+                    ))}
+                  </tr></thead>
+                  <tbody>
+                    {result.final.rows.map((r, ri) => (
+                      <tr key={ri} style={{ borderBottom: `1px solid ${(t.border || '#334155')}33` }}>
+                        {r.map((v, ci) => <td key={ci} style={{ ...cell(t), whiteSpace: 'nowrap' }}>{v}</td>)}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
           )}
-        </>
+        </div>
       )}
     </div>
   )
@@ -216,7 +249,29 @@ function PipelineGraph({ steps, theme }) {
   )
 }
 
-function cell(t) { return { padding: '6px 8px', color: t.text || '#e2e8f0' } }
+function SectionTitle({ t, n, title }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+      <span style={{
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        width: 20, height: 20, borderRadius: '50%', fontSize: 11, fontWeight: 800,
+        background: (t.accent || '#6366f1') + '22', color: t.accent || '#818cf8',
+        border: `1px solid ${(t.accent || '#6366f1')}55`,
+      }}>{n}</span>
+      <span style={{ fontSize: 13, fontWeight: 700, color: t.text || '#e2e8f0' }}>{title}</span>
+    </div>
+  )
+}
+// Cabecera sticky para tablas con scroll (se queda fija al hacer scroll vertical).
+function stickyHead(t) {
+  return {
+    position: 'sticky', top: 0, zIndex: 1, padding: '7px 10px', textAlign: 'left',
+    fontSize: 11.5, fontWeight: 700, whiteSpace: 'nowrap',
+    color: t.muted || '#94a3b8', background: t.card || '#0f172a',
+    borderBottom: `2px solid ${t.border || '#334155'}`,
+  }
+}
+function cell(t) { return { padding: '6px 10px', color: t.text || '#e2e8f0' } }
 function miniBtn(t, disabled) {
   return {
     padding: '4px 8px', borderRadius: 6, fontSize: 12, cursor: disabled ? 'not-allowed' : 'pointer',
