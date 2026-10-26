@@ -92,7 +92,17 @@ _MLLIB_HINT = {
     "RandomForestClassifier": "pyspark.ml.classification.RandomForestClassifier",
     "RandomForestRegressor": "pyspark.ml.regression.RandomForestRegressor",
     "GradientBoostingClassifier": "pyspark.ml.classification.GBTClassifier",
+    "GradientBoostingRegressor": "pyspark.ml.regression.GBTRegressor",
     "DecisionTreeClassifier": "pyspark.ml.classification.DecisionTreeClassifier",
+    # XGBoost / LightGBM no estan en MLlib estandar; hay conectores Spark nativos.
+    "XGBClassifier": "pyspark.ml.classification.GBTClassifier (MLlib) o "
+                     "xgboost.spark.SparkXGBClassifier (conector xgboost4j-spark)",
+    "XGBRegressor": "pyspark.ml.regression.GBTRegressor (MLlib) o "
+                    "xgboost.spark.SparkXGBRegressor (conector xgboost4j-spark)",
+    "LGBMClassifier": "synapse.ml.lightgbm.LightGBMClassifier (SynapseML) o "
+                      "pyspark.ml.classification.GBTClassifier",
+    "LGBMRegressor": "synapse.ml.lightgbm.LightGBMRegressor (SynapseML) o "
+                     "pyspark.ml.regression.GBTRegressor",
     "KMeans": "pyspark.ml.clustering.KMeans",
     "StandardScaler": "pyspark.ml.feature.StandardScaler (+ VectorAssembler)",
     "MinMaxScaler": "pyspark.ml.feature.MinMaxScaler (+ VectorAssembler)",
@@ -158,10 +168,27 @@ def _astype_to_spark(arg):
 
 
 def _uses_pandas_index(node):
-    """True si el nodo AST usa un accesor de indice/posicion de pandas
-    (.loc, .iloc, .at, .iat, .ix, .index, .values, set_index/reset_index)."""
+    """Devuelve el atributo de indice/posicion de pandas si el nodo lo usa, o None.
+
+    OJO con los falsos positivos: '.values' e '.index' tambien existen en Python
+    normal (dict.values(), list.index(x), str.index('_')). pandas los usa como
+    PROPIEDADES (sin parentesis): df.values, df.index. Los de Python normal son
+    METODOS (con parentesis): d.values(), s.index('_'). Por eso, para 'values' e
+    'index', SOLO los contamos como pandas cuando NO se llaman como metodo.
+    Los demas accesores (.loc/.iloc/.at/.iat/.ix/.reset_index/.set_index) no
+    chocan con Python normal y se marcan siempre."""
+    # Atributos que son el 'func' de una llamada  -> p.ej. d.values()  /  s.index('_').
+    called_attrs = set()
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute):
+            called_attrs.add(id(sub.func))
+
+    _AMBIGUOUS = {"values", "index"}  # existen en dict/list/str de Python
     for sub in ast.walk(node):
         if isinstance(sub, ast.Attribute) and sub.attr in _PANDAS_INDEX_ATTRS:
+            if sub.attr in _AMBIGUOUS and id(sub) in called_attrs:
+                # Llamado como metodo (d.values(), s.index('_')) -> Python normal.
+                continue
             return sub.attr
     return None
 
