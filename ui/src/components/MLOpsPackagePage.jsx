@@ -237,14 +237,51 @@ export default function MLOpsPackagePage({ theme }) {
                 }}>📦 Descargar {buildResult.filename}</a>
             </div>
             {(buildResult.report || []).length > 0 && (
-              <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {(() => {
+                  const totalTodos = buildResult.report.reduce((n, r) => n + ((r.todos || []).length), 0)
+                  return (
+                    <div style={{ fontSize: 11.5, color: t.muted || '#94a3b8', marginBottom: 2 }}>
+                      {totalTodos > 0
+                        ? `⚠️ ${totalTodos} línea(s) requieren revisión manual en total. Revisa los puntos marcados abajo (van con un "# TODO py2spark" en el archivo generado).`
+                        : '✅ Todas las fuentes convirtieron sin construcciones no traducibles.'}
+                    </div>
+                  )
+                })()}
                 {buildResult.report.map((r, i) => (
                   <div key={i} style={{ fontSize: 11.5, color: t.text || '#e2e8f0' }}>
-                    {r.ok ? '✅' : '⚠️'} <b>{r.source || r.name}</b>
-                    <span style={{ color: t.muted || '#94a3b8' }}> ← {r.name}</span>
-                    {r.ok
-                      ? (r.unsupported ? <span style={{ color: '#f59e0b' }}> · {r.unsupported} requiere revisión manual</span> : <span style={{ color: '#22c55e' }}> · conversión limpia</span>)
-                      : <span style={{ color: '#f87171' }}> · {r.reason}</span>}
+                    <div>
+                      {r.ok ? '✅' : '⚠️'} <b>{r.source || r.name}</b>
+                      <span style={{ color: t.muted || '#94a3b8' }}> ← {r.name}</span>
+                      {r.file && <span style={{ color: t.dim || '#64748b' }}> · {r.file}</span>}
+                      {r.ok
+                        ? ((r.todos || []).length
+                          ? <span style={{ color: '#f59e0b' }}> · {r.todos.length} línea(s) a revisar</span>
+                          : <span style={{ color: '#22c55e' }}> · conversión limpia</span>)
+                        : <span style={{ color: '#f87171' }}> · {r.reason}</span>}
+                    </div>
+                    {/* Detalle: lineas no traducibles de esta fuente */}
+                    {(r.todos || []).length > 0 && (
+                      <div style={{
+                        marginTop: 4, marginLeft: 16, display: 'flex', flexDirection: 'column', gap: 4,
+                        borderLeft: `2px solid #f59e0b55`, paddingLeft: 10,
+                      }}>
+                        {r.todos.map((td, k) => (
+                          <div key={k} style={{ fontSize: 11 }}>
+                            <span style={{
+                              fontFamily: 'monospace', color: '#fbbf24', fontWeight: 700,
+                              background: '#f59e0b18', padding: '1px 6px', borderRadius: 4,
+                            }}>línea {td.line}</span>
+                            <span style={{ color: t.text || '#e2e8f0' }}> {td.text.replace(/^TODO py2spark:\s*/, '')}</span>
+                            {td.original && (
+                              <div style={{ marginTop: 2, fontFamily: 'monospace', color: t.dim || '#64748b' }}>
+                                ↳ original: <span style={{ color: '#94a3b8' }}>{td.original}</span>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>

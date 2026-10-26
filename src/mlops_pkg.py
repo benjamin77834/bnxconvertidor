@@ -732,6 +732,37 @@ def _extra_step_files(extra_steps, include_monitoring=False, monitoring_target="
     return files
 
 
+def _extract_todos(code):
+    """Extrae los comentarios '# TODO py2spark' de un archivo generado, con su
+    numero de linea (1-based) y el texto, ademas de la linea 'Original:' que les
+    sigue (el pandas que no se pudo traducir). Devuelve [{line, text, original}]."""
+    out = []
+    lines = code.split("\n")
+    for i, ln in enumerate(lines):
+        s = ln.strip()
+        # Solo TODOs REALES: comentario que ARRANCA con '# TODO py2spark'. Las
+        # menciones dentro de docstrings/prosa ("Revisa los # TODO py2spark...")
+        # no son puntos a revisar y se ignoran.
+        if not s.startswith("#"):
+            continue
+        body_c = s.lstrip("#").strip()
+        if not body_c.startswith("TODO py2spark"):
+            continue
+        if True:
+            # Texto del TODO (sin el '# ').
+            text = body_c
+            # Buscar la linea 'Original: ...' siguiente (si la hay) para citar el
+            # codigo pandas original.
+            original = ""
+            for j in range(i + 1, min(i + 4, len(lines))):
+                js = lines[j].strip().lstrip("# ").strip()
+                if js.startswith("Original:"):
+                    original = js[len("Original:"):].strip()
+                    break
+            out.append({"line": i + 1, "text": text, "original": original})
+    return out
+
+
 def build_package_from_sources(sources, convert_fn, optimize_fn=None,
                                include_bank_libs=True, optimize=True,
                                extra_steps=False, include_monitoring=False,
@@ -791,8 +822,15 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
                            "warnings": len(warnings), "unsupported": len(unsupported)})
 
         gen_sources.append(src)
-        files[f"framework_mlops_v2/aggregates/{src}.py"] = _aggregate_from_pyspark(
-            src, pyspark_code, pandas_code)
+        rel_path = f"framework_mlops_v2/aggregates/{src}.py"
+        agg_code = _aggregate_from_pyspark(src, pyspark_code, pandas_code)
+        files[rel_path] = agg_code
+        # Extraer los TODO (lineas no traducibles) CON su numero de linea en el
+        # ARCHIVO generado (donde el usuario los abrira), para el reporte.
+        todos = _extract_todos(agg_code)
+        report[-1]["file"] = rel_path
+        report[-1]["todos"] = todos
+        report[-1]["unsupported"] = len(todos) if todos else report[-1].get("unsupported", 0)
 
     if not gen_sources:
         # Nada convertible: devolvemos el paquete base de ejemplo.
