@@ -9,7 +9,7 @@ const MANIFEST_URL = `${API_BASE}/mlops/package/manifest`
 const BUILD_URL = `${API_BASE}/mlops/package/build`
 const DOWNLOAD_URL = (bank, extra) => `${API_BASE}/mlops/package/download?bank=${bank ? 1 : 0}&extra=${extra ? 1 : 0}`
 
-export default function MLOpsPackagePage({ theme }) {
+export default function MLOpsPackagePage({ theme, onEmulate }) {
   const t = theme || {}
   const [manifest, setManifest] = useState(null)
   const [bankLibs, setBankLibs] = useState(true)
@@ -217,6 +217,21 @@ export default function MLOpsPackagePage({ theme }) {
             }}>
             {building ? '⏳ Generando…' : '🚀 Generar mi framework'}
           </button>
+          {onEmulate && (
+            <button
+              onClick={() => {
+                const s = sourcesToSend()
+                if (!s.length) { setBuildError('Pega código o sube al menos un archivo .py para emular.'); return }
+                onEmulate(s.map(x => ({ id: x.name, name: x.name.replace(/\.(py|txt)$/i, ''), code: x.code })))
+              }}
+              title="Lleva estas fuentes al Emulador MLOps y córrelas con datos sintéticos"
+              style={{
+                padding: '11px 18px', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: 'pointer',
+                background: 'transparent', color: '#2dd4bf', border: '1px solid #14b8a655',
+              }}>
+              🔬 Emular estas fuentes
+            </button>
+          )}
           <span style={{ fontSize: 12, color: t.muted || '#94a3b8' }}>
             {sourcesToSend().length} fuente(s) a procesar
           </span>

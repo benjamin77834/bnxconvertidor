@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { COMPILE_URL } from '../config'
 
 // Emulador MLOps: corre el pipeline (pasos encadenados) con datos sintéticos en
@@ -21,13 +21,26 @@ const EXAMPLE_STEPS = [
 let _uid = 0
 const newStep = (name = '', code = '') => ({ id: `step_${++_uid}`, name, code })
 
-export default function MLOpsEmulatorPage({ theme }) {
+export default function MLOpsEmulatorPage({ theme, initialSteps, onConsumeInitial }) {
   const t = theme || {}
   const [steps, setSteps] = useState([newStep('Mi paso', 'df_out = df\n')])
   const [nRows, setNRows] = useState(30)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [result, setResult] = useState(null)
+
+  // Si llegan pasos desde el generador ("Emular estas fuentes"), cargarlos.
+  useEffect(() => {
+    if (initialSteps && initialSteps.length) {
+      _uid = 0
+      setSteps(initialSteps.map(s => ({
+        id: `step_${++_uid}`, name: s.name || s.id || 'paso', code: s.code || 'df_out = df\n',
+      })))
+      setResult(null); setError('')
+      onConsumeInitial && onConsumeInitial()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialSteps])
 
   const card = {
     background: t.card || '#0f172a', border: `1px solid ${t.border || '#334155'}`,

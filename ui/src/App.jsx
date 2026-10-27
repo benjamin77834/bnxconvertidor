@@ -80,6 +80,9 @@ export default function App() {
   // Python ORIGINAL de py2spark: se envia al runtest para reconvertir fresco en
   // el servidor (evita ejecutar PySpark viejo cacheado).
   const [py2sparkSource, setPy2sparkSource] = useState('')
+  // Pasos que el generador del Framework MLOps v2 manda al Emulador MLOps
+  // ("Emular estas fuentes"). [{id,name,code}]. Se consume al abrir el emulador.
+  const [mlopsEmuSteps, setMlopsEmuSteps] = useState(null)
   // Defensa frontend: trunca nodes/edges de un result a 500 para no colgar la
   // vista. Aplica al leer de localStorage (grafos viejos guardados ANTES del
   // truncado de backend) y a cualquier result entrante. NUNCA toca `code`.
@@ -1203,9 +1206,15 @@ export default function App() {
             setPage('datagen')
           }} />
         ) : page === 'mlops_pkg' ? (
-          <MLOpsPackagePage theme={t} />
+          <MLOpsPackagePage theme={t} onEmulate={(steps) => {
+            // Mandar las fuentes del generador al Emulador MLOps.
+            setMlopsEmuSteps(steps)
+            setPage('mlops_emu')
+          }} />
         ) : page === 'mlops_emu' ? (
-          <MLOpsEmulatorPage theme={t} />
+          <MLOpsEmulatorPage theme={t}
+            initialSteps={mlopsEmuSteps}
+            onConsumeInitial={() => setMlopsEmuSteps(null)} />
         ) : page === 'datagen' ? (
           <DataGenPage theme={t}
             graphMp={py2sparkCode ? '' : editorMp} graphXfr={py2sparkCode ? '' : editorXfr}
