@@ -32,6 +32,7 @@ import tempfile
 # Runner: ejecuta los pasos encadenados en Spark local y emite un reporte JSON.
 _EMU_RUNNER = r'''
 import json, sys, time, traceback
+import types as _types
 
 steps_path = sys.argv[1]
 with open(steps_path) as f:
@@ -40,7 +41,75 @@ steps = payload["steps"]
 seed_cols = payload["seed_columns"]
 n_rows = payload.get("n_rows", 20)
 
-report = {"ok": False, "error": None, "steps": [], "final": {}, "metrics": {}}
+report = {"ok": False, "error": None, "steps": [], "final": {}, "metrics": {},
+          "stubbed": []}
+
+# --- IMPORTS TOLERANTES -----------------------------------------------------
+# Las fuentes del banco importan librerias internas (mex_lib*, toolbox,
+# lib_mkop_metrics, etc.) que NO existen en local. En vez de reventar con
+# ModuleNotFoundError y bloquear toda la emulacion, devolvemos un STUB (modulo
+# falso) cuyos atributos son objetos "mock" que no fallan al accederse/llamarse.
+# CLAVE: el finder va AL FINAL de sys.meta_path, asi SOLO actua cuando ningun
+# otro finder resolvio el modulo (es decir, cuando de verdad no existe). Nunca
+# pisa pyspark/pandas/stdlib reales. OJO: con stub la logica REAL de esa libreria
+# no se ejecuta (es simulacion del flujo, no del resultado).
+
+
+class _StubModule(_types.ModuleType):
+    """Modulo falso: cualquier atributo devuelve un callable/no-op que no rompe."""
+    def __getattr__(self, name):
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+        return _StubAny(name)
+
+
+class _StubAny:
+    """Objeto comodin: se puede llamar, indexar, iterar y encadenar sin fallar."""
+    def __init__(self, name="stub"):
+        self._name = name
+    def __call__(self, *a, **k):
+        return _StubAny(self._name)
+    def __getattr__(self, name):
+        return _StubAny(name)
+    def __getitem__(self, k):
+        return _StubAny(self._name)
+    def __iter__(self):
+        return iter([])
+    def __repr__(self):
+        return "<stub:%s>" % self._name
+
+
+def _stub_module(fullname):
+    """Registra en sys.modules un stub para 'fullname' (y sus paquetes padre),
+    de forma puntual. No usa import hooks globales (que interfieren con pyspark)."""
+    parts = fullname.split(".")
+    for i in range(len(parts)):
+        name = ".".join(parts[: i + 1])
+        if name not in sys.modules:
+            sys.modules[name] = _StubModule(name)
+    top = parts[0]
+    if top not in report["stubbed"]:
+        report["stubbed"].append(top)
+
+
+def _exec_with_stubs(code, local_ns, max_stubs=30):
+    """Ejecuta `code`. Si falla por un modulo faltante (ModuleNotFoundError),
+    registra un stub para ese modulo y REINTENTA, hasta max_stubs veces. Asi un
+    import de libreria del banco (mex_lib*, toolbox...) no bloquea el paso, pero
+    NO instalamos ningun hook global que pueda romper pyspark/pandas."""
+    for _ in range(max_stubs):
+        try:
+            exec(code, local_ns)
+            return
+        except ModuleNotFoundError as e:
+            missing = getattr(e, "name", None)
+            if not missing:
+                raise
+            _stub_module(missing)
+            # limpiar restos parciales del import fallido
+            local_ns.pop("__builtins__", None)
+    # Si tras max_stubs sigue fallando, dejar que la excepcion suba.
+    exec(code, local_ns)
 
 
 def _neutralize(code):
@@ -117,7 +186,7 @@ try:
             # Neutralizar lecturas externas: si el paso reasigna df con spark.read
             # o pd.read_*, lo ignoramos (usamos el df encadenado). Para el PRIMER
             # paso ya venimos del seed; para los demas, el df encadenado manda.
-            exec(_neutralize(code), local_ns)
+            _exec_with_stubs(_neutralize(code), local_ns)
             out = local_ns.get("df_out", local_ns.get("df"))
             if out is None:
                 raise ValueError("el paso no produjo 'df_out' ni modifico 'df'")
@@ -131,12 +200,20 @@ try:
             entry["ok"] = True
         except Exception as e:
             entry["error"] = "%s: %s" % (type(e).__name__, e)
+            # NO detenemos el pipeline: marcamos el paso y seguimos con el df que
+            # teniamos (el del ultimo paso exitoso). Asi se ve cuantos pasos
+            # corren y cuales fallan, en vez de cortar en el primero.
             report["steps"].append(entry)
-            report["error"] = "Fallo en el paso '%s': %s" % (st["name"], entry["error"])
-            break
+            continue
         report["steps"].append(entry)
-    else:
-        report["ok"] = True
+
+    steps_total = len(report["steps"])
+    steps_ok = sum(1 for s in report["steps"] if s["ok"])
+    report["ok"] = steps_ok == steps_total and steps_total > 0
+    if steps_ok < steps_total:
+        failed = [s["name"] for s in report["steps"] if not s["ok"]]
+        report["error"] = "%d de %d paso(s) con error: %s" % (
+            steps_total - steps_ok, steps_total, ", ".join(failed[:5]))
 
     # 3) Muestra del resultado final + DQC (calidad).
     try:

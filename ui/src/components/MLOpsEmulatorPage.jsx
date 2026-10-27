@@ -157,6 +157,19 @@ export default function MLOpsEmulatorPage({ theme, initialSteps, onConsumeInitia
             </span>
           </div>
 
+          {/* Librerías del banco simuladas (stub) */}
+          {(result.stubbed || []).length > 0 && (
+            <div style={{
+              fontSize: 11.5, color: '#fbbf24', background: '#f59e0b12',
+              border: '1px solid #f59e0b33', borderRadius: 8, padding: '8px 10px',
+            }}>
+              🏦 Librerías internas simuladas (no están en local, se stubearon para
+              poder ver el flujo): <b>{result.stubbed.join(', ')}</b>.
+              <span style={{ color: t.muted || '#94a3b8' }}> Su lógica real no se ejecutó;
+              en la red del banco corren de verdad.</span>
+            </div>
+          )}
+
           {/* 1) Grafo del pipeline */}
           <section>
             <SectionTitle t={t} n="1" title="Flujo del pipeline" />
