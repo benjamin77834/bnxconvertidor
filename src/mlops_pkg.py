@@ -533,6 +533,12 @@ def _readme(include_bank_libs):
             "descomentalas y apunta a tu Artifactory."
             if include_bank_libs else
             "Solo dependencias open source (sin librerias internas del banco).")
+    # Nota sobre despliegue (si el paquete fue firmado, la carpeta deploy/ existe).
+    deploy_hint = (
+        "## 🔐 Despliegue\n"
+        "Si firmaste el paquete, en `deploy/` están el `execution_manifest.json` "
+        "(firmado) y la clave pública. Verifica integridad + firma antes de "
+        "desplegar; si algún `.py` fue alterado, la verificación falla.")
     return f'''# Framework MLOps v2 (mejorado)
 
 Paquete NUEVO generado por BNX a partir del analisis del framework actual.
@@ -567,6 +573,72 @@ requirements.txt
 run.sh
 setup.py
 ```
+
+## ▶️ Cómo CORRER el modelo (paso a paso)
+
+### Requisitos previos
+- **Python 3.8+** instalado (el `setup.sh`/`run.sh` crea el venv con tu Python).
+- **Java (JDK 8/11/17)** con `java` en el PATH — PySpark lo necesita para ejecutar
+  Spark. Verifícalo con `java -version`. (No se empaqueta; debe estar en la máquina.)
+
+### 1) Montar el entorno (una sola vez)
+```bash
+bash run.sh          # paquete ligero (instala PySpark por internet)
+# ó, si bajaste el paquete con ambiente completo (vendor/):
+bash setup.sh        # instala PySpark OFFLINE desde vendor/, sin internet
+```
+Esto crea `.venv`, instala dependencias e instala el propio framework
+(`pip install -e .`). Al terminar debe decir "Ambiente listo".
+
+### 2) Activar el entorno
+```bash
+source .venv/bin/activate      # Linux/macOS
+# .venv\\Scripts\\activate     # Windows
+```
+
+### 3) Correr una agregación (un paso del pipeline)
+Cada fuente registrada se corre por su nombre con el router `GroupBy`:
+```python
+from pyspark.sql import SparkSession
+from framework_mlops_v2.aggregates.router import GroupBy, REGISTRY
+
+spark = SparkSession.builder.appName("mlops_v2").getOrCreate()
+
+print("Fuentes disponibles:", sorted(REGISTRY))   # p.ej. ['bureau', ...]
+
+# previous_path: carpeta con el parquet de entrada (<previous_path>/<table_name>)
+# agg_dict: parametros de la fuente (al menos {{"table_name": "..."}}).
+GroupBy("bureau",
+        previous_path="/ruta/a/datos",
+        agg_dict={{"table_name": "bureau"}},
+        sqlContext=spark).aggregate()
+# Escribe el resultado en la carpeta hermana 'groupby/'.
+```
+
+### 4) Correr el PIPELINE completo (si generaste con "pasos extra")
+Si el paquete incluye `pipeline.py` (feature engineering + vector + scoring):
+```python
+from framework_mlops_v2.pipeline import run
+run(previous_path="/ruta/a/datos",
+    agg_dict_by_source={{"bureau": {{"table_name": "bureau"}}}},
+    sqlContext=spark,
+    feature_cols=["saldo", "atraso_max"],   # columnas que entran al modelo
+    model_path="/ruta/al/modelo.xgb")        # XGBoost entrenado (opcional)
+```
+
+### 5) Correr en un cluster (Spark real)
+```bash
+spark-submit --master yarn tu_job.py
+# o local para probar:
+spark-submit --master "local[*]" tu_job.py
+```
+
+### Revisa antes de correr
+- Busca los comentarios `# TODO py2spark` en los aggregates: son las líneas que
+  requieren ajuste manual (p.ej. el modelo XGBoost). Edítalas antes de producción.
+- {libs}
+
+{deploy_hint}
 
 Generado: {datetime.now().isoformat(timespec="seconds")}
 '''
