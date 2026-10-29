@@ -17,6 +17,7 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
   const [monitoring, setMonitoring] = useState(false)
   const [separateMon, setSeparateMon] = useState(false)
   const [fullEnv, setFullEnv] = useState(false)
+  const [pyTarget, setPyTarget] = useState('all')  // all | py38-311 | py312plus
   const [loading, setLoading] = useState(true)
 
   // Entrada del usuario: codigo pegado + archivos de carpeta.
@@ -67,7 +68,7 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
         body: JSON.stringify({
           sources, include_bank_libs: bankLibs, optimize: true, extra_steps: extraSteps,
           include_monitoring: monitoring, separate_monitoring: monitoring && separateMon,
-          full_env: fullEnv,
+          full_env: fullEnv, py_target: pyTarget,
         }),
       })
       const data = await res.json()
@@ -214,8 +215,24 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
             <span>Incluir <b>ambiente completo</b> (PySpark offline en <code>vendor/</code> + <code>setup.sh</code> que monta el venv sin internet)</span>
           </label>
           {fullEnv && (
-            <div style={{ fontSize: 11, color: t.muted || '#94a3b8', marginLeft: 24 }}>
-              El ZIP será grande (incluye los wheels de PySpark). Usa tu Python 3.8+ y Java del sistema (esos no se empaquetan).
+            <div style={{ marginLeft: 24, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: t.text || '#e2e8f0' }}>
+                Versión de Python del destino:
+                <select value={pyTarget} onChange={e => setPyTarget(e.target.value)}
+                  style={{
+                    padding: '5px 8px', borderRadius: 6, fontSize: 12,
+                    background: t.codeBg || '#081220', color: t.text || '#e2e8f0',
+                    border: `1px solid ${t.border || '#334155'}`, outline: 'none', cursor: 'pointer',
+                  }}>
+                  <option value="all">Cualquiera (universal) — ~736 MB</option>
+                  <option value="py38-311">Python 3.8–3.11 — ~306 MB</option>
+                  <option value="py312plus">Python 3.12+ — ~417 MB</option>
+                </select>
+              </label>
+              <div style={{ fontSize: 11, color: t.muted || '#94a3b8' }}>
+                Elige la versión de los nodos del banco para bajar el tamaño (empaqueta UNA serie de PySpark
+                en vez de dos). Usa tu Python y Java del sistema; esos no se empaquetan.
+              </div>
             </div>
           )}
         </div>

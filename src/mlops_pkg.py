@@ -815,13 +815,15 @@ def _extract_todos(code):
     return out
 
 
-def _vendor_files_for_pkg():
-    """Wheels de PySpark+py4j (ambas series Python) para empaquetar el ambiente
-    completo offline. Reutiliza el cache de Data Sintetica. Devuelve
-    {serie_dir: [rutas .whl]} o {} si no se pudieron preparar."""
+def _vendor_files_for_pkg(py_target="all"):
+    """Wheels de PySpark+py4j para empaquetar el ambiente completo offline.
+    Reutiliza el cache de Data Sintetica. py_target elige que serie(s) incluir
+    para bajar el tamano: 'all' (ambas), 'py38-311' (PySpark 3.5.6) o
+    'py312plus' (PySpark 4.0.0). Devuelve {serie_dir: [rutas .whl]} o {}."""
     try:
-        from src.export_bundle import fetch_vendor_files
-        return fetch_vendor_files() or {}
+        from src.export_bundle import fetch_vendor_files, PY_TARGET_SERIES
+        only = PY_TARGET_SERIES.get(py_target, None)
+        return fetch_vendor_files(only_series=only) or {}
     except Exception:
         return {}
 
@@ -829,7 +831,8 @@ def _vendor_files_for_pkg():
 def build_package_from_sources(sources, convert_fn, optimize_fn=None,
                                include_bank_libs=True, optimize=True,
                                extra_steps=False, include_monitoring=False,
-                               separate_monitoring=False, full_env=False):
+                               separate_monitoring=False, full_env=False,
+                               py_target="all"):
     """Arma el Framework v2 EMPAQUETADO con la logica del usuario dentro.
 
     include_monitoring: anade el modulo de monitoreo (PSI/CSI/DQC).
@@ -928,7 +931,7 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
         include_monitoring=include_monitoring, separate_monitoring=separate_monitoring,
         full_env=full_env)
 
-    vendor_series = _vendor_files_for_pkg() if full_env else {}
+    vendor_series = _vendor_files_for_pkg(py_target) if full_env else {}
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as z:

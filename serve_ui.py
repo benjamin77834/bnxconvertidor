@@ -873,11 +873,15 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             include_monitoring = bool(data.get("include_monitoring", False))
             separate_monitoring = bool(data.get("separate_monitoring", False))
             full_env = bool(data.get("full_env", False))
+            py_target = data.get("py_target") or "all"
+            if py_target not in ("all", "py38-311", "py312plus"):
+                py_target = "all"
             zip_bytes, filename, report = build_package_from_sources(
                 sources, convert_fn=py2spark_convert, optimize_fn=optimize_pyspark,
                 include_bank_libs=include_bank, optimize=optimize,
                 extra_steps=extra_steps, include_monitoring=include_monitoring,
-                separate_monitoring=separate_monitoring, full_env=full_env)
+                separate_monitoring=separate_monitoring, full_env=full_env,
+                py_target=py_target)
             # Guardar para descarga por streaming (igual que /export/bundle).
             import uuid as _uuid
             tmpdir = os.path.join(tempfile.gettempdir(), "bnx_bundles")
