@@ -19,6 +19,7 @@ Cloudera/Artifactory) en requirements.txt; en la red del banco se resuelven
 desde su indice privado. En local corre con PySpark open source.
 """
 import io
+import os
 import zipfile
 from datetime import datetime
 
@@ -432,6 +433,57 @@ def _requirements(include_bank_libs, extra_steps=False):
     return "\n".join(base) + "\n"
 
 
+# setup.sh del AMBIENTE COMPLETO: crea el venv e instala PySpark OFFLINE desde
+# vendor/ (igual que el bundle de Data Sintetica). Monta todo sin internet.
+_SETUP_SH_FULL = '''#!/usr/bin/env bash
+# setup.sh — Monta el AMBIENTE COMPLETO del Framework MLOps v2.
+# Crea el venv, instala PySpark OFFLINE desde vendor/ (sin internet) segun la
+# version de Python, instala el framework (pip install -e .) y corre las pruebas.
+# Uso:  bash setup.sh
+set -e
+
+PY="${PYTHON:-python3}"
+echo "[1/5] Python: $($PY --version 2>&1)"
+echo "[2/5] Creando entorno virtual .venv ..."
+"$PY" -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip >/dev/null 2>&1 || true
+
+echo "[3/5] Instalando PySpark..."
+PYMINOR="$(python -c 'import sys; print(sys.version_info[1])')"
+VENDOR_DIR=""
+if [ "$PYMINOR" -ge 12 ] 2>/dev/null && [ -d "vendor/py312plus" ]; then
+  VENDOR_DIR="vendor/py312plus"
+elif [ -d "vendor/py38-311" ]; then
+  VENDOR_DIR="vendor/py38-311"
+elif [ -d "vendor/py312plus" ]; then
+  VENDOR_DIR="vendor/py312plus"
+fi
+if [ -n "$VENDOR_DIR" ] && ls "$VENDOR_DIR"/*.whl >/dev/null 2>&1; then
+  echo "      OFFLINE desde $VENDOR_DIR (sin internet)."
+  python -m pip install --no-index --find-links "$VENDOR_DIR" pip setuptools wheel >/dev/null 2>&1 || true
+  python -m pip install --no-index --find-links "$VENDOR_DIR" pyspark py4j
+else
+  echo "      vendor/ no disponible; instalando PySpark por internet."
+  python -m pip install "pyspark>=3.3,<4.0" py4j
+fi
+
+echo "[4/5] Instalando el framework y dependencias (pandas, numpy, pytest)..."
+# Las libs internas del banco (si estan en requirements.txt comentadas) se
+# resuelven en la red del banco; aqui instalamos lo open source + el paquete.
+python -m pip install pandas numpy pytest chispa >/dev/null 2>&1 || \
+  python -m pip install pandas numpy pytest
+python -m pip install -e . >/dev/null 2>&1 || true
+
+echo "[5/5] Corriendo pruebas ..."
+pytest -q || echo "  (pytest requiere Java para Spark; revisa el entorno)"
+
+echo ""
+echo "✅ Ambiente listo. Ejemplo:"
+echo "   . .venv/bin/activate"
+echo "   python -c \\"from framework_mlops_v2.aggregates.router import GroupBy; print('ok')\\""
+'''
+
 _RUN_SH = '''#!/usr/bin/env bash
 # run.sh — crea un ENTORNO VIRTUAL con todo lo necesario y corre las pruebas.
 # Uso:  bash run.sh
@@ -763,16 +815,30 @@ def _extract_todos(code):
     return out
 
 
+def _vendor_files_for_pkg():
+    """Wheels de PySpark+py4j (ambas series Python) para empaquetar el ambiente
+    completo offline. Reutiliza el cache de Data Sintetica. Devuelve
+    {serie_dir: [rutas .whl]} o {} si no se pudieron preparar."""
+    try:
+        from src.export_bundle import fetch_vendor_files
+        return fetch_vendor_files() or {}
+    except Exception:
+        return {}
+
+
 def build_package_from_sources(sources, convert_fn, optimize_fn=None,
                                include_bank_libs=True, optimize=True,
                                extra_steps=False, include_monitoring=False,
-                               separate_monitoring=False):
+                               separate_monitoring=False, full_env=False):
     """Arma el Framework v2 EMPAQUETADO con la logica del usuario dentro.
 
     include_monitoring: anade el modulo de monitoreo (PSI/CSI/DQC).
     separate_monitoring: si True, el monitoreo va como PAQUETE APARTE
         (framework_mlops_metrics_pkg/) dentro del mismo ZIP, con su propio
         setup.py/run.sh/tests. Si False, va dentro del framework principal.
+    full_env: si True, empaqueta el AMBIENTE COMPLETO (PySpark offline en
+        vendor/ + setup.sh que monta el venv sin internet), igual que el bundle
+        'con todo' de Data Sintetica.
 
     sources: lista [{"name": "<archivo>.py", "code": "<pandas>"}].
     convert_fn: funcion pandas->PySpark (p.ej. py2spark convert_code). Debe
@@ -854,29 +920,66 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     files["requirements.txt"] = _requirements(include_bank_libs, extra_steps)
     files["run.sh"] = _RUN_SH
     files["setup.py"] = _SETUP
+    # Ambiente completo: setup.sh que instala PySpark OFFLINE desde vendor/.
+    if full_env:
+        files["setup.sh"] = _SETUP_SH_FULL
     files["README.md"] = _readme_custom(
         include_bank_libs, gen_sources, report, extra_steps,
-        include_monitoring=include_monitoring, separate_monitoring=separate_monitoring)
+        include_monitoring=include_monitoring, separate_monitoring=separate_monitoring,
+        full_env=full_env)
+
+    vendor_series = _vendor_files_for_pkg() if full_env else {}
 
     buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as z:
         for path, content in files.items():
             z.writestr("framework_mlops_v2_pkg/" + path, content)
         # Monitoreo como PAQUETE SEPARADO: carpeta hermana en el mismo ZIP.
         if include_monitoring and separate_monitoring:
             for path, content in _monitoring_files("separate").items():
                 z.writestr("framework_mlops_metrics_pkg/" + path, content)
+        # Ambiente completo: wheels de PySpark/py4j offline en vendor/<serie>/.
+        for serie_dir, whls in (vendor_series or {}).items():
+            for fpath in whls:
+                try:
+                    with open(fpath, "rb") as fh:
+                        data = fh.read()
+                except OSError:
+                    continue
+                info = zipfile.ZipInfo(
+                    "framework_mlops_v2_pkg/vendor/" + serie_dir + "/" + os.path.basename(fpath))
+                info.compress_type = zipfile.ZIP_STORED  # el .whl ya esta comprimido
+                z.writestr(info, data)
+    # Meta informativa al final de la lista (marcada con _meta para filtrarla).
+    report.append({"_meta": True, "full_env": bool(full_env),
+                   "vendor_series": sorted((vendor_series or {}).keys())})
     return buf.getvalue(), "framework_mlops_v2.zip", report
 
 
 def _readme_custom(include_bank_libs, sources, report, extra_steps=False,
-                   include_monitoring=False, separate_monitoring=False):
+                   include_monitoring=False, separate_monitoring=False,
+                   full_env=False):
     rows = "\n".join(
         f"- `{r.get('source', '?')}` ← {r['name']}"
         + (" ✅" if r.get("ok") else f" ⚠️ {r.get('reason', '')}")
         + (f" ({r['unsupported']} revisión manual)" if r.get("unsupported") else "")
-        for r in report)
+        for r in report if not r.get("_meta"))
     base = _readme(include_bank_libs)
+    env = ""
+    if full_env:
+        env = '''
+
+## Ambiente completo (offline)
+El paquete incluye `vendor/` con los wheels de **PySpark + py4j** (dos series,
+para Python 3.8–3.14) y un `setup.sh` que monta todo **sin internet**:
+```bash
+bash setup.sh
+```
+`setup.sh` crea el venv con TU Python (3.8+ del sistema), instala PySpark desde
+`vendor/` offline, instala el framework y corre las pruebas. Requisitos en la
+máquina: Python 3.8+ y un JDK (Java) para Spark. (Python y Java NO se empaquetan;
+sí las dependencias Python.)
+'''
     extra = ""
     if extra_steps:
         extra = '''
@@ -919,7 +1022,7 @@ from framework_mlops_v2.aggregates.router import GroupBy
 GroupBy("{sources[0]}", previous_path, agg_dict, sqlContext).aggregate()
 ```
 Revisa los comentarios `# TODO py2spark` donde la conversión no fue 1:1.
-{extra}'''
+{extra}{env}'''
 
 
 def build_mlops_package(include_bank_libs=True, extra_steps=False,

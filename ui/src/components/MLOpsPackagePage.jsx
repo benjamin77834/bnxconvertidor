@@ -16,6 +16,7 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
   const [extraSteps, setExtraSteps] = useState(false)
   const [monitoring, setMonitoring] = useState(false)
   const [separateMon, setSeparateMon] = useState(false)
+  const [fullEnv, setFullEnv] = useState(false)
   const [loading, setLoading] = useState(true)
 
   // Entrada del usuario: codigo pegado + archivos de carpeta.
@@ -66,6 +67,7 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
         body: JSON.stringify({
           sources, include_bank_libs: bankLibs, optimize: true, extra_steps: extraSteps,
           include_monitoring: monitoring, separate_monitoring: monitoring && separateMon,
+          full_env: fullEnv,
         }),
       })
       const data = await res.json()
@@ -207,6 +209,15 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
             <input type="checkbox" checked={bankLibs} onChange={e => setBankLibs(e.target.checked)} />
             Incluir libs internas del banco en requirements.txt
           </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: t.text || '#e2e8f0', cursor: 'pointer' }}>
+            <input type="checkbox" checked={fullEnv} onChange={e => setFullEnv(e.target.checked)} />
+            <span>Incluir <b>ambiente completo</b> (PySpark offline en <code>vendor/</code> + <code>setup.sh</code> que monta el venv sin internet)</span>
+          </label>
+          {fullEnv && (
+            <div style={{ fontSize: 11, color: t.muted || '#94a3b8', marginLeft: 24 }}>
+              El ZIP será grande (incluye los wheels de PySpark). Usa tu Python 3.8+ y Java del sistema (esos no se empaquetan).
+            </div>
+          )}
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 10, flexWrap: 'wrap' }}>
@@ -254,16 +265,26 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
             {(buildResult.report || []).length > 0 && (
               <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {(() => {
-                  const totalTodos = buildResult.report.reduce((n, r) => n + ((r.todos || []).length), 0)
+                  const sourcesR = buildResult.report.filter(r => !r._meta)
+                  const meta = buildResult.report.find(r => r._meta)
+                  const totalTodos = sourcesR.reduce((n, r) => n + ((r.todos || []).length), 0)
                   return (
-                    <div style={{ fontSize: 11.5, color: t.muted || '#94a3b8', marginBottom: 2 }}>
-                      {totalTodos > 0
-                        ? `⚠️ ${totalTodos} línea(s) requieren revisión manual en total. Revisa los puntos marcados abajo (van con un "# TODO py2spark" en el archivo generado).`
-                        : '✅ Todas las fuentes convirtieron sin construcciones no traducibles.'}
-                    </div>
+                    <>
+                      <div style={{ fontSize: 11.5, color: t.muted || '#94a3b8', marginBottom: 2 }}>
+                        {totalTodos > 0
+                          ? `⚠️ ${totalTodos} línea(s) requieren revisión manual en total. Revisa los puntos marcados abajo (van con un "# TODO py2spark" en el archivo generado).`
+                          : '✅ Todas las fuentes convirtieron sin construcciones no traducibles.'}
+                      </div>
+                      {meta?.full_env && (
+                        <div style={{ fontSize: 11.5, color: '#2dd4bf', marginBottom: 2 }}>
+                          📦 Ambiente completo incluido: PySpark offline en <code>vendor/</code>
+                          {(meta.vendor_series || []).length ? ` (${meta.vendor_series.join(', ')})` : ''}. Monta con <code>bash setup.sh</code>.
+                        </div>
+                      )}
+                    </>
                   )
                 })()}
-                {buildResult.report.map((r, i) => (
+                {buildResult.report.filter(r => !r._meta).map((r, i) => (
                   <div key={i} style={{ fontSize: 11.5, color: t.text || '#e2e8f0' }}>
                     <div>
                       {r.ok ? '✅' : '⚠️'} <b>{r.source || r.name}</b>
