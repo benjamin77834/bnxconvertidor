@@ -494,11 +494,12 @@ echo "[5/5] Corriendo pruebas ..."
 pytest -q || echo "  (pytest requiere Java para Spark; revisa el entorno)"
 
 echo ""
-echo "▶️  PRUEBA con datos sinteticos (try_it.py):"
-python try_it.py || echo "  (try_it requiere Java para Spark; revisa el entorno)"
+echo "▶️  Corriendo el framework (main.py, modo demo):"
+python main.py || echo "  (main.py requiere Java para Spark; revisa el entorno)"
 
 echo ""
-echo "✅ Ambiente listo. Para volver a probar:  . .venv/bin/activate && python try_it.py"
+echo "✅ Ambiente listo. Entry point:  . .venv/bin/activate && python main.py"
+echo "   Datos reales:  python main.py --config cfg.json"
 '''
 
 _RUN_SH = '''#!/usr/bin/env bash
@@ -523,11 +524,12 @@ pip install -e .
 echo "[3/4] Ejecutando pruebas (pytest) ..."
 pytest -q || echo "  (pytest requiere pyspark + Java; revisa el entorno)"
 
-echo "[4/4] PRUEBA con datos sinteticos (try_it.py) ..."
-python try_it.py || echo "  (try_it requiere pyspark + Java; revisa el entorno)"
+echo "[4/4] Corriendo el framework (main.py, modo demo) ..."
+python main.py || echo "  (main.py requiere pyspark + Java; revisa el entorno)"
 
 echo ""
-echo "✅ Listo. Para volver a probar:  . .venv/bin/activate && python try_it.py"
+echo "✅ Listo. Entry point:  . .venv/bin/activate && python main.py"
+echo "   Datos reales:  python main.py --config cfg.json"
 '''
 
 
@@ -580,15 +582,24 @@ setup.py
 
 ## ▶️ Cómo CORRER el modelo (paso a paso)
 
-### 🚀 Prueba rápida (sin configurar nada)
+### 🚀 Correr el framework (entry point: main.py)
 ```bash
-bash run.sh            # monta el venv y al final corre la prueba
+bash run.sh            # monta el venv y al final corre main.py (demo)
 # o si ya montaste el entorno:
-. .venv/bin/activate && python try_it.py
+. .venv/bin/activate && python main.py            # modo DEMO (datos sinteticos)
+. .venv/bin/activate && python main.py --config cfg.json   # datos REALES
 ```
-`try_it.py` genera **datos sintéticos**, neutraliza las lecturas externas e
-ejecuta cada fuente mostrando entrada → salida. Es la forma mas facil de ver el
-framework correr; no necesitas datos reales ni rutas. (Requiere Java para Spark.)
+`main.py` es el **punto de entrada** del framework (encapsulado en el venv):
+orquesta el pipeline, reporta las **optimizaciones de Spark** aplicadas, y por
+defecto corre en modo DEMO (genera datos sinteticos, neutraliza las lecturas
+externas y muestra entrada → salida por fuente). Con `--config cfg.json` usa tus
+datos reales. No necesitas configurar nada para la demo. (Requiere Java para Spark.)
+
+`cfg.json` para datos reales:
+```json
+{{"previous_path": "/ruta/con/parquets",
+ "sources": {{"bureau": {{"table_name": "bureau"}}}}}}
+```
 
 ### Requisitos previos
 - **Python 3.8+** instalado (el `setup.sh`/`run.sh` crea el venv con tu Python).
@@ -658,28 +669,36 @@ Generado: {datetime.now().isoformat(timespec="seconds")}
 '''
 
 
-# try_it.py: script AUTOEJECUTABLE de prueba. Genera datos sinteticos, neutraliza
-# las lecturas externas de los aggregates (spark.read.* -> datos de juguete) y
-# corre cada fuente registrada mostrando entrada -> salida. Asi "probar" el
-# paquete es: python try_it.py  (sin configurar rutas ni tener datos reales).
-_TRY_IT = '''#!/usr/bin/env python3
-"""try_it.py — Prueba el framework con DATOS SINTETICOS, sin configurar nada.
+# main.py: ENTRY POINT del framework, encapsulado en el venv. Orquesta el
+# pipeline completo (fuentes del router), REPORTA las optimizaciones de Spark
+# aplicadas, y corre por defecto en modo DEMO (datos sinteticos, sin configurar
+# nada). Con --config <archivo> usa rutas/datos reales. Es la unica forma de
+# correr el paquete:  python main.py  [--config cfg.json] [--source NOMBRE]
+_MAIN_PY = '''#!/usr/bin/env python3
+"""main.py — Punto de entrada del Framework MLOps v2 (encapsulado en el venv).
 
-Uso (tras montar el entorno):
+Orquesta el pipeline y reporta las optimizaciones de Spark aplicadas.
+
+Uso (tras montar el entorno con run.sh / setup.sh):
     . .venv/bin/activate
-    python try_it.py
+    python main.py                 # modo DEMO: datos sinteticos, sin configurar
+    python main.py --source bureau # solo una fuente
+    python main.py --config cfg.json   # datos REALES (ver formato abajo)
 
-Que hace:
-  1. Crea un Spark local y un DataFrame sintetico de juguete.
-  2. Intercepta las lecturas externas (spark.read.*) para que devuelvan ese
-     DataFrame — asi los aggregates generados (que pueden traer rutas propias
-     del codigo de negocio) corren sin necesitar archivos reales.
-  3. Ejecuta CADA fuente registrada en el router y muestra entrada -> salida.
+cfg.json (datos reales):
+    {
+      "previous_path": "/ruta/con/parquets",   # <previous_path>/<table_name>
+      "sources": {"bureau": {"table_name": "bureau"}, ...}
+    }
 
-Es una demostracion del flujo (como el Emulador del portal), no una corrida de
-produccion: usa datos sinteticos y neutraliza las fuentes reales.
+En DEMO genera datos sinteticos, neutraliza las lecturas externas de los
+aggregates (spark.read.* -> datos de juguete) y corre cada fuente mostrando
+entrada -> salida. Las fuentes con un '# TODO py2spark' pendiente se marcan.
 """
+import argparse
+import json
 import os
+import shutil
 import tempfile
 
 try:
@@ -694,7 +713,6 @@ from framework_mlops_v2.aggregates.router import REGISTRY, GroupBy
 
 
 def _synthetic_df(spark, n=20):
-    """DataFrame de juguete con columnas tipicas de scoring crediticio."""
     import random
     random.seed(7)
     schema = StructType([
@@ -711,9 +729,7 @@ def _synthetic_df(spark, n=20):
 
 
 def _patch_reads(spark, synth):
-    """Hace que spark.read.<cualquier formato>(...) devuelva el df sintetico.
-    Asi los aggregates que traen lecturas propias (rutas del codigo de negocio)
-    no fallan: reciben los datos de juguete."""
+    """spark.read.<fmt>(...) -> df sintetico (solo en modo DEMO)."""
     class _Reader:
         def option(self, *a, **k): return self
         def options(self, *a, **k): return self
@@ -724,57 +740,98 @@ def _patch_reads(spark, synth):
         def parquet(self, *a, **k): return synth
         def json(self, *a, **k): return synth
         def table(self, *a, **k): return synth
-    import pyspark.sql.session as _s
-    # Propiedad 'read' de la sesion -> nuestro lector de juguete.
     try:
         type(spark).read = property(lambda self: _Reader())
     except Exception:
         pass
 
 
+def _report_optimizations():
+    """Resumen de las optimizaciones de Spark ya aplicadas al generar el paquete
+    (cache / broadcast / coalesce). BNX las aplico en el portal; aqui las
+    detectamos en el codigo de los aggregates para dejar constancia."""
+    import glob
+    counts = {"cache": 0, "broadcast": 0, "coalesce": 0}
+    here = os.path.dirname(os.path.abspath(__file__))
+    for fp in glob.glob(os.path.join(here, "framework_mlops_v2", "**", "*.py"), recursive=True):
+        try:
+            txt = open(fp, encoding="utf-8").read()
+        except OSError:
+            continue
+        counts["cache"] += txt.count(".cache(")
+        counts["broadcast"] += txt.count("broadcast(")
+        counts["coalesce"] += txt.count(".coalesce(")
+    total = sum(counts.values())
+    if total:
+        print("OPTIMIZACIONES Spark aplicadas: %d cache, %d broadcast, %d coalesce"
+              % (counts["cache"], counts["broadcast"], counts["coalesce"]))
+    else:
+        print("OPTIMIZACIONES Spark: ninguna (el codigo generado no la amerita; "
+              "cache/broadcast/coalesce aplican con joins/reuso/escrituras).")
+
+
 def main():
-    spark = (SparkSession.builder.master("local[1]").appName("try_it")
+    ap = argparse.ArgumentParser(description="Framework MLOps v2 — entry point")
+    ap.add_argument("--config", help="JSON con previous_path y sources (datos reales)")
+    ap.add_argument("--source", help="correr solo esta fuente (por nombre)")
+    args = ap.parse_args()
+
+    demo = not args.config
+    spark = (SparkSession.builder.master("local[1]").appName("framework_mlops_v2")
              .config("spark.ui.enabled", "false")
              .config("spark.sql.shuffle.partitions", "2").getOrCreate())
     spark.sparkContext.setLogLevel("ERROR")
 
-    synth = _synthetic_df(spark)
-    print("=" * 60)
-    print("DATOS SINTETICOS DE ENTRADA (%d filas):" % synth.count())
-    synth.show(5, truncate=False)
+    print("=" * 64)
+    print("FRAMEWORK MLOPS v2 — %s" % ("DEMO (datos sinteticos)" if demo else "DATOS REALES"))
+    print("=" * 64)
+    _report_optimizations()
 
-    # Parquet de juguete para los aggregates que leen por previous_path/table_name.
-    base = tempfile.mkdtemp(prefix="bnx_try_")
-    src = os.path.join(base, "datapull")
-    os.makedirs(src, exist_ok=True)
-    for source in REGISTRY:
-        synth.write.mode("overwrite").parquet(os.path.join(src, source))
+    if demo:
+        synth = _synthetic_df(spark)
+        print("\\nENTRADA sintetica (%d filas):" % synth.count())
+        synth.show(5, truncate=False)
+        base = tempfile.mkdtemp(prefix="bnx_main_")
+        prev = os.path.join(base, "datapull")
+        os.makedirs(prev, exist_ok=True)
+        for s in REGISTRY:
+            synth.write.mode("overwrite").parquet(os.path.join(prev, s))
+        _patch_reads(spark, synth)
+        src_cfg = {s: {"table_name": s} for s in REGISTRY}
+    else:
+        cfg = json.load(open(args.config, encoding="utf-8"))
+        base = None
+        prev = cfg["previous_path"]
+        src_cfg = cfg.get("sources") or {s: {"table_name": s} for s in REGISTRY}
 
-    # Interceptar lecturas externas (rutas propias del codigo de negocio).
-    _patch_reads(spark, synth)
-
-    ok, fail = 0, 0
-    for source in REGISTRY:
-        print("\\n" + "-" * 60)
-        print("FUENTE:", source)
+    fuentes = [args.source] if args.source else list(src_cfg.keys())
+    ok = fail = 0
+    for s in fuentes:
+        if s not in REGISTRY:
+            print("\\n[skip] fuente no registrada:", s); continue
+        print("\\n" + "-" * 64); print("FUENTE:", s)
         try:
-            GroupBy(source, previous_path=src,
-                    agg_dict={"table_name": source}, sqlContext=spark).aggregate()
-            out = spark.read.parquet(os.path.join(base, "groupby"))
+            GroupBy(s, previous_path=prev, agg_dict=src_cfg.get(s, {"table_name": s}),
+                    sqlContext=spark).aggregate()
+            head, _ = os.path.split(prev)
+            out = spark.read.parquet(os.path.join(head, "groupby"))
             print("  OK -> salida: %d filas, %d columnas" % (out.count(), len(out.columns)))
-            out.show(5, truncate=False)
+            if demo:
+                out.show(5, truncate=False)
             ok += 1
         except Exception as e:
             print("  ERROR:", type(e).__name__, "-", str(e)[:120])
-            print("  (revisa los '# TODO py2spark' de aggregates/%s.py)" % source)
+            print("  (revisa los '# TODO py2spark' de aggregates/%s.py)" % s)
             fail += 1
 
-    print("\\n" + "=" * 60)
+    print("\\n" + "=" * 64)
     print("RESULTADO: %d fuente(s) OK, %d con error." % (ok, fail))
-    print("Es una prueba con datos sinteticos (demo del flujo), no produccion.")
-    import shutil
-    shutil.rmtree(base, ignore_errors=True)
+    if demo:
+        print("Modo DEMO con datos sinteticos. Para datos reales: python main.py --config cfg.json")
+    if base:
+        shutil.rmtree(base, ignore_errors=True)
     spark.stop()
+    raise SystemExit(0 if fail == 0 else 1)
 
 
 if __name__ == "__main__":
@@ -1186,7 +1243,7 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     files.update(_extra_step_files(
         extra_steps, include_monitoring=mon_in_pkg, monitoring_target="package"))
     files["tests/test_aggregates.py"] = _TEST
-    files["try_it.py"] = _TRY_IT   # prueba autoejecutable con datos sinteticos
+    files["main.py"] = _MAIN_PY   # entry point del framework (demo + --config)
     files["requirements.txt"] = _requirements(include_bank_libs, extra_steps)
     files["run.sh"] = _RUN_SH
     files["setup.py"] = _SETUP
@@ -1296,7 +1353,7 @@ def build_mlops_package(include_bank_libs=True, extra_steps=False,
         "framework_mlops_v2/features/__init__.py": "",
         "framework_mlops_v2/features/ratios.py": _RATIOS,
         "tests/test_aggregates.py": _TEST,
-        "try_it.py": _TRY_IT,
+        "main.py": _MAIN_PY,
         "requirements.txt": _requirements(include_bank_libs, extra_steps),
         "run.sh": _RUN_SH,
         "README.md": _readme(include_bank_libs),

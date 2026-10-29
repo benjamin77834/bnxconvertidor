@@ -170,9 +170,12 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
         <p style={{ margin: '4px 0 0', fontSize: 13, color: t.muted || '#94a3b8', maxWidth: 900 }}>
           Genera un <b>paquete nuevo</b> del framework que corrige los problemas detectados (ver el diagnóstico
           en la sección anterior), <b>sin tocar el código del banco</b>. Trae un <b>entorno virtual reproducible</b>
-          (como Data Sintética): <code>run.sh</code> crea el venv, instala todo y corre las pruebas.
+          (como Data Sintética): <code>run.sh</code> crea el venv, instala todo y corre el framework.
         </p>
       </div>
+
+      {/* Instrucciones de ejecución (cómo correr el paquete descargado) */}
+      <RunInstructions theme={t} />
 
       {/* === SUBE TU CÓDIGO Y GENERA TU FRAMEWORK === */}
       <div style={{ ...card, borderColor: (t.accent || '#6366f1') + '66' }}>
@@ -651,4 +654,61 @@ function uploadBtn(t) {
     background: (t.accent || '#6366f1') + '20', color: t.accent || '#818cf8',
     border: `1px solid ${(t.accent || '#6366f1')}55`, display: 'inline-block',
   }
+}
+
+// Instrucciones de ejecución del paquete descargado (también en el README del ZIP).
+function RunInstructions({ theme }) {
+  const t = theme || {}
+  const [open, setOpen] = useState(true)
+  const card = {
+    background: t.card || '#0f172a', border: `1px solid ${t.border || '#334155'}`,
+    borderRadius: 10, padding: 16,
+  }
+  const pre = {
+    margin: '6px 0 0', padding: 10, borderRadius: 8, overflowX: 'auto',
+    background: t.codeBg || '#081220', border: `1px solid ${t.border || '#334155'}`,
+    color: '#22c55e', fontFamily: 'monospace', fontSize: 12, lineHeight: 1.6,
+  }
+  const step = { fontSize: 12.5, color: t.text || '#e2e8f0', marginTop: 10, fontWeight: 700 }
+  return (
+    <div style={{ ...card, borderColor: '#14b8a655' }}>
+      <div onClick={() => setOpen(v => !v)}
+        style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+        <span style={{ fontSize: 14, fontWeight: 800, color: '#2dd4bf' }}>▶️ Cómo correr el paquete (instrucciones)</span>
+        <span style={{ marginLeft: 'auto', fontSize: 12, color: t.muted || '#94a3b8' }}>{open ? '▲' : '▼'}</span>
+      </div>
+      {open && (
+        <div style={{ marginTop: 6 }}>
+          <p style={{ margin: 0, fontSize: 12, color: t.muted || '#94a3b8' }}>
+            Tras descargar y descomprimir el ZIP. <b>Requisitos</b>: Python 3.8+ y Java (JDK) para Spark
+            (ninguno se empaqueta; deben estar en la máquina). Estas mismas instrucciones van en el <code>README.md</code> del paquete.
+          </p>
+
+          <div style={step}>1) Montar el entorno (una sola vez)</div>
+          <pre style={pre}>{`cd framework_mlops_v2_pkg
+bash run.sh         # paquete ligero (PySpark por internet)
+# ó, si bajaste "ambiente completo":
+bash setup.sh       # PySpark OFFLINE desde vendor/, sin internet`}</pre>
+
+          <div style={step}>2) Correr el framework (entry point: main.py)</div>
+          <pre style={pre}>{`. .venv/bin/activate
+python main.py                    # modo DEMO (datos sintéticos, sin configurar)
+python main.py --source bureau    # solo una fuente
+python main.py --config cfg.json  # datos REALES`}</pre>
+
+          <div style={step}>3) cfg.json para datos reales</div>
+          <pre style={pre}>{`{
+  "previous_path": "/ruta/con/parquets",
+  "sources": { "bureau": { "table_name": "bureau" } }
+}`}</pre>
+
+          <p style={{ margin: '10px 0 0', fontSize: 11.5, color: t.muted || '#94a3b8' }}>
+            <code>main.py</code> orquesta el pipeline, reporta las <b>optimizaciones de Spark</b> aplicadas
+            (cache / broadcast / coalesce) y marca las fuentes con un <code># TODO py2spark</code> pendiente.
+            El modo demo corre sin datos reales; <code>run.sh</code>/<code>setup.sh</code> ya lo ejecutan al final.
+          </p>
+        </div>
+      )}
+    </div>
+  )
 }
