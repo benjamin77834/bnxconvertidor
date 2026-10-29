@@ -494,9 +494,11 @@ echo "[5/5] Corriendo pruebas ..."
 pytest -q || echo "  (pytest requiere Java para Spark; revisa el entorno)"
 
 echo ""
-echo "✅ Ambiente listo. Ejemplo:"
-echo "   . .venv/bin/activate"
-echo "   python -c \\"from framework_mlops_v2.aggregates.router import GroupBy; print('ok')\\""
+echo "▶️  PRUEBA con datos sinteticos (try_it.py):"
+python try_it.py || echo "  (try_it requiere Java para Spark; revisa el entorno)"
+
+echo ""
+echo "✅ Ambiente listo. Para volver a probar:  . .venv/bin/activate && python try_it.py"
 '''
 
 _RUN_SH = '''#!/usr/bin/env bash
@@ -521,9 +523,11 @@ pip install -e .
 echo "[3/4] Ejecutando pruebas (pytest) ..."
 pytest -q || echo "  (pytest requiere pyspark + Java; revisa el entorno)"
 
-echo "[4/4] Listo. Ejemplo de uso:"
-echo "  . .venv/bin/activate"
-echo "  python -c \\"from framework_mlops_v2.aggregates.router import GroupBy; print('ok')\\""
+echo "[4/4] PRUEBA con datos sinteticos (try_it.py) ..."
+python try_it.py || echo "  (try_it requiere pyspark + Java; revisa el entorno)"
+
+echo ""
+echo "✅ Listo. Para volver a probar:  . .venv/bin/activate && python try_it.py"
 '''
 
 
@@ -575,6 +579,16 @@ setup.py
 ```
 
 ## ▶️ Cómo CORRER el modelo (paso a paso)
+
+### 🚀 Prueba rápida (sin configurar nada)
+```bash
+bash run.sh            # monta el venv y al final corre la prueba
+# o si ya montaste el entorno:
+. .venv/bin/activate && python try_it.py
+```
+`try_it.py` genera **datos sintéticos**, neutraliza las lecturas externas e
+ejecuta cada fuente mostrando entrada → salida. Es la forma mas facil de ver el
+framework correr; no necesitas datos reales ni rutas. (Requiere Java para Spark.)
 
 ### Requisitos previos
 - **Python 3.8+** instalado (el `setup.sh`/`run.sh` crea el venv con tu Python).
@@ -641,6 +655,130 @@ spark-submit --master "local[*]" tu_job.py
 {deploy_hint}
 
 Generado: {datetime.now().isoformat(timespec="seconds")}
+'''
+
+
+# try_it.py: script AUTOEJECUTABLE de prueba. Genera datos sinteticos, neutraliza
+# las lecturas externas de los aggregates (spark.read.* -> datos de juguete) y
+# corre cada fuente registrada mostrando entrada -> salida. Asi "probar" el
+# paquete es: python try_it.py  (sin configurar rutas ni tener datos reales).
+_TRY_IT = '''#!/usr/bin/env python3
+"""try_it.py — Prueba el framework con DATOS SINTETICOS, sin configurar nada.
+
+Uso (tras montar el entorno):
+    . .venv/bin/activate
+    python try_it.py
+
+Que hace:
+  1. Crea un Spark local y un DataFrame sintetico de juguete.
+  2. Intercepta las lecturas externas (spark.read.*) para que devuelvan ese
+     DataFrame — asi los aggregates generados (que pueden traer rutas propias
+     del codigo de negocio) corren sin necesitar archivos reales.
+  3. Ejecuta CADA fuente registrada en el router y muestra entrada -> salida.
+
+Es una demostracion del flujo (como el Emulador del portal), no una corrida de
+produccion: usa datos sinteticos y neutraliza las fuentes reales.
+"""
+import os
+import tempfile
+
+try:
+    from pyspark.sql import SparkSession
+    from pyspark.sql.types import (StructType, StructField, StringType,
+                                    DoubleType, IntegerType)
+except Exception as e:
+    raise SystemExit("PySpark no esta instalado o falta Java. Monta el entorno "
+                     "con 'bash run.sh' (o setup.sh) primero. Detalle: %s" % e)
+
+from framework_mlops_v2.aggregates.router import REGISTRY, GroupBy
+
+
+def _synthetic_df(spark, n=20):
+    """DataFrame de juguete con columnas tipicas de scoring crediticio."""
+    import random
+    random.seed(7)
+    schema = StructType([
+        StructField("cliente_id", IntegerType(), True),
+        StructField("monto", DoubleType(), True),
+        StructField("saldo", DoubleType(), True),
+        StructField("atraso_max", IntegerType(), True),
+        StructField("pais", StringType(), True),
+    ])
+    rows = [(i + 1, round(random.uniform(0, 5000), 2),
+             round(random.uniform(0, 20000), 2), random.randint(0, 5),
+             random.choice(["MX", "US", "CA"])) for i in range(n)]
+    return spark.createDataFrame(rows, schema)
+
+
+def _patch_reads(spark, synth):
+    """Hace que spark.read.<cualquier formato>(...) devuelva el df sintetico.
+    Asi los aggregates que traen lecturas propias (rutas del codigo de negocio)
+    no fallan: reciben los datos de juguete."""
+    class _Reader:
+        def option(self, *a, **k): return self
+        def options(self, *a, **k): return self
+        def schema(self, *a, **k): return self
+        def format(self, *a, **k): return self
+        def load(self, *a, **k): return synth
+        def csv(self, *a, **k): return synth
+        def parquet(self, *a, **k): return synth
+        def json(self, *a, **k): return synth
+        def table(self, *a, **k): return synth
+    import pyspark.sql.session as _s
+    # Propiedad 'read' de la sesion -> nuestro lector de juguete.
+    try:
+        type(spark).read = property(lambda self: _Reader())
+    except Exception:
+        pass
+
+
+def main():
+    spark = (SparkSession.builder.master("local[1]").appName("try_it")
+             .config("spark.ui.enabled", "false")
+             .config("spark.sql.shuffle.partitions", "2").getOrCreate())
+    spark.sparkContext.setLogLevel("ERROR")
+
+    synth = _synthetic_df(spark)
+    print("=" * 60)
+    print("DATOS SINTETICOS DE ENTRADA (%d filas):" % synth.count())
+    synth.show(5, truncate=False)
+
+    # Parquet de juguete para los aggregates que leen por previous_path/table_name.
+    base = tempfile.mkdtemp(prefix="bnx_try_")
+    src = os.path.join(base, "datapull")
+    os.makedirs(src, exist_ok=True)
+    for source in REGISTRY:
+        synth.write.mode("overwrite").parquet(os.path.join(src, source))
+
+    # Interceptar lecturas externas (rutas propias del codigo de negocio).
+    _patch_reads(spark, synth)
+
+    ok, fail = 0, 0
+    for source in REGISTRY:
+        print("\\n" + "-" * 60)
+        print("FUENTE:", source)
+        try:
+            GroupBy(source, previous_path=src,
+                    agg_dict={"table_name": source}, sqlContext=spark).aggregate()
+            out = spark.read.parquet(os.path.join(base, "groupby"))
+            print("  OK -> salida: %d filas, %d columnas" % (out.count(), len(out.columns)))
+            out.show(5, truncate=False)
+            ok += 1
+        except Exception as e:
+            print("  ERROR:", type(e).__name__, "-", str(e)[:120])
+            print("  (revisa los '# TODO py2spark' de aggregates/%s.py)" % source)
+            fail += 1
+
+    print("\\n" + "=" * 60)
+    print("RESULTADO: %d fuente(s) OK, %d con error." % (ok, fail))
+    print("Es una prueba con datos sinteticos (demo del flujo), no produccion.")
+    import shutil
+    shutil.rmtree(base, ignore_errors=True)
+    spark.stop()
+
+
+if __name__ == "__main__":
+    main()
 '''
 
 
@@ -1048,6 +1186,7 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     files.update(_extra_step_files(
         extra_steps, include_monitoring=mon_in_pkg, monitoring_target="package"))
     files["tests/test_aggregates.py"] = _TEST
+    files["try_it.py"] = _TRY_IT   # prueba autoejecutable con datos sinteticos
     files["requirements.txt"] = _requirements(include_bank_libs, extra_steps)
     files["run.sh"] = _RUN_SH
     files["setup.py"] = _SETUP
@@ -1157,11 +1296,14 @@ def build_mlops_package(include_bank_libs=True, extra_steps=False,
         "framework_mlops_v2/features/__init__.py": "",
         "framework_mlops_v2/features/ratios.py": _RATIOS,
         "tests/test_aggregates.py": _TEST,
+        "try_it.py": _TRY_IT,
         "requirements.txt": _requirements(include_bank_libs, extra_steps),
         "run.sh": _RUN_SH,
         "README.md": _readme(include_bank_libs),
         "setup.py": _SETUP,
     }
+    if full_env:
+        files["setup.sh"] = _SETUP_SH_FULL
     mon_in_pkg = include_monitoring and not separate_monitoring
     files.update(_extra_step_files(
         extra_steps, include_monitoring=mon_in_pkg, monitoring_target="package"))
