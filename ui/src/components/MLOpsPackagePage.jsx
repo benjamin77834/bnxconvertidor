@@ -34,6 +34,9 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
   const [editDirty, setEditDirty] = useState(false)
   const [editMsg, setEditMsg] = useState('')
   const [rebuilding, setRebuilding] = useState(false)
+  // Firma / despliegue del paquete.
+  const [signing, setSigning] = useState(false)
+  const [signResult, setSignResult] = useState(null)  // {manifest, verify, public_key_pem, private_key_pem}
 
   useEffect(() => {
     fetch(MANIFEST_URL)
@@ -68,7 +71,7 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
   const buildMine = async () => {
     const sources = sourcesToSend()
     if (!sources.length) { setBuildError('Pega código o sube al menos un archivo .py.'); return }
-    setBuilding(true); setBuildError(''); setBuildResult(null)
+    setBuilding(true); setBuildError(''); setBuildResult(null); setSignResult(null)
     try {
       const res = await fetch(BUILD_URL, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -120,6 +123,23 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
       setEditFiles(fs => fs.map(f => f.path === activePath ? { ...f, content: editContent } : f))
       setEditDirty(false); setEditMsg('✅ Guardado')
     } catch (e) { setEditMsg('⚠️ ' + e.message) }
+  }
+
+  const signPackage = async () => {
+    if (!buildResult?.edit_token) return
+    setSigning(true); setEditMsg(''); setSignResult(null)
+    try {
+      const res = await fetch(`${API_BASE}/mlops/package/sign`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: buildResult.edit_token }),
+      })
+      const data = await res.json()
+      if (!res.ok || data.error) { setEditMsg('⚠️ ' + (data.error || 'no se pudo firmar')); return }
+      setSignResult(data)
+      // Reflejar que ahora el paquete trae deploy/ (reload de archivos editables).
+      loadEditFiles(buildResult.edit_token)
+    } catch (e) { setEditMsg('⚠️ ' + e.message) }
+    finally { setSigning(false) }
   }
 
   const rebuild = async () => {
@@ -401,6 +421,70 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                 ))}
               </div>
             )}
+
+            {/* FIRMA Y DESPLIEGUE: gobierno del paquete PySpark */}
+            <div style={{ marginTop: 14, borderTop: `1px solid ${t.border || '#334155'}`, paddingTop: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: t.text || '#e2e8f0' }}>🔐 Firma y despliegue</span>
+                <button onClick={signPackage} disabled={signing}
+                  title="Firma el PySpark (SHA-256 + Ed25519) y verifica si es desplegable"
+                  style={{
+                    padding: '7px 14px', borderRadius: 8, fontSize: 12.5, fontWeight: 700, cursor: signing ? 'wait' : 'pointer',
+                    background: '#a855f722', color: '#c084fc', border: '1px solid #a855f755',
+                  }}>{signing ? '⏳ Firmando…' : '🔐 Firmar y verificar despliegue'}</button>
+                <span style={{ fontSize: 11.5, color: t.muted || '#94a3b8' }}>
+                  Firma el código PySpark generado y comprueba integridad (hash) + autenticidad (firma).
+                </span>
+              </div>
+
+              {signResult && (
+                <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {/* Veredicto de despliegue */}
+                  <div style={{
+                    display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+                    padding: '10px 12px', borderRadius: 8,
+                    background: (signResult.verify?.deployable ? '#22c55e' : '#ef4444') + '12',
+                    border: `1px solid ${(signResult.verify?.deployable ? '#22c55e' : '#ef4444')}44`,
+                  }}>
+                    <span style={{
+                      fontSize: 13, fontWeight: 800,
+                      color: signResult.verify?.deployable ? '#22c55e' : '#ef4444',
+                    }}>
+                      {signResult.verify?.deployable ? '✅ DESPLEGABLE' : '⛔ NO DESPLEGABLE'}
+                    </span>
+                    <span style={{ fontSize: 12, color: t.text || '#e2e8f0' }}>
+                      Firma: <b style={{ color: signResult.verify?.signature === 'VALID' ? '#22c55e' : '#ef4444' }}>{signResult.verify?.signature}</b>
+                      {'  ·  '}Hashes: <b style={{ color: signResult.verify?.hashes === 'VALID' ? '#22c55e' : '#ef4444' }}>{signResult.verify?.hashes}</b>
+                      {'  ·  '}{(signResult.signed_files || []).length} archivo(s) .py firmados
+                    </span>
+                  </div>
+
+                  <div style={{ fontSize: 11.5, color: t.muted || '#94a3b8' }}>
+                    El manifiesto firmado y la clave pública quedan en <code>deploy/</code> del paquete (pulsa “Rehacer paquete” para incluirlos en el ZIP).
+                    Algoritmos: SHA-256 (integridad) + Ed25519 (autenticidad).
+                  </div>
+
+                  {/* Clave privada: se muestra UNA vez, para guardar */}
+                  {signResult.private_key_pem && (
+                    <details>
+                      <summary style={{ fontSize: 11.5, color: '#fbbf24', cursor: 'pointer' }}>
+                        🔑 Clave privada de firma (guárdala en tu gestor de secretos — se muestra una sola vez)
+                      </summary>
+                      <textarea readOnly value={signResult.private_key_pem}
+                        onFocus={e => e.target.select()}
+                        style={{
+                          width: '100%', minHeight: 110, marginTop: 6, padding: 8, borderRadius: 6, boxSizing: 'border-box',
+                          background: t.codeBg || '#081220', border: '1px solid #f59e0b55',
+                          color: '#fbbf24', fontFamily: 'monospace', fontSize: 10.5, outline: 'none',
+                        }} />
+                      <div style={{ fontSize: 10.5, color: '#f87171', marginTop: 4 }}>
+                        ⚠️ No se guarda en el servidor ni en el ZIP. Si la pierdes, vuelve a firmar (genera nueva).
+                      </div>
+                    </details>
+                  )}
+                </div>
+              )}
+            </div>
 
             {/* EDITOR: editar archivos generados y rehacer el paquete */}
             {editFiles.length > 0 && (

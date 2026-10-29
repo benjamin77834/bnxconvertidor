@@ -178,6 +178,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_mlops_emulate()
         elif "/mlops/package/save" in path:
             self._handle_mlops_package_save()
+        elif "/mlops/package/sign" in path:
+            self._handle_mlops_package_sign()
         elif "/mlops/package/rebuild" in path:
             self._handle_mlops_package_rebuild()
         elif "/mlops/package/build" in path:
@@ -986,6 +988,72 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         with open(fp, "w", encoding="utf-8") as fh:
             json.dump(state, fh)
         self._json_response(200, {"ok": True, "path": path})
+
+    def _handle_mlops_package_sign(self):
+        """Firma el paquete PySpark generado (SHA-256 + Ed25519), produce un
+        MANIFIESTO y verifica si es desplegable. Body JSON: {token}. El manifiesto
+        y la clave publica se guardan en el paquete (deploy/) para incluirlos al
+        rehacer el ZIP. La clave PRIVADA se devuelve una sola vez (guardala tu)."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length) if content_length else b""
+        try:
+            data = json.loads(body.decode("utf-8", errors="replace")) if body else {}
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._json_response(400, {"error": "Invalid JSON body"})
+            return
+        token = (data.get("token") or "").strip()
+        fp = self._mlops_edit_path(token)
+        if not fp or not os.path.isfile(fp):
+            self._json_response(404, {"error": "token no encontrado o expirado"})
+            return
+        try:
+            with open(fp, "r", encoding="utf-8") as fh:
+                state = json.load(fh)
+            code_files = dict(state.get("code_files") or {})
+            sep_files = dict(state.get("sep_files") or {})
+            # Firmamos SOLO los .py del paquete (el codigo PySpark real que se
+            # despliega); no los wheels de vendor ni binarios.
+            to_sign = {p: c for p, c in {**code_files,
+                        **{"[metrics] " + k: v for k, v in sep_files.items()}}.items()
+                       if p.endswith(".py")}
+            from src.mlops_deploy import sign_package, verify_package
+            signed = sign_package(to_sign, model_name="framework_mlops_v2",
+                                  execution_id=token[:12], expose_private_key=True)
+            manifest = signed["manifest"]
+            pub_pem = signed["public_key_pem"]
+            # Verificacion inmediata (debe dar desplegable).
+            check = verify_package(manifest, to_sign, pub_pem)
+            # Guardar manifiesto + clave publica DENTRO del paquete (deploy/), para
+            # que viajen en el ZIP. La clave privada NO se guarda (se devuelve 1 vez).
+            code_files["deploy/execution_manifest.json"] = json.dumps(manifest, indent=2)
+            code_files["deploy/signing_public_key.pem"] = pub_pem
+            code_files["deploy/VERIFY.md"] = (
+                "# Verificacion de despliegue\n\n"
+                "Este paquete esta firmado. Para verificar que es desplegable "
+                "(firma + hashes intactos):\n\n"
+                "```python\n"
+                "import json\n"
+                "from framework_mlops_v2_deploy import verify  # o usa el verify del portal\n"
+                "```\n\n"
+                f"- Algoritmos: SHA-256 (integridad) + Ed25519 (autenticidad).\n"
+                f"- Artefactos firmados: {manifest['artifact_count']} archivo(s) .py.\n"
+                f"- Estado al firmar: deployable={check['deployable']}.\n")
+            state["code_files"] = code_files
+            state["signed"] = True
+            with open(fp, "w", encoding="utf-8") as fh:
+                json.dump(state, fh)
+            self._json_response(200, {
+                "ok": True,
+                "manifest": manifest,
+                "verify": check,
+                "public_key_pem": pub_pem,
+                "private_key_pem": signed.get("private_key_pem"),
+                "signed_files": sorted(to_sign.keys()),
+            })
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": f"{type(e).__name__}: {e}"})
 
     def _handle_mlops_package_rebuild(self):
         """Re-empaqueta el ZIP con las ediciones guardadas. Body JSON: {token}.
