@@ -25,8 +25,15 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
   const [pastedName, setPastedName] = useState('mi_fuente.py')
   const [files, setFiles] = useState([])        // [{name, code}]
   const [building, setBuilding] = useState(false)
-  const [buildResult, setBuildResult] = useState(null)  // {report, download_url, filename}
+  const [buildResult, setBuildResult] = useState(null)  // {report, download_url, filename, edit_token}
   const [buildError, setBuildError] = useState('')
+  // Editor del paquete generado (editar archivos y rehacer).
+  const [editFiles, setEditFiles] = useState([])      // [{path, content, editable}]
+  const [activePath, setActivePath] = useState('')
+  const [editContent, setEditContent] = useState('')
+  const [editDirty, setEditDirty] = useState(false)
+  const [editMsg, setEditMsg] = useState('')
+  const [rebuilding, setRebuilding] = useState(false)
 
   useEffect(() => {
     fetch(MANIFEST_URL)
@@ -74,8 +81,61 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
       const data = await res.json()
       if (!res.ok || data.error) { setBuildError(data.error || `HTTP ${res.status}`); return }
       setBuildResult(data)
+      // Cargar los archivos editables del paquete recién generado.
+      if (data.edit_token) loadEditFiles(data.edit_token)
     } catch (e) { setBuildError('Error de red: ' + e.message) }
     finally { setBuilding(false) }
+  }
+
+  const loadEditFiles = async (token) => {
+    try {
+      const res = await fetch(`${API_BASE}/mlops/package/files?token=${encodeURIComponent(token)}`)
+      const data = await res.json()
+      if (!res.ok || data.error) return
+      setEditFiles(data.files || [])
+      // Abrir por defecto el primer archivo con "a revisar" (TODOs), o el primero.
+      const withTodo = (data.files || []).find(f => f.editable && f.content.includes('# TODO py2spark'))
+      const first = withTodo || (data.files || []).find(f => f.editable) || (data.files || [])[0]
+      if (first) { setActivePath(first.path); setEditContent(first.content); setEditDirty(false) }
+    } catch (e) { /* silencioso */ }
+  }
+
+  const openFile = (path) => {
+    const f = editFiles.find(x => x.path === path)
+    if (!f) return
+    setActivePath(path); setEditContent(f.content); setEditDirty(false); setEditMsg('')
+  }
+
+  const saveFile = async () => {
+    if (!buildResult?.edit_token || !activePath) return
+    setEditMsg('Guardando…')
+    try {
+      const res = await fetch(`${API_BASE}/mlops/package/save`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: buildResult.edit_token, path: activePath, content: editContent }),
+      })
+      const data = await res.json()
+      if (!res.ok || data.error) { setEditMsg('⚠️ ' + (data.error || 'no se pudo guardar')); return }
+      // Reflejar el cambio en la lista local.
+      setEditFiles(fs => fs.map(f => f.path === activePath ? { ...f, content: editContent } : f))
+      setEditDirty(false); setEditMsg('✅ Guardado')
+    } catch (e) { setEditMsg('⚠️ ' + e.message) }
+  }
+
+  const rebuild = async () => {
+    if (!buildResult?.edit_token) return
+    setRebuilding(true); setEditMsg('')
+    try {
+      const res = await fetch(`${API_BASE}/mlops/package/rebuild`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: buildResult.edit_token }),
+      })
+      const data = await res.json()
+      if (!res.ok || data.error) { setEditMsg('⚠️ ' + (data.error || 'no se pudo rehacer')); return }
+      setBuildResult(r => ({ ...r, size: data.size, download_url: data.download_url, filename: data.filename }))
+      setEditMsg('✅ Paquete rehecho con tus ediciones — listo para descargar.')
+    } catch (e) { setEditMsg('⚠️ ' + e.message) }
+    finally { setRebuilding(false) }
   }
 
   const card = {
@@ -271,7 +331,9 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
           <div style={{ marginTop: 12, padding: 12, borderRadius: 8, background: '#22c55e10', border: '1px solid #22c55e40' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 13, fontWeight: 700, color: '#22c55e' }}>
-                ✅ Paquete generado ({(buildResult.size / 1024).toFixed(1)} KB)
+                ✅ Paquete generado ({buildResult.size >= 1048576
+                  ? (buildResult.size / 1048576).toFixed(1) + ' MB'
+                  : (buildResult.size / 1024).toFixed(1) + ' KB'})
               </span>
               <a href={`${API_BASE}${buildResult.download_url}`} download
                 style={{
@@ -337,6 +399,73 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                     )}
                   </div>
                 ))}
+              </div>
+            )}
+
+            {/* EDITOR: editar archivos generados y rehacer el paquete */}
+            {editFiles.length > 0 && (
+              <div style={{ marginTop: 14, borderTop: `1px solid ${t.border || '#334155'}`, paddingTop: 12 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: t.text || '#e2e8f0', marginBottom: 8 }}>
+                  ✏️ Editar archivos y rehacer el paquete
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '240px 1fr', gap: 12, alignItems: 'start' }}>
+                  {/* Lista de archivos */}
+                  <div style={{
+                    maxHeight: 360, overflow: 'auto', borderRadius: 8,
+                    background: t.codeBg || '#081220', border: `1px solid ${t.border || '#334155'}`,
+                  }}>
+                    {editFiles.map((f, i) => {
+                      const hasTodo = f.content.includes('# TODO py2spark')
+                      const active = f.path === activePath
+                      return (
+                        <button key={i} onClick={() => openFile(f.path)} disabled={!f.editable}
+                          style={{
+                            display: 'block', width: '100%', textAlign: 'left', cursor: f.editable ? 'pointer' : 'default',
+                            padding: '6px 10px', fontSize: 11, fontFamily: 'monospace',
+                            background: active ? (t.accent || '#6366f1') + '22' : 'transparent',
+                            color: f.editable ? (active ? (t.accent || '#818cf8') : (t.text || '#e2e8f0')) : (t.dim || '#64748b'),
+                            border: 'none', borderBottom: `1px solid ${(t.border || '#334155')}44`,
+                            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                          }}>
+                          {hasTodo ? '⚠️ ' : ''}{f.path}
+                        </button>
+                      )
+                    })}
+                  </div>
+                  {/* Editor del archivo activo */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 12, fontFamily: 'monospace', color: t.muted || '#94a3b8' }}>{activePath || '(elige un archivo)'}</span>
+                      <button onClick={saveFile} disabled={!editDirty}
+                        style={{
+                          marginLeft: 'auto', padding: '6px 12px', borderRadius: 6, fontSize: 12, fontWeight: 700,
+                          cursor: editDirty ? 'pointer' : 'default',
+                          background: editDirty ? '#22c55e' : (t.border || '#334155'),
+                          color: editDirty ? '#000' : (t.muted || '#94a3b8'), border: 'none',
+                        }}>💾 Guardar archivo</button>
+                      <button onClick={rebuild} disabled={rebuilding}
+                        style={{
+                          padding: '6px 12px', borderRadius: 6, fontSize: 12, fontWeight: 700, cursor: 'pointer',
+                          background: (t.accent || '#6366f1') + '22', color: t.accent || '#818cf8',
+                          border: `1px solid ${(t.accent || '#6366f1')}55`,
+                        }}>{rebuilding ? '⏳ Rehaciendo…' : '🔄 Rehacer paquete'}</button>
+                    </div>
+                    <textarea value={editContent}
+                      onChange={e => { setEditContent(e.target.value); setEditDirty(true) }}
+                      spellCheck={false}
+                      style={{
+                        width: '100%', minHeight: 300, maxHeight: 500, padding: 10, borderRadius: 8, boxSizing: 'border-box',
+                        background: t.codeBg || '#081220', border: `1px solid ${t.border || '#334155'}`,
+                        color: t.text || '#e2e8f0', fontFamily: 'monospace', fontSize: 12, lineHeight: 1.5,
+                        resize: 'vertical', outline: 'none', whiteSpace: 'pre', overflowX: 'auto',
+                      }} />
+                    {editMsg && <div style={{ fontSize: 12, color: editMsg.startsWith('⚠️') ? '#f87171' : '#22c55e' }}>{editMsg}</div>}
+                    <div style={{ fontSize: 11, color: t.muted || '#94a3b8' }}>
+                      Edita las líneas marcadas (busca <code># TODO py2spark</code>), guarda, y pulsa “Rehacer paquete”
+                      para reempaquetar el ZIP con tus cambios{buildResult.report?.find(r => r._meta)?.full_env ? ' (incluye el ambiente completo offline)' : ''}.
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
           </div>

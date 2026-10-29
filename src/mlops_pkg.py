@@ -815,6 +815,35 @@ def _extract_todos(code):
     return out
 
 
+def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all"):
+    """Empaqueta un ZIP a partir de dicts de archivos YA LISTOS (texto). Reusable
+    para re-empaquetar tras EDITAR los archivos generados.
+
+    code_files: {ruta_relativa: contenido} del paquete principal (framework_mlops_v2_pkg/).
+    sep_files:  {ruta_relativa: contenido} del paquete separado de monitoreo (opcional).
+    full_env/py_target: si full_env, agrega vendor/ offline (PySpark) segun py_target.
+    Devuelve (zip_bytes, filename, vendor_series_list)."""
+    vendor_series = _vendor_files_for_pkg(py_target) if full_env else {}
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as z:
+        for path, content in (code_files or {}).items():
+            z.writestr("framework_mlops_v2_pkg/" + path, content)
+        for path, content in (sep_files or {}).items():
+            z.writestr("framework_mlops_metrics_pkg/" + path, content)
+        for serie_dir, whls in (vendor_series or {}).items():
+            for fpath in whls:
+                try:
+                    with open(fpath, "rb") as fh:
+                        data = fh.read()
+                except OSError:
+                    continue
+                info = zipfile.ZipInfo(
+                    "framework_mlops_v2_pkg/vendor/" + serie_dir + "/" + os.path.basename(fpath))
+                info.compress_type = zipfile.ZIP_STORED
+                z.writestr(info, data)
+    return buf.getvalue(), "framework_mlops_v2.zip", sorted((vendor_series or {}).keys())
+
+
 def _vendor_files_for_pkg(py_target="all"):
     """Wheels de PySpark+py4j para empaquetar el ambiente completo offline.
     Reutiliza el cache de Data Sintetica. py_target elige que serie(s) incluir
@@ -931,32 +960,17 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
         include_monitoring=include_monitoring, separate_monitoring=separate_monitoring,
         full_env=full_env)
 
-    vendor_series = _vendor_files_for_pkg(py_target) if full_env else {}
+    sep_files = _monitoring_files("separate") if (include_monitoring and separate_monitoring) else {}
 
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as z:
-        for path, content in files.items():
-            z.writestr("framework_mlops_v2_pkg/" + path, content)
-        # Monitoreo como PAQUETE SEPARADO: carpeta hermana en el mismo ZIP.
-        if include_monitoring and separate_monitoring:
-            for path, content in _monitoring_files("separate").items():
-                z.writestr("framework_mlops_metrics_pkg/" + path, content)
-        # Ambiente completo: wheels de PySpark/py4j offline en vendor/<serie>/.
-        for serie_dir, whls in (vendor_series or {}).items():
-            for fpath in whls:
-                try:
-                    with open(fpath, "rb") as fh:
-                        data = fh.read()
-                except OSError:
-                    continue
-                info = zipfile.ZipInfo(
-                    "framework_mlops_v2_pkg/vendor/" + serie_dir + "/" + os.path.basename(fpath))
-                info.compress_type = zipfile.ZIP_STORED  # el .whl ya esta comprimido
-                z.writestr(info, data)
-    # Meta informativa al final de la lista (marcada con _meta para filtrarla).
+    zip_bytes, _fn, vendor_list = zip_from_files(
+        files, sep_files, full_env=full_env, py_target=py_target)
+
+    # Meta: incluye los archivos de CODIGO (editables) para guardarlos por token.
     report.append({"_meta": True, "full_env": bool(full_env),
-                   "vendor_series": sorted((vendor_series or {}).keys())})
-    return buf.getvalue(), "framework_mlops_v2.zip", report
+                   "vendor_series": vendor_list,
+                   "py_target": py_target,
+                   "_code_files": files, "_sep_files": sep_files})
+    return zip_bytes, "framework_mlops_v2.zip", report
 
 
 def _readme_custom(include_bank_libs, sources, report, extra_steps=False,

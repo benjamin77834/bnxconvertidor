@@ -176,6 +176,10 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_transactional_test()
         elif "/mlops/emulate" in path:
             self._handle_mlops_emulate()
+        elif "/mlops/package/save" in path:
+            self._handle_mlops_package_save()
+        elif "/mlops/package/rebuild" in path:
+            self._handle_mlops_package_rebuild()
         elif "/mlops/package/build" in path:
             self._handle_mlops_package_build()
         elif "/emulate" in path:
@@ -268,6 +272,10 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         # Framework MLOps v2 (mejorado): manifiesto + descarga del paquete ZIP.
         if path == "/mlops/package/manifest" or path == "/api/mlops/package/manifest":
             self._handle_mlops_package_manifest()
+            return
+        # Listar los archivos de codigo editables de un paquete generado (token).
+        if path.startswith("/mlops/package/files") or path.startswith("/api/mlops/package/files"):
+            self._handle_mlops_package_files()
             return
         if path.startswith("/mlops/package/download") or path.startswith("/api/mlops/package/download"):
             self._handle_mlops_package_download()
@@ -882,6 +890,11 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 extra_steps=extra_steps, include_monitoring=include_monitoring,
                 separate_monitoring=separate_monitoring, full_env=full_env,
                 py_target=py_target)
+            # Separar el meta (trae los archivos de codigo editables, grandes).
+            meta = next((r for r in report if r.get("_meta")), {})
+            code_files = meta.pop("_code_files", {}) if meta else {}
+            sep_files = meta.pop("_sep_files", {}) if meta else {}
+
             # Guardar para descarga por streaming (igual que /export/bundle).
             import uuid as _uuid
             tmpdir = os.path.join(tempfile.gettempdir(), "bnx_bundles")
@@ -891,9 +904,120 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 fh.write(zip_bytes)
             with open(os.path.join(tmpdir, token + ".name"), "w", encoding="utf-8") as fh:
                 fh.write(filename)
+            # Guardar el ESTADO EDITABLE (archivos de codigo + opciones) por token,
+            # para listar/editar/rehacer sin reconvertir.
+            editdir = os.path.join(tempfile.gettempdir(), "bnx_mlops_edit")
+            os.makedirs(editdir, exist_ok=True)
+            with open(os.path.join(editdir, token + ".json"), "w", encoding="utf-8") as fh:
+                json.dump({"code_files": code_files, "sep_files": sep_files,
+                           "full_env": full_env, "py_target": py_target}, fh)
             self._json_response(200, {
                 "ok": True, "token": token, "filename": filename,
                 "size": len(zip_bytes), "report": report,
+                "download_url": f"/export/download?token={token}",
+                "edit_token": token,
+            })
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": f"{type(e).__name__}: {e}"})
+
+    def _mlops_edit_path(self, token):
+        """Ruta del estado editable de un token (valida contra path-traversal)."""
+        if not re.fullmatch(r"[0-9a-fA-F]+", token or ""):
+            return None
+        editdir = os.path.join(tempfile.gettempdir(), "bnx_mlops_edit")
+        return os.path.join(editdir, token + ".json")
+
+    def _handle_mlops_package_files(self):
+        """Lista los archivos de CODIGO editables de un paquete generado.
+        Query: ?token=<hex>. Devuelve {ok, files:[{path, content, editable}]}."""
+        from urllib.parse import urlparse as _up, parse_qs as _pq
+        token = (_pq(_up(self.path).query).get("token", [""])[0] or "").strip()
+        fp = self._mlops_edit_path(token)
+        if not fp or not os.path.isfile(fp):
+            self._json_response(404, {"error": "token no encontrado o expirado"})
+            return
+        with open(fp, "r", encoding="utf-8") as fh:
+            state = json.load(fh)
+        items = []
+        for path, content in (state.get("code_files") or {}).items():
+            items.append({"path": path, "content": content,
+                          "editable": path.endswith((".py", ".txt", ".md", ".sh", ".cfg", ".ini"))})
+        for path, content in (state.get("sep_files") or {}).items():
+            items.append({"path": "[metrics] " + path, "content": content,
+                          "editable": path.endswith((".py", ".txt", ".md", ".sh"))})
+        items.sort(key=lambda x: x["path"])
+        self._json_response(200, {"ok": True, "token": token, "files": items,
+                                  "full_env": state.get("full_env", False),
+                                  "py_target": state.get("py_target", "all")})
+
+    def _handle_mlops_package_save(self):
+        """Guarda la edicion de UN archivo del paquete. Body JSON:
+        {token, path, content}. 'path' con prefijo '[metrics] ' edita el paquete
+        separado de monitoreo."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length) if content_length else b""
+        try:
+            data = json.loads(body.decode("utf-8", errors="replace")) if body else {}
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._json_response(400, {"error": "Invalid JSON body"})
+            return
+        token = (data.get("token") or "").strip()
+        path = data.get("path") or ""
+        content = data.get("content")
+        fp = self._mlops_edit_path(token)
+        if not fp or not os.path.isfile(fp):
+            self._json_response(404, {"error": "token no encontrado o expirado"})
+            return
+        if content is None:
+            self._json_response(400, {"error": "falta 'content'"})
+            return
+        with open(fp, "r", encoding="utf-8") as fh:
+            state = json.load(fh)
+        key = "sep_files" if path.startswith("[metrics] ") else "code_files"
+        real_path = path[len("[metrics] "):] if key == "sep_files" else path
+        bag = state.get(key) or {}
+        if real_path not in bag:
+            self._json_response(404, {"error": f"archivo no existe en el paquete: {real_path}"})
+            return
+        bag[real_path] = content
+        state[key] = bag
+        with open(fp, "w", encoding="utf-8") as fh:
+            json.dump(state, fh)
+        self._json_response(200, {"ok": True, "path": path})
+
+    def _handle_mlops_package_rebuild(self):
+        """Re-empaqueta el ZIP con las ediciones guardadas. Body JSON: {token}.
+        Respeta las opciones (full_env, py_target) guardadas al generar."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length) if content_length else b""
+        try:
+            data = json.loads(body.decode("utf-8", errors="replace")) if body else {}
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._json_response(400, {"error": "Invalid JSON body"})
+            return
+        token = (data.get("token") or "").strip()
+        fp = self._mlops_edit_path(token)
+        if not fp or not os.path.isfile(fp):
+            self._json_response(404, {"error": "token no encontrado o expirado"})
+            return
+        try:
+            with open(fp, "r", encoding="utf-8") as fh:
+                state = json.load(fh)
+            from src.mlops_pkg import zip_from_files
+            zip_bytes, filename, vendor_list = zip_from_files(
+                state.get("code_files") or {}, state.get("sep_files") or {},
+                full_env=bool(state.get("full_env")), py_target=state.get("py_target", "all"))
+            tmpdir = os.path.join(tempfile.gettempdir(), "bnx_bundles")
+            os.makedirs(tmpdir, exist_ok=True)
+            with open(os.path.join(tmpdir, token + ".zip"), "wb") as fh:
+                fh.write(zip_bytes)
+            with open(os.path.join(tmpdir, token + ".name"), "w", encoding="utf-8") as fh:
+                fh.write(filename)
+            self._json_response(200, {
+                "ok": True, "filename": filename, "size": len(zip_bytes),
+                "vendor_series": vendor_list,
                 "download_url": f"/export/download?token={token}",
             })
         except Exception as e:
