@@ -408,7 +408,11 @@ __version__ = "2.0.0"
 def _requirements(include_bank_libs, extra_steps=False):
     base = [
         "# Framework MLOps v2 — dependencias",
-        "pyspark>=3.3,<4.0",
+        "# PySpark segun la version de Python (markers de pip): 3.5.x soporta",
+        "# Python 3.8-3.11; 4.0.x soporta 3.9+ y es el unico compatible con 3.12+",
+        "# (PySpark 3.5 usa distutils, eliminado en Python 3.12).",
+        'pyspark>=3.5,<3.6 ; python_version < "3.12"',
+        'pyspark>=4.0,<4.1 ; python_version >= "3.12"',
         "pandas>=1.3",
         "numpy>=1.21",
         "pytest>=7.0",
@@ -464,16 +468,27 @@ if [ -n "$VENDOR_DIR" ] && ls "$VENDOR_DIR"/*.whl >/dev/null 2>&1; then
   python -m pip install --no-index --find-links "$VENDOR_DIR" pip setuptools wheel >/dev/null 2>&1 || true
   python -m pip install --no-index --find-links "$VENDOR_DIR" pyspark py4j
 else
-  echo "      vendor/ no disponible; instalando PySpark por internet."
-  python -m pip install "pyspark>=3.3,<4.0" py4j
+  echo "      vendor/ no disponible; instalando PySpark por internet (serie segun Python)."
+  if [ "$PYMINOR" -ge 12 ] 2>/dev/null; then
+    python -m pip install "pyspark>=4.0,<4.1" py4j   # 3.12+ (3.5 usa distutils, roto)
+  else
+    python -m pip install "pyspark>=3.5,<3.6" py4j
+  fi
 fi
 
-echo "[4/5] Instalando el framework y dependencias (pandas, numpy, pytest)..."
-# Las libs internas del banco (si estan en requirements.txt comentadas) se
-# resuelven en la red del banco; aqui instalamos lo open source + el paquete.
-python -m pip install pandas numpy pytest chispa >/dev/null 2>&1 || \
-  python -m pip install pandas numpy pytest
-python -m pip install -e . >/dev/null 2>&1 || true
+echo "[4/5] Instalando dependencias (requirements.txt) y el framework..."
+# Dependencias del paquete (pandas, numpy, pytest y -si aplica- xgboost/sklearn).
+# Las libs internas del banco comentadas en el archivo se ignoran. OFFLINE: si
+# existen en vendor/ se usan de ahi; si no, por internet.
+if [ -n "$VENDOR_DIR" ] && ls "$VENDOR_DIR"/*.whl >/dev/null 2>&1; then
+  python -m pip install --no-index --find-links "$VENDOR_DIR" -r requirements.txt 2>/dev/null || \
+    python -m pip install -r requirements.txt 2>/dev/null || true
+else
+  python -m pip install -r requirements.txt 2>/dev/null || true
+fi
+# Instalar el PROPIO paquete en modo editable (clave: sin esto los imports
+# 'from framework_mlops_v2...' fallan fuera de la carpeta raiz).
+python -m pip install -e .
 
 echo "[5/5] Corriendo pruebas ..."
 pytest -q || echo "  (pytest requiere Java para Spark; revisa el entorno)"
@@ -499,13 +514,16 @@ pip install --upgrade pip >/dev/null
 # Si estas en la red del banco, descomenta --index-url con tu Artifactory:
 # pip install -r requirements.txt --index-url https://<artifactory-interno>/simple
 pip install -r requirements.txt
+# Instalar el PROPIO paquete (sin esto los imports 'from framework_mlops_v2...'
+# fallan fuera de la carpeta raiz).
+pip install -e .
 
 echo "[3/4] Ejecutando pruebas (pytest) ..."
 pytest -q || echo "  (pytest requiere pyspark + Java; revisa el entorno)"
 
 echo "[4/4] Listo. Ejemplo de uso:"
-echo "  from framework_mlops_v2.aggregates.router import GroupBy"
-echo "  GroupBy('pnl', previous_path, agg_dict, sqlContext).aggregate()"
+echo "  . .venv/bin/activate"
+echo "  python -c \\"from framework_mlops_v2.aggregates.router import GroupBy; print('ok')\\""
 '''
 
 
@@ -562,7 +580,12 @@ setup(
     description="Framework MLOps v2 (mejorado) — feature engineering para scoring",
     packages=find_packages(exclude=["tests*"]),
     python_requires=">=3.9",
-    install_requires=["pyspark>=3.3,<4.0", "pandas>=1.3", "numpy>=1.21"],
+    install_requires=[
+        # PySpark segun version de Python (3.5 usa distutils, roto en 3.12+).
+        'pyspark>=3.5,<3.6 ; python_version < "3.12"',
+        'pyspark>=4.0,<4.1 ; python_version >= "3.12"',
+        "pandas>=1.3", "numpy>=1.21",
+    ],
 )
 '''
 
@@ -740,7 +763,11 @@ setup(
     description="Monitoreo de modelos (PSI/CSI/DQC) — separado del datapull",
     packages=find_packages(exclude=["tests*"]),
     python_requires=">=3.9",
-    install_requires=["pyspark>=3.3,<4.0", "pandas>=1.3"],
+    install_requires=[
+        'pyspark>=3.5,<3.6 ; python_version < "3.12"',
+        'pyspark>=4.0,<4.1 ; python_version >= "3.12"',
+        "pandas>=1.3",
+    ],
 )
 '''
 
