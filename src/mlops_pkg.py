@@ -517,17 +517,50 @@ def _requirements(include_bank_libs, extra_steps=False, bank_libs=None):
     return "\n".join(base) + "\n"
 
 
+# Mapeo de MODULO importado -> paquete pip del banco (mex-lib*). El codigo
+# importa 'lib_extract', 'lib_group_by', etc.; el paquete pip se llama distinto.
+_BANK_MODULE_TO_PKG = {
+    "lib_columns2_vector": "mex-libcolumns2vector",
+    "lib_extract": "mex-libextract",
+    "lib_feature_engineering": "mex-libfeatureengineering",
+    "lib_generate_pivot": "mex-libgeneratepivot",
+    "lib_generate_ratios": "mex-libgenerateratios",
+    "lib_group_by": "mex-libgroupby",
+    "lib_missing_treatment": "mex-libmissingtreatment",
+    "lib_vector_assembler": "mex-libvectorassembler",
+}
+# Modulos del banco que NO son pip, sino codigo de PYTHONPATH (van en vendor/bank/
+# pkgcode, no en requirements-bank.txt).
+_BANK_PATH_MODULES = {"toolbox", "bnmxverse", "utils"}
+
+
+def _bank_pkg_name(mod):
+    """Traduce un modulo importado al nombre del paquete pip del banco (o lo deja
+    igual si no hay mapeo conocido)."""
+    return _BANK_MODULE_TO_PKG.get(mod, mod)
+
+
 def _requirements_bank(bank_libs):
-    """Archivo SOLO con las librerias internas del banco, para instalarlas desde
-    el Artifactory privado SIN romper el montaje offline del core (vendor/)."""
+    """Archivo SOLO con las librerias internas del banco (nombres de paquete pip),
+    para instalarlas OFFLINE desde vendor/bank/ o desde el Artifactory privado.
+    Los modulos de PYTHONPATH (toolbox, ...) NO van aqui; se montan via bank_pkg."""
+    # Traducir modulos -> paquetes pip y excluir los de path (toolbox/...).
+    pkgs = []
+    for m in bank_libs or []:
+        if m in _BANK_PATH_MODULES:
+            continue
+        name = _bank_pkg_name(m)
+        if name not in pkgs:
+            pkgs.append(name)
     head = [
         "# Librerias INTERNAS del banco detectadas en tu codigo original.",
-        "# NO estan en PyPI ni en vendor/: se resuelven desde el Artifactory privado.",
-        "# setup.sh/run.sh instalan primero el core OFFLINE y luego INTENTAN estas",
-        "# (sin --no-index). Instala manualmente si tu indice necesita credenciales:",
+        "# Se instalan OFFLINE desde vendor/bank/ si el paquete es 'ambiente completo';",
+        "# si no, desde el Artifactory privado:",
         "#   pip install -r requirements-bank.txt --index-url https://<artifactory-interno>/simple",
+        "# Los modulos de PYTHONPATH (toolbox, bnmxverse, utils) van en ./bank_pkg,",
+        "# NO aqui (no son paquetes pip).",
     ]
-    return "\n".join(head + list(bank_libs)) + "\n"
+    return "\n".join(head + pkgs) + "\n"
 
 
 # setup.sh del AMBIENTE COMPLETO: crea el venv e instala PySpark OFFLINE desde
@@ -588,15 +621,29 @@ else
   python -m pip install -e .
 fi
 
-# Librerias INTERNAS del banco (si las hay): se resuelven desde el Artifactory
-# privado, NO desde vendor/. Se instalan aparte para no romper el montaje offline
-# del core. Si no hay acceso al indice, se avisa pero no se aborta.
+# Librerias INTERNAS del banco (si las hay). Preferimos OFFLINE desde vendor/bank/
+# (sdist empaquetados); si no estan, caemos al Artifactory privado. El codigo de
+# path (toolbox/bnmxverse/utils) se copia a ./bank_pkg y se expone via PYTHONPATH.
 if [ -f requirements-bank.txt ]; then
-  echo "      Instalando librerias internas del banco (Artifactory privado) ..."
-  # Descomenta y apunta a tu Artifactory si hace falta un indice explicito:
-  # python -m pip install -r requirements-bank.txt --index-url https://<artifactory-interno>/simple
-  python -m pip install -r requirements-bank.txt || \
-    echo "      ⚠️  No se pudieron instalar las libs del banco (sin acceso al Artifactory). Revisa requirements-bank.txt."
+  if ls vendor/bank/*.tar.gz >/dev/null 2>&1 || ls vendor/bank/*.whl >/dev/null 2>&1; then
+    echo "      Instalando librerias internas del banco OFFLINE desde vendor/bank/ ..."
+    python -m pip install --no-index --find-links vendor/bank -r requirements-bank.txt || \
+      python -m pip install --no-index --find-links vendor/bank vendor/bank/*.tar.gz || \
+      echo "      ⚠️  Fallo la instalacion offline de libs del banco. Revisa vendor/bank/."
+  else
+    echo "      Instalando librerias internas del banco (Artifactory privado) ..."
+    # Descomenta y apunta a tu Artifactory si hace falta un indice explicito:
+    # python -m pip install -r requirements-bank.txt --index-url https://<artifactory-interno>/simple
+    python -m pip install -r requirements-bank.txt || \
+      echo "      ⚠️  No se pudieron instalar las libs del banco (sin acceso al Artifactory)."
+  fi
+fi
+# Modulos de path del banco (toolbox, bnmxverse, utils): no son pip, van en PYTHONPATH.
+if [ -d vendor/bank/pkgcode ]; then
+  mkdir -p bank_pkg
+  cp -R vendor/bank/pkgcode/* bank_pkg/ 2>/dev/null || true
+  echo "      Modulos de path del banco en ./bank_pkg (toolbox, ...). Exporta antes de correr:"
+  echo '        export PYTHONPATH="$PWD/bank_pkg:$PYTHONPATH"'
 fi
 
 # Al instalar PySpark OFFLINE desde el wheel, algunos servidores (umask estricto)
@@ -663,15 +710,29 @@ else
   python -m pip install -e .
 fi
 
-# Librerias INTERNAS del banco (si las hay): se resuelven desde el Artifactory
-# privado, NO desde vendor/. Se instalan aparte para no romper el montaje offline
-# del core. Si no hay acceso al indice, se avisa pero no se aborta.
+# Librerias INTERNAS del banco (si las hay). Preferimos OFFLINE desde vendor/bank/
+# (sdist empaquetados); si no estan, caemos al Artifactory privado. El codigo de
+# path (toolbox/bnmxverse/utils) se copia a ./bank_pkg y se expone via PYTHONPATH.
 if [ -f requirements-bank.txt ]; then
-  echo "      Instalando librerias internas del banco (Artifactory privado) ..."
-  # Descomenta y apunta a tu Artifactory si hace falta un indice explicito:
-  # python -m pip install -r requirements-bank.txt --index-url https://<artifactory-interno>/simple
-  python -m pip install -r requirements-bank.txt || \
-    echo "      ⚠️  No se pudieron instalar las libs del banco (sin acceso al Artifactory). Revisa requirements-bank.txt."
+  if ls vendor/bank/*.tar.gz >/dev/null 2>&1 || ls vendor/bank/*.whl >/dev/null 2>&1; then
+    echo "      Instalando librerias internas del banco OFFLINE desde vendor/bank/ ..."
+    python -m pip install --no-index --find-links vendor/bank -r requirements-bank.txt || \
+      python -m pip install --no-index --find-links vendor/bank vendor/bank/*.tar.gz || \
+      echo "      ⚠️  Fallo la instalacion offline de libs del banco. Revisa vendor/bank/."
+  else
+    echo "      Instalando librerias internas del banco (Artifactory privado) ..."
+    # Descomenta y apunta a tu Artifactory si hace falta un indice explicito:
+    # python -m pip install -r requirements-bank.txt --index-url https://<artifactory-interno>/simple
+    python -m pip install -r requirements-bank.txt || \
+      echo "      ⚠️  No se pudieron instalar las libs del banco (sin acceso al Artifactory)."
+  fi
+fi
+# Modulos de path del banco (toolbox, bnmxverse, utils): no son pip, van en PYTHONPATH.
+if [ -d vendor/bank/pkgcode ]; then
+  mkdir -p bank_pkg
+  cp -R vendor/bank/pkgcode/* bank_pkg/ 2>/dev/null || true
+  echo "      Modulos de path del banco en ./bank_pkg (toolbox, ...). Exporta antes de correr:"
+  echo '        export PYTHONPATH="$PWD/bank_pkg:$PYTHONPATH"'
 fi
 
 # Al instalar PySpark OFFLINE desde el wheel, algunos servidores (umask estricto)
@@ -861,8 +922,18 @@ entrada -> salida. Las fuentes con un '# TODO py2spark' pendiente se marcan.
 import argparse
 import json
 import os
+import sys
 import shutil
 import tempfile
+
+# Modulos de PYTHONPATH del banco (toolbox, bnmxverse, utils): si el paquete se
+# monto con ambiente completo, setup.sh/run.sh los dejan en ./bank_pkg. Los
+# agregamos al path aqui para que 'import toolbox' funcione sin exportar nada.
+_here = os.path.dirname(os.path.abspath(__file__))
+for _cand in (os.path.join(_here, "bank_pkg"),
+              os.path.join(_here, "vendor", "bank", "pkgcode")):
+    if os.path.isdir(_cand) and _cand not in sys.path:
+        sys.path.insert(0, _cand)
 
 try:
     from pyspark.sql import SparkSession
@@ -1289,6 +1360,14 @@ def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all"):
     Devuelve (zip_bytes, filename, vendor_series_list)."""
     extra_steps = any("scoring/scorer.py" in p for p in (code_files or {}))
     vendor_series = _vendor_files_for_pkg(py_target, extra_steps) if full_env else {}
+    # Empaquetar las LIBRERIAS INTERNAS del banco OFFLINE cuando el paquete las
+    # usa (hay requirements-bank.txt) y tenemos el cache. Van en vendor/bank/
+    # (sdist pip-instalables) y vendor/bank/pkgcode/ (toolbox/bnmxverse/utils que
+    # se agregan al PYTHONPATH). Asi el despliegue offline no depende del Artifactory.
+    uses_bank = any(p.endswith("requirements-bank.txt") for p in (code_files or {}))
+    bank_sdists, bank_pkgcode = ([], {})
+    if full_env and uses_bank:
+        bank_sdists, bank_pkgcode = _bank_vendor_files()
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as z:
         for path, content in (code_files or {}).items():
@@ -1306,7 +1385,29 @@ def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all"):
                     "framework_mlops_v2_pkg/vendor/" + serie_dir + "/" + os.path.basename(fpath))
                 info.compress_type = zipfile.ZIP_STORED
                 z.writestr(info, data)
-    return buf.getvalue(), "framework_mlops_v2.zip", sorted((vendor_series or {}).keys())
+        # sdist de las mex-lib* del banco -> vendor/bank/
+        for fpath in bank_sdists:
+            try:
+                with open(fpath, "rb") as fh:
+                    data = fh.read()
+            except OSError:
+                continue
+            info = zipfile.ZipInfo(
+                "framework_mlops_v2_pkg/vendor/bank/" + os.path.basename(fpath))
+            info.compress_type = zipfile.ZIP_STORED
+            z.writestr(info, data)
+        # Codigo de path del banco (toolbox/bnmxverse/utils) -> vendor/bank/pkgcode/
+        for rel, full in sorted(bank_pkgcode.items()):
+            try:
+                with open(full, "rb") as fh:
+                    data = fh.read()
+            except OSError:
+                continue
+            z.writestr("framework_mlops_v2_pkg/vendor/bank/pkgcode/" + rel.replace(os.sep, "/"), data)
+    series_out = sorted((vendor_series or {}).keys())
+    if bank_sdists or bank_pkgcode:
+        series_out = series_out + ["bank"]
+    return buf.getvalue(), "framework_mlops_v2.zip", series_out
 
 
 import subprocess as _sp
@@ -1317,6 +1418,38 @@ import sys as _sys
 _MLOPS_VENDOR_CACHE = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     ".bnx_vendor_cache", "mlops_deps")
+
+# Cache de las LIBRERIAS INTERNAS del banco (mex-lib* como sdist + toolbox/bnmxverse/
+# utils como codigo de path). Son Python puro, sirven para cualquier plataforma/
+# version. Vive fuera de git. 'wheels/' = sdist pip-instalables; 'pkgcode/' =
+# modulos que el codigo espera en el PYTHONPATH (toolbox, etc.).
+_BANK_LIBS_CACHE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    ".bnx_vendor_cache", "bank_libs")
+
+
+def _bank_vendor_files():
+    """Devuelve ({sdist .tar.gz}, {pkgcode: rutas de modulos}) de las librerias
+    internas del banco presentes en cache. Si no hay cache, devuelve ([], {})."""
+    whl_dir = os.path.join(_BANK_LIBS_CACHE, "wheels")
+    code_dir = os.path.join(_BANK_LIBS_CACHE, "pkgcode")
+    sdists = []
+    if os.path.isdir(whl_dir):
+        sdists = [os.path.join(whl_dir, f) for f in sorted(os.listdir(whl_dir))
+                  if f.endswith((".tar.gz", ".whl"))]
+    pkgcode = {}
+    if os.path.isdir(code_dir):
+        for root, _dirs, files in os.walk(code_dir):
+            for fn in files:
+                full = os.path.join(root, fn)
+                rel = os.path.relpath(full, code_dir)
+                pkgcode[rel] = full
+    return sdists, pkgcode
+
+
+def _has_bank_libs_cache():
+    sdists, pkgcode = _bank_vendor_files()
+    return bool(sdists or pkgcode)
 
 # Dependencias del framework a empaquetar OFFLINE (ademas de PySpark+py4j que ya
 # trae el vendor base). pytest/chispa para correr pruebas; xgboost/sklearn solo
@@ -1597,16 +1730,19 @@ Tu código original importa estas librerías **internas** (no están en PyPI):
 
 {libs_md}
 
-Quedaron **dadas de alta en `requirements-bank.txt`** (separadas del core para
-no romper el montaje offline desde `vendor/`). `setup.sh`/`run.sh` instalan
-primero todo el core offline y luego **intentan** estas desde el **Artifactory
-privado**. Si tu índice necesita URL o credenciales:
+Si bajaste el paquete como **ambiente completo**, estas librerías ya vienen
+**OFFLINE en `vendor/bank/`**:
+- Los paquetes pip del banco (`mex-lib*`) se instalan con `--no-index` desde
+  `vendor/bank/` (ver `requirements-bank.txt`).
+- Los módulos de PYTHONPATH (`toolbox`, `bnmxverse`, `utils`) se copian a
+  `./bank_pkg` y `main.py` los agrega al path automáticamente.
+
+`setup.sh`/`run.sh` hacen todo esto sin internet. Si NO usaste ambiente completo,
+se intentan desde el **Artifactory privado**:
 ```bash
 pip install -r requirements-bank.txt --index-url https://<artifactory-interno>/simple
 ```
-o configura el índice en `pip.conf` / `PIP_INDEX_URL`. Sin acceso a ese índice
-el modelo fallará con `No module named '<lib>'` al correr. En `requirements.txt`
-aparecen comentadas como referencia.
+En `requirements.txt` aparecen comentadas como referencia.
 '''
     return base + banklibs + mon + f'''
 

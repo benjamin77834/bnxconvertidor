@@ -36,9 +36,38 @@ echo " Step 3: Generating Glue code..."
 ##python3 $PATHBNX/main.py --project $PATHBNX/e2e/test.mp --xfr $PATHBNX/e2e/test.xfr --target glue --output $PATHBNX/e2e/glue_job.py
 
 # Step 4: Upload script to S3
+# IMPORTANTE: subimos un script que lee del BUCKET PROPIO ($BUCKET). El ejemplo
+# generado (test_new.py) leia de s3://datalake/... (bucket ajeno) y fallaba con
+# 403 AccessDenied — el problema NO era el role, era la ruta de datos.
 echo " Step 4: Uploading Glue script..."
-#aws s3 cp $PATHBNX/test_spark_output.py s3://$BUCKET/scripts/glue_job.py
-aws s3 cp $PATHBNX/test_new.py s3://$BUCKET/scripts/glue_job.py
+cat << PYEOF > /tmp/bnx_glue_job.py
+import sys
+from awsglue.context import GlueContext
+from pyspark.context import SparkContext
+from pyspark.sql import functions as F
+
+BUCKET = "$BUCKET"
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+print("[*] BNX E2E Glue Job iniciado")
+
+orders = (spark.read.format("csv").option("header", "true")
+          .option("inferSchema", "true")
+          .load("s3://%s/raw/orders/data.csv" % BUCKET))
+print("[>] SOURCE raw/orders: %d filas" % orders.count())
+
+report = (orders.groupBy("nombre")
+          .agg(F.count("*").alias("num_ordenes"),
+               F.round(F.sum("monto"), 2).alias("monto_total"),
+               F.round(F.avg("monto"), 2).alias("monto_promedio"))
+          .orderBy(F.desc("monto_total")))
+report.show(truncate=False)
+
+report.coalesce(1).write.mode("overwrite").format("parquet").save("s3://%s/output/report" % BUCKET)
+print("[*] BNX E2E Glue Job completado OK")
+PYEOF
+aws s3 cp /tmp/bnx_glue_job.py s3://$BUCKET/scripts/glue_job.py
 
 # Step 5: Create or update Glue job
 echo " Step 5: Creating Glue job..."
