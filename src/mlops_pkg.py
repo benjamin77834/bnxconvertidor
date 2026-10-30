@@ -1115,9 +1115,12 @@ def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all"):
 
     code_files: {ruta_relativa: contenido} del paquete principal (framework_mlops_v2_pkg/).
     sep_files:  {ruta_relativa: contenido} del paquete separado de monitoreo (opcional).
-    full_env/py_target: si full_env, agrega vendor/ offline (PySpark) segun py_target.
+    full_env/py_target: si full_env, agrega vendor/ offline (PySpark + deps del
+    framework) segun py_target. extra_steps se infiere del paquete (si trae
+    scoring/, necesita xgboost/sklearn offline).
     Devuelve (zip_bytes, filename, vendor_series_list)."""
-    vendor_series = _vendor_files_for_pkg(py_target) if full_env else {}
+    extra_steps = any("scoring/scorer.py" in p for p in (code_files or {}))
+    vendor_series = _vendor_files_for_pkg(py_target, extra_steps) if full_env else {}
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as z:
         for path, content in (code_files or {}).items():
@@ -1138,17 +1141,73 @@ def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all"):
     return buf.getvalue(), "framework_mlops_v2.zip", sorted((vendor_series or {}).keys())
 
 
-def _vendor_files_for_pkg(py_target="all"):
-    """Wheels de PySpark+py4j para empaquetar el ambiente completo offline.
-    Reutiliza el cache de Data Sintetica. py_target elige que serie(s) incluir
-    para bajar el tamano: 'all' (ambas), 'py38-311' (PySpark 3.5.6) o
-    'py312plus' (PySpark 4.0.0). Devuelve {serie_dir: [rutas .whl]} o {}."""
+import subprocess as _sp
+import sys as _sys
+
+# Cache propio del paquete MLOps para las deps del framework (pandas/numpy/...),
+# separado por serie de Python. Vive fuera de git.
+_MLOPS_VENDOR_CACHE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    ".bnx_vendor_cache", "mlops_deps")
+
+# Dependencias del framework a empaquetar OFFLINE (ademas de PySpark+py4j que ya
+# trae el vendor base). pytest/chispa para correr pruebas; xgboost/sklearn solo
+# si el paquete trae pasos extra (scoring).
+_MLOPS_BASE_DEPS = ["pandas>=1.3", "numpy>=1.21", "pytest>=7.0"]
+_MLOPS_EXTRA_DEPS = ["xgboost>=1.7", "scikit-learn>=1.1"]
+
+# Python objetivo por serie (para 'pip download --python-version'): las wheels de
+# pandas/numpy SI son especificas de version de Python.
+_SERIE_PYVER = {"py38-311": "3.11", "py312plus": "3.12"}
+
+
+def _fetch_mlops_deps(serie_dir, extra_steps):
+    """Descarga (y cachea) los wheels de pandas/numpy/pytest (+xgboost/sklearn si
+    extra_steps) para una serie de Python. Devuelve [rutas .whl]. Si no hay
+    internet o pip falla, devuelve lo que haya en cache (puede ser [])."""
+    pyver = _SERIE_PYVER.get(serie_dir, "3.11")
+    cache = os.path.join(_MLOPS_VENDOR_CACHE, serie_dir + ("_extra" if extra_steps else ""))
+    os.makedirs(cache, exist_ok=True)
+    deps = list(_MLOPS_BASE_DEPS) + (list(_MLOPS_EXTRA_DEPS) if extra_steps else [])
+    # Si ya hay wheels en cache, reusar sin re-descargar.
+    existing = [os.path.join(cache, f) for f in os.listdir(cache) if f.endswith(".whl")]
+    if existing:
+        return existing
+    try:
+        _sp.run(
+            [_sys.executable, "-m", "pip", "download",
+             "--only-binary=:all:", "--python-version", pyver,
+             "--implementation", "cp", "--abi", "none", "--platform", "any",
+             "-d", cache, *deps],
+            check=True, capture_output=True, timeout=600)
+    except Exception:
+        # Fallback: sin restriccion de plataforma (descarga para este host).
+        try:
+            _sp.run([_sys.executable, "-m", "pip", "download", "-d", cache, *deps],
+                    check=True, capture_output=True, timeout=600)
+        except Exception:
+            pass
+    return [os.path.join(cache, f) for f in os.listdir(cache) if f.endswith(".whl")]
+
+
+def _vendor_files_for_pkg(py_target="all", extra_steps=False):
+    """Wheels para el ambiente completo OFFLINE: PySpark+py4j (del vendor base de
+    Data Sintetica) MAS las deps del framework (pandas/numpy/pytest y, si
+    extra_steps, xgboost/sklearn). py_target elige serie(s) para bajar tamano.
+    Devuelve {serie_dir: [rutas .whl]} o {}."""
     try:
         from src.export_bundle import fetch_vendor_files, PY_TARGET_SERIES
         only = PY_TARGET_SERIES.get(py_target, None)
-        return fetch_vendor_files(only_series=only) or {}
+        base = fetch_vendor_files(only_series=only) or {}
     except Exception:
         return {}
+    # Complementar cada serie con las deps del framework (pandas/numpy/...).
+    for serie_dir in list(base.keys()):
+        try:
+            base[serie_dir] = list(base[serie_dir]) + _fetch_mlops_deps(serie_dir, extra_steps)
+        except Exception:
+            pass
+    return base
 
 
 def build_package_from_sources(sources, convert_fn, optimize_fn=None,
