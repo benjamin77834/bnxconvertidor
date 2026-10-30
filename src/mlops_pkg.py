@@ -21,6 +21,8 @@ desde su indice privado. En local corre con PySpark open source.
 import io
 import os
 import zipfile
+import ast as _ast_mod
+import re as _re
 from datetime import datetime
 
 
@@ -405,7 +407,70 @@ __version__ = "2.0.0"
 '''
 
 
-def _requirements(include_bank_libs, extra_steps=False):
+# Modulos que NUNCA son librerias internas del banco: stdlib + stack open source
+# que ya resolvemos (pandas/numpy/pyspark/sklearn/xgboost/pytest/chispa) y el
+# propio framework generado. Lo que importe el codigo original y NO este aqui se
+# trata como lib interna del banco (Artifactory privado).
+_STDLIB_AND_KNOWN = {
+    # open source que ya empaquetamos / resolvemos
+    "pandas", "numpy", "np", "pd", "pyspark", "sklearn", "scikit_learn",
+    "xgboost", "lightgbm", "scipy", "pytest", "chispa", "matplotlib",
+    "seaborn", "statsmodels", "joblib", "dateutil", "pytz", "six",
+    # el propio framework generado (imports relativos)
+    "framework_mlops_v2", "framework_mlops_metrics",
+    # stdlib comun que puede aparecer en el codigo de negocio
+    "os", "sys", "re", "json", "csv", "math", "time", "datetime", "calendar",
+    "collections", "itertools", "functools", "logging", "typing", "decimal",
+    "random", "io", "pathlib", "warnings", "argparse", "abc", "copy",
+    "hashlib", "base64", "uuid", "pickle", "glob", "shutil", "tempfile",
+    "subprocess", "traceback", "operator", "string", "enum", "dataclasses",
+}
+
+
+def _detect_bank_imports(source_codes):
+    """Escanea el codigo ORIGINAL (pandas) de las fuentes y devuelve, ordenados,
+    los modulos de PRIMER nivel importados que NO son stdlib ni del stack open
+    source conocido: es decir, las librerias INTERNAS del banco (toolbox,
+    mex_lib_cs, lib_mkop_metrics, mex-lib*, etc.) que hay que resolver desde el
+    Artifactory privado. `source_codes` es una lista de strings (codigo pandas).
+
+    Robusto: intenta ast; si el codigo no parsea, cae a regex sobre las lineas
+    de import. Ignora imports relativos (from . import ...)."""
+    found = {}
+    for code in source_codes or []:
+        code = code or ""
+        mods = set()
+        parsed = False
+        try:
+            tree = _ast_mod.parse(code)
+            parsed = True
+            for node in _ast_mod.walk(tree):
+                if isinstance(node, _ast_mod.Import):
+                    for a in node.names:
+                        mods.add(a.name.split(".")[0])
+                elif isinstance(node, _ast_mod.ImportFrom):
+                    if node.level and node.level > 0:
+                        continue  # relativo: no es lib externa
+                    if node.module:
+                        mods.add(node.module.split(".")[0])
+        except Exception:
+            parsed = False
+        if not parsed:
+            # Fallback por regex: 'import X', 'from X import ...'
+            for m in _re.finditer(r'^\s*import\s+([a-zA-Z_][\w]*)', code, _re.M):
+                mods.add(m.group(1))
+            for m in _re.finditer(r'^\s*from\s+([a-zA-Z_][\w]*)\s+import', code, _re.M):
+                mods.add(m.group(1))
+        for mod in mods:
+            key = mod.strip()
+            if not key or key in _STDLIB_AND_KNOWN:
+                continue
+            # Preservar primer orden de aparicion.
+            found.setdefault(key, True)
+    return sorted(found.keys())
+
+
+def _requirements(include_bank_libs, extra_steps=False, bank_libs=None):
     base = [
         "# Framework MLOps v2 — dependencias",
         "# PySpark segun la version de Python (markers de pip): 3.5.x soporta",
@@ -423,11 +488,26 @@ def _requirements(include_bank_libs, extra_steps=False):
             "xgboost>=1.7  # scoring (paso extra)",
             "scikit-learn>=1.1  # metricas/preparacion (paso extra)",
         ]
-    if include_bank_libs:
+    # Librerias INTERNAS del banco detectadas en el codigo original. Se dan de
+    # ALTA en requirements.txt para que pip las resuelva desde el Artifactory
+    # privado (--index-url). Van ACTIVAS (no comentadas) cuando se detectaron,
+    # porque el codigo realmente las importa y sin ellas el paquete no corre.
+    detected = list(bank_libs or [])
+    if detected:
+        base += [
+            "",
+            "# --- Librerias INTERNAS del banco (detectadas en el codigo original) ---",
+            "# NO estan en PyPI ni en vendor/: se resuelven desde el Artifactory privado.",
+            "# Van en 'requirements-bank.txt' (no aqui) para que la instalacion OFFLINE",
+            "# del core desde vendor/ con --no-index NO se rompa. setup.sh/run.sh las",
+            "# instalan aparte. Listadas aqui COMENTADAS solo como referencia:",
+        ]
+        base += [f"# {lib}" for lib in detected]
+    elif include_bank_libs:
         base += [
             "",
             "# Librerias internas del banco (se resuelven desde el Artifactory",
-            "# privado de Citi; en local se omiten o se apuntan al indice interno).",
+            "# privado; en local se omiten o se apuntan al indice interno).",
             "# toolbox",
             "# lib_mkop_metrics",
             "# mex-libextract",
@@ -435,6 +515,19 @@ def _requirements(include_bank_libs, extra_steps=False):
             "# mex-libfeatureengineering",
         ]
     return "\n".join(base) + "\n"
+
+
+def _requirements_bank(bank_libs):
+    """Archivo SOLO con las librerias internas del banco, para instalarlas desde
+    el Artifactory privado SIN romper el montaje offline del core (vendor/)."""
+    head = [
+        "# Librerias INTERNAS del banco detectadas en tu codigo original.",
+        "# NO estan en PyPI ni en vendor/: se resuelven desde el Artifactory privado.",
+        "# setup.sh/run.sh instalan primero el core OFFLINE y luego INTENTAN estas",
+        "# (sin --no-index). Instala manualmente si tu indice necesita credenciales:",
+        "#   pip install -r requirements-bank.txt --index-url https://<artifactory-interno>/simple",
+    ]
+    return "\n".join(head + list(bank_libs)) + "\n"
 
 
 # setup.sh del AMBIENTE COMPLETO: crea el venv e instala PySpark OFFLINE desde
@@ -493,6 +586,17 @@ if [ -n "$VENDOR_DIR" ] && ls "$VENDOR_DIR"/*.whl >/dev/null 2>&1; then
   python -m pip install --no-build-isolation -e .
 else
   python -m pip install -e .
+fi
+
+# Librerias INTERNAS del banco (si las hay): se resuelven desde el Artifactory
+# privado, NO desde vendor/. Se instalan aparte para no romper el montaje offline
+# del core. Si no hay acceso al indice, se avisa pero no se aborta.
+if [ -f requirements-bank.txt ]; then
+  echo "      Instalando librerias internas del banco (Artifactory privado) ..."
+  # Descomenta y apunta a tu Artifactory si hace falta un indice explicito:
+  # python -m pip install -r requirements-bank.txt --index-url https://<artifactory-interno>/simple
+  python -m pip install -r requirements-bank.txt || \
+    echo "      ⚠️  No se pudieron instalar las libs del banco (sin acceso al Artifactory). Revisa requirements-bank.txt."
 fi
 
 # Al instalar PySpark OFFLINE desde el wheel, algunos servidores (umask estricto)
@@ -557,6 +661,17 @@ else
   # pip install -r requirements.txt --index-url https://<artifactory-interno>/simple
   python -m pip install -r requirements.txt
   python -m pip install -e .
+fi
+
+# Librerias INTERNAS del banco (si las hay): se resuelven desde el Artifactory
+# privado, NO desde vendor/. Se instalan aparte para no romper el montaje offline
+# del core. Si no hay acceso al indice, se avisa pero no se aborta.
+if [ -f requirements-bank.txt ]; then
+  echo "      Instalando librerias internas del banco (Artifactory privado) ..."
+  # Descomenta y apunta a tu Artifactory si hace falta un indice explicito:
+  # python -m pip install -r requirements-bank.txt --index-url https://<artifactory-interno>/simple
+  python -m pip install -r requirements-bank.txt || \
+    echo "      ⚠️  No se pudieron instalar las libs del banco (sin acceso al Artifactory). Revisa requirements-bank.txt."
 fi
 
 # Al instalar PySpark OFFLINE desde el wheel, algunos servidores (umask estricto)
@@ -903,9 +1018,6 @@ setup(
     ],
 )
 '''
-
-
-import re as _re
 
 
 def _safe_name(filename):
@@ -1319,10 +1431,13 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     files = {}
     report = []
     seen = set()
+    original_codes = []    # codigo pandas original de cada fuente (para detectar libs)
 
     for item in sources or []:
         raw_name = item.get("name") or "fuente.py"
         pandas_code = item.get("code") or ""
+        if pandas_code.strip():
+            original_codes.append(pandas_code)
         if not pandas_code.strip():
             report.append({"name": raw_name, "ok": False, "reason": "vacio"})
             continue
@@ -1387,7 +1502,15 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
         extra_steps, include_monitoring=mon_in_pkg, monitoring_target="package"))
     files["tests/test_aggregates.py"] = _TEST
     files["main.py"] = _MAIN_PY   # entry point del framework (demo + --config)
-    files["requirements.txt"] = _requirements(include_bank_libs, extra_steps)
+    # Detectar librerias INTERNAS del banco (toolbox, mex_lib_cs, ...) en el
+    # codigo original. Van en requirements.txt (dadas de alta) para visibilidad,
+    # y ADEMAS en requirements-bank.txt para que el montaje offline del core
+    # (vendor/) no se rompa: el core se instala con --no-index y las del banco se
+    # intentan aparte desde el Artifactory (sin abortar si no hay acceso).
+    bank_libs = _detect_bank_imports(original_codes)
+    files["requirements.txt"] = _requirements(include_bank_libs, extra_steps, bank_libs)
+    if bank_libs:
+        files["requirements-bank.txt"] = _requirements_bank(bank_libs)
     files["run.sh"] = _RUN_SH
     files["setup.py"] = _SETUP
     # Ambiente completo: setup.sh que instala PySpark OFFLINE desde vendor/.
@@ -1396,7 +1519,7 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     files["README.md"] = _readme_custom(
         include_bank_libs, gen_sources, report, extra_steps,
         include_monitoring=include_monitoring, separate_monitoring=separate_monitoring,
-        full_env=full_env)
+        full_env=full_env, bank_libs=bank_libs)
 
     sep_files = _monitoring_files("separate") if (include_monitoring and separate_monitoring) else {}
 
@@ -1407,13 +1530,14 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     report.append({"_meta": True, "full_env": bool(full_env),
                    "vendor_series": vendor_list,
                    "py_target": py_target,
+                   "bank_libs": bank_libs,
                    "_code_files": files, "_sep_files": sep_files})
     return zip_bytes, "framework_mlops_v2.zip", report
 
 
 def _readme_custom(include_bank_libs, sources, report, extra_steps=False,
                    include_monitoring=False, separate_monitoring=False,
-                   full_env=False):
+                   full_env=False, bank_libs=None):
     rows = "\n".join(
         f"- `{r.get('source', '?')}` ← {r['name']}"
         + (" ✅" if r.get("ok") else f" ⚠️ {r.get('reason', '')}")
@@ -1463,7 +1587,28 @@ El monitoreo se entrega aparte en `framework_mlops_metrics_pkg/`
 (`framework_mlops_metrics`), con su propio setup.py/tests, para que corra en
 producción con su propio ciclo de vida (igual que el `lib_mkop_metrics` original).
 '''
-    return base + mon + f'''
+    banklibs = ""
+    if bank_libs:
+        libs_md = "\n".join(f"- `{lib}`" for lib in bank_libs)
+        banklibs = f'''
+
+## ⚠️ Librerías internas del banco (acción requerida)
+Tu código original importa estas librerías **internas** (no están en PyPI):
+
+{libs_md}
+
+Quedaron **dadas de alta en `requirements-bank.txt`** (separadas del core para
+no romper el montaje offline desde `vendor/`). `setup.sh`/`run.sh` instalan
+primero todo el core offline y luego **intentan** estas desde el **Artifactory
+privado**. Si tu índice necesita URL o credenciales:
+```bash
+pip install -r requirements-bank.txt --index-url https://<artifactory-interno>/simple
+```
+o configura el índice en `pip.conf` / `PIP_INDEX_URL`. Sin acceso a ese índice
+el modelo fallará con `No module named '<lib>'` al correr. En `requirements.txt`
+aparecen comentadas como referencia.
+'''
+    return base + banklibs + mon + f'''
 
 ## Fuentes generadas desde tu código
 Cada archivo que subiste se convirtió a PySpark y se envolvió como un aggregate
