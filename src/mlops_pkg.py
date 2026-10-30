@@ -931,6 +931,14 @@ def _indent(code, spaces):
     return "\n".join((pad + ln if ln.strip() else ln) for ln in code.split("\n"))
 
 
+def _as_comment_block(code):
+    """Convierte un bloque de codigo en lineas comentadas con '# '. Seguro frente
+    a docstrings con triple comilla o comillas internas (no es un string literal,
+    asi que nunca cierra prematuramente ni rompe la sintaxis del archivo)."""
+    lines = (code or "").strip().split("\n")
+    return "\n".join((f"# {ln}" if ln.strip() else "#") for ln in lines)
+
+
 def _aggregate_from_pyspark(source, pyspark_code, original_pandas):
     """Envuelve PySpark convertido en el contrato del framework v2.
 
@@ -966,9 +974,9 @@ class {cls}(BaseAggregate):
 
 
 # --- Codigo de negocio ORIGINAL (pandas), como referencia ---
-_ORIGINAL_PANDAS = """
-{original_pandas.strip()}
-"""
+# Se guarda COMENTADO (no como string literal) para que un docstring con triple
+# comilla o comillas internas en el original no rompa la sintaxis de este archivo.
+{_as_comment_block(original_pandas)}
 '''
 
 
