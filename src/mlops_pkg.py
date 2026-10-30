@@ -1398,42 +1398,59 @@ def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all"):
     bank_sdists, bank_pkgcode = ([], {})
     if full_env and uses_bank:
         bank_sdists, bank_pkgcode = _bank_vendor_files()
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as z:
-        for path, content in (code_files or {}).items():
-            z.writestr("framework_mlops_v2_pkg/" + path, content)
-        for path, content in (sep_files or {}).items():
-            z.writestr("framework_mlops_metrics_pkg/" + path, content)
-        for serie_dir, whls in (vendor_series or {}).items():
-            for fpath in whls:
-                try:
-                    with open(fpath, "rb") as fh:
-                        data = fh.read()
-                except OSError:
-                    continue
-                info = zipfile.ZipInfo(
-                    "framework_mlops_v2_pkg/vendor/" + serie_dir + "/" + os.path.basename(fpath))
-                info.compress_type = zipfile.ZIP_STORED
-                z.writestr(info, data)
-        # sdist de las mex-lib* del banco -> vendor/bank/
-        for fpath in bank_sdists:
-            try:
-                with open(fpath, "rb") as fh:
-                    data = fh.read()
-            except OSError:
-                continue
-            info = zipfile.ZipInfo(
-                "framework_mlops_v2_pkg/vendor/bank/" + os.path.basename(fpath))
+    # Evitar escribir la MISMA ruta dos veces (en Python 3.8/Windows un ZipInfo
+    # duplicado o un estado inconsistente puede dejar el stream en mal estado y
+    # romper el cierre con 'I/O operation on closed file'). Deduplicamos por ruta.
+    seen_arc = set()
+
+    def _put_str(z, arc, content):
+        if arc in seen_arc:
+            return
+        seen_arc.add(arc)
+        z.writestr(arc, content)
+
+    def _put_bin(z, arc, fpath, stored=False):
+        if arc in seen_arc:
+            return
+        try:
+            with open(fpath, "rb") as fh:
+                data = fh.read()
+        except OSError:
+            return
+        seen_arc.add(arc)
+        if stored:
+            info = zipfile.ZipInfo(arc)
             info.compress_type = zipfile.ZIP_STORED
             z.writestr(info, data)
+        else:
+            z.writestr(arc, data)
+
+    buf = io.BytesIO()
+    z = zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, allowZip64=True)
+    try:
+        for path, content in (code_files or {}).items():
+            _put_str(z, "framework_mlops_v2_pkg/" + path, content)
+        for path, content in (sep_files or {}).items():
+            _put_str(z, "framework_mlops_metrics_pkg/" + path, content)
+        for serie_dir, whls in (vendor_series or {}).items():
+            for fpath in whls:
+                _put_bin(z, "framework_mlops_v2_pkg/vendor/" + serie_dir + "/"
+                         + os.path.basename(fpath), fpath, stored=True)
+        # sdist de las mex-lib* del banco -> vendor/bank/
+        for fpath in bank_sdists:
+            _put_bin(z, "framework_mlops_v2_pkg/vendor/bank/" + os.path.basename(fpath),
+                     fpath, stored=True)
         # Codigo de path del banco (toolbox/bnmxverse/utils) -> vendor/bank/pkgcode/
         for rel, full in sorted(bank_pkgcode.items()):
-            try:
-                with open(full, "rb") as fh:
-                    data = fh.read()
-            except OSError:
-                continue
-            z.writestr("framework_mlops_v2_pkg/vendor/bank/pkgcode/" + rel.replace(os.sep, "/"), data)
+            _put_bin(z, "framework_mlops_v2_pkg/vendor/bank/pkgcode/"
+                     + rel.replace(os.sep, "/"), full, stored=False)
+    finally:
+        # Cerrar SIEMPRE antes de leer getvalue(); si algo fallo arriba, el cierre
+        # no debe lanzar un segundo error que oculte el real.
+        try:
+            z.close()
+        except Exception:
+            pass
     series_out = sorted((vendor_series or {}).keys())
     if bank_sdists or bank_pkgcode:
         series_out = series_out + ["bank"]
