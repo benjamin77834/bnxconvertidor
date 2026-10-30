@@ -529,6 +529,23 @@ _BANK_MODULE_TO_PKG = {
     "lib_missing_treatment": "mex-libmissingtreatment",
     "lib_vector_assembler": "mex-libvectorassembler",
 }
+# Paquetes pip del banco VERIFICADOS (importan limpio en pruebas nuestras). Solo
+# estos se empaquetan OFFLINE en vendor/bank/. Los demas sdist estan INCOMPLETOS
+# en el origen (les faltan subpaquetes: extract_special_treatments, mobs, alias
+# 'libs', shims *_aggregate, numpy.source) -> se omiten del vendor y se avisa.
+_BANK_PKG_VERIFIED = {
+    "mex-libcolumns2vector",
+    "mex-libgeneratepivot",
+    "mex-libgenerateratios",
+    "mex-libvectorassembler",
+}
+# Paquetes del banco INCOMPLETOS en el origen, con el motivo (para avisar al usuario).
+_BANK_PKG_INCOMPLETE = {
+    "mex-libextract": "falta el subpaquete 'extract_special_treatments/' en el .tar.gz",
+    "mex-libgroupby": "imports '*_aggregate' sin shim y depende de otras libs (generate_pivot)",
+    "mex-libfeatureengineering": "usa 'from libs.*' (alias inexistente) y exporta nombres privados inconsistentes",
+    "mex-libmissingtreatment": "falta el subpaquete 'mobs/' y usa numpy.source (API eliminada)",
+}
 # Modulos del banco que NO son pip, sino codigo de PYTHONPATH (van en vendor/bank/
 # pkgcode, no en requirements-bank.txt).
 _BANK_PATH_MODULES = {"toolbox", "bnmxverse", "utils"}
@@ -545,13 +562,17 @@ def _requirements_bank(bank_libs):
     para instalarlas OFFLINE desde vendor/bank/ o desde el Artifactory privado.
     Los modulos de PYTHONPATH (toolbox, ...) NO van aqui; se montan via bank_pkg."""
     # Traducir modulos -> paquetes pip y excluir los de path (toolbox/...).
-    pkgs = []
+    # Separar VERIFICADOS (activos) de INCOMPLETOS (comentados con el motivo).
+    verified, incomplete = [], []
     for m in bank_libs or []:
         if m in _BANK_PATH_MODULES:
             continue
         name = _bank_pkg_name(m)
-        if name not in pkgs:
-            pkgs.append(name)
+        if name in _BANK_PKG_INCOMPLETE:
+            if name not in [n for n, _ in incomplete]:
+                incomplete.append((name, _BANK_PKG_INCOMPLETE[name]))
+        elif name not in verified:
+            verified.append(name)
     head = [
         "# Librerias INTERNAS del banco detectadas en tu codigo original.",
         "# Se instalan OFFLINE desde vendor/bank/ si el paquete es 'ambiente completo';",
@@ -560,7 +581,16 @@ def _requirements_bank(bank_libs):
         "# Los modulos de PYTHONPATH (toolbox, bnmxverse, utils) van en ./bank_pkg,",
         "# NO aqui (no son paquetes pip).",
     ]
-    return "\n".join(head + pkgs) + "\n"
+    lines = list(head) + list(verified)
+    if incomplete:
+        lines += [
+            "",
+            "# --- INCOMPLETAS en el .tar.gz de origen (NO empaquetadas; pide la",
+            "#     version completa al equipo del banco). Motivo por paquete: ---",
+        ]
+        for name, reason in incomplete:
+            lines.append(f"# {name}   # {reason}")
+    return "\n".join(lines) + "\n"
 
 
 # setup.sh del AMBIENTE COMPLETO: crea el venv e instala PySpark OFFLINE desde
@@ -1430,13 +1460,21 @@ _BANK_LIBS_CACHE = os.path.join(
 
 def _bank_vendor_files():
     """Devuelve ({sdist .tar.gz}, {pkgcode: rutas de modulos}) de las librerias
-    internas del banco presentes en cache. Si no hay cache, devuelve ([], {})."""
+    internas del banco presentes en cache. Solo incluye los sdist VERIFICADOS
+    (_BANK_PKG_VERIFIED): los incompletos en origen se omiten del vendor. Si no
+    hay cache, devuelve ([], {})."""
     whl_dir = os.path.join(_BANK_LIBS_CACHE, "wheels")
     code_dir = os.path.join(_BANK_LIBS_CACHE, "pkgcode")
     sdists = []
     if os.path.isdir(whl_dir):
-        sdists = [os.path.join(whl_dir, f) for f in sorted(os.listdir(whl_dir))
-                  if f.endswith((".tar.gz", ".whl"))]
+        for f in sorted(os.listdir(whl_dir)):
+            if not f.endswith((".tar.gz", ".whl")):
+                continue
+            # Nombre de paquete = prefijo antes de '-<version>'. Solo empaquetar
+            # los verificados (los incompletos se dejan fuera del vendor offline).
+            pkg = f.split("-2.")[0] if "-2." in f else f.rsplit("-", 1)[0]
+            if pkg in _BANK_PKG_VERIFIED:
+                sdists.append(os.path.join(whl_dir, f))
     pkgcode = {}
     if os.path.isdir(code_dir):
         for root, _dirs, files in os.walk(code_dir):
@@ -1659,11 +1697,25 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     zip_bytes, _fn, vendor_list = zip_from_files(
         files, sep_files, full_env=full_env, py_target=py_target)
 
+    # Clasificar libs del banco para el reporte (verificadas vs incompletas).
+    bank_verified, bank_incomplete = [], []
+    for lib in bank_libs or []:
+        if lib in _BANK_PATH_MODULES:
+            continue
+        name = _bank_pkg_name(lib)
+        if name in _BANK_PKG_INCOMPLETE:
+            if name not in bank_incomplete:
+                bank_incomplete.append(name)
+        elif name not in bank_verified:
+            bank_verified.append(name)
+
     # Meta: incluye los archivos de CODIGO (editables) para guardarlos por token.
     report.append({"_meta": True, "full_env": bool(full_env),
                    "vendor_series": vendor_list,
                    "py_target": py_target,
                    "bank_libs": bank_libs,
+                   "bank_verified": bank_verified,
+                   "bank_incomplete": bank_incomplete,
                    "_code_files": files, "_sep_files": sep_files})
     return zip_bytes, "framework_mlops_v2.zip", report
 
@@ -1722,27 +1774,44 @@ producción con su propio ciclo de vida (igual que el `lib_mkop_metrics` origina
 '''
     banklibs = ""
     if bank_libs:
-        libs_md = "\n".join(f"- `{lib}`" for lib in bank_libs)
+        # Clasificar lo detectado: paquetes pip verificados / incompletos, y
+        # modulos de PYTHONPATH (toolbox/...).
+        ver, inc, pathmods = [], [], []
+        for lib in bank_libs:
+            if lib in _BANK_PATH_MODULES:
+                pathmods.append(lib)
+                continue
+            name = _bank_pkg_name(lib)
+            if name in _BANK_PKG_INCOMPLETE:
+                if (name, _BANK_PKG_INCOMPLETE[name]) not in inc:
+                    inc.append((name, _BANK_PKG_INCOMPLETE[name]))
+            elif name not in ver:
+                ver.append(name)
+        ver_md = "\n".join(f"- `{n}`" for n in ver) or "- (ninguna)"
+        inc_md = "\n".join(f"- `{n}` — {r}" for n, r in inc) or "- (ninguna)"
+        path_md = "\n".join(f"- `{m}`" for m in pathmods) or "- (ninguno)"
         banklibs = f'''
 
-## ⚠️ Librerías internas del banco (acción requerida)
-Tu código original importa estas librerías **internas** (no están en PyPI):
+## ⚠️ Librerías internas del banco
+Tu código importa librerías **internas** del banco (no están en PyPI).
 
-{libs_md}
+### ✅ Empaquetadas OFFLINE (verificadas, importan limpio)
+{ver_md}
 
-Si bajaste el paquete como **ambiente completo**, estas librerías ya vienen
-**OFFLINE en `vendor/bank/`**:
-- Los paquetes pip del banco (`mex-lib*`) se instalan con `--no-index` desde
-  `vendor/bank/` (ver `requirements-bank.txt`).
-- Los módulos de PYTHONPATH (`toolbox`, `bnmxverse`, `utils`) se copian a
-  `./bank_pkg` y `main.py` los agrega al path automáticamente.
+En **ambiente completo** vienen en `vendor/bank/` y se instalan con `--no-index`
+(ver `requirements-bank.txt`). Los módulos de PYTHONPATH se copian a `./bank_pkg`
+y `main.py` los agrega al path solo:
+{path_md}
 
-`setup.sh`/`run.sh` hacen todo esto sin internet. Si NO usaste ambiente completo,
-se intentan desde el **Artifactory privado**:
+### ⛔ NO empaquetadas (sdist INCOMPLETO en el origen)
+Estas vienen defectuosas desde el `.tar.gz` del banco (les falta código). **No**
+se incluyen en `vendor/bank/`; pide la versión completa al equipo del banco:
+{inc_md}
+
+Si tu servidor tiene acceso al **Artifactory privado**, pueden intentarse desde ahí:
 ```bash
 pip install -r requirements-bank.txt --index-url https://<artifactory-interno>/simple
 ```
-En `requirements.txt` aparecen comentadas como referencia.
 '''
     return base + banklibs + mon + f'''
 
