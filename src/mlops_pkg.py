@@ -481,14 +481,19 @@ echo "[4/5] Instalando dependencias (requirements.txt) y el framework..."
 # Las libs internas del banco comentadas en el archivo se ignoran. OFFLINE: si
 # existen en vendor/ se usan de ahi; si no, por internet.
 if [ -n "$VENDOR_DIR" ] && ls "$VENDOR_DIR"/*.whl >/dev/null 2>&1; then
-  python -m pip install --no-index --find-links "$VENDOR_DIR" -r requirements.txt 2>/dev/null || \
-    python -m pip install -r requirements.txt 2>/dev/null || true
+  # OFFLINE estricto: todo desde vendor/, sin caer a internet.
+  python -m pip install --no-index --find-links "$VENDOR_DIR" -r requirements.txt
 else
   python -m pip install -r requirements.txt 2>/dev/null || true
 fi
 # Instalar el PROPIO paquete en modo editable (clave: sin esto los imports
-# 'from framework_mlops_v2...' fallan fuera de la carpeta raiz).
-python -m pip install -e .
+# 'from framework_mlops_v2...' fallan fuera de la carpeta raiz). Sin aislamiento
+# para no intentar bajar el build-system por internet cuando estamos offline.
+if [ -n "$VENDOR_DIR" ] && ls "$VENDOR_DIR"/*.whl >/dev/null 2>&1; then
+  python -m pip install --no-build-isolation -e .
+else
+  python -m pip install -e .
+fi
 
 echo "[5/5] Corriendo pruebas ..."
 pytest -q || echo "  (pytest requiere Java para Spark; revisa el entorno)"
@@ -504,6 +509,7 @@ echo "   Datos reales:  python main.py --config cfg.json"
 
 _RUN_SH = '''#!/usr/bin/env bash
 # run.sh — crea un ENTORNO VIRTUAL con todo lo necesario y corre las pruebas.
+# Si el paquete trae vendor/ (ambiente completo) monta TODO OFFLINE, sin internet.
 # Uso:  bash run.sh
 set -e
 
@@ -513,13 +519,35 @@ echo "[1/4] Creando entorno virtual .venv ..."
 
 echo "[2/4] Activando e instalando dependencias ..."
 . .venv/bin/activate
-pip install --upgrade pip >/dev/null
-# Si estas en la red del banco, descomenta --index-url con tu Artifactory:
-# pip install -r requirements.txt --index-url https://<artifactory-interno>/simple
-pip install -r requirements.txt
-# Instalar el PROPIO paquete (sin esto los imports 'from framework_mlops_v2...'
-# fallan fuera de la carpeta raiz).
-pip install -e .
+python -m pip install --upgrade pip >/dev/null 2>&1 || true
+
+# Detectar vendor/ segun la version de Python (igual que setup.sh): si existe,
+# instalamos TODO offline con --no-index. pandas/numpy/pyspark/py4j/pytest estan
+# ahi. Sin vendor/, caemos a internet (red del banco / Artifactory).
+PYMINOR="$(python -c 'import sys; print(sys.version_info[1])')"
+VENDOR_DIR=""
+if [ "$PYMINOR" -ge 12 ] 2>/dev/null && [ -d "vendor/py312plus" ]; then
+  VENDOR_DIR="vendor/py312plus"
+elif [ -d "vendor/py38-311" ]; then
+  VENDOR_DIR="vendor/py38-311"
+elif [ -d "vendor/py312plus" ]; then
+  VENDOR_DIR="vendor/py312plus"
+fi
+
+if [ -n "$VENDOR_DIR" ] && ls "$VENDOR_DIR"/*.whl >/dev/null 2>&1; then
+  echo "      OFFLINE desde $VENDOR_DIR (sin internet)."
+  python -m pip install --no-index --find-links "$VENDOR_DIR" pip setuptools wheel >/dev/null 2>&1 || true
+  python -m pip install --no-index --find-links "$VENDOR_DIR" -r requirements.txt
+  # Paquete propio en editable SIN aislamiento (usa el setuptools ya instalado,
+  # no intenta bajar build-system por internet).
+  python -m pip install --no-build-isolation -e .
+else
+  echo "      vendor/ no disponible; instalando por internet (red del banco)."
+  # Si estas en la red del banco, descomenta --index-url con tu Artifactory:
+  # pip install -r requirements.txt --index-url https://<artifactory-interno>/simple
+  python -m pip install -r requirements.txt
+  python -m pip install -e .
+fi
 
 echo "[3/4] Ejecutando pruebas (pytest) ..."
 pytest -q || echo "  (pytest requiere pyspark + Java; revisa el entorno)"
@@ -1159,6 +1187,16 @@ _MLOPS_EXTRA_DEPS = ["xgboost>=1.7", "scikit-learn>=1.1"]
 # Python objetivo por serie (para 'pip download --python-version'): las wheels de
 # pandas/numpy SI son especificas de version de Python.
 _SERIE_PYVER = {"py38-311": "3.11", "py312plus": "3.12"}
+# ABI de CPython por serie. pandas/numpy traen wheels BINARIAS con ABI concreta
+# (cp311, cp312); no existe wheel 'none/any' para ellas, por eso hay que pedirla.
+_SERIE_ABI = {"py38-311": "cp311", "py312plus": "cp312"}
+# Plataformas Linux objetivo (el servidor del banco es Linux, normalmente x86_64).
+# Bajamos ambas arquitecturas comunes para no asumir. manylinux2014 = glibc 2.17+,
+# compatible con RHEL7+/la mayoria de servidores empresariales.
+_LINUX_PLATFORMS = [
+    "manylinux2014_x86_64", "manylinux_2_17_x86_64",
+    "manylinux2014_aarch64", "manylinux_2_17_aarch64",
+]
 
 
 def _fetch_mlops_deps(serie_dir, extra_steps):
@@ -1166,6 +1204,7 @@ def _fetch_mlops_deps(serie_dir, extra_steps):
     extra_steps) para una serie de Python. Devuelve [rutas .whl]. Si no hay
     internet o pip falla, devuelve lo que haya en cache (puede ser [])."""
     pyver = _SERIE_PYVER.get(serie_dir, "3.11")
+    abi = _SERIE_ABI.get(serie_dir, "cp311")
     cache = os.path.join(_MLOPS_VENDOR_CACHE, serie_dir + ("_extra" if extra_steps else ""))
     os.makedirs(cache, exist_ok=True)
     deps = list(_MLOPS_BASE_DEPS) + (list(_MLOPS_EXTRA_DEPS) if extra_steps else [])
@@ -1173,15 +1212,32 @@ def _fetch_mlops_deps(serie_dir, extra_steps):
     existing = [os.path.join(cache, f) for f in os.listdir(cache) if f.endswith(".whl")]
     if existing:
         return existing
-    try:
-        _sp.run(
-            [_sys.executable, "-m", "pip", "download",
-             "--only-binary=:all:", "--python-version", pyver,
-             "--implementation", "cp", "--abi", "none", "--platform", "any",
-             "-d", cache, *deps],
-            check=True, capture_output=True, timeout=600)
-    except Exception:
-        # Fallback: sin restriccion de plataforma (descarga para este host).
+    # El paquete corre en Linux (servidor del banco), pero el generador puede
+    # correr en macOS/otra version de Python. Hay que pedirle a pip, por cada
+    # dependencia binaria, la wheel de Linux con la ABI de CPython correcta
+    # (cp311/cp312) y, ademas, las wheels puras ('none'/'any' para pytest etc.).
+    # Se intenta por cada plataforma Linux; pip trae la que resuelva y descarta
+    # las que no apliquen. La restriccion de ABI/plataforma NO depende del host.
+    ok_any = False
+    for plat in _LINUX_PLATFORMS:
+        try:
+            _sp.run(
+                [_sys.executable, "-m", "pip", "download",
+                 "--only-binary=:all:",
+                 "--python-version", pyver,
+                 "--implementation", "cp",
+                 "--abi", abi, "--abi", "abi3", "--abi", "none",
+                 "--platform", plat, "--platform", "any",
+                 "-d", cache, *deps],
+                check=True, capture_output=True, timeout=600)
+            ok_any = True
+        except Exception:
+            # Esta plataforma no resolvio (p.ej. no hay aarch64); seguir con la
+            # siguiente. Lo importante es que al menos x86_64 funcione.
+            continue
+    if not ok_any:
+        # Ultimo recurso: descarga para este host (puede no servir en el servidor;
+        # mejor que nada para entornos de prueba locales).
         try:
             _sp.run([_sys.executable, "-m", "pip", "download", "-d", cache, *deps],
                     check=True, capture_output=True, timeout=600)
