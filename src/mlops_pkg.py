@@ -495,6 +495,16 @@ else
   python -m pip install -e .
 fi
 
+# Al instalar PySpark OFFLINE desde el wheel, algunos servidores (umask estricto)
+# dejan los scripts de pyspark/bin sin permiso de ejecucion, y spark-submit falla
+# con 'Permission denied'. Les restauramos el bit +x.
+PYSPARK_HOME="$(python -c 'import os, pyspark; print(os.path.dirname(pyspark.__file__))' 2>/dev/null || true)"
+if [ -n "$PYSPARK_HOME" ]; then
+  echo "      Ajustando permisos de ejecucion en $PYSPARK_HOME/bin y /sbin ..."
+  chmod -R +x "$PYSPARK_HOME/bin" 2>/dev/null || true
+  chmod -R +x "$PYSPARK_HOME/sbin" 2>/dev/null || true
+fi
+
 echo "[5/5] Corriendo pruebas ..."
 pytest -q || echo "  (pytest requiere Java para Spark; revisa el entorno)"
 
@@ -547,6 +557,16 @@ else
   # pip install -r requirements.txt --index-url https://<artifactory-interno>/simple
   python -m pip install -r requirements.txt
   python -m pip install -e .
+fi
+
+# Al instalar PySpark OFFLINE desde el wheel, algunos servidores (umask estricto)
+# dejan los scripts de pyspark/bin sin permiso de ejecucion, y spark-submit falla
+# con 'Permission denied'. Les restauramos el bit +x.
+PYSPARK_HOME="$(python -c 'import os, pyspark; print(os.path.dirname(pyspark.__file__))' 2>/dev/null || true)"
+if [ -n "$PYSPARK_HOME" ]; then
+  echo "      Ajustando permisos de ejecucion en $PYSPARK_HOME/bin y /sbin ..."
+  chmod -R +x "$PYSPARK_HOME/bin" 2>/dev/null || true
+  chmod -R +x "$PYSPARK_HOME/sbin" 2>/dev/null || true
 fi
 
 echo "[3/4] Ejecutando pruebas (pytest) ..."
