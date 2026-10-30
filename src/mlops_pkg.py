@@ -1181,7 +1181,7 @@ _MLOPS_VENDOR_CACHE = os.path.join(
 # Dependencias del framework a empaquetar OFFLINE (ademas de PySpark+py4j que ya
 # trae el vendor base). pytest/chispa para correr pruebas; xgboost/sklearn solo
 # si el paquete trae pasos extra (scoring).
-_MLOPS_BASE_DEPS = ["pandas>=1.3", "numpy>=1.21", "pytest>=7.0"]
+_MLOPS_BASE_DEPS = ["pandas>=1.3", "numpy>=1.21", "pytest>=7.0", "chispa>=0.9"]
 _MLOPS_EXTRA_DEPS = ["xgboost>=1.7", "scikit-learn>=1.1"]
 
 # Python objetivo por serie (para 'pip download --python-version'): las wheels de
