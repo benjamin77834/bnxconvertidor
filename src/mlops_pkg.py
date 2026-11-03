@@ -1534,7 +1534,8 @@ def _extract_todos(code):
     return out
 
 
-def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all"):
+def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all",
+                   out_path=None):
     """Empaqueta un ZIP a partir de dicts de archivos YA LISTOS (texto). Reusable
     para re-empaquetar tras EDITAR los archivos generados.
 
@@ -1543,7 +1544,13 @@ def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all"):
     full_env/py_target: si full_env, agrega vendor/ offline (PySpark + deps del
     framework) segun py_target. extra_steps se infiere del paquete (si trae
     scoring/, necesita xgboost/sklearn offline).
-    Devuelve (zip_bytes, filename, vendor_series_list)."""
+    out_path: si se da, el ZIP se escribe DIRECTO a ese archivo en disco (no a
+        memoria). CLAVE para el ambiente completo (~700 MB): en Windows/Python 3.8
+        de 32 bits construirlo en un BytesIO agota el espacio de direcciones y
+        rompe con 'I/O operation on closed file'. Con out_path la salida es por
+        streaming a disco. En ese caso el primer valor devuelto es out_path (str),
+        no los bytes.
+    Devuelve (zip_bytes_o_ruta, filename, vendor_series_list)."""
     extra_steps = any("scoring/scorer.py" in p for p in (code_files or {}))
     vendor_series = _vendor_files_for_pkg(py_target, extra_steps) if full_env else {}
     # Empaquetar las LIBRERIAS INTERNAS del banco OFFLINE cuando el paquete las
@@ -1581,8 +1588,15 @@ def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all"):
         else:
             z.writestr(arc, data)
 
-    buf = io.BytesIO()
-    z = zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, allowZip64=True)
+    # Destino: archivo en disco (out_path) o memoria (BytesIO). Para el ambiente
+    # completo (pesado) el handler pasa out_path y evitamos cargarlo todo en RAM.
+    buf = None
+    if out_path:
+        sink = open(out_path, "wb")
+    else:
+        buf = io.BytesIO()
+        sink = buf
+    z = zipfile.ZipFile(sink, "w", zipfile.ZIP_DEFLATED, allowZip64=True)
     try:
         for path, content in (code_files or {}).items():
             _put_str(z, "framework_mlops_v2_pkg/" + path, content)
@@ -1601,16 +1615,22 @@ def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all"):
             _put_bin(z, "framework_mlops_v2_pkg/vendor/bank/pkgcode/"
                      + rel.replace(os.sep, "/"), full, stored=False)
     finally:
-        # Cerrar SIEMPRE antes de leer getvalue(); si algo fallo arriba, el cierre
-        # no debe lanzar un segundo error que oculte el real.
+        # Cerrar SIEMPRE antes de leer el resultado; si algo fallo arriba, el
+        # cierre no debe lanzar un segundo error que oculte el real.
         try:
             z.close()
         except Exception:
             pass
+        if out_path:
+            try:
+                sink.close()
+            except Exception:
+                pass
     series_out = sorted((vendor_series or {}).keys())
     if bank_sdists or bank_pkgcode:
         series_out = series_out + ["bank"]
-    return buf.getvalue(), "framework_mlops_v2.zip", series_out
+    result = out_path if out_path else buf.getvalue()
+    return result, "framework_mlops_v2.zip", series_out
 
 
 import subprocess as _sp
@@ -1754,7 +1774,7 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
                                include_bank_libs=True, optimize=True,
                                extra_steps=False, include_monitoring=False,
                                separate_monitoring=False, full_env=False,
-                               py_target="all"):
+                               py_target="all", out_path=None):
     """Arma el Framework v2 EMPAQUETADO con la logica del usuario dentro.
 
     include_monitoring: anade el modulo de monitoreo (PSI/CSI/DQC).
@@ -1769,7 +1789,10 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     convert_fn: funcion pandas->PySpark (p.ej. py2spark convert_code). Debe
         devolver {"ok","code","warnings","unsupported"}.
     optimize_fn: opcional, PySpark->PySpark optimizado (optimize_pyspark).
-    Devuelve (zip_bytes, filename, report) donde report describe cada fuente.
+    out_path: si se da, el ZIP se escribe a ese archivo en disco (no a memoria) y
+        el primer valor devuelto es out_path en vez de los bytes. Recomendado para
+        ambiente completo (~700 MB) y servidores de 32 bits (Windows/Python 3.8).
+    Devuelve (zip_bytes_o_ruta, filename, report) donde report describe cada fuente.
     """
     gen_sources = []       # nombres de modulo validos, unicos
     files = {}
@@ -1868,8 +1891,8 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
 
     sep_files = _monitoring_files("separate") if (include_monitoring and separate_monitoring) else {}
 
-    zip_bytes, _fn, vendor_list = zip_from_files(
-        files, sep_files, full_env=full_env, py_target=py_target)
+    zip_result, _fn, vendor_list = zip_from_files(
+        files, sep_files, full_env=full_env, py_target=py_target, out_path=out_path)
 
     # Clasificar libs del banco para el reporte (verificadas vs incompletas).
     bank_verified, bank_incomplete = [], []
@@ -1891,7 +1914,7 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
                    "bank_verified": bank_verified,
                    "bank_incomplete": bank_incomplete,
                    "_code_files": files, "_sep_files": sep_files})
-    return zip_bytes, "framework_mlops_v2.zip", report
+    return zip_result, "framework_mlops_v2.zip", report
 
 
 def _readme_custom(include_bank_libs, sources, report, extra_steps=False,

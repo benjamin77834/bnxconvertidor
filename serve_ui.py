@@ -888,24 +888,31 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             py_target = data.get("py_target") or "all"
             if py_target not in ("all", "py38-311", "py312plus"):
                 py_target = "all"
-            zip_bytes, filename, report = build_package_from_sources(
+            # El ZIP se escribe DIRECTO a disco (out_path) para no cargar ~700 MB
+            # en memoria: en Windows/Python 3.8 de 32 bits eso rompe con
+            # 'I/O operation on closed file'. 'zip_out' es la ruta del archivo.
+            import uuid as _uuid
+            tmpdir = os.path.join(tempfile.gettempdir(), "bnx_bundles")
+            os.makedirs(tmpdir, exist_ok=True)
+            token = _uuid.uuid4().hex
+            zip_path = os.path.join(tmpdir, token + ".zip")
+            zip_out, filename, report = build_package_from_sources(
                 sources, convert_fn=py2spark_convert, optimize_fn=optimize_pyspark,
                 include_bank_libs=include_bank, optimize=optimize,
                 extra_steps=extra_steps, include_monitoring=include_monitoring,
                 separate_monitoring=separate_monitoring, full_env=full_env,
-                py_target=py_target)
+                py_target=py_target, out_path=zip_path)
             # Separar el meta (trae los archivos de codigo editables, grandes).
             meta = next((r for r in report if r.get("_meta")), {})
             code_files = meta.pop("_code_files", {}) if meta else {}
             sep_files = meta.pop("_sep_files", {}) if meta else {}
 
-            # Guardar para descarga por streaming (igual que /export/bundle).
-            import uuid as _uuid
-            tmpdir = os.path.join(tempfile.gettempdir(), "bnx_bundles")
-            os.makedirs(tmpdir, exist_ok=True)
-            token = _uuid.uuid4().hex
-            with open(os.path.join(tmpdir, token + ".zip"), "wb") as fh:
-                fh.write(zip_bytes)
+            # Si por alguna razon no se escribio a disco (sin fuentes convertibles,
+            # paquete base en memoria), guardarlo ahora.
+            if isinstance(zip_out, (bytes, bytearray)):
+                with open(zip_path, "wb") as fh:
+                    fh.write(zip_out)
+            zip_size = os.path.getsize(zip_path)
             with open(os.path.join(tmpdir, token + ".name"), "w", encoding="utf-8") as fh:
                 fh.write(filename)
             # Guardar el ESTADO EDITABLE (archivos de codigo + opciones) por token,
@@ -917,7 +924,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                            "full_env": full_env, "py_target": py_target}, fh)
             self._json_response(200, {
                 "ok": True, "token": token, "filename": filename,
-                "size": len(zip_bytes), "report": report,
+                "size": zip_size, "report": report,
                 "download_url": f"/export/download?token={token}",
                 "edit_token": token,
             })
@@ -1076,17 +1083,19 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             with open(fp, "r", encoding="utf-8") as fh:
                 state = json.load(fh)
             from src.mlops_pkg import zip_from_files
-            zip_bytes, filename, vendor_list = zip_from_files(
-                state.get("code_files") or {}, state.get("sep_files") or {},
-                full_env=bool(state.get("full_env")), py_target=state.get("py_target", "all"))
             tmpdir = os.path.join(tempfile.gettempdir(), "bnx_bundles")
             os.makedirs(tmpdir, exist_ok=True)
-            with open(os.path.join(tmpdir, token + ".zip"), "wb") as fh:
-                fh.write(zip_bytes)
+            zip_path = os.path.join(tmpdir, token + ".zip")
+            # Escribir a disco directo (evita cargar el ambiente completo en RAM).
+            _out, filename, vendor_list = zip_from_files(
+                state.get("code_files") or {}, state.get("sep_files") or {},
+                full_env=bool(state.get("full_env")), py_target=state.get("py_target", "all"),
+                out_path=zip_path)
+            zip_size = os.path.getsize(zip_path)
             with open(os.path.join(tmpdir, token + ".name"), "w", encoding="utf-8") as fh:
                 fh.write(filename)
             self._json_response(200, {
-                "ok": True, "filename": filename, "size": len(zip_bytes),
+                "ok": True, "filename": filename, "size": zip_size,
                 "vendor_series": vendor_list,
                 "download_url": f"/export/download?token={token}",
             })
