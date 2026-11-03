@@ -182,6 +182,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_mlops_package_sign()
         elif "/mlops/package/rebuild" in path:
             self._handle_mlops_package_rebuild()
+        elif "/mlops/package/verify" in path:
+            self._handle_mlops_package_verify()
         elif "/mlops/package/build" in path:
             self._handle_mlops_package_build()
         elif "/emulate" in path:
@@ -1088,6 +1090,38 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 "vendor_series": vendor_list,
                 "download_url": f"/export/download?token={token}",
             })
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": f"{type(e).__name__}: {e}"})
+
+    def _handle_mlops_package_verify(self):
+        """Monta el paquete en un venv real y lo PRUEBA: check_env.py + pytest.
+        Body JSON: {token}. Devuelve {ok, log, steps, checks}. El 'log' es la
+        salida estilo terminal (stdout+stderr de cada paso) para mostrar en la GUI.
+        """
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length) if content_length else b""
+        try:
+            data = json.loads(body.decode("utf-8", errors="replace")) if body else {}
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._json_response(400, {"error": "Invalid JSON body"})
+            return
+        token = (data.get("token") or "").strip()
+        fp = self._mlops_edit_path(token)
+        if not fp or not os.path.isfile(fp):
+            self._json_response(404, {"error": "token no encontrado o expirado"})
+            return
+        try:
+            with open(fp, "r", encoding="utf-8") as fh:
+                state = json.load(fh)
+            from src.mlops_pkg import verify_package_env
+            result = verify_package_env(
+                state.get("code_files") or {},
+                full_env=bool(state.get("full_env")),
+                py_target=state.get("py_target", "all"),
+                run_pytest=bool(data.get("run_pytest", False)))
+            self._json_response(200, {"ok": True, "token": token, **result})
         except Exception as e:
             import traceback
             traceback.print_exc()

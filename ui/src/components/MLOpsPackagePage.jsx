@@ -34,6 +34,10 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
   const [editDirty, setEditDirty] = useState(false)
   const [editMsg, setEditMsg] = useState('')
   const [rebuilding, setRebuilding] = useState(false)
+  const [verifying, setVerifying] = useState(false)
+  const [verifyLog, setVerifyLog] = useState('')
+  const [verifyResult, setVerifyResult] = useState(null)  // {ok_env, checks, steps}
+  const [runPytest, setRunPytest] = useState(false)
   // Firma / despliegue del paquete.
   const [signing, setSigning] = useState(false)
   const [signResult, setSignResult] = useState(null)  // {manifest, verify, public_key_pem, private_key_pem}
@@ -156,6 +160,28 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
       setEditMsg('✅ Paquete rehecho con tus ediciones — listo para descargar.')
     } catch (e) { setEditMsg('⚠️ ' + e.message) }
     finally { setRebuilding(false) }
+  }
+
+  // Monta el paquete en un venv real y lo PRUEBA (check_env.py + pytest opcional),
+  // mostrando la salida estilo terminal. Responde la pregunta "¿faltan librerias?".
+  const verify = async () => {
+    if (!buildResult?.edit_token) return
+    setVerifying(true); setVerifyResult(null)
+    setVerifyLog('Montando el entorno virtual y verificando dependencias…\n(Esto puede tardar; instala desde vendor/ si es ambiente completo.)')
+    try {
+      const res = await fetch(`${API_BASE}/mlops/package/verify`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: buildResult.edit_token, run_pytest: runPytest }),
+      })
+      const data = await res.json()
+      if (!res.ok || data.error) {
+        setVerifyLog('⚠️ ' + (data.error || 'no se pudo verificar'))
+        return
+      }
+      setVerifyLog(data.log || '(sin salida)')
+      setVerifyResult({ ok_env: data.ok_env, checks: data.checks, steps: data.steps })
+    } catch (e) { setVerifyLog('⚠️ ' + e.message) }
+    finally { setVerifying(false) }
   }
 
   const card = {
@@ -486,6 +512,55 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                     </details>
                   )}
                 </div>
+              )}
+            </div>
+
+            {/* PROBAR ENTORNO: monta el venv y verifica que no falten librerias */}
+            <div style={{ marginTop: 14, borderTop: `1px solid ${t.border || '#334155'}`, paddingTop: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: t.text || '#e2e8f0' }}>🧪 Probar entorno</span>
+                <button onClick={verify} disabled={verifying}
+                  title="Monta un venv real, instala las dependencias (offline si es ambiente completo) y verifica que no falte ninguna librería"
+                  style={{
+                    padding: '7px 14px', borderRadius: 8, fontSize: 12.5, fontWeight: 700, cursor: verifying ? 'wait' : 'pointer',
+                    background: '#22c55e22', color: '#4ade80', border: '1px solid #22c55e55',
+                  }}>{verifying ? '⏳ Montando y verificando…' : '🧪 Probar y comprobar librerías'}</button>
+                <label style={{ fontSize: 11.5, color: t.muted || '#94a3b8', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={runPytest} onChange={e => setRunPytest(e.target.checked)} />
+                  Correr pruebas (pytest/Spark — más lento)
+                </label>
+              </div>
+              <div style={{ fontSize: 11.5, color: t.muted || '#94a3b8', marginTop: 6 }}>
+                Crea el entorno virtual, instala todo y corre <code>check_env.py</code>. Te dice si falta alguna
+                librería (del stack o del banco) <b>antes</b> de llevarlo a producción.
+              </div>
+
+              {verifyResult && (
+                <div style={{ marginTop: 10, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <span style={{
+                    fontSize: 12.5, fontWeight: 700, padding: '4px 10px', borderRadius: 6,
+                    background: verifyResult.ok_env ? '#22c55e22' : '#f8717122',
+                    color: verifyResult.ok_env ? '#4ade80' : '#f87171',
+                    border: `1px solid ${verifyResult.ok_env ? '#22c55e55' : '#f8717155'}`,
+                  }}>
+                    {verifyResult.ok_env ? '✅ Entorno completo: no falta ninguna librería'
+                      : `⛔ Faltan ${(verifyResult.checks?.missing || []).length} librería(s)`}
+                  </span>
+                  {(verifyResult.checks?.missing || []).length > 0 && (
+                    <span style={{ fontSize: 12, color: '#f87171' }}>
+                      Faltan: {verifyResult.checks.missing.join(', ')}
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {verifyLog && (
+                <pre style={{
+                  marginTop: 10, padding: 12, borderRadius: 8, maxHeight: 360, overflow: 'auto',
+                  background: '#0a0f1a', border: `1px solid ${t.border || '#334155'}`,
+                  color: '#9ae6b4', fontFamily: 'monospace', fontSize: 11.5, lineHeight: 1.5,
+                  whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                }}>{verifyLog}</pre>
               )}
             </div>
 

@@ -2120,3 +2120,166 @@ def package_manifest(include_bank_libs=True):
     ]
     return {"improvements": improvements, "tree": tree,
             "include_bank_libs": include_bank_libs}
+
+
+# --------------------------------------------------------------------------
+# Verificacion REAL del paquete: monta un venv, instala deps (offline si hay
+# vendor/), corre check_env.py y pytest. Devuelve el log estilo terminal para
+# mostrarlo en la GUI. Es lo que hace el boton "Probar entorno" del portal.
+# --------------------------------------------------------------------------
+def verify_package_env(code_files, full_env=False, py_target="all", timeout=900,
+                       run_pytest=False):
+    """Extrae el paquete a un dir temporal, crea un venv, instala las deps y
+    verifica el entorno (check_env.py; pytest opcional). No deja residuos.
+
+    code_files: {ruta_relativa: contenido} del paquete (como en zip_from_files).
+    full_env/py_target: para montar offline desde vendor/ si aplica.
+    run_pytest: si True corre tambien pytest (lento: arranca JVM/Spark). Por
+        defecto False para que el boton de la GUI responda rapido.
+    Devuelve {log, steps, ok_env, checks} donde:
+      - log:   texto completo (stdout+stderr de cada paso), estilo terminal.
+      - steps: [{name, exit_code, ok}] por cada comando ejecutado.
+      - ok_env: True si check_env.py no reporto faltantes (exit 0).
+      - checks: {missing: [...], ok: [...]} parseado de check_env.py."""
+    import tempfile as _tf
+    import shutil as _sh
+    import venv as _venv
+
+    workdir = _tf.mkdtemp(prefix="bnx_verify_")
+    pkg_root = os.path.join(workdir, "framework_mlops_v2_pkg")
+    log_lines = []
+    steps = []
+
+    def _log(s):
+        log_lines.append(s)
+
+    def _run(name, args, cwd):
+        """Corre un comando, captura stdout+stderr, lo agrega al log."""
+        _log("$ " + " ".join(args))
+        try:
+            p = _sp.run(args, cwd=cwd, capture_output=True, text=True,
+                        timeout=timeout)
+            out = (p.stdout or "") + (p.stderr or "")
+            if out.strip():
+                _log(out.rstrip("\n"))
+            steps.append({"name": name, "exit_code": p.returncode,
+                          "ok": p.returncode == 0})
+            _log("")
+            return p.returncode, out
+        except Exception as e:  # pragma: no cover
+            _log("[ERROR] %s: %s" % (name, e))
+            steps.append({"name": name, "exit_code": -1, "ok": False})
+            _log("")
+            return -1, str(e)
+
+    checks = {"missing": [], "ok": []}
+    ok_env = False
+    try:
+        # 1) Materializar el paquete en disco (incluye vendor/ si full_env, para
+        #    poder instalar offline exactamente como en el servidor del banco).
+        zb, _fn, _series = zip_from_files(
+            code_files or {}, None, full_env=full_env, py_target=py_target)
+        import zipfile as _zf
+        _zf.ZipFile(io.BytesIO(zb)).extractall(workdir)
+        _log("== Entorno de prueba: %s ==" % pkg_root)
+        _log("Paquete extraido (%d archivos).\n" % len(code_files or {}))
+
+        # 2) Crear el venv.
+        venv_dir = os.path.join(workdir, ".venv")
+        _log("$ python -m venv .venv")
+        _venv.EnvBuilder(with_pip=True).create(venv_dir)
+        py = os.path.join(venv_dir, "bin", "python")
+        if not os.path.exists(py):  # Windows
+            py = os.path.join(venv_dir, "Scripts", "python.exe")
+        _log("venv creado.\n")
+        steps.append({"name": "venv", "exit_code": 0, "ok": True})
+
+        # 3) Elegir serie de vendor segun la version del python del venv.
+        vendor_root = os.path.join(pkg_root, "vendor")
+        vendor_dir = None
+        if os.path.isdir(vendor_root):
+            minor = _sys.version_info[1]
+            cand = "py312plus" if minor >= 12 else "py38-311"
+            for d in (cand, "py38-311", "py312plus"):
+                if os.path.isdir(os.path.join(vendor_root, d)):
+                    vendor_dir = os.path.join(vendor_root, d)
+                    break
+
+        # pip/setuptools/wheel: OFFLINE desde vendor/ si hay (no toca internet);
+        # si no, upgrade normal por pip.
+        if vendor_dir:
+            _run("pip/setuptools (offline)",
+                 [py, "-m", "pip", "install", "--no-index", "--find-links",
+                  vendor_dir, "pip", "setuptools", "wheel"], pkg_root)
+        else:
+            _run("pip upgrade", [py, "-m", "pip", "install", "--upgrade", "pip",
+                                 "setuptools", "wheel"], pkg_root)
+        req = os.path.join(pkg_root, "requirements.txt")
+        if vendor_dir:
+            _run("deps (offline vendor/)",
+                 [py, "-m", "pip", "install", "--no-index",
+                  "--find-links", vendor_dir, "-r", req], pkg_root)
+            _run("framework (editable)",
+                 [py, "-m", "pip", "install", "--no-build-isolation", "-e", "."],
+                 pkg_root)
+        else:
+            _run("deps (pip)", [py, "-m", "pip", "install", "-r", req], pkg_root)
+            _run("framework (editable)", [py, "-m", "pip", "install", "-e", "."],
+                 pkg_root)
+
+        # 4) Libs del banco OFFLINE (si el paquete las trae).
+        bank_dir = os.path.join(vendor_root, "bank")
+        req_bank = os.path.join(pkg_root, "requirements-bank.txt")
+        if os.path.isdir(bank_dir) and os.path.isfile(req_bank):
+            _run("libs banco (offline)",
+                 [py, "-m", "pip", "install", "--no-index", "--no-build-isolation",
+                  "--find-links", bank_dir, "-r", req_bank], pkg_root)
+            # Copiar pkgcode (toolbox/...) a bank_pkg para el PYTHONPATH.
+            pkgcode = os.path.join(bank_dir, "pkgcode")
+            if os.path.isdir(pkgcode):
+                dst = os.path.join(pkg_root, "bank_pkg")
+                _sh.copytree(pkgcode, dst, dirs_exist_ok=True)
+
+        # 5) check_env.py — el verificador de dependencias.
+        env_vars = dict(os.environ)
+        bank_pkg = os.path.join(pkg_root, "bank_pkg")
+        if os.path.isdir(bank_pkg):
+            env_vars["PYTHONPATH"] = bank_pkg + os.pathsep + env_vars.get("PYTHONPATH", "")
+        _log("$ python check_env.py")
+        try:
+            pe = _sp.run([py, "check_env.py"], cwd=pkg_root, capture_output=True,
+                         text=True, timeout=timeout, env=env_vars)
+            ce_out = (pe.stdout or "") + (pe.stderr or "")
+            _log(ce_out.rstrip("\n"))
+            ok_env = pe.returncode == 0
+            steps.append({"name": "check_env", "exit_code": pe.returncode,
+                          "ok": ok_env})
+            # Parsear faltantes/ok del texto (lineas 'Instaladas OK' y 'FALTAN').
+            for ln in ce_out.splitlines():
+                s = ln.strip()
+                if s.startswith("Instaladas OK"):
+                    part = s.split(":", 1)[1].strip() if ":" in s else ""
+                    checks["ok"] = [x.strip() for x in part.split(",")
+                                    if x.strip() and x.strip() != "-"]
+                elif s.startswith("- ") and ":" in s and (
+                        "open source" in s or "banco" in s or "Otras" in s):
+                    part = s.split(":", 1)[1].strip()
+                    checks["missing"] += [x.strip() for x in part.split(",")
+                                          if x.strip()]
+            _log("")
+        except Exception as e:  # pragma: no cover
+            _log("[ERROR] check_env: %s\n" % e)
+            steps.append({"name": "check_env", "exit_code": -1, "ok": False})
+
+        # 6) pytest OPCIONAL (lento: arranca JVM/Spark). Solo si se pide.
+        if run_pytest:
+            _run("pytest", [py, "-m", "pytest", "-q"], pkg_root)
+        else:
+            _log("(pytest omitido; activalo con 'Correr pruebas' para ejecutar Spark)\n")
+
+        _log("== Fin de la verificacion ==")
+    finally:
+        _sh.rmtree(workdir, ignore_errors=True)
+
+    return {"log": "\n".join(log_lines), "steps": steps,
+            "ok_env": ok_env, "checks": checks}
