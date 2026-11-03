@@ -1553,13 +1553,15 @@ def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all",
     Devuelve (zip_bytes_o_ruta, filename, vendor_series_list)."""
     extra_steps = any("scoring/scorer.py" in p for p in (code_files or {}))
     vendor_series = _vendor_files_for_pkg(py_target, extra_steps) if full_env else {}
-    # Empaquetar las LIBRERIAS INTERNAS del banco OFFLINE cuando el paquete las
-    # usa (hay requirements-bank.txt) y tenemos el cache. Van en vendor/bank/
-    # (sdist pip-instalables) y vendor/bank/pkgcode/ (toolbox/bnmxverse/utils que
-    # se agregan al PYTHONPATH). Asi el despliegue offline no depende del Artifactory.
+    # Empaquetar las LIBRERIAS INTERNAS del banco OFFLINE SIEMPRE que el paquete
+    # las use (hay requirements-bank.txt) y tengamos el cache, TAMBIEN en el
+    # paquete ligero. Son Python puro y pesan ~260 KB (no PySpark), asi que no
+    # engordan el ZIP ligero y evitan que el usuario tenga que conseguirlas
+    # aparte. Van en vendor/bank/ (sdist pip-instalables) y vendor/bank/pkgcode/
+    # (toolbox/bnmxverse/utils, que se agregan al PYTHONPATH).
     uses_bank = any(p.endswith("requirements-bank.txt") for p in (code_files or {}))
     bank_sdists, bank_pkgcode = ([], {})
-    if full_env and uses_bank:
+    if uses_bank:
         bank_sdists, bank_pkgcode = _bank_vendor_files()
     # Evitar escribir la MISMA ruta dos veces (en Python 3.8/Windows un ZipInfo
     # duplicado o un estado inconsistente puede dejar el stream en mal estado y
@@ -1670,8 +1672,12 @@ def _bank_vendor_files():
                 sdists.append(os.path.join(whl_dir, f))
     pkgcode = {}
     if os.path.isdir(code_dir):
-        for root, _dirs, files in os.walk(code_dir):
+        for root, dirs, files in os.walk(code_dir):
+            # No empaquetar artefactos de compilacion ni basura.
+            dirs[:] = [d for d in dirs if d != "__pycache__"]
             for fn in files:
+                if fn.endswith((".pyc", ".pyo")) or fn == ".DS_Store":
+                    continue
                 full = os.path.join(root, fn)
                 rel = os.path.relpath(full, code_dir)
                 pkgcode[rel] = full
@@ -1995,9 +2001,10 @@ Tu código importa librerías **internas** del banco (no están en PyPI).
 ### ✅ Empaquetadas OFFLINE (verificadas, importan limpio)
 {ver_md}
 
-En **ambiente completo** vienen en `vendor/bank/` y se instalan con `--no-index`
-(ver `requirements-bank.txt`). Los módulos de PYTHONPATH se copian a `./bank_pkg`
-y `main.py` los agrega al path solo:
+Vienen en `vendor/bank/` **tanto en el paquete ligero como en el ambiente
+completo** (pesan ~260 KB, son Python puro). Se instalan con `--no-index` desde
+ahí (ver `requirements-bank.txt`). Los módulos de PYTHONPATH se copian a
+`./bank_pkg` y `main.py` los agrega al path solo:
 {path_md}
 
 ### ⛔ NO empaquetadas (sdist INCOMPLETO en el origen)
