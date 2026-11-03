@@ -686,7 +686,9 @@ if [ -n "$PYSPARK_HOME" ]; then
   chmod -R +x "$PYSPARK_HOME/sbin" 2>/dev/null || true
 fi
 
-echo "[5/5] Corriendo pruebas ..."
+echo "[5/5] Verificando dependencias y corriendo pruebas ..."
+# check_env.py avisa si falta alguna libreria que el codigo importa.
+python check_env.py || echo "  ⚠️  Faltan librerias (ver arriba). Instalalas antes de produccion."
 pytest -q || echo "  (pytest requiere Java para Spark; revisa el entorno)"
 
 echo ""
@@ -775,10 +777,12 @@ if [ -n "$PYSPARK_HOME" ]; then
   chmod -R +x "$PYSPARK_HOME/sbin" 2>/dev/null || true
 fi
 
-echo "[3/4] Ejecutando pruebas (pytest) ..."
-pytest -q || echo "  (pytest requiere pyspark + Java; revisa el entorno)"
+echo "[3/4] Verificando dependencias (check_env.py) ..."
+# Avisa si falta alguna libreria que el codigo importa (no aborta el montaje).
+python check_env.py || echo "  ⚠️  Faltan librerias (ver arriba). Instalalas antes de produccion."
 
-echo "[4/4] Corriendo el framework (main.py, modo demo) ..."
+echo "[4/4] Ejecutando pruebas y el framework ..."
+pytest -q || echo "  (pytest requiere pyspark + Java; revisa el entorno)"
 python main.py || echo "  (main.py requiere pyspark + Java; revisa el entorno)"
 
 echo ""
@@ -1100,6 +1104,158 @@ def main():
 
 if __name__ == "__main__":
     main()
+'''
+
+
+# check_env.py — verifica que TODAS las librerias que importa el codigo esten
+# instaladas en el venv. Lo corren run.sh/setup.sh tras montar, y el usuario lo
+# puede correr a mano:  python check_env.py
+_CHECK_ENV = '''#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""check_env.py — Verificador de dependencias del Framework MLOps v2.
+
+Escanea TODOS los imports de primer nivel del codigo del paquete
+(framework_mlops_v2/, main.py) y comprueba que cada modulo se pueda importar en
+este entorno virtual. Reporta lo que FALTA, separando:
+  - stack open source (pandas/numpy/pyspark/...) -> deberia venir de vendor/ o pip
+  - librerias internas del banco (mex-lib*/toolbox/...) -> vendor/bank/ o Artifactory
+
+Uso:  python check_env.py          (sale con codigo !=0 si falta algo)
+      python check_env.py --quiet  (solo imprime el resumen final)
+Es SOLO lectura: no instala nada.
+"""
+import ast
+import importlib.util
+import os
+import sys
+
+# Modulos del stack open source que el framework usa (deben estar instalados).
+_STACK = {
+    "pandas", "numpy", "pyspark", "py4j", "pytest", "chispa", "sklearn",
+    "scikit_learn", "xgboost", "lightgbm", "scipy", "dateutil", "pytz",
+}
+# Prefijos de librerias internas del banco (para clasificar lo que falta).
+_BANK_PREFIXES = ("lib_", "mex", "toolbox", "bnmxverse")
+
+# stdlib: si el modulo se resuelve y vive bajo la lib estandar, no es dependencia
+# externa. Usamos sys.stdlib_module_names cuando existe (3.10+); si no, heuristica.
+_STDLIB = set(getattr(sys, "stdlib_module_names", set()))
+
+
+def _project_root():
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _iter_py_files():
+    root = _project_root()
+    targets = [os.path.join(root, "main.py"),
+               os.path.join(root, "framework_mlops_v2")]
+    for t in targets:
+        if os.path.isfile(t) and t.endswith(".py"):
+            yield t
+        elif os.path.isdir(t):
+            for dp, _dn, fns in os.walk(t):
+                for fn in fns:
+                    if fn.endswith(".py"):
+                        yield os.path.join(dp, fn)
+
+
+def _top_level_imports():
+    """Modulos de primer nivel importados por el codigo (sin relativos)."""
+    mods = set()
+    for path in _iter_py_files():
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                tree = ast.parse(fh.read(), filename=path)
+        except Exception:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for a in node.names:
+                    mods.add(a.name.split(".")[0])
+            elif isinstance(node, ast.ImportFrom):
+                if node.level and node.level > 0:
+                    continue  # relativo (del propio paquete)
+                if node.module:
+                    mods.add(node.module.split(".")[0])
+    # El propio paquete no es dependencia externa.
+    mods.discard("framework_mlops_v2")
+    mods.discard("framework_mlops_metrics")
+    return mods
+
+
+def _is_stdlib(mod):
+    if mod in _STDLIB:
+        return True
+    spec = None
+    try:
+        spec = importlib.util.find_spec(mod)
+    except Exception:
+        return False
+    if spec is None or not getattr(spec, "origin", None):
+        return False
+    origin = spec.origin
+    if origin in ("built-in", "frozen"):
+        return True
+    std = os.path.dirname(os.__file__)
+    return os.path.abspath(origin).startswith(os.path.abspath(std)) and "site-packages" not in origin
+
+
+def _can_import(mod):
+    try:
+        return importlib.util.find_spec(mod) is not None
+    except Exception:
+        return False
+
+
+def _classify(mod):
+    low = mod.lower()
+    if any(low.startswith(p) for p in _BANK_PREFIXES):
+        return "banco"
+    if mod in _STACK:
+        return "stack"
+    return "otro"
+
+
+def main():
+    quiet = "--quiet" in sys.argv
+    mods = sorted(_top_level_imports())
+    faltan, ok = [], []
+    for mod in mods:
+        if _is_stdlib(mod):
+            continue
+        (ok if _can_import(mod) else faltan).append(mod)
+
+    if not quiet:
+        print("== Verificacion de dependencias (check_env.py) ==")
+        print("Python:", sys.version.split()[0], "| venv:", sys.prefix)
+        print("Instaladas OK (%d): %s" % (len(ok), ", ".join(ok) or "-"))
+
+    if not faltan:
+        print("\\n[OK] No falta ninguna libreria. El entorno esta completo.")
+        return 0
+
+    # Agrupar lo que falta por categoria para un mensaje accionable.
+    por_cat = {"stack": [], "banco": [], "otro": []}
+    for mod in faltan:
+        por_cat[_classify(mod)].append(mod)
+
+    print("\\n[FALTAN %d libreria(s)]:" % len(faltan))
+    if por_cat["stack"]:
+        print("  - Stack open source:", ", ".join(por_cat["stack"]))
+        print("    -> Instala desde vendor/ (ambiente completo) o: pip install -r requirements.txt")
+    if por_cat["banco"]:
+        print("  - Librerias INTERNAS del banco:", ", ".join(por_cat["banco"]))
+        print("    -> Offline: vendor/bank/ (pip --no-index) y ./bank_pkg en PYTHONPATH.")
+        print("       Online:  pip install -r requirements-bank.txt --index-url <artifactory>")
+        print("       Si alguna es 'INCOMPLETA' (ver requirements-bank.txt), pide la version completa al banco.")
+    if por_cat["otro"]:
+        print("  - Otras:", ", ".join(por_cat["otro"]))
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
 '''
 
 
@@ -1690,6 +1846,7 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
         extra_steps, include_monitoring=mon_in_pkg, monitoring_target="package"))
     files["tests/test_aggregates.py"] = _TEST
     files["main.py"] = _MAIN_PY   # entry point del framework (demo + --config)
+    files["check_env.py"] = _CHECK_ENV   # verificador de deps (que no falte nada)
     # Detectar librerias INTERNAS del banco (toolbox, mex_lib_cs, ...) en el
     # codigo original. Van en requirements.txt (dadas de alta) para visibilidad,
     # y ADEMAS en requirements-bank.txt para que el montaje offline del core
