@@ -59,6 +59,10 @@ vscode-extension/*.vsix
 # Se regenera con pip download; no debe entrar al repo.
 .bnx_vendor_cache/
 
+# ZIP de vendor para servidores aislados (exportar_vendor.py). Pesan cientos de
+# MB (PySpark); se pasan al server por USB/red, NO por git.
+bnx_vendor_*.zip
+
 # Drivers JDBC incluidos localmente (pesados; se descargan con drivers/README).
 # No se versionan: el de Hive pesa ~69MB y MySQL es GPL con FOSS exception.
 drivers/*.jar

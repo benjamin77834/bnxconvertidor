@@ -415,9 +415,10 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                           background: '#ef444415', border: '1px solid #ef444455',
                         }}>
                           ⚠️ <b>Ambiente completo pedido, pero PySpark NO se incluyó.</b> Este servidor no tiene
-                          el cache de PySpark (vendor vacío) y no pudo descargarlo. El ZIP trae el código pero
-                          <b> no el PySpark offline</b>. Ve a <b>📚 Librerías del banco</b> → importa el vendor de
-                          PySpark, o monta con internet (<code>bash run.sh</code>) para que pip baje PySpark.
+                          el cache de PySpark (vendor vacío) y no pudo descargarlo (sin internet). El ZIP trae el
+                          código pero <b>no el PySpark offline</b>. Solución: en una máquina con el cache lleno corre
+                          <code>python exportar_vendor.py --serie py38-311</code>, copia el ZIP a este servidor y
+                          corre <code>python importar_vendor.py bnx_vendor_py38-311.zip</code>. Luego vuelve a generar.
                         </div>
                       )}
                     </>
