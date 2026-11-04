@@ -2331,3 +2331,200 @@ def verify_package_env(code_files, full_env=False, py_target="all", timeout=900,
 
     return {"log": "\n".join(log_lines), "steps": steps,
             "ok_env": ok_env, "checks": checks}
+
+
+# --------------------------------------------------------------------------
+# GESTOR de librerias del banco (para la pagina "Librerias del banco" del portal).
+# Lee/escribe el cache .bnx_vendor_cache/bank_libs/. Permite listar, importar
+# desde una ruta/disco, eliminar y verificar que una mex-lib importe limpio.
+# --------------------------------------------------------------------------
+def bank_libs_list():
+    """Inventario del cache de librerias del banco. Devuelve:
+      {wheels: [{name, size, kind, pkg, status, reason}],
+       pkgcode: [{module, files:[{name,size}]}]}
+    - kind: 'mex-lib' | 'dep' (pandas/numpy/...) | 'otro'
+    - status (solo mex-lib): 'verificada' | 'incompleta' | 'desconocida'"""
+    whl_dir = os.path.join(_BANK_LIBS_CACHE, "wheels")
+    code_dir = os.path.join(_BANK_LIBS_CACHE, "pkgcode")
+    wheels = []
+    if os.path.isdir(whl_dir):
+        for f in sorted(os.listdir(whl_dir)):
+            if not f.endswith((".tar.gz", ".whl")):
+                continue
+            full = os.path.join(whl_dir, f)
+            low = f.lower()
+            pkg = f.split("-2.")[0] if "-2." in f else f.rsplit("-", 1)[0]
+            if low.startswith("mex"):
+                kind = "mex-lib"
+                if pkg in _BANK_PKG_VERIFIED:
+                    status, reason = "verificada", ""
+                elif pkg in _BANK_PKG_INCOMPLETE:
+                    status, reason = "incompleta", _BANK_PKG_INCOMPLETE[pkg]
+                else:
+                    status, reason = "desconocida", "sin verificar (usa 'Verificar')"
+            elif low.startswith(("pandas-", "numpy-", "xgboost-", "scikit_learn-",
+                                 "scikit-learn-", "scipy-")):
+                kind, status, reason = "dep", "incluida", ""
+            else:
+                kind, status, reason = "otro", "incluida", ""
+            wheels.append({"name": f, "size": os.path.getsize(full),
+                           "kind": kind, "pkg": pkg,
+                           "status": status, "reason": reason})
+    pkgcode = []
+    if os.path.isdir(code_dir):
+        for mod in sorted(os.listdir(code_dir)):
+            mdir = os.path.join(code_dir, mod)
+            if not os.path.isdir(mdir):
+                continue
+            files = []
+            for root, dirs, fns in os.walk(mdir):
+                dirs[:] = [d for d in dirs if d != "__pycache__"]
+                for fn in fns:
+                    if fn.endswith((".pyc", ".pyo")) or fn == ".DS_Store":
+                        continue
+                    full = os.path.join(root, fn)
+                    rel = os.path.relpath(full, mdir)
+                    files.append({"name": rel.replace(os.sep, "/"),
+                                  "size": os.path.getsize(full)})
+            pkgcode.append({"module": mod, "files": sorted(files, key=lambda x: x["name"])})
+    return {"wheels": wheels, "pkgcode": pkgcode}
+
+
+def bank_libs_import_from_path(src_path):
+    """Importa librerias del banco desde una RUTA del disco (carpeta de release
+    como '.../170589.DAA.MLOps_RPS...'). Copia al cache:
+      - *.tar.gz / *.whl  -> bank_libs/wheels/
+      - bin/toolbox, bin/utils, bin/bnmxverse (o en la raiz) -> bank_libs/pkgcode/<mod>/
+    Devuelve {copiados: [...], omitidos: [...]} (resumen por archivo/modulo)."""
+    import shutil as _sh
+    src_path = os.path.expanduser((src_path or "").strip())
+    if not src_path or not os.path.isdir(src_path):
+        raise ValueError("Ruta no valida o no es un directorio: %r" % src_path)
+    whl_dir = os.path.join(_BANK_LIBS_CACHE, "wheels")
+    code_dir = os.path.join(_BANK_LIBS_CACHE, "pkgcode")
+    os.makedirs(whl_dir, exist_ok=True)
+    os.makedirs(code_dir, exist_ok=True)
+    copiados, omitidos = [], []
+
+    # 1) Wheels/sdist: buscar en la raiz de la ruta (no recursivo profundo para
+    #    no arrastrar basura; 1 nivel cubre el layout de release del banco).
+    #    El servidor del banco es LINUX: se omiten wheels de macOS/Windows (no
+    #    corren alla y solo engordan el paquete). Los sdist (.tar.gz) son
+    #    multiplataforma, se copian siempre.
+    for f in sorted(os.listdir(src_path)):
+        full = os.path.join(src_path, f)
+        if not (os.path.isfile(full) and f.endswith((".tar.gz", ".whl"))):
+            continue
+        low = f.lower()
+        if f.endswith(".whl") and ("macosx" in low or "win_amd64" in low
+                                   or "win32" in low or "-win-" in low):
+            omitidos.append(f + " (wheel no-Linux; el servidor del banco es Linux)")
+            continue
+        dst = os.path.join(whl_dir, f)
+        if os.path.exists(dst) and os.path.getsize(dst) == os.path.getsize(full):
+            omitidos.append(f + " (ya estaba, identico)")
+        else:
+            _sh.copy2(full, dst)
+            copiados.append("wheels/" + f)
+
+    # 2) Modulos de PYTHONPATH: toolbox/utils/bnmxverse, esten en la raiz o en bin/.
+    for base in (src_path, os.path.join(src_path, "bin")):
+        if not os.path.isdir(base):
+            continue
+        for mod in ("toolbox", "utils", "bnmxverse"):
+            mdir = os.path.join(base, mod)
+            if not os.path.isdir(mdir):
+                continue
+            dst = os.path.join(code_dir, mod)
+            n_before = 0
+            if os.path.isdir(dst):
+                for _r, _d, _fs in os.walk(dst):
+                    n_before += len([x for x in _fs if not x.endswith((".pyc", ".pyo"))])
+            # Copiar archivos (merge), sin .pyc/__pycache__.
+            for root, dirs, fns in os.walk(mdir):
+                dirs[:] = [d for d in dirs if d != "__pycache__"]
+                for fn in fns:
+                    if fn.endswith((".pyc", ".pyo")) or fn == ".DS_Store":
+                        continue
+                    srcf = os.path.join(root, fn)
+                    rel = os.path.relpath(srcf, mdir)
+                    dstf = os.path.join(dst, rel)
+                    os.makedirs(os.path.dirname(dstf), exist_ok=True)
+                    changed = not (os.path.exists(dstf)
+                                   and os.path.getsize(dstf) == os.path.getsize(srcf))
+                    _sh.copy2(srcf, dstf)
+                    if changed:
+                        copiados.append("pkgcode/%s/%s" % (mod, rel.replace(os.sep, "/")))
+            if not any(c.startswith("pkgcode/" + mod) for c in copiados):
+                omitidos.append("pkgcode/%s (sin cambios)" % mod)
+    return {"copiados": copiados, "omitidos": omitidos}
+
+
+def bank_libs_delete(name, kind):
+    """Elimina del cache una entrada: kind='wheel' -> wheels/<name>;
+    kind='pkgcode' -> pkgcode/<name> (modulo completo). Devuelve {ok, deleted}."""
+    import shutil as _sh
+    if kind == "wheel":
+        # name debe ser un basename simple (sin separadores de ruta).
+        if not name or "/" in name or "\\" in name or ".." in name:
+            raise ValueError("nombre invalido")
+        target = os.path.join(_BANK_LIBS_CACHE, "wheels", name)
+        if os.path.isfile(target):
+            os.remove(target)
+            return {"ok": True, "deleted": "wheels/" + name}
+    elif kind == "pkgcode":
+        if not name or "/" in name or "\\" in name or ".." in name:
+            raise ValueError("nombre invalido")
+        target = os.path.join(_BANK_LIBS_CACHE, "pkgcode", name)
+        if os.path.isdir(target):
+            _sh.rmtree(target, ignore_errors=True)
+            return {"ok": True, "deleted": "pkgcode/" + name}
+    return {"ok": False, "deleted": None}
+
+
+def bank_lib_verify(name, timeout=300):
+    """Instala una mex-lib (sdist del cache) en un venv temporal y comprueba que
+    su modulo importe limpio. Devuelve {ok, module, log}. Solo lectura del cache.
+    El resultado NO cambia _BANK_PKG_VERIFIED (eso es manual, por seguridad); sirve
+    para que el usuario DECIDA con datos si una lib nueva/incompleta ya sirve."""
+    import tempfile as _tf
+    import shutil as _sh
+    import venv as _venv
+    whl = os.path.join(_BANK_LIBS_CACHE, "wheels", name or "")
+    if not os.path.isfile(whl):
+        raise ValueError("no existe en el cache: %r" % name)
+    pkg = name.split("-2.")[0] if "-2." in name else name.rsplit("-", 1)[0]
+    # Modulo que exporta (p.ej. mex-libextract -> lib_extract).
+    mod = None
+    for m2, p2 in _BANK_MODULE_TO_PKG.items():
+        if p2 == pkg:
+            mod = m2
+            break
+    log = []
+    workdir = _tf.mkdtemp(prefix="bnx_banklib_")
+    ok = False
+    try:
+        venv_dir = os.path.join(workdir, ".venv")
+        _venv.EnvBuilder(with_pip=True).create(venv_dir)
+        py = os.path.join(venv_dir, "bin", "python")
+        if not os.path.exists(py):
+            py = os.path.join(venv_dir, "Scripts", "python.exe")
+        log.append("$ pip install %s (+ pandas/pyspark de prueba)" % name)
+        _sp.run([py, "-m", "pip", "install", "-q", "setuptools", "wheel",
+                 "pandas", "pyspark", "cytoolz"], capture_output=True, timeout=timeout)
+        p = _sp.run([py, "-m", "pip", "install", "--no-build-isolation", whl],
+                    capture_output=True, text=True, timeout=timeout)
+        log.append((p.stdout or "") + (p.stderr or ""))
+        if mod:
+            log.append("$ python -c 'import %s'" % mod)
+            pe = _sp.run([py, "-c", "import %s; print('IMPORT OK')" % mod],
+                         capture_output=True, text=True, timeout=timeout)
+            out = (pe.stdout or "") + (pe.stderr or "")
+            log.append(out)
+            ok = pe.returncode == 0
+        else:
+            log.append("(no se conoce el modulo de %s; se verifico solo la instalacion)" % pkg)
+            ok = p.returncode == 0
+    finally:
+        _sh.rmtree(workdir, ignore_errors=True)
+    return {"ok": ok, "module": mod or pkg, "log": "\n".join(log)}

@@ -184,6 +184,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_mlops_package_rebuild()
         elif "/mlops/package/verify" in path:
             self._handle_mlops_package_verify()
+        elif "/banklibs" in path:
+            self._handle_banklibs()
         elif "/mlops/package/build" in path:
             self._handle_mlops_package_build()
         elif "/emulate" in path:
@@ -1099,6 +1101,44 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 "vendor_series": vendor_list,
                 "download_url": f"/export/download?token={token}",
             })
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": f"{type(e).__name__}: {e}"})
+
+    def _handle_banklibs(self):
+        """Gestor de librerias del banco (pagina 'Librerias del banco').
+        Body JSON: {action, ...}. Acciones:
+          - list                                  -> inventario del cache
+          - import_path {path}                    -> copia libs desde una ruta
+          - delete {name, kind}                   -> borra wheel o modulo pkgcode
+          - verify {name}                         -> prueba que una mex-lib importe
+        """
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length) if content_length else b""
+        try:
+            data = json.loads(body.decode("utf-8", errors="replace")) if body else {}
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._json_response(400, {"error": "Invalid JSON body"})
+            return
+        action = (data.get("action") or "list").strip()
+        try:
+            from src import mlops_pkg as mp
+            if action == "list":
+                self._json_response(200, {"ok": True, **mp.bank_libs_list()})
+            elif action == "import_path":
+                res = mp.bank_libs_import_from_path(data.get("path", ""))
+                self._json_response(200, {"ok": True, **res, **mp.bank_libs_list()})
+            elif action == "delete":
+                res = mp.bank_libs_delete(data.get("name", ""), data.get("kind", ""))
+                self._json_response(200, {"ok": res.get("ok", False),
+                                          "deleted": res.get("deleted"),
+                                          **mp.bank_libs_list()})
+            elif action == "verify":
+                res = mp.bank_lib_verify(data.get("name", ""))
+                self._json_response(200, {"ok": True, **res})
+            else:
+                self._json_response(400, {"error": "accion desconocida: %s" % action})
         except Exception as e:
             import traceback
             traceback.print_exc()

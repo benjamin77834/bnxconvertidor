@@ -13,6 +13,7 @@ import HistoryPage from './components/HistoryPage'
 import PipelinePage from './components/PipelinePage'
 import GraphLibrary from './components/GraphLibrary'
 import GrafosPage from './components/GrafosPage'
+import BankLibsPage from './components/BankLibsPage'
 import EmulatorPage from './components/EmulatorPage'
 import ModelFrameworkPage from './components/ModelFrameworkPage'
 import QualityPage from './components/QualityPage'
@@ -777,6 +778,7 @@ export default function App() {
         { id: 'py2spark', label: '🐍 Py→Spark' },
         { id: 'mlops', label: '🧬 Framework MLOps' },
         { id: 'mlops_pkg', label: '📦 Framework MLOps v2' },
+        { id: 'banklibs', label: '📚 Librerías del banco' },
         { id: 'mlops_emu', label: '🔬 Emulador MLOps' },
         { id: 'emulator', label: '🔬 Emulador CICS' },
         { id: 'ocr', label: '📷 OCR' },
@@ -1133,6 +1135,8 @@ export default function App() {
           <HistoryPage theme={t} />
         ) : page === 'pipeline' ? (
           <PipelinePage theme={t} compiledCode={result?.code || ''} compiledTarget={target} extractorCode={result?.extractor_code || ''} hasDbSources={result?.has_db_sources || false} />
+        ) : page === 'banklibs' ? (
+          <BankLibsPage theme={t} />
         ) : page === 'grafos' ? (
           <GrafosPage theme={t} onLoadToCompiler={(g) => {
             setEditorMp(g.mp || '')
