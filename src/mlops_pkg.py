@@ -2632,3 +2632,79 @@ def bank_lib_verify(name, timeout=300):
     finally:
         _sh.rmtree(workdir, ignore_errors=True)
     return {"ok": ok, "module": mod or pkg, "log": "\n".join(log)}
+
+
+# --------------------------------------------------------------------------
+# Exportar el VENDOR (PySpark + mex-lib + toolbox + deps) como ZIP descargable,
+# para montar el entorno virtual en un servidor AISLADO sin internet. Es la
+# version 'servida por web' de exportar_vendor.py: el portal arma el ZIP a disco
+# y lo sirve por streaming (no carga cientos de MB en memoria).
+# --------------------------------------------------------------------------
+_VENDOR_EXPORT_DIRS = {
+    # serie -> carpetas del cache a incluir (relativas a .bnx_vendor_cache/)
+    "all": ["bank_libs", "py38-311", "py312plus", "mlops_deps"],
+    "py38-311": ["bank_libs", "py38-311",
+                 os.path.join("mlops_deps", "py38-311"),
+                 os.path.join("mlops_deps", "py38-311_extra")],
+    "py312plus": ["bank_libs", "py312plus",
+                  os.path.join("mlops_deps", "py312plus"),
+                  os.path.join("mlops_deps", "py312plus_extra")],
+}
+
+
+def export_vendor_zip(out_path, serie="py38-311"):
+    """Empaqueta el cache de vendor (.bnx_vendor_cache/) en out_path, filtrando
+    por serie de Python del destino. Devuelve {ok, files, bytes, missing}. El ZIP
+    se descomprime en el server con importar_vendor.py. Escribe a DISCO (streaming).
+    """
+    cache = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        ".bnx_vendor_cache")
+    dirs = _VENDOR_EXPORT_DIRS.get(serie, _VENDOR_EXPORT_DIRS["py38-311"])
+    n_files, total = 0, 0
+    missing = []
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_STORED, allowZip64=True) as z:
+        for d in dirs:
+            base = os.path.join(cache, d)
+            if not os.path.isdir(base):
+                missing.append(d)
+                continue
+            for root, subdirs, files in os.walk(base):
+                subdirs[:] = [s for s in subdirs if s != "__pycache__"]
+                for fn in files:
+                    if fn.endswith((".pyc", ".pyo")) or fn == ".DS_Store":
+                        continue
+                    full = os.path.join(root, fn)
+                    rel = os.path.relpath(full, cache)
+                    arc = os.path.join(".bnx_vendor_cache", rel).replace(os.sep, "/")
+                    z.write(full, arc)
+                    n_files += 1
+                    total += os.path.getsize(full)
+    # Incluir el importador dentro del ZIP para que el server lo tenga a mano.
+    imp = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                       "importar_vendor.py")
+    if os.path.isfile(imp):
+        with zipfile.ZipFile(out_path, "a", zipfile.ZIP_DEFLATED, allowZip64=True) as z:
+            z.write(imp, "importar_vendor.py")
+    return {"ok": n_files > 0, "files": n_files, "bytes": total, "missing": missing}
+
+
+def vendor_cache_status():
+    """Resumen del cache de vendor para la UI: que series de PySpark hay y su
+    tamaño. Asi el usuario sabe si puede exportar o si falta poblar el cache."""
+    cache = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        ".bnx_vendor_cache")
+    out = {}
+    for serie in ("py38-311", "py312plus"):
+        sdir = os.path.join(cache, serie)
+        has_pyspark, size = False, 0
+        if os.path.isdir(sdir):
+            for f in os.listdir(sdir):
+                if f.endswith(".whl"):
+                    fp = os.path.join(sdir, f)
+                    size += os.path.getsize(fp)
+                    if f.lower().startswith("pyspark-"):
+                        has_pyspark = True
+        out[serie] = {"has_pyspark": has_pyspark, "bytes": size}
+    return out

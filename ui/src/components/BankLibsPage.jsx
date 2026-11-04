@@ -33,6 +33,10 @@ export default function BankLibsPage({ theme }) {
   const [verifyName, setVerifyName] = useState('')
   const [verifyLog, setVerifyLog] = useState('')
   const [verifyOk, setVerifyOk] = useState(null)
+  const [vendorStatus, setVendorStatus] = useState(null)   // {py38-311:{...}, py312plus:{...}}
+  const [exporting, setExporting] = useState(false)
+  const [exportSerie, setExportSerie] = useState('py38-311')
+  const [exportMsg, setExportMsg] = useState('')
 
   const card = { background: t.card || '#1e2433', border: `1px solid ${t.border || '#334155'}`, borderRadius: 10, padding: 16 }
 
@@ -51,8 +55,25 @@ export default function BankLibsPage({ theme }) {
     try {
       const data = await post({ action: 'list' })
       if (data.wheels || data.pkgcode) setInv({ wheels: data.wheels || [], pkgcode: data.pkgcode || [] })
+      const vs = await post({ action: 'vendor_status' })
+      if (vs.series) setVendorStatus(vs.series)
     } catch (e) { setMsg('⚠️ ' + e.message) }
     finally { setLoading(false) }
+  }
+
+  const exportVendor = async () => {
+    setExporting(true); setExportMsg('Empaquetando el vendor (PySpark + librerías)… puede tardar, son cientos de MB.')
+    try {
+      const data = await post({ action: 'export_vendor', serie: exportSerie })
+      if (!data.ok || data.error) { setExportMsg('⚠️ ' + (data.error || 'no se pudo exportar')); return }
+      setExportMsg(`✅ Listo: ${data.filename} (${(data.size / 1024 / 1024).toFixed(0)} MB). Descargando…`)
+      // Disparar la descarga nativa del navegador (streaming desde disco).
+      const a = document.createElement('a')
+      a.href = `${API_BASE}${data.download_url}`
+      a.download = data.filename
+      document.body.appendChild(a); a.click(); a.remove()
+    } catch (e) { setExportMsg('⚠️ ' + e.message) }
+    finally { setExporting(false) }
   }
 
   const doImport = async () => {
@@ -141,6 +162,54 @@ export default function BankLibsPage({ theme }) {
           y los módulos <code>toolbox</code>/<code>utils</code>/<code>bnmxverse</code> (estén en la raíz o en <code>bin/</code>).
         </div>
         {msg && <div style={{ fontSize: 12.5, marginTop: 8, color: msg.startsWith('⚠️') ? '#f87171' : (msg.startsWith('✅') || msg.startsWith('🗑️') ? '#4ade80' : '#a5b4fc') }}>{msg}</div>}
+      </div>
+
+      {/* Exportar el vendor (entorno virtual offline) para otra maquina */}
+      <div style={{ ...card, borderLeft: '3px solid #a855f7' }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: t.text || '#e2e8f0', marginBottom: 6 }}>
+          ⬇️ Descargar el entorno (PySpark + librerías) para un servidor sin internet
+        </div>
+        <div style={{ fontSize: 11.5, color: t.dim || '#64748b', marginBottom: 10 }}>
+          Genera un ZIP con <b>PySpark offline</b> + las librerías del banco, para montar el entorno virtual en
+          una máquina aislada. Descárgalo aquí, cópialo al servidor y corre
+          <code> python importar_vendor.py bnx_vendor_&lt;serie&gt;.zip</code> (el script va incluido en el ZIP).
+        </div>
+
+        {/* Estado del cache por serie */}
+        {vendorStatus && (
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+            {Object.entries(vendorStatus).map(([serie, v]) => (
+              <span key={serie} style={{
+                fontSize: 11.5, padding: '3px 10px', borderRadius: 6,
+                background: v.has_pyspark ? '#22c55e18' : '#f59e0b18',
+                color: v.has_pyspark ? '#4ade80' : '#fbbf24',
+                border: `1px solid ${v.has_pyspark ? '#22c55e44' : '#f59e0b44'}`,
+              }}>
+                {v.has_pyspark ? '✅' : '⚠️'} {serie}: {v.has_pyspark ? `PySpark listo (${(v.bytes / 1024 / 1024).toFixed(0)} MB)` : 'sin PySpark en cache'}
+              </span>
+            ))}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <label style={{ fontSize: 12, color: t.muted || '#94a3b8' }}>Serie de Python del destino:</label>
+          <select value={exportSerie} onChange={e => setExportSerie(e.target.value)}
+            style={{
+              padding: '7px 10px', borderRadius: 6, fontSize: 12.5,
+              background: t.codeBg || '#081220', border: `1px solid ${t.border || '#334155'}`,
+              color: t.text || '#e2e8f0', outline: 'none',
+            }}>
+            <option value="py38-311">Python 3.8–3.11 (PySpark 3.5) — ~550 MB</option>
+            <option value="py312plus">Python 3.12+ (PySpark 4.0) — ~670 MB</option>
+            <option value="all">Ambas (todo) — ~1.1 GB</option>
+          </select>
+          <button onClick={exportVendor} disabled={exporting}
+            style={{
+              padding: '8px 16px', borderRadius: 8, fontSize: 12.5, fontWeight: 700,
+              cursor: exporting ? 'wait' : 'pointer', background: '#a855f7', color: '#fff', border: 'none',
+            }}>{exporting ? '⏳ Empaquetando…' : '⬇️ Descargar entorno (.zip)'}</button>
+        </div>
+        {exportMsg && <div style={{ fontSize: 12.5, marginTop: 8, color: exportMsg.startsWith('⚠️') ? '#f87171' : (exportMsg.startsWith('✅') ? '#4ade80' : '#c4b5fd') }}>{exportMsg}</div>}
       </div>
 
       {loading ? (

@@ -1137,6 +1137,34 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             elif action == "verify":
                 res = mp.bank_lib_verify(data.get("name", ""))
                 self._json_response(200, {"ok": True, **res})
+            elif action == "vendor_status":
+                self._json_response(200, {"ok": True, "series": mp.vendor_cache_status()})
+            elif action == "export_vendor":
+                serie = data.get("serie", "py38-311")
+                if serie not in ("all", "py38-311", "py312plus"):
+                    serie = "py38-311"
+                import uuid as _uuid
+                tmpdir = os.path.join(tempfile.gettempdir(), "bnx_bundles")
+                os.makedirs(tmpdir, exist_ok=True)
+                token = _uuid.uuid4().hex
+                zip_path = os.path.join(tmpdir, token + ".zip")
+                res = mp.export_vendor_zip(zip_path, serie=serie)
+                if not res.get("ok"):
+                    self._json_response(200, {
+                        "ok": False,
+                        "error": "El cache de vendor esta vacio para la serie '%s'. "
+                                 "Genera un paquete 'ambiente completo' con internet "
+                                 "una vez, o pobla el cache, antes de exportar." % serie,
+                        "missing": res.get("missing", [])})
+                    return
+                fname = "bnx_vendor_%s.zip" % serie
+                with open(os.path.join(tmpdir, token + ".name"), "w", encoding="utf-8") as fh:
+                    fh.write(fname)
+                self._json_response(200, {
+                    "ok": True, "serie": serie, "filename": fname,
+                    "size": res["bytes"], "files": res["files"],
+                    "download_url": f"/export/download?token={token}",
+                })
             else:
                 self._json_response(400, {"error": "accion desconocida: %s" % action})
         except Exception as e:
