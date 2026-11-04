@@ -1571,8 +1571,13 @@ def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all",
     # (toolbox/bnmxverse/utils, que se agregan al PYTHONPATH).
     uses_bank = any(p.endswith("requirements-bank.txt") for p in (code_files or {}))
     bank_sdists, bank_pkgcode = ([], {})
+    bank_extracted = {}
     if uses_bank:
         bank_sdists, bank_pkgcode = _bank_vendor_files()
+        # Ademas de los sdist (que pip instala), extraemos las mex-lib verificadas
+        # como CODIGO en pkgcode/ para que funcionen por PYTHONPATH sin pip/build
+        # (fallback a prueba de fallos en Windows/Python 3.8).
+        bank_extracted = _bank_extracted_pkgs()
     # Evitar escribir la MISMA ruta dos veces (en Python 3.8/Windows un ZipInfo
     # duplicado o un estado inconsistente puede dejar el stream en mal estado y
     # romper el cierre con 'I/O operation on closed file'). Deduplicamos por ruta.
@@ -1626,6 +1631,14 @@ def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all",
         for rel, full in sorted(bank_pkgcode.items()):
             _put_bin(z, "framework_mlops_v2_pkg/vendor/bank/pkgcode/"
                      + rel.replace(os.sep, "/"), full, stored=False)
+        # mex-lib VERIFICADAS extraidas como codigo -> vendor/bank/pkgcode/ tambien.
+        # Asi quedan en el PYTHONPATH listas para importar sin pip (fallback).
+        for rel, data in sorted(bank_extracted.items()):
+            arc = "framework_mlops_v2_pkg/vendor/bank/pkgcode/" + rel
+            if arc in seen_arc:
+                continue
+            seen_arc.add(arc)
+            z.writestr(arc, data)
     finally:
         # Cerrar SIEMPRE antes de leer el resultado; si algo fallo arriba, el
         # cierre no debe lanzar un segundo error que oculte el real.
@@ -1700,6 +1713,57 @@ def _bank_vendor_files():
                 rel = os.path.relpath(full, code_dir)
                 pkgcode[rel] = full
     return sdists, pkgcode
+
+
+def _bank_extracted_pkgs():
+    """Extrae el MODULO IMPORTABLE de cada sdist mex-lib VERIFICADO (lib_extract,
+    lib_generate_pivot, ...) y lo devuelve como {ruta_relativa: bytes}, listo para
+    colocarlo en pkgcode/ del paquete. Asi las mex-lib funcionan por PYTHONPATH
+    SIN pip/build (a prueba de fallos en Windows/Python 3.8). Ignora egg-info,
+    setup.py y basura; solo trae el paquete Python que se importa."""
+    import tarfile as _tar
+    whl_dir = os.path.join(_BANK_LIBS_CACHE, "wheels")
+    out = {}
+    if not os.path.isdir(whl_dir):
+        return out
+    for f in sorted(os.listdir(whl_dir)):
+        if not f.endswith(".tar.gz"):
+            continue
+        pkg = f.split("-2.")[0] if "-2." in f else f.rsplit("-", 1)[0]
+        if pkg not in _BANK_PKG_VERIFIED:
+            continue
+        # Modulo importable esperado (lib_extract, etc.) via el mapeo conocido.
+        top = None
+        for mod, p2 in _BANK_MODULE_TO_PKG.items():
+            if p2 == pkg:
+                top = mod
+                break
+        try:
+            with _tar.open(os.path.join(whl_dir, f), "r:gz") as tf:
+                for member in tf.getmembers():
+                    if not member.isfile():
+                        continue
+                    # Rutas dentro del tar: '<pkg>-2.2.0/<...>'. Quitar el prefijo.
+                    parts = member.name.split("/", 1)
+                    if len(parts) != 2:
+                        continue
+                    rel = parts[1]
+                    # Solo el paquete importable; descartar egg-info/setup/metadata.
+                    first = rel.split("/", 1)[0]
+                    if first.endswith(".egg-info") or first in (
+                            "setup.py", "setup.cfg", "PKG-INFO", "MANIFEST.in"):
+                        continue
+                    if top and first != top:
+                        continue
+                    if rel.endswith((".pyc", ".pyo")) or "__pycache__" in rel:
+                        continue
+                    fobj = tf.extractfile(member)
+                    if fobj is None:
+                        continue
+                    out[rel.replace(os.sep, "/")] = fobj.read()
+        except Exception:
+            continue
+    return out
 
 
 def _has_bank_libs_cache():
