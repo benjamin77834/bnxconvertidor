@@ -636,11 +636,14 @@ echo "[4/5] Instalando dependencias (requirements.txt) y el framework..."
 # Dependencias del paquete (pandas, numpy, pytest y -si aplica- xgboost/sklearn).
 # Las libs internas del banco comentadas en el archivo se ignoran. OFFLINE: si
 # existen en vendor/ se usan de ahi; si no, por internet.
+# vendor/bank aporta deps PINNEADAS del banco (pandas 1.3.1 cp38 para Python 3.8).
+BANK_LINKS=""
+if [ -d "vendor/bank" ]; then BANK_LINKS="--find-links vendor/bank"; fi
 if [ -n "$VENDOR_DIR" ] && ls "$VENDOR_DIR"/*.whl >/dev/null 2>&1; then
   # OFFLINE estricto: todo desde vendor/, sin caer a internet.
-  python -m pip install --no-index --find-links "$VENDOR_DIR" -r requirements.txt
+  python -m pip install --no-index --find-links "$VENDOR_DIR" $BANK_LINKS -r requirements.txt
 else
-  python -m pip install -r requirements.txt 2>/dev/null || true
+  python -m pip install $BANK_LINKS -r requirements.txt 2>/dev/null || true
 fi
 # Instalar el PROPIO paquete en modo editable (clave: sin esto los imports
 # 'from framework_mlops_v2...' fallan fuera de la carpeta raiz). Sin aislamiento
@@ -727,18 +730,25 @@ elif [ -d "vendor/py312plus" ]; then
   VENDOR_DIR="vendor/py312plus"
 fi
 
+# vendor/bank tambien aporta wheels de deps PINNEADAS por el banco (p.ej. pandas
+# 1.3.1 cp38 para Python 3.8). Se agrega a los --find-links para que pip elija la
+# version correcta segun la version de Python, tanto offline como por internet.
+BANK_LINKS=""
+if [ -d "vendor/bank" ]; then BANK_LINKS="--find-links vendor/bank"; fi
+
 if [ -n "$VENDOR_DIR" ] && ls "$VENDOR_DIR"/*.whl >/dev/null 2>&1; then
   echo "      OFFLINE desde $VENDOR_DIR (sin internet)."
   python -m pip install --no-index --find-links "$VENDOR_DIR" pip setuptools wheel >/dev/null 2>&1 || true
-  python -m pip install --no-index --find-links "$VENDOR_DIR" -r requirements.txt
+  python -m pip install --no-index --find-links "$VENDOR_DIR" $BANK_LINKS -r requirements.txt
   # Paquete propio en editable SIN aislamiento (usa el setuptools ya instalado,
   # no intenta bajar build-system por internet).
   python -m pip install --no-build-isolation -e .
 else
-  echo "      vendor/ no disponible; instalando por internet (red del banco)."
+  echo "      vendor/ (PySpark) no disponible; instalando por internet (red del banco)."
   # Si estas en la red del banco, descomenta --index-url con tu Artifactory:
   # pip install -r requirements.txt --index-url https://<artifactory-interno>/simple
-  python -m pip install -r requirements.txt
+  # BANK_LINKS deja que pip use pandas 1.3.1 cp38 del banco si corre en Python 3.8.
+  python -m pip install $BANK_LINKS -r requirements.txt
   python -m pip install -e .
 fi
 
@@ -1665,8 +1675,16 @@ def _bank_vendor_files():
         for f in sorted(os.listdir(whl_dir)):
             if not f.endswith((".tar.gz", ".whl")):
                 continue
-            # Nombre de paquete = prefijo antes de '-<version>'. Solo empaquetar
-            # los verificados (los incompletos se dejan fuera del vendor offline).
+            low = f.lower()
+            # Deps del negocio PINNEADAS por el banco (p.ej. pandas 1.3.1 cp38,
+            # numpy/xgboost/scikit-learn con la version exacta del ambiente). Se
+            # empaquetan tal cual para que el ambiente del banco (Python 3.8)
+            # resuelva la version correcta offline.
+            if low.startswith(("pandas-", "numpy-", "xgboost-", "scikit_learn-",
+                               "scikit-learn-", "scipy-")):
+                sdists.append(os.path.join(whl_dir, f))
+                continue
+            # mex-lib*: solo los VERIFICADOS (los incompletos se omiten del vendor).
             pkg = f.split("-2.")[0] if "-2." in f else f.rsplit("-", 1)[0]
             if pkg in _BANK_PKG_VERIFIED:
                 sdists.append(os.path.join(whl_dir, f))
