@@ -1994,9 +1994,17 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
         elif name not in bank_verified:
             bank_verified.append(name)
 
+    # Detectar si se pidio ambiente completo pero el vendor de PySpark NO quedo
+    # (cache vacio / sin internet en el server). vendor_list trae las series
+    # incluidas; 'bank' no cuenta como PySpark. Si no hay ninguna serie de
+    # PySpark, el ambiente completo salio SIN PySpark (ZIP chico, engañoso).
+    pyspark_series = [s for s in (vendor_list or []) if s != "bank"]
+    vendor_missing = bool(full_env) and not pyspark_series
+
     # Meta: incluye los archivos de CODIGO (editables) para guardarlos por token.
     report.append({"_meta": True, "full_env": bool(full_env),
                    "vendor_series": vendor_list,
+                   "vendor_missing": vendor_missing,
                    "py_target": py_target,
                    "bank_libs": bank_libs,
                    "bank_verified": bank_verified,
@@ -2470,6 +2478,23 @@ def bank_libs_import_from_path(src_path):
     os.makedirs(code_dir, exist_ok=True)
     copiados, omitidos = [], []
 
+    # Cache de PySpark (series). pyspark 3.5.x -> py38-311; 4.0.x -> py312plus.
+    pyspark_cache = os.path.join(
+        os.path.dirname(_BANK_LIBS_CACHE), "")  # .bnx_vendor_cache/
+
+    def _pyspark_serie(fname):
+        low = fname.lower()
+        if low.startswith("pyspark-"):
+            ver = low.split("pyspark-", 1)[1]
+            if ver.startswith("3."):
+                return "py38-311"
+            if ver.startswith(("4.", "5.")):
+                return "py312plus"
+        if low.startswith("py4j-"):
+            # py4j 0.10.9.7 -> 3.5; 0.10.9.9 -> 4.0. Copiamos a AMBAS por si acaso.
+            return "both-py4j"
+        return None
+
     # 1) Wheels/sdist: buscar en la raiz de la ruta (no recursivo profundo para
     #    no arrastrar basura; 1 nivel cubre el layout de release del banco).
     #    El servidor del banco es LINUX: se omiten wheels de macOS/Windows (no
@@ -2483,6 +2508,21 @@ def bank_libs_import_from_path(src_path):
         if f.endswith(".whl") and ("macosx" in low or "win_amd64" in low
                                    or "win32" in low or "-win-" in low):
             omitidos.append(f + " (wheel no-Linux; el servidor del banco es Linux)")
+            continue
+        # PySpark / py4j -> van al cache de vendor de PySpark (no a bank_libs),
+        # para que el 'ambiente completo' los empaquete offline.
+        serie = _pyspark_serie(f)
+        if serie:
+            targets = (["py38-311", "py312plus"] if serie == "both-py4j" else [serie])
+            for sdir in targets:
+                dcache = os.path.join(pyspark_cache, sdir)
+                os.makedirs(dcache, exist_ok=True)
+                dst = os.path.join(dcache, f)
+                if os.path.exists(dst) and os.path.getsize(dst) == os.path.getsize(full):
+                    omitidos.append("%s/%s (ya estaba)" % (sdir, f))
+                else:
+                    _sh.copy2(full, dst)
+                    copiados.append("vendor-pyspark/%s/%s" % (sdir, f))
             continue
         dst = os.path.join(whl_dir, f)
         if os.path.exists(dst) and os.path.getsize(dst) == os.path.getsize(full):

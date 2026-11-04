@@ -403,10 +403,21 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                           ? `⚠️ ${totalTodos} línea(s) requieren revisión manual en total. Revisa los puntos marcados abajo (van con un "# TODO py2spark" en el archivo generado).`
                           : '✅ Todas las fuentes convirtieron sin construcciones no traducibles.'}
                       </div>
-                      {meta?.full_env && (
+                      {meta?.full_env && !meta?.vendor_missing && (
                         <div style={{ fontSize: 11.5, color: '#2dd4bf', marginBottom: 2 }}>
                           📦 Ambiente completo incluido: PySpark offline en <code>vendor/</code>
                           {(meta.vendor_series || []).length ? ` (${meta.vendor_series.join(', ')})` : ''}. Monta con <code>bash setup.sh</code>.
+                        </div>
+                      )}
+                      {meta?.full_env && meta?.vendor_missing && (
+                        <div style={{
+                          fontSize: 11.5, color: '#fca5a5', marginBottom: 2, padding: 8, borderRadius: 6,
+                          background: '#ef444415', border: '1px solid #ef444455',
+                        }}>
+                          ⚠️ <b>Ambiente completo pedido, pero PySpark NO se incluyó.</b> Este servidor no tiene
+                          el cache de PySpark (vendor vacío) y no pudo descargarlo. El ZIP trae el código pero
+                          <b> no el PySpark offline</b>. Ve a <b>📚 Librerías del banco</b> → importa el vendor de
+                          PySpark, o monta con internet (<code>bash run.sh</code>) para que pip baje PySpark.
                         </div>
                       )}
                     </>
