@@ -38,6 +38,7 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
   const [verifyLog, setVerifyLog] = useState('')
   const [verifyResult, setVerifyResult] = useState(null)  // {ok_env, checks, steps}
   const [runPytest, setRunPytest] = useState(false)
+  const [verifySerie, setVerifySerie] = useState('py38-311')  // target Linux a emular
   // Firma / despliegue del paquete.
   const [signing, setSigning] = useState(false)
   const [signResult, setSignResult] = useState(null)  // {manifest, verify, public_key_pem, private_key_pem}
@@ -167,11 +168,14 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
   const verify = async () => {
     if (!buildResult?.edit_token) return
     setVerifying(true); setVerifyResult(null)
-    setVerifyLog('Montando el entorno virtual y verificando dependencias…\n(Esto puede tardar; instala desde vendor/ si es ambiente completo.)')
+    setVerifyLog(runPytest
+      ? 'Montando venv local y corriendo pruebas… (fiel solo si este host es el destino)'
+      : `Verificando contra el servidor LINUX del banco (${verifySerie})… resolviendo dependencias con pip, sin instalar.`)
     try {
       const res = await fetch(`${API_BASE}/mlops/package/verify`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: buildResult.edit_token, run_pytest: runPytest }),
+        body: JSON.stringify({ token: buildResult.edit_token, run_pytest: runPytest,
+                               emulate_linux: !runPytest, serie: verifySerie }),
       })
       const data = await res.json()
       if (!res.ok || data.error) {
@@ -527,24 +531,34 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
               )}
             </div>
 
-            {/* PROBAR ENTORNO: monta el venv y verifica que no falten librerias */}
+            {/* PROBAR ENTORNO: verifica contra el servidor LINUX del banco */}
             <div style={{ marginTop: 14, borderTop: `1px solid ${t.border || '#334155'}`, paddingTop: 12 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 13, fontWeight: 700, color: t.text || '#e2e8f0' }}>🧪 Probar entorno</span>
+                <span style={{ fontSize: 13, fontWeight: 700, color: t.text || '#e2e8f0' }}>🧪 Probar entorno (emula Linux del banco)</span>
                 <button onClick={verify} disabled={verifying}
-                  title="Monta un venv real, instala las dependencias (offline si es ambiente completo) y verifica que no falte ninguna librería"
+                  title="Verifica que TODAS las dependencias resuelvan para el servidor Linux del banco (sin depender de la plataforma del portal)"
                   style={{
                     padding: '7px 14px', borderRadius: 8, fontSize: 12.5, fontWeight: 700, cursor: verifying ? 'wait' : 'pointer',
                     background: '#22c55e22', color: '#4ade80', border: '1px solid #22c55e55',
-                  }}>{verifying ? '⏳ Montando y verificando…' : '🧪 Probar y comprobar librerías'}</button>
+                  }}>{verifying ? '⏳ Verificando…' : '🧪 Probar y comprobar librerías'}</button>
+                <label style={{ fontSize: 11.5, color: t.muted || '#94a3b8', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  Target Linux:
+                  <select value={verifySerie} onChange={e => setVerifySerie(e.target.value)} disabled={runPytest}
+                    style={{ padding: '4px 8px', borderRadius: 6, fontSize: 11.5, background: t.codeBg || '#081220',
+                             border: `1px solid ${t.border || '#334155'}`, color: t.text || '#e2e8f0' }}>
+                    <option value="py38-311">Python 3.8–3.11 (cp38)</option>
+                    <option value="py312plus">Python 3.12+ (cp312)</option>
+                  </select>
+                </label>
                 <label style={{ fontSize: 11.5, color: t.muted || '#94a3b8', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
                   <input type="checkbox" checked={runPytest} onChange={e => setRunPytest(e.target.checked)} />
-                  Correr pruebas (pytest/Spark — más lento)
+                  Montar venv local + pytest (este host)
                 </label>
               </div>
               <div style={{ fontSize: 11.5, color: t.muted || '#94a3b8', marginTop: 6 }}>
-                Crea el entorno virtual, instala todo y corre <code>check_env.py</code>. Te dice si falta alguna
-                librería (del stack o del banco) <b>antes</b> de llevarlo a producción.
+                Por defecto <b>emula el servidor Linux del banco</b>: resuelve todas las dependencias (con pip,
+                sin instalar) para el target elegido. Así la verificación es fiel aunque el portal corra en Mac/Windows.
+                Marca "venv local + pytest" solo si este equipo es el destino.
               </div>
 
               {verifyResult && (
@@ -555,8 +569,8 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                     color: verifyResult.ok_env ? '#4ade80' : '#f87171',
                     border: `1px solid ${verifyResult.ok_env ? '#22c55e55' : '#f8717155'}`,
                   }}>
-                    {verifyResult.ok_env ? '✅ Entorno completo: no falta ninguna librería'
-                      : `⛔ Faltan ${(verifyResult.checks?.missing || []).length} librería(s)`}
+                    {verifyResult.ok_env ? '✅ Todo resuelve para el servidor Linux del banco'
+                      : `⛔ Faltan ${(verifyResult.checks?.missing || []).length} librería(s) para Linux`}
                   </span>
                   {(verifyResult.checks?.missing || []).length > 0 && (
                     <span style={{ fontSize: 12, color: '#f87171' }}>

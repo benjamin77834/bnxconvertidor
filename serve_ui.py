@@ -1195,11 +1195,21 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             with open(fp, "r", encoding="utf-8") as fh:
                 state = json.load(fh)
             from src.mlops_pkg import verify_package_env
+            # Por defecto EMULA el servidor Linux del banco (fiel aunque el portal
+            # corra en Mac/Windows). run_pytest=True fuerza el modo venv local.
+            run_pytest = bool(data.get("run_pytest", False))
+            emulate_linux = bool(data.get("emulate_linux", not run_pytest))
+            # py_target: si el paquete se genero 'all', emular py38-311 por defecto
+            # (lo mas comun en el banco); el usuario puede pedir py312plus.
+            pyt = state.get("py_target", "all")
+            if emulate_linux and pyt == "all":
+                pyt = data.get("serie", "py38-311")
             result = verify_package_env(
                 state.get("code_files") or {},
                 full_env=bool(state.get("full_env")),
-                py_target=state.get("py_target", "all"),
-                run_pytest=bool(data.get("run_pytest", False)))
+                py_target=pyt,
+                run_pytest=run_pytest,
+                emulate_linux=emulate_linux)
             self._json_response(200, {"ok": True, "token": token, **result})
         except Exception as e:
             import traceback

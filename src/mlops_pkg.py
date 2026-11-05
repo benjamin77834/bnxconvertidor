@@ -2343,19 +2343,21 @@ def package_manifest(include_bank_libs=True):
 # mostrarlo en la GUI. Es lo que hace el boton "Probar entorno" del portal.
 # --------------------------------------------------------------------------
 def verify_package_env(code_files, full_env=False, py_target="all", timeout=900,
-                       run_pytest=False):
-    """Extrae el paquete a un dir temporal, crea un venv, instala las deps y
-    verifica el entorno (check_env.py; pytest opcional). No deja residuos.
+                       run_pytest=False, emulate_linux=True):
+    """Verifica el paquete simulando el SERVIDOR LINUX del banco (default), o
+    montando un venv local. No deja residuos.
 
-    code_files: {ruta_relativa: contenido} del paquete (como en zip_from_files).
-    full_env/py_target: para montar offline desde vendor/ si aplica.
-    run_pytest: si True corre tambien pytest (lento: arranca JVM/Spark). Por
-        defecto False para que el boton de la GUI responda rapido.
-    Devuelve {log, steps, ok_env, checks} donde:
-      - log:   texto completo (stdout+stderr de cada paso), estilo terminal.
-      - steps: [{name, exit_code, ok}] por cada comando ejecutado.
-      - ok_env: True si check_env.py no reporto faltantes (exit 0).
-      - checks: {missing: [...], ok: [...]} parseado de check_env.py."""
+    emulate_linux=True (RECOMENDADO): resuelve TODAS las dependencias contra el
+        target Linux (manylinux, cp38 o cp312 segun py_target) con
+        'pip download --no-index' desde vendor/. Reporta que resuelve y que falta
+        EXACTAMENTE como lo hara el server del banco, aunque el portal corra en
+        Mac/Windows. No instala ni importa (no depende de la plataforma del host).
+    emulate_linux=False: monta un venv real en el host (solo fiel si el host ES
+        el destino; en Mac da falsos faltantes por diferencia de plataforma).
+
+    code_files/full_env/py_target: como en zip_from_files.
+    run_pytest: solo aplica al modo venv local (arranca JVM/Spark).
+    Devuelve {log, steps, ok_env, checks, mode}."""
     import tempfile as _tf
     import shutil as _sh
     import venv as _venv
@@ -2398,6 +2400,17 @@ def verify_package_env(code_files, full_env=False, py_target="all", timeout=900,
         _zf.ZipFile(io.BytesIO(zb)).extractall(workdir)
         _log("== Entorno de prueba: %s ==" % pkg_root)
         _log("Paquete extraido (%d archivos).\n" % len(code_files or {}))
+
+        # MODO LINUX (default): resolver dependencias contra el target del banco
+        # (manylinux, cp38/cp312), sin instalar en el host. Fiel al server aunque
+        # el portal corra en Mac/Windows.
+        if emulate_linux:
+            res = _verify_resolve_linux(pkg_root, py_target, _log, steps, timeout)
+            checks = res["checks"]
+            ok_env = res["ok_env"]
+            _log("== Fin de la verificacion (modo Linux del banco) ==")
+            return {"log": "\n".join(log_lines), "steps": steps,
+                    "ok_env": ok_env, "checks": checks, "mode": "linux"}
 
         # 2) Crear el venv.
         venv_dir = os.path.join(workdir, ".venv")
@@ -2492,12 +2505,133 @@ def verify_package_env(code_files, full_env=False, py_target="all", timeout=900,
         else:
             _log("(pytest omitido; activalo con 'Correr pruebas' para ejecutar Spark)\n")
 
-        _log("== Fin de la verificacion ==")
+        _log("== Fin de la verificacion (venv local) ==")
     finally:
         _sh.rmtree(workdir, ignore_errors=True)
 
     return {"log": "\n".join(log_lines), "steps": steps,
-            "ok_env": ok_env, "checks": checks}
+            "ok_env": ok_env, "checks": checks, "mode": "venv"}
+
+
+def _verify_resolve_linux(pkg_root, py_target, _log, steps, timeout):
+    """Resuelve las dependencias del paquete contra el target LINUX del banco con
+    'pip download --no-index' (manylinux, cp38/cp312). No instala: solo comprueba
+    que pip encuentre una version valida de cada dep para Linux, exactamente como
+    en el server. Analiza requirements.txt (core) y requirements-bank.txt (banco)
+    + los imports del codigo. Devuelve {ok_env, checks{ok,missing}}."""
+    import tempfile as _tf
+    import shutil as _sh
+
+    # Serie/ABI/plataforma del destino.
+    serie = "py38-311" if py_target == "py38-311" else "py312plus"
+    pyver = "3.8" if serie == "py38-311" else "3.12"
+    abi = "cp38" if serie == "py38-311" else "cp312"
+    plat = "manylinux2014_x86_64"
+    vendor_dir = os.path.join(pkg_root, "vendor", serie)
+    bank_dir = os.path.join(pkg_root, "vendor", "bank")
+    links = []
+    for d in (vendor_dir, bank_dir):
+        if os.path.isdir(d):
+            links += ["--find-links", d]
+
+    _log("== Verificacion emulando el SERVIDOR LINUX del banco ==")
+    _log("Target: Python %s / %s / %s (resolucion con pip, sin instalar).\n"
+         % (pyver, abi, plat))
+
+    def _resolve_one(req):
+        """Resuelve UN requisito para Linux desde vendor. Devuelve (ok, nombre).
+        Permite sdist (.tar.gz de las mex-lib) ademas de wheels; respeta el marker
+        de version de Python (pyspark) descartando la linea que no aplica a pyver."""
+        # Marker 'python_version': saltar la linea que NO aplica al target.
+        base = req
+        if ";" in req:
+            spec, marker = req.split(";", 1)
+            marker = marker.strip()
+            py_is_312plus = (pyver != "3.8")
+            if "python_version <" in marker and py_is_312plus:
+                return True, None   # no aplica a 3.12+: se ignora
+            if "python_version >=" in marker and not py_is_312plus:
+                return True, None   # no aplica a 3.8: se ignora
+            base = spec.strip()
+        if not base:
+            return True, None
+        name = _re.split(r"[<>=!~ ]", base, 1)[0].strip()
+        # Las mex-lib del banco son sdist (.tar.gz). pip con --platform exige
+        # --only-binary (rechaza sdist), asi que para ellas comprobamos que el
+        # archivo exista en vendor/bank (normalizando guion/underscore).
+        nlow = name.lower().replace("_", "-")
+        if nlow.startswith("mex"):
+            found = False
+            if os.path.isdir(bank_dir):
+                for f in os.listdir(bank_dir):
+                    if f.lower().replace("_", "-").startswith(nlow) and f.endswith((".tar.gz", ".whl")):
+                        found = True
+                        break
+            return found, (None if found else name)
+        tmp = _tf.mkdtemp(prefix="bnx_res_")
+        try:
+            # Wheels binarios: resolver para la plataforma Linux objetivo.
+            cmd = ([_sys.executable, "-m", "pip", "download", "--no-index", "--no-deps",
+                    "--only-binary=:all:"]
+                   + links + ["--python-version", pyver, "--implementation", "cp",
+                              "--abi", abi, "--abi", "abi3", "--abi", "none",
+                              "--platform", plat, "--platform", "any",
+                              "-d", tmp, base])
+            p = _sp.run(cmd, capture_output=True, text=True, timeout=timeout)
+            ok = p.returncode == 0
+            return ok, (None if ok else name)
+        finally:
+            _sh.rmtree(tmp, ignore_errors=True)
+
+    def _resolve(nombre, reqs):
+        """Resuelve cada requisito por separado (asi un marker que no aplica no
+        tumba al resto). Devuelve (ok, faltantes)."""
+        if not reqs:
+            return True, []
+        _log("$ pip download (Linux %s) — %d requisitos" % (abi, len(reqs)))
+        faltan = []
+        for r in reqs:
+            ok1, missing = _resolve_one(r)
+            if not ok1 and missing:
+                faltan.append(missing)
+        ok = not faltan
+        if ok:
+            _log("  OK: todas resuelven para Linux.\n")
+        else:
+            _log("  Faltan: %s\n" % ", ".join(faltan))
+        steps.append({"name": nombre, "exit_code": 0 if ok else 1, "ok": ok})
+        return ok, faltan
+
+    # Leer requirements (core) y requirements-bank (banco), ignorando comentarios.
+    def _read_reqs(path):
+        reqs = []
+        if os.path.isfile(path):
+            for ln in open(path, encoding="utf-8"):
+                s = ln.strip()
+                if not s or s.startswith("#"):
+                    continue
+                # quitar comentario al final y marker de pyspark (ya resuelto)
+                s = s.split("#", 1)[0].strip()
+                if s:
+                    reqs.append(s)
+        return reqs
+
+    core = _read_reqs(os.path.join(pkg_root, "requirements.txt"))
+    bank = _read_reqs(os.path.join(pkg_root, "requirements-bank.txt"))
+
+    ok_core, falta_core = _resolve("core (requirements.txt)", core)
+    ok_bank, falta_bank = (True, [])
+    if bank:
+        ok_bank, falta_bank = _resolve("banco (requirements-bank.txt)", bank)
+
+    faltantes = sorted(set(falta_core + falta_bank))
+    ok_env = not faltantes
+    if ok_env:
+        _log("[OK] Todo el stack resuelve OFFLINE para el servidor Linux del banco.")
+    else:
+        _log("[FALTAN] para Linux: %s" % ", ".join(faltantes))
+        _log("  -> Carga lo que falte en 'Librerias del banco' (importar/descargar entorno).")
+    return {"ok_env": ok_env, "checks": {"ok": [], "missing": faltantes}}
 
 
 # --------------------------------------------------------------------------
