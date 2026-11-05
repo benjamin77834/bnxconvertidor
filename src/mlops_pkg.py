@@ -2613,9 +2613,30 @@ def bank_lib_verify(name, timeout=300):
         py = os.path.join(venv_dir, "bin", "python")
         if not os.path.exists(py):
             py = os.path.join(venv_dir, "Scripts", "python.exe")
-        log.append("$ pip install %s (+ pandas/pyspark de prueba)" % name)
-        _sp.run([py, "-m", "pip", "install", "-q", "setuptools", "wheel",
-                 "pandas", "pyspark", "cytoolz"], capture_output=True, timeout=timeout)
+        # Instalar deps de prueba (pandas/pyspark/cytoolz) OFFLINE desde el cache
+        # local si existe (rapido); si no, por internet. Las mex-lib importan
+        # pyspark/pandas en su __init__, por eso hacen falta para probar el import.
+        cache_root = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            ".bnx_vendor_cache")
+        links = []
+        for sub in ("py38-311", "py312plus",
+                    os.path.join("mlops_deps", "py38-311"),
+                    os.path.join("mlops_deps", "py312plus"),
+                    os.path.join("bank_libs", "wheels")):
+            d = os.path.join(cache_root, sub)
+            if os.path.isdir(d):
+                links += ["--find-links", d]
+        log.append("$ pip install pandas pyspark cytoolz %s"
+                   % ("(offline desde cache)" if links else "(internet)"))
+        base_cmd = [py, "-m", "pip", "install", "-q", "setuptools", "wheel"]
+        # Intento 1: OFFLINE con el cache local.
+        r1 = _sp.run(base_cmd + links + ["pandas", "pyspark", "cytoolz"],
+                     capture_output=True, text=True, timeout=timeout) if links else None
+        if r1 is None or r1.returncode != 0:
+            # Fallback: por internet (host de desarrollo / server con salida).
+            _sp.run(base_cmd + ["pandas", "pyspark", "cytoolz"],
+                    capture_output=True, timeout=timeout)
         p = _sp.run([py, "-m", "pip", "install", "--no-build-isolation", whl],
                     capture_output=True, text=True, timeout=timeout)
         log.append((p.stdout or "") + (p.stderr or ""))
