@@ -562,8 +562,9 @@ _BANK_PKG_INCOMPLETE = {
     "mex-libmissingtreatment": "falta el subpaquete 'mobs/' y usa numpy.source (API eliminada)",
 }
 # Modulos del banco que NO son pip, sino codigo de PYTHONPATH (van en vendor/bank/
-# pkgcode, no en requirements-bank.txt).
-_BANK_PATH_MODULES = {"toolbox", "bnmxverse", "utils"}
+# pkgcode, no en requirements-bank.txt). 'mex_lib_cs' es un AGREGADOR (fachada de
+# las mex-lib*); BNX lo genera como shim en pkgcode, no es un paquete pip.
+_BANK_PATH_MODULES = {"toolbox", "bnmxverse", "utils", "mex_lib_cs"}
 
 
 def _bank_pkg_name(mod):
