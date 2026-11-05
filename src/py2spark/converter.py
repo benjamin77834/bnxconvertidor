@@ -1565,6 +1565,11 @@ def convert_code(source, add_preamble=True):
     if transformer.mllib_blocks:
         body_code = _expand_mllib_placeholders(body_code, transformer.mllib_blocks)
 
+    # Reparar bloques que quedaron solo con comentarios (if/else/for/def cuyo
+    # cuerpo se neutralizo por completo, p.ej. XGBoost): inyectar 'pass' para que
+    # el archivo sea Python valido (evita IndentationError 'else sin bloque').
+    body_code = _fix_empty_blocks(body_code)
+
     used_ml = bool(transformer.mllib_blocks)
 
     # Si el MLlib generado referencia un DataFrame (df_hint) que nunca se define
@@ -1664,6 +1669,51 @@ def _expand_mllib_placeholders(body_code, blocks):
         else:
             out_lines.append(line)
     return "\n".join(out_lines)
+
+
+def _fix_empty_blocks(code):
+    """Repara bloques que quedaron SOLO con comentarios (sin sentencia real), lo
+    que pasa cuando se neutraliza todo el cuerpo de un if/for/def (p.ej. XGBoost
+    no traducible). Python exige al menos una sentencia: se inyecta un 'pass' con
+    la indentacion correcta. Sin esto el archivo da IndentationError (else sin
+    bloque, etc.). Analisis por indentacion, robusto a comentarios."""
+    lines = code.split("\n")
+    out = []
+    n = len(lines)
+    for i, ln in enumerate(lines):
+        out.append(ln)
+        stripped = ln.strip()
+        # Linea que ABRE un bloque: termina en ':' y no es comentario.
+        if not stripped or stripped.startswith("#"):
+            continue
+        if not stripped.endswith(":"):
+            continue
+        header_indent = len(ln) - len(ln.lstrip())
+        # Mirar las lineas siguientes del cuerpo (mayor indentacion). Si TODAS son
+        # comentarios o vacias hasta que baja la indentacion, el bloque esta vacio.
+        body_indent = None
+        has_real_stmt = False
+        j = i + 1
+        while j < n:
+            nxt = lines[j]
+            s = nxt.strip()
+            if not s:
+                j += 1
+                continue
+            ind = len(nxt) - len(nxt.lstrip())
+            if ind <= header_indent:
+                break  # el bloque termino
+            if body_indent is None:
+                body_indent = ind
+            if not s.startswith("#"):
+                has_real_stmt = True
+                break
+            j += 1
+        if not has_real_stmt:
+            # Bloque vacio (solo comentarios): inyectar 'pass' tras el header.
+            pad = " " * (body_indent if body_indent is not None else header_indent + 4)
+            out.append(pad + "pass")
+    return "\n".join(out)
 
 
 def convert_file(path, add_preamble=True):

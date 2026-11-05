@@ -418,6 +418,11 @@ _STDLIB_AND_KNOWN = {
     "seaborn", "statsmodels", "joblib", "dateutil", "pytz", "six",
     # el propio framework generado (imports relativos)
     "framework_mlops_v2", "framework_mlops_metrics",
+    # modulos INTERNOS del proyecto del banco (no son librerias a instalar: son
+    # carpetas del propio codigo / del paquete generado). El main.py del banco
+    # hace 'from aggregates...', 'import datapull', 'from libs...', etc.
+    "aggregates", "datapull", "data_pull", "libs", "jobs", "settings", "static",
+    "unidecode",
     # stdlib comun que puede aparecer en el codigo de negocio
     "os", "sys", "re", "json", "csv", "math", "time", "datetime", "calendar",
     "collections", "itertools", "functools", "logging", "typing", "decimal",
@@ -1188,9 +1193,14 @@ def _top_level_imports():
                     continue  # relativo (del propio paquete)
                 if node.module:
                     mods.add(node.module.split(".")[0])
-    # El propio paquete no es dependencia externa.
-    mods.discard("framework_mlops_v2")
-    mods.discard("framework_mlops_metrics")
+    # El propio paquete y sus submodulos internos NO son dependencias externas.
+    # (aggregates/datapull/libs/utils/jobs/settings son carpetas del propio
+    # codigo del banco o del paquete generado, no librerias a instalar.)
+    for interno in ("framework_mlops_v2", "framework_mlops_metrics",
+                    "aggregates", "datapull", "data_pull", "libs", "utils",
+                    "jobs", "settings", "static", "core", "features",
+                    "scoring", "monitoring"):
+        mods.discard(interno)
     return mods
 
 
