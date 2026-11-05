@@ -1328,6 +1328,31 @@ def _as_comment_block(code):
     return "\n".join((f"# {ln}" if ln.strip() else "#") for ln in lines)
 
 
+def _hoist_module_imports(code):
+    """Separa los imports de NIVEL SUPERIOR del resto del codigo. Devuelve
+    (imports_txt, resto_txt). CLAVE para 'from X import *': Python solo lo permite
+    a nivel de modulo, nunca dentro de un metodo/funcion. Al envolver el PySpark en
+    _aggregate_df, los imports deben subir al tope del archivo (fuera de la clase).
+    Solo mueve imports que esten SIN indentar (nivel superior del codigo generado);
+    los imports dentro de funciones del propio codigo se dejan donde esten salvo el
+    'import *', que SIEMPRE sube (si no, es SyntaxError)."""
+    imports, rest = [], []
+    for ln in (code or "").split("\n"):
+        stripped = ln.strip()
+        is_top_import = (
+            (ln[:1] not in (" ", "\t"))  # sin indentar
+            and (stripped.startswith("import ") or stripped.startswith("from ")))
+        # 'import *' en cualquier nivel DEBE ir al modulo (si no, SyntaxError).
+        is_star_import = stripped.startswith("from ") and stripped.endswith("import *")
+        if is_top_import or is_star_import:
+            imp = stripped
+            if imp not in imports:
+                imports.append(imp)
+        else:
+            rest.append(ln)
+    return "\n".join(imports), "\n".join(rest)
+
+
 def _aggregate_from_pyspark(source, pyspark_code, original_pandas):
     """Envuelve PySpark convertido en el contrato del framework v2.
 
@@ -1340,17 +1365,23 @@ def _aggregate_from_pyspark(source, pyspark_code, original_pandas):
     # si el codigo lee de rutas propias (spark.read...), se respeta tal cual; el
     # df inyectado queda disponible como punto de partida alternativo.
     body = pyspark_code.strip() or "df_out = df"
+    # Subir los imports al nivel de MODULO. Imprescindible para 'from X import *'
+    # (Python prohibe import * dentro de metodos -> SyntaxError). Tambien deja el
+    # metodo mas limpio.
+    hoisted, body = _hoist_module_imports(body)
+    body = body.strip() or "df_out = df"
     # Heuristica: si el codigo no define df_out ni retorna, devolvemos la ultima
     # variable *_df o el df de entrada.
     has_out = _re.search(r"\bdf_out\b", body) is not None
     tail = "" if has_out else "\n# BNX: no se detecto 'df_out'; se devuelve el df de entrada.\ndf_out = df"
+    extra_imports = ("\n" + hoisted + "\n") if hoisted.strip() else "\n"
     return f'''# framework_mlops_v2/aggregates/{source}.py
 """Fuente '{source}': generada por BNX desde el Python del negocio.
 Convertida a PySpark y envuelta en el contrato del framework v2.
 Revisa los comentarios '# TODO py2spark' donde la conversion no fue 1:1."""
 from pyspark.sql import functions as F
 from ..core.base_aggregate import BaseAggregate
-
+{extra_imports}
 
 class {cls}(BaseAggregate):
     """Agregacion de la fuente '{source}'. La logica proviene del codigo de
