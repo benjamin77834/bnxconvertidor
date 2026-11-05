@@ -416,6 +416,8 @@ _STDLIB_AND_KNOWN = {
     "pandas", "numpy", "np", "pd", "pyspark", "sklearn", "scikit_learn",
     "xgboost", "lightgbm", "scipy", "pytest", "chispa", "matplotlib",
     "seaborn", "statsmodels", "joblib", "dateutil", "pytz", "six",
+    # deps del stack empaquetadas en vendor/bank (no son libs internas del banco):
+    "cytoolz", "toolz", "unidecode", "cloudpickle",
     # el propio framework generado (imports relativos)
     "framework_mlops_v2", "framework_mlops_metrics",
     # modulos INTERNOS del proyecto del banco (no son librerias a instalar: son
@@ -1151,6 +1153,8 @@ import sys
 _STACK = {
     "pandas", "numpy", "pyspark", "py4j", "pytest", "chispa", "sklearn",
     "scikit_learn", "xgboost", "lightgbm", "scipy", "dateutil", "pytz",
+    # deps del stack del banco que ahora SI van empaquetadas en vendor/bank:
+    "cytoolz", "toolz", "unidecode", "joblib", "cloudpickle", "six",
 }
 # Prefijos de librerias internas del banco (para clasificar lo que falta).
 _BANK_PREFIXES = ("lib_", "mex", "toolbox", "bnmxverse")
@@ -1776,18 +1780,17 @@ def _bank_vendor_files():
             if not f.endswith((".tar.gz", ".whl")):
                 continue
             low = f.lower()
-            # Deps del negocio PINNEADAS por el banco (p.ej. pandas 1.3.1 cp38,
-            # numpy/xgboost/scikit-learn con la version exacta del ambiente). Se
-            # empaquetan tal cual para que el ambiente del banco (Python 3.8)
-            # resuelva la version correcta offline.
-            if low.startswith(("pandas-", "numpy-", "xgboost-", "scikit_learn-",
-                               "scikit-learn-", "scipy-")):
-                sdists.append(os.path.join(whl_dir, f))
+            # mex-lib* del banco: solo las VERIFICADAS (las incompletas en origen
+            # se omiten del vendor porque les falta codigo).
+            if low.startswith("mex"):
+                pkg = f.split("-2.")[0] if "-2." in f else f.rsplit("-", 1)[0]
+                if pkg in _BANK_PKG_VERIFIED:
+                    sdists.append(os.path.join(whl_dir, f))
                 continue
-            # mex-lib*: solo los VERIFICADOS (los incompletos se omiten del vendor).
-            pkg = f.split("-2.")[0] if "-2." in f else f.rsplit("-", 1)[0]
-            if pkg in _BANK_PKG_VERIFIED:
-                sdists.append(os.path.join(whl_dir, f))
+            # Cualquier OTRA wheel/sdist en bank_libs/wheels es una DEP del stack
+            # del banco (pandas/numpy/xgboost/cytoolz/pytest/chispa y transitivas).
+            # Se incluyen TODAS: asi nada queda faltante al montar offline.
+            sdists.append(os.path.join(whl_dir, f))
     pkgcode = {}
     if os.path.isdir(code_dir):
         for root, dirs, files in os.walk(code_dir):
