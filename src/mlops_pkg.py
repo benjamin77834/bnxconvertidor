@@ -471,9 +471,14 @@ def _detect_bank_imports(source_codes):
                 mods.add(m.group(1))
             for m in _re.finditer(r'^\s*from\s+([a-zA-Z_][\w]*)\s+import', code, _re.M):
                 mods.add(m.group(1))
+        # Modulos de la STDLIB de Python (email, os, io, ...): NUNCA son libs del
+        # banco. Se detectan automaticamente con sys.stdlib_module_names (3.10+)
+        # para no mantener una lista manual que siempre tiene huecos (p.ej. 'email').
+        import sys as _sys2
+        _stdlib = set(getattr(_sys2, "stdlib_module_names", ()))
         for mod in mods:
             key = mod.strip()
-            if not key or key in _STDLIB_AND_KNOWN:
+            if not key or key in _STDLIB_AND_KNOWN or key in _stdlib:
                 continue
             # Preservar primer orden de aparicion.
             found.setdefault(key, True)
