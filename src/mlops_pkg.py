@@ -1335,6 +1335,42 @@ def _as_comment_block(code):
     return "\n".join((f"# {ln}" if ln.strip() else "#") for ln in lines)
 
 
+# Modulos que NO estaran disponibles en el despliegue (no se usan / no se
+# empaquetan). Sus imports se neutralizan con try/except para que el archivo NO
+# rompa al importar; si se usan en runtime dan un error claro, no al cargar.
+_MODULOS_AUSENTES = ("modeling_tools",)
+
+
+def _neutralize_missing_imports(imports_txt):
+    """Envuelve en try/except ImportError los imports de modulos que sabemos que
+    NO estaran (modeling_tools, etc.), para que el archivo importe sin romper. El
+    symbolo importado queda como None (si se usa en runtime, falla claro ahi, no
+    al cargar el modulo). Devuelve el bloque de imports ya neutralizado."""
+    out = []
+    for ln in imports_txt.split("\n"):
+        s = ln.strip()
+        top = s.split()[1].split(".")[0] if s.startswith(("import ", "from ")) and len(s.split()) > 1 else ""
+        if top in _MODULOS_AUSENTES:
+            # Nombres que define este import (para dejarlos como None si falla).
+            names = []
+            if s.startswith("from ") and " import " in s:
+                tail = s.split(" import ", 1)[1]
+                names = [p.strip().split(" as ")[-1].strip()
+                         for p in tail.split(",") if p.strip() and p.strip() != "*"]
+            elif s.startswith("import "):
+                names = [s.split()[1].split(".")[0].split(" as ")[-1].strip()]
+            out.append("try:")
+            out.append("    " + s)
+            out.append("except ImportError:  # BNX: modulo no disponible en el despliegue")
+            if names:
+                out.append("    " + " = ".join(names) + " = None")
+            else:
+                out.append("    pass")
+        else:
+            out.append(ln)
+    return "\n".join(out)
+
+
 def _hoist_module_imports(code):
     """Separa los imports de NIVEL SUPERIOR del resto del codigo. Devuelve
     (imports_txt, resto_txt). CLAVE para 'from X import *': Python solo lo permite
@@ -1376,6 +1412,9 @@ def _aggregate_from_pyspark(source, pyspark_code, original_pandas):
     # (Python prohibe import * dentro de metodos -> SyntaxError). Tambien deja el
     # metodo mas limpio.
     hoisted, body = _hoist_module_imports(body)
+    # Neutralizar imports de modulos que NO estaran (modeling_tools, etc.): el
+    # archivo debe importar sin romper (try/except ImportError).
+    hoisted = _neutralize_missing_imports(hoisted)
     body = body.strip() or "df_out = df"
     # Heuristica: si el codigo no define df_out ni retorna, devolvemos la ultima
     # variable *_df o el df de entrada.
