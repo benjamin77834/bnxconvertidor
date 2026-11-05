@@ -154,6 +154,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._proxy_to_datalab(path)
         elif "/datagen/awscode" in path:
             self._handle_awscode()
+        elif "/datagen/databricks" in path:
+            self._handle_databricks_export()
         elif "/datagen" in path:
             self._handle_datagen()
         elif "/export/bundle" in path:
@@ -1366,6 +1368,84 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             import traceback
             traceback.print_exc()
             self._json_response(500, {"error": str(e)})
+
+    def _handle_databricks_export(self):
+        """Genera artefactos de Databricks desde el PySpark del grafo.
+        Body JSON: {code|mp, format, job_name?, spark_version?, node_type?, num_workers?}
+          format = 'notebook' | 'job_json' | 'asset_bundle' | 'unity_catalog'
+        notebook/job_json/unity_catalog -> JSON {filename, content}.
+        asset_bundle -> ZIP binario descargable."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length) if content_length else b""
+        try:
+            data = json.loads(body.decode("utf-8", errors="replace")) if body else {}
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._json_response(400, {"error": "Invalid JSON body"})
+            return
+        code = data.get("code", "")
+        mp_content = data.get("mp", "")
+        fmt = (data.get("format") or "notebook").strip()
+        job_name = data.get("job_name") or "bnx_job"
+        # Si mandan el grafo, regeneramos PySpark fresco (como en /datagen/awscode).
+        compiled = None
+        if mp_content.strip():
+            try:
+                compiled = self._compile_graph(
+                    mp_content, data.get("xfr", ""), data.get("dml", ""),
+                    data.get("pset", ""), target="spark")
+                if compiled and compiled.get("code"):
+                    code = compiled["code"]
+                    job_name = data.get("job_name") or compiled.get("graph_name") or job_name
+            except Exception as e:
+                print(f"  [databricks] no se pudo regenerar desde grafo: {e}")
+        if fmt != "unity_catalog" and not code.strip():
+            self._json_response(400, {"error": "Falta 'code' (PySpark) o 'mp' (grafo)"})
+            return
+        try:
+            from src import databricks_export as dbx
+            sv = data.get("spark_version", "14.3.x-scala2.12")
+            nt = data.get("node_type", "Standard_DS3_v2")
+            nw = int(data.get("num_workers", 2) or 2)
+
+            if fmt == "notebook":
+                r = dbx.build_notebook(code, job_name=job_name)
+                self._json_response(200, {"ok": True, "format": fmt, **r})
+            elif fmt == "job_json":
+                r = dbx.build_job_json(job_name=job_name, spark_version=sv,
+                                       node_type=nt, num_workers=nw)
+                self._json_response(200, {"ok": True, "format": fmt, **r})
+            elif fmt == "unity_catalog":
+                # DDL de linaje: requiere el grafo compilado para la metadata.
+                if compiled is None and mp_content.strip():
+                    compiled = self._compile_graph(mp_content, data.get("xfr", ""),
+                                                   data.get("dml", ""), data.get("pset", ""),
+                                                   target="spark")
+                if compiled is None:
+                    self._json_response(400, {"error": "Unity Catalog necesita el grafo (mp) para la metadata de linaje."})
+                    return
+                from src.metadata import build_canonical, build_databricks_ddl
+                canonical = build_canonical(compiled)
+                ddl = build_databricks_ddl(canonical)
+                self._json_response(200, {"ok": True, "format": fmt,
+                                          "filename": "%s_unity_catalog.sql" % dbx._safe_name(job_name),
+                                          "content": ddl})
+            elif fmt == "asset_bundle":
+                ddl = None
+                if compiled is not None:
+                    try:
+                        from src.metadata import build_canonical, build_databricks_ddl
+                        ddl = build_databricks_ddl(build_canonical(compiled))
+                    except Exception:
+                        ddl = None
+                r = dbx.build_asset_bundle(code, job_name=job_name, spark_version=sv,
+                                           node_type=nt, num_workers=nw, databricks_ddl=ddl)
+                self._binary_response(r["zip_bytes"], r["filename"])
+            else:
+                self._json_response(400, {"error": "format desconocido: %s" % fmt})
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"error": f"{type(e).__name__}: {e}"})
 
     def _handle_export_bundle(self):
         """Genera un ZIP descargable para probar el job en Linux.

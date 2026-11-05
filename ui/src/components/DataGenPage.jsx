@@ -14,6 +14,7 @@ const OPTIMIZE_COMPARE_URL = COMPILE_URL.replace(/\/compile$/, '/optimize/compar
 const AWSCODE_URL = COMPILE_URL.replace(/\/compile$/, '/datagen/awscode')
 const EXPORT_BUNDLE_URL = COMPILE_URL.replace(/\/compile$/, '/export/bundle')
 const DOWNLOAD_URL = COMPILE_URL.replace(/\/compile$/, '/download')
+const DATABRICKS_URL = COMPILE_URL.replace(/\/compile$/, '/datagen/databricks')
 
 const TYPES = ['string', 'integer', 'decimal', 'date', 'datetime', 'boolean']
 const PII_CATEGORIES = ['', 'name', 'email', 'phone', 'card', 'account', 'ssn', 'address', 'dob', 'id']
@@ -119,6 +120,10 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
   const [awsRole] = useState('arn:aws:iam::107094296911:role/datalake-glue-role-dev')
   const [awsJobName, setAwsJobName] = useState('datalake-bnx-datagen-spark-dev')
   const [awsDownloads, setAwsDownloads] = useState([]) // [{name, url}] presigned URLs
+  // --- Databricks ---
+  const [dbxBusy, setDbxBusy] = useState('')   // '' | 'notebook' | 'job_json' | 'asset_bundle' | 'unity_catalog'
+  const [dbxMsg, setDbxMsg] = useState('')
+  const [dbxPreview, setDbxPreview] = useState(null) // {title, content}
 
   const isPySpark = compiledTarget === 'spark'
   const hasCode = Boolean((compiledCode || '').trim())
@@ -432,6 +437,49 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
         awsLog('Error polling: ' + e.message)
       }
     }, 15000)
+  }
+
+  // Genera artefactos de Databricks desde el PySpark del grafo.
+  // notebook/job_json/unity_catalog -> JSON con {content}; asset_bundle -> ZIP.
+  const databricksExport = async (format) => {
+    setDbxBusy(format); setDbxMsg(''); setDbxPreview(null)
+    try {
+      const jobName = graphName || 'bnx_job'
+      const payload = { code: compiledCode, mp: graphMp, xfr: graphXfr, format, job_name: jobName }
+      if (format === 'asset_bundle') {
+        // Descarga binaria (ZIP) directa.
+        const res = await fetch(DATABRICKS_URL, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        })
+        if (!res.ok) { const e = await res.json().catch(() => ({})); setDbxMsg('⚠️ ' + (e.error || res.statusText)); return }
+        const blob = await res.blob()
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url; a.download = `bnx_dab_${jobName.replace(/[^A-Za-z0-9_-]/g, '_')}.zip`
+        document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url)
+        setDbxMsg('✅ Asset Bundle descargado. Despliega con: databricks bundle deploy -t dev')
+      } else {
+        const res = await fetch(DATABRICKS_URL, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        })
+        const data = await res.json()
+        if (!data.ok || data.error) { setDbxMsg('⚠️ ' + (data.error || 'no se pudo generar')); return }
+        setDbxPreview({ title: data.filename, content: data.content, note: data.note })
+        setDbxMsg(`✅ ${data.filename} generado.`)
+      }
+    } catch (e) { setDbxMsg('⚠️ ' + e.message) }
+    finally { setDbxBusy('') }
+  }
+
+  const downloadDbxPreview = () => {
+    if (!dbxPreview) return
+    const blob = new Blob([dbxPreview.content], { type: 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = dbxPreview.title
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url)
   }
 
   const runTest = async (target = 'local') => {
@@ -2041,6 +2089,60 @@ export default function DataGenPage({ theme, graphMp = '', graphXfr = '', compil
                   whiteSpace: 'pre-wrap', wordBreak: 'break-all',
                 }}>{l}</div>
               ))}
+            </div>
+          )}
+
+          {/* --- DATABRICKS --- */}
+          <div style={{ height: 1, background: t.border || '#334155', margin: '8px 0' }} />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <span style={label}>🧱 Databricks (desde el PySpark del grafo)</span>
+            <span style={{ fontSize: 11, color: t.dim }}>
+              Genera artefactos de despliegue para Databricks. Databricks ejecuta PySpark nativo: el código del grafo corre tal cual.
+            </span>
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 4 }}>
+            <button onClick={() => databricksExport('asset_bundle')} disabled={!!dbxBusy || !hasCode || !isPySpark}
+              title="Asset Bundle (DAB): databricks.yml + notebook + job. El formato moderno de despliegue."
+              style={{
+                padding: '9px 16px', borderRadius: 8, fontSize: 12.5, fontWeight: 700,
+                cursor: dbxBusy ? 'wait' : 'pointer', background: '#ff5f46', color: '#fff', border: 'none',
+                opacity: (!hasCode || !isPySpark) ? 0.5 : 1,
+              }}>{dbxBusy === 'asset_bundle' ? '⏳…' : '📦 Asset Bundle (.zip)'}</button>
+            <button onClick={() => databricksExport('job_json')} disabled={!!dbxBusy || !hasCode || !isPySpark}
+              title="JSON de un Databricks Job para la API/CLI (databricks jobs create --json)"
+              style={{
+                padding: '9px 16px', borderRadius: 8, fontSize: 12.5, fontWeight: 700,
+                cursor: dbxBusy ? 'wait' : 'pointer', background: '#1b3139', color: '#fff', border: '1px solid #3b5563',
+                opacity: (!hasCode || !isPySpark) ? 0.5 : 1,
+              }}>{dbxBusy === 'job_json' ? '⏳…' : '⚙️ Databricks Job (.json)'}</button>
+            <button onClick={() => databricksExport('notebook')} disabled={!!dbxBusy || !hasCode || !isPySpark}
+              title="Notebook .py de Databricks (celdas) para subir al workspace"
+              style={{
+                padding: '9px 16px', borderRadius: 8, fontSize: 12.5, fontWeight: 700,
+                cursor: dbxBusy ? 'wait' : 'pointer', background: '#1b3139', color: '#fff', border: '1px solid #3b5563',
+                opacity: (!hasCode || !isPySpark) ? 0.5 : 1,
+              }}>{dbxBusy === 'notebook' ? '⏳…' : '📓 Notebook (.py)'}</button>
+            <button onClick={() => databricksExport('unity_catalog')} disabled={!!dbxBusy || !graphMp}
+              title="DDL de Unity Catalog para el linaje (CREATE TABLE + lineage por columna)"
+              style={{
+                padding: '9px 16px', borderRadius: 8, fontSize: 12.5, fontWeight: 700,
+                cursor: dbxBusy ? 'wait' : 'pointer', background: '#0b6b4f', color: '#fff', border: 'none',
+                opacity: !graphMp ? 0.5 : 1,
+              }}>{dbxBusy === 'unity_catalog' ? '⏳…' : '🔗 Unity Catalog (linaje)'}</button>
+          </div>
+          {dbxMsg && <div style={{ fontSize: 12, color: dbxMsg.startsWith('⚠️') ? '#f87171' : '#4ade80' }}>{dbxMsg}</div>}
+          {dbxPreview && (
+            <div style={{ background: '#0a0e17', border: `1px solid ${t.border || '#334155'}`, borderRadius: 8, padding: 12 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6, flexWrap: 'wrap', gap: 6 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: t.text || '#e2e8f0', fontFamily: 'monospace' }}>{dbxPreview.title}</span>
+                <button onClick={downloadDbxPreview}
+                  style={{ padding: '5px 12px', borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: 'pointer', background: '#6366f1', color: '#fff', border: 'none' }}>⬇️ Descargar</button>
+              </div>
+              {dbxPreview.note && <div style={{ fontSize: 10.5, color: t.dim, marginBottom: 6, fontFamily: 'monospace' }}>{dbxPreview.note}</div>}
+              <pre style={{
+                margin: 0, maxHeight: 280, overflow: 'auto', fontFamily: 'monospace', fontSize: 11,
+                color: '#9ae6b4', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+              }}>{dbxPreview.content}</pre>
             </div>
           )}
         </div>
