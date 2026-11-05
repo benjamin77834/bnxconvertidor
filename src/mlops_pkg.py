@@ -1348,7 +1348,7 @@ def _as_comment_block(code):
 # Modulos que NO estaran disponibles en el despliegue (no se usan / no se
 # empaquetan). Sus imports se neutralizan con try/except para que el archivo NO
 # rompa al importar; si se usan en runtime dan un error claro, no al cargar.
-_MODULOS_AUSENTES = ("modeling_tools",)
+_MODULOS_AUSENTES = ("modeling_tools", "libs")
 
 
 def _neutralize_missing_imports(imports_txt):
