@@ -423,6 +423,9 @@ _STDLIB_AND_KNOWN = {
     # hace 'from aggregates...', 'import datapull', 'from libs...', etc.
     "aggregates", "datapull", "data_pull", "libs", "jobs", "settings", "static",
     "unidecode",
+    # IGNORADAS a peticion: no se usan en el despliegue, no reportarlas como
+    # faltantes. smtplib es stdlib (correo); modeling_tools no aplica.
+    "smtplib", "modeling_tools",
     # stdlib comun que puede aparecer en el codigo de negocio
     "os", "sys", "re", "json", "csv", "math", "time", "datetime", "calendar",
     "collections", "itertools", "functools", "logging", "typing", "decimal",
@@ -1152,6 +1155,10 @@ _STACK = {
 # Prefijos de librerias internas del banco (para clasificar lo que falta).
 _BANK_PREFIXES = ("lib_", "mex", "toolbox", "bnmxverse")
 
+# Modulos a IGNORAR por completo en la verificacion (no se usan en el despliegue):
+# no reportarlos como faltantes aunque el codigo los importe.
+_IGNORAR = {"modeling_tools", "smtplib"}
+
 # stdlib: si el modulo se resuelve y vive bajo la lib estandar, no es dependencia
 # externa. Usamos sys.stdlib_module_names cuando existe (3.10+); si no, heuristica.
 _STDLIB = set(getattr(sys, "stdlib_module_names", set()))
@@ -1242,8 +1249,8 @@ def main():
     mods = sorted(_top_level_imports())
     faltan, ok = [], []
     for mod in mods:
-        if _is_stdlib(mod):
-            continue
+        if _is_stdlib(mod) or mod in _IGNORAR:
+            continue  # stdlib o modulo ignorado (no se usa en el despliegue)
         (ok if _can_import(mod) else faltan).append(mod)
 
     if not quiet:
