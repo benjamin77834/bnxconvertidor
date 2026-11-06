@@ -972,12 +972,21 @@ Uso (tras montar el entorno con setup.sh; o directo:  bash run.sh):
     python main.py --source bureau # solo una fuente
     python main.py --config cfg.json   # datos REALES (ver formato abajo)
 
-cfg.json (datos reales):
+cfg.json (datos reales) — ver cfg.example.json:
     {
-      "previous_path": "/ruta/con/parquets",   # <previous_path>/<table_name>
-      "sources": {"bureau": {"table_name": "bureau"}, ...}
+      "previous_path": "data/datapull",        # opcional; destino/origen de parquets
+      "spark": {"master": "yarn", "hive": true, "conf": {"spark.executor.memory": "4g"}},
+      "sources": {
+        "bureau": {"table_name": "bureau",
+                   "query": "SELECT * FROM db.bureau WHERE fecha >= '2024-01-01'"},
+        "atms":   {"table_name": "atms", "source_table": "db.atms", "limit": 100000}
+      }
     }
-
+Si una fuente trae "query" (o "query_file", o "source_table"), main.py se conecta
+a la sesion de Spark/Hive, ejecuta el query y BAJA el resultado a parquet en
+<previous_path>/<table_name>; luego corre los aggregates sobre esos parquets.
+Sin query, usa el parquet que ya exista en esa ruta. --skip-extract reutiliza
+los parquets ya bajados; --extract-only solo baja los datos.
 En DEMO genera datos sinteticos, neutraliza las lecturas externas de los
 aggregates (spark.read.* -> datos de juguete) y corre cada fuente mostrando
 entrada -> salida. Las fuentes con un '# TODO py2spark' pendiente se marcan.
@@ -1043,6 +1052,52 @@ def _patch_reads(spark, synth):
         pass
 
 
+def _load_config(path):
+    """Lee el JSON de configuracion con mensajes claros (sin KeyError)."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            cfg = json.load(fh)
+    except (OSError, ValueError) as e:
+        raise SystemExit("No se pudo leer el config '%s': %s" % (path, e))
+    if not isinstance(cfg, dict):
+        raise SystemExit("El config '%s' debe ser un objeto JSON {...}" % path)
+    return cfg
+def _source_query(s, scfg, cfg_dir):
+    """SQL a ejecutar para bajar la fuente, o None si no hay que extraer."""
+    q = scfg.get("query")
+    if not q and scfg.get("query_file"):
+        qf = scfg["query_file"]
+        if not os.path.isabs(qf):
+            qf = os.path.join(cfg_dir, qf)
+        with open(qf, encoding="utf-8") as fh:
+            q = fh.read()
+    if not q and scfg.get("source_table"):
+        q = "SELECT * FROM %s" % scfg["source_table"]
+    if not q:
+        return None
+    q = q.strip().rstrip(";")
+    if scfg.get("limit"):
+        q = "SELECT * FROM (%s) bnx_q LIMIT %d" % (q, int(scfg["limit"]))
+    return q
+def _extract_sources(spark, fuentes, src_cfg, prev, cfg_dir):
+    """Ejecuta el query de cada fuente en la sesion de Spark y lo baja a parquet
+    en <prev>/<table_name>. Devuelve las fuentes que fallaron al extraer."""
+    fallidas = []
+    for s in fuentes:
+        scfg = src_cfg.get(s) or {}
+        q = _source_query(s, scfg, cfg_dir)
+        if q is None:
+            continue
+        dest = os.path.join(prev, scfg.get("table_name", s))
+        print("[extract] %s -> %s" % (s, dest))
+        try:
+            spark.sql(q).write.mode("overwrite").parquet(dest)
+            print("          OK (%d filas)" % spark.read.parquet(dest).count())
+        except Exception as e:
+            causa = str(e).strip().splitlines()[0][:200] if str(e).strip() else type(e).__name__
+            print("          ERROR extrayendo '%s': %s" % (s, causa))
+            fallidas.append(s)
+    return fallidas
 def _report_optimizations():
     """Resumen de las optimizaciones de Spark ya aplicadas al generar el paquete
     (cache / broadcast / coalesce). BNX las aplico en el portal; aqui las
@@ -1111,18 +1166,38 @@ def main():
     ap = argparse.ArgumentParser(description="Framework MLOps v2 — entry point")
     ap.add_argument("--config", help="JSON con previous_path y sources (datos reales)")
     ap.add_argument("--source", help="correr solo esta fuente (por nombre)")
+    ap.add_argument("--skip-extract", action="store_true",
+                    help="no ejecutar los query; usar los parquets ya bajados")
+    ap.add_argument("--extract-only", action="store_true",
+                    help="solo bajar los query a parquet, sin correr los aggregates")
     args = ap.parse_args()
-
     demo = not args.config
+    cfg = {} if demo else _load_config(args.config)
+    cfg_dir = os.path.dirname(os.path.abspath(args.config)) if args.config else _here
+    scfg_spark = cfg.get("spark") or {}
     work = _work_dir()
     # tmp de Java/Spark/snappy dentro del paquete (escribible), no en /tmp.
     jopts = "-Djava.io.tmpdir=%s -Dorg.xerial.snappy.tempdir=%s" % (work, work)
-    spark = (SparkSession.builder.master("local[1]").appName("framework_mlops_v2")
-             .config("spark.ui.enabled", "false")
-             .config("spark.sql.shuffle.partitions", "2")
-             .config("spark.local.dir", work)
-             .config("spark.driver.extraJavaOptions", jopts)
-             .getOrCreate())
+    builder = (SparkSession.builder
+               .master(scfg_spark.get("master", "local[1]"))
+               .appName(scfg_spark.get("app_name", "framework_mlops_v2"))
+               .config("spark.ui.enabled", "false")
+               .config("spark.sql.shuffle.partitions", "2")
+               .config("spark.local.dir", work)
+               .config("spark.driver.extraJavaOptions", jopts))
+    for k, v in (scfg_spark.get("conf") or {}).items():   # conf extra del JSON
+        builder = builder.config(k, str(v))
+    # Hive (tablas del catalogo/metastore): "spark.hive": true, o automatico si
+    # alguna fuente usa query/source_table.
+    _src0 = cfg.get("sources") or {}
+    _usa_sql = any(isinstance(v, dict) and (v.get("query") or v.get("query_file")
+                                            or v.get("source_table")) for v in _src0.values())
+    if scfg_spark.get("hive", _usa_sql):
+        try:
+            builder = builder.enableHiveSupport()
+        except Exception as e:
+            print("[aviso] no se pudo habilitar Hive:", str(e)[:120])
+    spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
     _ensure_parquet_codec(spark, work)
 
@@ -1143,13 +1218,24 @@ def main():
         _patch_reads(spark, synth)
         src_cfg = {s: {"table_name": s} for s in REGISTRY}
     else:
-        cfg = json.load(open(args.config, encoding="utf-8"))
         base = None
-        prev = cfg["previous_path"]
+        prev = cfg.get("previous_path") or os.path.join(_here, "data", "datapull")
+        if not os.path.isabs(prev):
+            prev = os.path.join(cfg_dir, prev)
+        os.makedirs(prev, exist_ok=True)
+        print("previous_path:", prev)
         src_cfg = cfg.get("sources") or {s: {"table_name": s} for s in REGISTRY}
-
     fuentes = [args.source] if args.source else list(src_cfg.keys())
     ok = fail = 0
+    if not demo and not args.skip_extract:
+        fallidas = _extract_sources(spark, [f for f in fuentes if f in REGISTRY],
+                                    src_cfg, prev, cfg_dir)
+        fuentes = [f for f in fuentes if f not in fallidas]
+        fail += len(fallidas)
+    if args.extract_only:
+        print("\\n--extract-only: parquets en", prev)
+        spark.stop()
+        raise SystemExit(0 if fail == 0 else 1)
     for s in fuentes:
         if s not in REGISTRY:
             print("\\n[skip] fuente no registrada:", s); continue
@@ -1183,6 +1269,24 @@ if __name__ == "__main__":
 '''
 
 
+_CFG_EXAMPLE = '''{
+  "previous_path": "data/datapull",
+  "spark": {
+    "master": "local[2]",
+    "hive": true,
+    "conf": {
+      "spark.sql.shuffle.partitions": "8"
+    }
+  },
+  "sources": {
+    "data_pull": {
+      "table_name": "data_pull",
+      "query": "SELECT * FROM mi_base.mi_tabla WHERE fecha >= '2024-01-01'",
+      "limit": 100000
+    }
+  }
+}
+'''
 # mex_lib_cs — FACHADA (agregador) de las mex-lib del banco. El codigo del banco hace
 #   from mex_lib_cs import Extract, GroupBy, GeneratePivot, ...
 # pero 'mex_lib_cs' nunca se entrego como paquete: es una capa que re-exporta las
@@ -2193,6 +2297,7 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
         files["mex_lib_cs/__init__.py"] = _MEX_LIB_CS
     files["setup.sh"] = _SETUP_SH
     files["run.sh"] = _RUN_SH
+    files["cfg.example.json"] = _CFG_EXAMPLE
     files["pytest.ini"] = _PYTEST_INI   # pytest solo en tests/, ignora __MACOSX/vendor
     files["setup.py"] = _SETUP
     files["README.md"] = _readme_custom(
@@ -2373,6 +2478,7 @@ def build_mlops_package(include_bank_libs=True, extra_steps=False,
         "requirements.txt": _requirements(include_bank_libs, extra_steps),
         "setup.sh": _SETUP_SH,
         "run.sh": _RUN_SH,
+        "cfg.example.json": _CFG_EXAMPLE,
         "pytest.ini": _PYTEST_INI,
         "README.md": _readme(include_bank_libs),
         "setup.py": _SETUP,
