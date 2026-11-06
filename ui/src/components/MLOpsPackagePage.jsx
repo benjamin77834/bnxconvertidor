@@ -791,8 +791,8 @@ bash setup.sh       # con vendor/: PySpark OFFLINE; sin vendor/: por internet`}<
 
           <div style={step}>2) Correr el framework (entry point: main.py)</div>
           <pre style={pre}>{`bash run.sh                      # modo DEMO (datos sintéticos, sin configurar)
-bash run.sh --source bureau    # solo una fuente
-bash run.sh --config cfg.json  # datos REALES`}</pre>
+bash run.sh --config cfg.json              # todas las fuentes (cada una es un job independiente)
+bash run.sh --config cfg.json --source X   # UNA sola fuente (job aislado p/ Airflow/cron)`}</pre>
 
           <div style={step}>3) cfg.json para datos reales</div>
           <pre style={pre}>{`{

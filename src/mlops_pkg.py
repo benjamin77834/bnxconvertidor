@@ -987,6 +987,10 @@ a la sesion de Spark/Hive, ejecuta el query y BAJA el resultado a parquet en
 <previous_path>/<table_name>; luego corre los aggregates sobre esos parquets.
 Sin query, usa el parquet que ya exista en esa ruta. --skip-extract reutiliza
 los parquets ya bajados; --extract-only solo baja los datos.
+
+Cada fuente es un JOB INDEPENDIENTE, no una secuencia: si una falla, las demas
+siguen. Para lanzar una sola como job aislado (p.ej. desde Airflow/cron, una
+tarea por fuente):  python main.py --config cfg.json --source <nombre>
 En DEMO genera datos sinteticos, neutraliza las lecturas externas de los
 aggregates (spark.read.* -> datos de juguete) y corre cada fuente mostrando
 entrada -> salida. Las fuentes con un '# TODO py2spark' pendiente se marcan.
@@ -1227,21 +1231,25 @@ def main():
         src_cfg = cfg.get("sources") or {s: {"table_name": s} for s in REGISTRY}
     fuentes = [args.source] if args.source else list(src_cfg.keys())
     ok = fail = 0
-    if not demo and not args.skip_extract:
-        fallidas = _extract_sources(spark, [f for f in fuentes if f in REGISTRY],
-                                    src_cfg, prev, cfg_dir)
-        fuentes = [f for f in fuentes if f not in fallidas]
-        fail += len(fallidas)
-    if args.extract_only:
-        print("\\n--extract-only: parquets en", prev)
-        spark.stop()
-        raise SystemExit(0 if fail == 0 else 1)
+    # Cada fuente es un JOB INDEPENDIENTE: extrae su query y corre su aggregate en
+    # su propio bloque aislado. Una fuente que falla NO tumba a las demas. Para
+    # correr una sola como job separado desde tu orquestador:  run.sh --source X
     for s in fuentes:
         if s not in REGISTRY:
             print("\\n[skip] fuente no registrada:", s); continue
         print("\\n" + "-" * 64); print("FUENTE:", s)
+        scfg = src_cfg.get(s, {"table_name": s})
         try:
-            GroupBy(s, previous_path=prev, agg_dict=src_cfg.get(s, {"table_name": s}),
+            # 1) Extraccion propia de ESTA fuente (si trae query/source_table).
+            if not demo and not args.skip_extract:
+                if _extract_sources(spark, [s], src_cfg, prev, cfg_dir):
+                    raise RuntimeError("fallo la extraccion de '%s'" % s)
+            if args.extract_only:
+                print("  extract-only: parquet en", os.path.join(prev, scfg.get("table_name", s)))
+                ok += 1
+                continue
+            # 2) Aggregate de ESTA fuente.
+            GroupBy(s, previous_path=prev, agg_dict=scfg,
                     sqlContext=spark).aggregate()
             head, _ = os.path.split(prev)
             out = spark.read.parquet(os.path.join(head, "groupby"))
