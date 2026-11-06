@@ -1087,6 +1087,46 @@ def _report_optimizations():
               "cache/broadcast/coalesce aplican con joins/reuso/escrituras).")
 
 
+def _work_dir():
+    """Directorio de trabajo ESCRIBIBLE dentro del paquete. No depende de /tmp, que
+    en servidores endurecidos suele estar montado 'noexec' o con cuota (rompe las
+    librerias nativas de compresion de parquet/snappy y la escritura de temporales)."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for cand in (os.path.join(here, ".bnx_tmp"), tempfile.gettempdir()):
+        try:
+            os.makedirs(cand, exist_ok=True)
+            probe = os.path.join(cand, ".w")
+            open(probe, "w").close()
+            os.remove(probe)
+            return cand
+        except OSError:
+            continue
+    return tempfile.gettempdir()
+
+
+def _ensure_parquet_codec(spark, work):
+    """Comprueba que se pueda ESCRIBIR parquet con el codec por defecto (snappy).
+    Si falla (libreria nativa no cargable, /tmp noexec...), cae a 'uncompressed'
+    y lo avisa, en vez de reventar con un stack de Java ilegible. Se puede forzar
+    con la variable BNX_PARQUET_CODEC (snappy|gzip|uncompressed|zstd)."""
+    forced = os.environ.get("BNX_PARQUET_CODEC")
+    if forced:
+        spark.conf.set("spark.sql.parquet.compression.codec", forced)
+        print("[codec] parquet forzado a '%s' (BNX_PARQUET_CODEC)" % forced)
+        return
+    probe = os.path.join(work, "_codec_probe")
+    try:
+        spark.range(1).write.mode("overwrite").parquet(probe)
+    except Exception as e:
+        causa = str(e).strip().splitlines()[0][:200] if str(e).strip() else type(e).__name__
+        print("[aviso] no se pudo escribir parquet con el codec por defecto: %s" % causa)
+        print("        Se usa 'uncompressed'. (Suele ser /tmp noexec o snappy nativo.)")
+        spark.conf.set("spark.sql.parquet.compression.codec", "uncompressed")
+        spark.range(1).write.mode("overwrite").parquet(probe)   # si falla aqui, es otro tema
+    finally:
+        shutil.rmtree(probe, ignore_errors=True)
+
+
 def main():
     ap = argparse.ArgumentParser(description="Framework MLOps v2 — entry point")
     ap.add_argument("--config", help="JSON con previous_path y sources (datos reales)")
@@ -1094,10 +1134,17 @@ def main():
     args = ap.parse_args()
 
     demo = not args.config
+    work = _work_dir()
+    # tmp de Java/Spark/snappy dentro del paquete (escribible), no en /tmp.
+    jopts = "-Djava.io.tmpdir=%s -Dorg.xerial.snappy.tempdir=%s" % (work, work)
     spark = (SparkSession.builder.master("local[1]").appName("framework_mlops_v2")
              .config("spark.ui.enabled", "false")
-             .config("spark.sql.shuffle.partitions", "2").getOrCreate())
+             .config("spark.sql.shuffle.partitions", "2")
+             .config("spark.local.dir", work)
+             .config("spark.driver.extraJavaOptions", jopts)
+             .getOrCreate())
     spark.sparkContext.setLogLevel("ERROR")
+    _ensure_parquet_codec(spark, work)
 
     print("=" * 64)
     print("FRAMEWORK MLOPS v2 — %s" % ("DEMO (datos sinteticos)" if demo else "DATOS REALES"))
@@ -1108,7 +1155,7 @@ def main():
         synth = _synthetic_df(spark)
         print("\\nENTRADA sintetica (%d filas):" % synth.count())
         synth.show(5, truncate=False)
-        base = tempfile.mkdtemp(prefix="bnx_main_")
+        base = tempfile.mkdtemp(prefix="bnx_main_", dir=work)
         prev = os.path.join(base, "datapull")
         os.makedirs(prev, exist_ok=True)
         for s in REGISTRY:
