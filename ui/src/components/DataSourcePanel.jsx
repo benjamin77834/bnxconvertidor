@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { COMPILE_URL } from '../config'
+import { parseAbinitioParams, mapAbinitioToConnection, sanitizeKeysText } from '../abinitioKeys'
 
 // Panel SEPARADO para traer datos reales de Cloudera (Hive/Impala) o Teradata
 // para pruebas PUNTUALES. Los datos llegan YA ENMASCARADOS por la libreria de PII
@@ -72,6 +73,25 @@ export default function DataSourcePanel({ theme, onImport }) {
   const [error, setError] = useState('')
   const [preview, setPreview] = useState(null) // {columns, rows} enmascarado
 
+  // --- Llaves de conexion estilo Ab Initio (OPCIONAL) ---
+  // Se pega el bloque de parametros del GDE (GEN_REDACTION_DB_USER, ..._NAME,
+  // ..._ENCRYPTED_PASSWD, ..._TNS ...) y se autollenan usuario/host/db. Los
+  // passwords cifrados de Ab Initio NO se pueden descifrar aqui: solo se avisa.
+  const [keysText, setKeysText] = useState('')
+  const [keysInfo, setKeysInfo] = useState(null) // resultado de mapAbinitioToConnection
+  const applyKeys = (text = keysText, st = sourceType) => {
+    const params = parseAbinitioParams(text)
+    const info = mapAbinitioToConnection(params, st)
+    setKeysInfo(info)
+    const f = info.fields
+    if (f.user !== undefined) setUser(f.user)
+    if (f.host !== undefined) setHost(f.host)
+    if (f.database !== undefined) setDatabase(f.database)
+    if (f.password !== undefined) setPassword(f.password)
+    return info
+  }
+  const clearKeys = () => { setKeysText(''); setKeysInfo(null) }
+
   // --- Conexiones guardadas (SIN password, por seguridad) ---
   // Se guardan en localStorage por tipo de fuente. Hasta MAX_SAVED por tipo.
   // El password NUNCA se persiste: se pide al conectar.
@@ -92,6 +112,9 @@ export default function DataSourcePanel({ theme, onImport }) {
     const entry = {
       name, sourceType, host, port, database,
       url: url.trim(), user, table, driverJar,
+      // Llaves Ab Initio SIN las lineas de password (cifrado o no): se guardan el
+      // usuario, nombres y rutas, jamas credenciales.
+      keysText: sanitizeKeysText(keysText),
     }
     const list = (savedConns[sourceType] || []).filter(c => c.name !== name)
     list.unshift(entry)
@@ -107,6 +130,10 @@ export default function DataSourcePanel({ theme, onImport }) {
     setHost(c.host || ''); setPort(c.port || ''); setDatabase(c.database || '')
     setUrl(c.url || ''); setUser(c.user || ''); setTable(c.table || '')
     setDriverJar(c.driverJar || ''); setPassword('')
+    // Restaurar las llaves guardadas (sin passwords) para mostrarlas; no pisan los
+    // campos ya cargados arriba (la conexion guardada manda).
+    setKeysText(c.keysText || '')
+    setKeysInfo(c.keysText ? mapAbinitioToConnection(parseAbinitioParams(c.keysText), c.sourceType || sourceType) : null)
     setError('')
   }
   const deleteConnection = (st, name) => {
@@ -132,7 +159,11 @@ export default function DataSourcePanel({ theme, onImport }) {
   const fetchData = async () => {
     setLoading(true); setError(''); setPreview(null)
     try {
-      const conn = { user, password }
+      // Credenciales OPCIONALES: solo se envian si tienen valor (Kerberos/SSO/sin
+      // autenticacion explicita no deben recibir user/password vacios).
+      const conn = {}
+      if (user.trim()) conn.user = user.trim()
+      if (password) conn.password = password
       if (url.trim()) conn.url = url.trim()
       else { conn.host = host; conn.port = port; conn.database = database }
       const res = await fetch(FETCH_URL, {
@@ -239,6 +270,9 @@ export default function DataSourcePanel({ theme, onImport }) {
                 // no vienen incluidos (licencia): se limpia para que lo ponga el usuario.
                 setDriverJar(DRIVER_BUNDLED[st] || '')
                 if (PORT_HINT[st]) setPort(PORT_HINT[st])
+                // Si ya hay llaves pegadas, re-mapearlas a la fuente nueva
+                // (Teradata usa el grupo *_TERADATA_*, el resto el grupo *_DB_*).
+                if (keysText.trim()) applyKeys(keysText, st)
               }} style={field}>
                 <option value="teradata">Teradata</option>
                 <option value="hive">Cloudera · Hive</option>
@@ -288,9 +322,59 @@ export default function DataSourcePanel({ theme, onImport }) {
             <div style={{ minWidth: 0 }}><label style={lbl}>Base de datos</label><input style={field} value={database} onChange={e => setDatabase(e.target.value)} placeholder="esquema / database" /></div>
             <div style={{ minWidth: 0 }}><label style={lbl}>URL JDBC (opcional, sobreescribe host/db)</label><input style={field} value={url} onChange={e => setUrl(e.target.value)} placeholder="jdbc:teradata://host/DATABASE=db" /></div>
           </div>
+          {/* LLAVES estilo Ab Initio (OPCIONAL, colapsado) */}
+          <details open={!!keysInfo} style={{ border: `1px dashed ${t.border || '#334155'}`, borderRadius: 8, padding: '6px 10px' }}>
+            <summary style={{ cursor: 'pointer', fontSize: 12, fontWeight: 700, color: '#fbbf24' }}>
+              🔑 Llaves de conexión estilo Ab Initio <span style={{ fontWeight: 400, color: t.dim }}>(opcional)</span>
+            </summary>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+              <div style={{ fontSize: 11, color: t.dim }}>
+                Pega los parámetros del GDE (Name / Value), p. ej. <code>GEN_REDACTION_DB_TERADATA_USER</code>,{' '}
+                <code>..._NAME</code>, <code>..._NODES</code>, <code>..._INIT_FILE</code>. Se autollenan usuario, host y base según la fuente elegida.
+                Si no usas Ab Initio, ignora este bloque.
+              </div>
+              <textarea value={keysText} onChange={e => setKeysText(e.target.value)} rows={5}
+                placeholder={'GEN_REDACTION_DB_TERADATA_NAME\tedwdev\nGEN_REDACTION_DB_TERADATA_USER\tGENESIS_ETL'}
+                spellCheck={false}
+                style={{ ...field, fontFamily: 'monospace', fontSize: 11, resize: 'vertical' }} />
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                <button onClick={() => applyKeys()} disabled={!keysText.trim()}
+                  style={{ padding: '5px 12px', borderRadius: 6, fontSize: 11.5, fontWeight: 700, cursor: keysText.trim() ? 'pointer' : 'not-allowed',
+                    background: '#f59e0b22', color: '#fbbf24', border: '1px solid #f59e0b55' }}>🔑 Aplicar llaves</button>
+                <button onClick={clearKeys} disabled={!keysText && !keysInfo}
+                  style={{ padding: '5px 12px', borderRadius: 6, fontSize: 11.5, cursor: 'pointer', background: 'transparent',
+                    color: t.dim, border: `1px solid ${t.border || '#334155'}` }}>Limpiar</button>
+              </div>
+              {keysInfo && (
+                <div style={{ fontSize: 11.5, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {keysInfo.found === 0 && <div style={{ color: '#f87171' }}>No se reconoció ningún parámetro (formato: NOMBRE⇥valor o NOMBRE=valor).</div>}
+                  {Object.entries(keysInfo.used).map(([campo, key]) => (
+                    <div key={campo} style={{ color: '#4ade80' }}>✓ <b>{campo}</b> ← <code>{key}</code></div>
+                  ))}
+                  {keysInfo.found > 0 && Object.keys(keysInfo.used).length === 0 && (
+                    <div style={{ color: '#fbbf24' }}>Hay {keysInfo.found} parámetros pero ninguno corresponde a {sourceType} (usuario / NAME / NODES).</div>
+                  )}
+                  {keysInfo.encrypted.length > 0 && (
+                    <div style={{ color: '#fbbf24' }}>
+                      ⚠️ Password cifrado de Ab Initio detectado (<code>{keysInfo.encrypted.join(', ')}</code>). Está cifrado con la llave de Ab Initio:
+                      BNX <b>no lo puede descifrar ni lo usa</b>. Escribe el password abajo, o déjalo vacío si la conexión no lo requiere.
+                    </div>
+                  )}
+                  {Object.keys(keysInfo.extras).length > 0 && (
+                    <div style={{ color: t.dim }}>
+                      Otras llaves (solo informativas): {Object.entries(keysInfo.extras).map(([k, v]) => (
+                        <div key={k} style={{ fontFamily: 'monospace', fontSize: 10.5 }}>{k} = {v}</div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </details>
+
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 8 }}>
-            <div style={{ minWidth: 0 }}><label style={lbl}>Usuario</label><input style={field} value={user} onChange={e => setUser(e.target.value)} /></div>
-            <div style={{ minWidth: 0 }}><label style={lbl}>Password (no se guarda ni se muestra)</label><input style={field} type="password" value={password} onChange={e => setPassword(e.target.value)} /></div>
+            <div style={{ minWidth: 0 }}><label style={lbl}>Usuario (opcional)</label><input style={field} value={user} onChange={e => setUser(e.target.value)} placeholder="vacío = sin usuario / Kerberos" /></div>
+            <div style={{ minWidth: 0 }}><label style={lbl}>Password (opcional — no se guarda ni se muestra)</label><input style={field} type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="vacío = sin password" autoComplete="off" /></div>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8 }}>
             <div style={{ minWidth: 0 }}><label style={lbl}>Tabla</label><input style={field} value={table} onChange={e => setTable(e.target.value)} placeholder="esquema.clientes" /></div>

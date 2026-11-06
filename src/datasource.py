@@ -55,6 +55,21 @@ _PRESETS = {
 }
 
 
+def _auth_options(conn):
+    """Opciones JDBC de autenticacion, SOLO las que traen valor. Devuelve el
+    fragmento de codigo (con saltos de linea) para encadenar al reader. Si no hay
+    usuario ni password devuelve '' (conexion sin auth explicita: Kerberos, SSO,
+    credenciales en la URL, etc.). Un password sin usuario se ignora."""
+    user = (conn.get("user") or "").strip()
+    pwd = conn.get("password") or ""
+    out = ""
+    if user:
+        out += f'\n          .option("user", {json.dumps(user)})'
+        if pwd:
+            out += f'\n          .option("password", {json.dumps(pwd)})'
+    return out
+
+
 def _resolve_python():
     # Reusa el mismo Python del venv (donde esta pyspark).
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -118,6 +133,10 @@ def fetch_masked(source_type, conn, query=None, table=None, limit=50,
 
     out_tmp = tempfile.NamedTemporaryFile(delete=False, suffix="_bnx_src.json")
     out_tmp.close()
+    # Credenciales OPCIONALES: solo se envian a JDBC si vienen con valor. Mandar
+    # user/password vacios ('') rompe fuentes con Kerberos/SSO o sin autenticacion
+    # (el driver intenta autenticar con credenciales en blanco).
+    auth_opts = _auth_options(conn)
     # Script PySpark: lee via JDBC y escribe las filas CRUDAS a un JSON temporal.
     # El enmascaramiento se hace en ESTE proceso (abajo), no se expone por API.
     reader = f'''# -*- coding: utf-8 -*-
@@ -128,9 +147,7 @@ try:
     df = (spark.read.format("jdbc")
           .option("url", {json.dumps(url)})
           .option("driver", {json.dumps(driver)})
-          .option("dbtable", {json.dumps(dbtable)})
-          .option("user", {json.dumps(conn.get("user",""))})
-          .option("password", {json.dumps(conn.get("password",""))})
+          .option("dbtable", {json.dumps(dbtable)}){auth_opts}
           .load())
     df = df.limit({lim})
     cols = df.columns
