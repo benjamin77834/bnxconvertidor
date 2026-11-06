@@ -200,7 +200,7 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
         <p style={{ margin: '4px 0 0', fontSize: 13, color: t.muted || '#94a3b8', maxWidth: 900 }}>
           Genera un <b>paquete nuevo</b> del framework que corrige los problemas detectados (ver el diagnóstico
           en la sección anterior), <b>sin tocar el código del banco</b>. Trae un <b>entorno virtual reproducible</b>
-          (como Data Sintética): <code>run.sh</code> crea el venv, instala todo y corre el framework.
+          (como Data Sintética): <code>setup.sh</code> crea el venv e instala todo; <code>run.sh</code> solo corre el modelo.
         </p>
       </div>
 
@@ -730,8 +730,8 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                   margin: '6px 0 0', padding: 10, borderRadius: 6,
                   background: t.codeBg || '#081220', border: `1px solid ${t.border || '#334155'}`,
                   color: '#22c55e', fontFamily: 'monospace', fontSize: 11.5,
-                }}>{'cd framework_mlops_v2_pkg\nbash run.sh'}</pre>
-                Crea <code>.venv</code>, instala dependencias y corre las pruebas.
+                }}>{'cd framework_mlops_v2_pkg\nbash setup.sh   # una vez\nbash run.sh     # corre el modelo'}</pre>
+                <code>setup.sh</code> crea <code>.venv</code> e instala dependencias; <code>run.sh</code> solo ejecuta <code>main.py</code>.
               </div>
             </div>
           </div>
@@ -787,15 +787,12 @@ function RunInstructions({ theme }) {
 
           <div style={step}>1) Montar el entorno (una sola vez)</div>
           <pre style={pre}>{`cd framework_mlops_v2_pkg
-bash run.sh         # paquete ligero (PySpark por internet)
-# ó, si bajaste "ambiente completo":
-bash setup.sh       # PySpark OFFLINE desde vendor/, sin internet`}</pre>
+bash setup.sh       # con vendor/: PySpark OFFLINE; sin vendor/: por internet`}</pre>
 
           <div style={step}>2) Correr el framework (entry point: main.py)</div>
-          <pre style={pre}>{`. .venv/bin/activate
-python main.py                    # modo DEMO (datos sintéticos, sin configurar)
-python main.py --source bureau    # solo una fuente
-python main.py --config cfg.json  # datos REALES`}</pre>
+          <pre style={pre}>{`bash run.sh                      # modo DEMO (datos sintéticos, sin configurar)
+bash run.sh --source bureau    # solo una fuente
+bash run.sh --config cfg.json  # datos REALES`}</pre>
 
           <div style={step}>3) cfg.json para datos reales</div>
           <pre style={pre}>{`{
@@ -806,7 +803,7 @@ python main.py --config cfg.json  # datos REALES`}</pre>
           <p style={{ margin: '10px 0 0', fontSize: 11.5, color: t.muted || '#94a3b8' }}>
             <code>main.py</code> orquesta el pipeline, reporta las <b>optimizaciones de Spark</b> aplicadas
             (cache / broadcast / coalesce) y marca las fuentes con un <code># TODO py2spark</code> pendiente.
-            El modo demo corre sin datos reales; <code>run.sh</code>/<code>setup.sh</code> ya lo ejecutan al final.
+            El modo demo corre sin datos reales; <code>bash run.sh</code> lo ejecuta.
           </p>
         </div>
       )}

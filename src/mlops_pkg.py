@@ -10,7 +10,7 @@ hallazgos del diagnostico (ver examples/mlops_framework/steps.py:FINDINGS):
   - sin errores silenciados (excepciones especificas + logging)
   - pruebas reales con pytest (fixture de Spark)
   - estructura limpia y una sola fuente de verdad
-  - entorno virtual reproducible (requirements.txt + run.sh que crea el venv)
+  - entorno virtual reproducible (requirements.txt + setup.sh que crea el venv + run.sh que corre el modelo)
 
 build_mlops_package() -> (zip_bytes, filename)
 
@@ -678,126 +678,12 @@ python_files = test_*.py
 addopts = -p no:cacheprovider
 '''
 
-# setup.sh del AMBIENTE COMPLETO: crea el venv e instala PySpark OFFLINE desde
-# vendor/ (igual que el bundle de Data Sintetica). Monta todo sin internet.
-_SETUP_SH_FULL = '''#!/usr/bin/env bash
-# setup.sh — Monta el AMBIENTE COMPLETO del Framework MLOps v2.
-# Crea el venv, instala PySpark OFFLINE desde vendor/ (sin internet) segun la
-# version de Python, instala el framework (pip install -e .) y corre las pruebas.
-# Uso:  bash setup.sh
-set -e
-
-# Basura de macOS (si el ZIP se comprimio/re-comprimio en Finder): la carpeta
-# __MACOSX y los archivos ._* (resource forks) rompen pytest con PermissionError.
-rm -rf __MACOSX 2>/dev/null || true
-find . -name '._*' -not -path './.venv/*' -delete 2>/dev/null || true
-find . -name '.DS_Store' -not -path './.venv/*' -delete 2>/dev/null || true
-
-PY="${PYTHON:-python3}"
-echo "[1/5] Python: $($PY --version 2>&1)"
-echo "[2/5] Creando entorno virtual .venv ..."
-"$PY" -m venv .venv
-. .venv/bin/activate
-python -m pip install --upgrade pip >/dev/null 2>&1 || true
-
-echo "[3/5] Instalando PySpark..."
-PYMINOR="$(python -c 'import sys; print(sys.version_info[1])')"
-VENDOR_DIR=""
-if [ "$PYMINOR" -ge 12 ] 2>/dev/null && [ -d "vendor/py312plus" ]; then
-  VENDOR_DIR="vendor/py312plus"
-elif [ -d "vendor/py38-311" ]; then
-  VENDOR_DIR="vendor/py38-311"
-elif [ -d "vendor/py312plus" ]; then
-  VENDOR_DIR="vendor/py312plus"
-fi
-if [ -n "$VENDOR_DIR" ] && ls "$VENDOR_DIR"/*.whl >/dev/null 2>&1; then
-  echo "      OFFLINE desde $VENDOR_DIR (sin internet)."
-  python -m pip install --no-index --find-links "$VENDOR_DIR" pip setuptools wheel >/dev/null 2>&1 || true
-  python -m pip install --no-index --find-links "$VENDOR_DIR" pyspark py4j
-else
-  echo "      vendor/ no disponible; instalando PySpark por internet (serie segun Python)."
-  if [ "$PYMINOR" -ge 12 ] 2>/dev/null; then
-    python -m pip install "pyspark>=4.0,<4.1" py4j   # 3.12+ (3.5 usa distutils, roto)
-  else
-    python -m pip install "pyspark>=3.5,<3.6" py4j
-  fi
-fi
-
-echo "[4/5] Instalando dependencias (requirements.txt) y el framework..."
-# Dependencias del paquete (pandas, numpy, pytest y -si aplica- xgboost/sklearn).
-# Las libs internas del banco comentadas en el archivo se ignoran. OFFLINE: si
-# existen en vendor/ se usan de ahi; si no, por internet.
-# vendor/bank aporta deps PINNEADAS del banco (pandas 1.3.1 cp38 para Python 3.8).
-BANK_LINKS=""
-if [ -d "vendor/bank" ]; then BANK_LINKS="--find-links vendor/bank"; fi
-if [ -n "$VENDOR_DIR" ] && ls "$VENDOR_DIR"/*.whl >/dev/null 2>&1; then
-  # OFFLINE estricto: todo desde vendor/, sin caer a internet.
-  python -m pip install --no-index --find-links "$VENDOR_DIR" $BANK_LINKS -r requirements.txt
-else
-  python -m pip install $BANK_LINKS -r requirements.txt 2>/dev/null || true
-fi
-# Instalar el PROPIO paquete en modo editable (clave: sin esto los imports
-# 'from framework_mlops_v2...' fallan fuera de la carpeta raiz). Sin aislamiento
-# para no intentar bajar el build-system por internet cuando estamos offline.
-if [ -n "$VENDOR_DIR" ] && ls "$VENDOR_DIR"/*.whl >/dev/null 2>&1; then
-  python -m pip install --no-build-isolation -e .
-else
-  python -m pip install -e .
-fi
-
-# Librerias INTERNAS del banco (si las hay). Preferimos OFFLINE desde vendor/bank/
-# (sdist empaquetados); si no estan, caemos al Artifactory privado. El codigo de
-# path (toolbox/bnmxverse/utils) se copia a ./bank_pkg y se expone via PYTHONPATH.
-if [ -f requirements-bank.txt ]; then
-  if ls vendor/bank/*.tar.gz >/dev/null 2>&1 || ls vendor/bank/*.whl >/dev/null 2>&1; then
-    echo "      Instalando librerias internas del banco OFFLINE desde vendor/bank/ ..."
-    python -m pip install --no-index --find-links vendor/bank -r requirements-bank.txt || \
-      python -m pip install --no-index --find-links vendor/bank vendor/bank/*.tar.gz || \
-      echo "      ⚠️  Fallo la instalacion offline de libs del banco. Revisa vendor/bank/."
-  else
-    echo "      Instalando librerias internas del banco (Artifactory privado) ..."
-    # Descomenta y apunta a tu Artifactory si hace falta un indice explicito:
-    # python -m pip install -r requirements-bank.txt --index-url https://<artifactory-interno>/simple
-    python -m pip install -r requirements-bank.txt || \
-      echo "      ⚠️  No se pudieron instalar las libs del banco (sin acceso al Artifactory)."
-  fi
-fi
-# Modulos de path del banco (toolbox, bnmxverse, utils): no son pip, van en PYTHONPATH.
-if [ -d vendor/bank/pkgcode ]; then
-  mkdir -p bank_pkg
-  cp -R vendor/bank/pkgcode/* bank_pkg/ 2>/dev/null || true
-  echo "      Modulos de path del banco en ./bank_pkg (toolbox, ...). Exporta antes de correr:"
-  echo '        export PYTHONPATH="$PWD/bank_pkg:$PYTHONPATH"'
-fi
-
-# Al instalar PySpark OFFLINE desde el wheel, algunos servidores (umask estricto)
-# dejan los scripts de pyspark/bin sin permiso de ejecucion, y spark-submit falla
-# con 'Permission denied'. Les restauramos el bit +x.
-PYSPARK_HOME="$(python -c 'import os, pyspark; print(os.path.dirname(pyspark.__file__))' 2>/dev/null || true)"
-if [ -n "$PYSPARK_HOME" ]; then
-  echo "      Ajustando permisos de ejecucion en $PYSPARK_HOME/bin y /sbin ..."
-  chmod -R +x "$PYSPARK_HOME/bin" 2>/dev/null || true
-  chmod -R +x "$PYSPARK_HOME/sbin" 2>/dev/null || true
-fi
-
-echo "[5/5] Verificando dependencias y corriendo pruebas ..."
-# check_env.py avisa si falta alguna libreria que el codigo importa.
-python check_env.py || echo "  ⚠️  Faltan librerias (ver arriba). Instalalas antes de produccion."
-pytest -q || echo "  (pytest requiere Java para Spark; revisa el entorno)"
-
-echo ""
-echo "▶️  Corriendo el framework (main.py, modo demo):"
-python main.py || echo "  (main.py requiere Java para Spark; revisa el entorno)"
-
-echo ""
-echo "✅ Ambiente listo. Entry point:  . .venv/bin/activate && python main.py"
-echo "   Datos reales:  python main.py --config cfg.json"
-'''
-
-_RUN_SH = '''#!/usr/bin/env bash
-# run.sh — crea un ENTORNO VIRTUAL con todo lo necesario y corre las pruebas.
+_SETUP_SH = '''#!/usr/bin/env bash
+# setup.sh — MONTA el entorno (una sola vez): crea .venv e instala todo.
 # Si el paquete trae vendor/ (ambiente completo) monta TODO OFFLINE, sin internet.
-# Uso:  bash run.sh
+# NO corre el modelo: para eso usa  bash run.sh
+# Uso:  bash setup.sh            (monta el entorno)
+#       bash setup.sh --test     (monta y ademas corre pytest)
 set -e
 
 # Basura de macOS (si el ZIP se comprimio/re-comprimio en Finder): la carpeta
@@ -814,7 +700,7 @@ echo "[2/4] Activando e instalando dependencias ..."
 . .venv/bin/activate
 python -m pip install --upgrade pip >/dev/null 2>&1 || true
 
-# Detectar vendor/ segun la version de Python (igual que setup.sh): si existe,
+# Detectar vendor/ segun la version de Python: si existe,
 # instalamos TODO offline con --no-index. pandas/numpy/pyspark/py4j/pytest estan
 # ahi. Sin vendor/, caemos a internet (red del banco / Artifactory).
 PYMINOR="$(python -c 'import sys; print(sys.version_info[1])')"
@@ -888,15 +774,50 @@ echo "[3/4] Verificando dependencias (check_env.py) ..."
 # Avisa si falta alguna libreria que el codigo importa (no aborta el montaje).
 python check_env.py || echo "  ⚠️  Faltan librerias (ver arriba). Instalalas antes de produccion."
 
-echo "[4/4] Ejecutando pruebas y el framework ..."
-pytest -q || echo "  (pytest requiere pyspark + Java; revisa el entorno)"
-python main.py || echo "  (main.py requiere pyspark + Java; revisa el entorno)"
+if [ "${1:-}" = "--test" ]; then
+  echo "[4/4] Ejecutando pruebas (pytest) ..."
+  pytest -q || echo "  (pytest requiere pyspark + Java; revisa el entorno)"
+else
+  echo "[4/4] Entorno montado (pruebas omitidas; usa --test para correrlas)."
+fi
 
 echo ""
-echo "✅ Listo. Entry point:  . .venv/bin/activate && python main.py"
-echo "   Datos reales:  python main.py --config cfg.json"
+echo "✅ Entorno listo. Para correr el modelo:  bash run.sh"
+echo "   Datos reales:  bash run.sh --config cfg.json"
 '''
 
+# run.sh — SOLO ejecuta el modelo (main.py) en el entorno ya montado por setup.sh.
+_RUN_SH = '''#!/usr/bin/env bash
+# run.sh — corre el modelo (main.py) con el entorno de setup.sh. No instala nada.
+# Uso:  bash run.sh                      (modo demo, datos sinteticos)
+#       bash run.sh --config cfg.json    (datos reales)
+set -e
+cd "$(dirname "$0")"
+
+if [ ! -f .venv/bin/activate ]; then
+  echo "❌ No existe .venv. Monta el entorno primero:  bash setup.sh" >&2
+  exit 1
+fi
+. .venv/bin/activate
+
+# Modulos de path del banco (toolbox, bnmxverse, utils) que dejo setup.sh.
+if [ -d bank_pkg ]; then export PYTHONPATH="$PWD/bank_pkg:${PYTHONPATH:-}"; fi
+
+exec python main.py "$@"
+'''
+
+# run.sh del paquete de monitoreo (sin main.py): corre sus pruebas.
+_RUN_SH_METRICS = '''#!/usr/bin/env bash
+# run.sh — corre las pruebas del monitoreo en el entorno montado por setup.sh.
+set -e
+cd "$(dirname "$0")"
+if [ ! -f .venv/bin/activate ]; then
+  echo "❌ No existe .venv. Monta el entorno primero:  bash setup.sh" >&2
+  exit 1
+fi
+. .venv/bin/activate
+exec pytest -q "$@"
+'''
 
 def _readme(include_bank_libs):
     libs = ("Incluye marcadores para las librerias internas del banco "
@@ -928,9 +849,10 @@ andamiaje que corrige los problemas detectados.
 
 ## Como correr (entorno virtual con todo lo necesario)
 ```bash
-bash run.sh
+bash setup.sh      # una sola vez: crea .venv e instala dependencias
+bash run.sh        # corre el modelo (main.py)
 ```
-Crea `.venv`, instala dependencias y corre las pruebas. {libs}
+`setup.sh` monta el entorno; `run.sh` solo ejecuta el modelo. {libs}
 
 ## Estructura
 ```
@@ -941,6 +863,7 @@ framework_mlops_v2/
   features/ratios.py       # ratios con proteccion /0
 tests/                     # pruebas reales (pytest)
 requirements.txt
+setup.sh
 run.sh
 setup.py
 ```
@@ -949,7 +872,7 @@ setup.py
 
 ### 🚀 Correr el framework (entry point: main.py)
 ```bash
-bash run.sh            # monta el venv y al final corre main.py (demo)
+bash run.sh            # corre main.py (demo) en el venv ya montado por setup.sh
 # o si ya montaste el entorno:
 . .venv/bin/activate && python main.py            # modo DEMO (datos sinteticos)
 . .venv/bin/activate && python main.py --config cfg.json   # datos REALES
@@ -973,12 +896,11 @@ datos reales. No necesitas configurar nada para la demo. (Requiere Java para Spa
 
 ### 1) Montar el entorno (una sola vez)
 ```bash
-bash run.sh          # paquete ligero (instala PySpark por internet)
-# ó, si bajaste el paquete con ambiente completo (vendor/):
-bash setup.sh        # instala PySpark OFFLINE desde vendor/, sin internet
+bash setup.sh        # con vendor/: PySpark OFFLINE; sin vendor/: por internet
+bash setup.sh --test # (opcional) ademas corre pytest
 ```
 Esto crea `.venv`, instala dependencias e instala el propio framework
-(`pip install -e .`). Al terminar debe decir "Ambiente listo".
+(`pip install -e .`). Al terminar dice "Entorno listo"; despues corre el modelo con `bash run.sh`.
 
 ### 2) Activar el entorno
 ```bash
@@ -1044,7 +966,7 @@ _MAIN_PY = '''#!/usr/bin/env python3
 
 Orquesta el pipeline y reporta las optimizaciones de Spark aplicadas.
 
-Uso (tras montar el entorno con run.sh / setup.sh):
+Uso (tras montar el entorno con setup.sh; o directo:  bash run.sh):
     . .venv/bin/activate
     python main.py                 # modo DEMO: datos sinteticos, sin configurar
     python main.py --source bureau # solo una fuente
@@ -1082,7 +1004,7 @@ try:
                                     DoubleType, IntegerType)
 except Exception as e:
     raise SystemExit("PySpark no esta instalado o falta Java. Monta el entorno "
-                     "con 'bash run.sh' (o setup.sh) primero. Detalle: %s" % e)
+                     "con 'bash setup.sh' primero. Detalle: %s" % e)
 
 from framework_mlops_v2.aggregates.router import REGISTRY, GroupBy
 
@@ -1745,7 +1667,8 @@ def _monitoring_files(target="package"):
             "setup.py": _SETUP_METRICS,
             "requirements.txt": "pyspark>=3.3,<4.0\npandas>=1.3\npytest>=7.0\n",
             "README.md": _README_METRICS,
-            "run.sh": _RUN_SH,
+            "setup.sh": _SETUP_SH,
+            "run.sh": _RUN_SH_METRICS,
         }
     return {
         "framework_mlops_v2/monitoring/__init__.py": "",
@@ -1786,6 +1709,7 @@ print(psi, m.interpret(psi))   # estable | revisar | inestable
 
 ## Correr pruebas
 ```bash
+bash setup.sh   # una vez
 bash run.sh
 ```
 '''
@@ -2267,12 +2191,10 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     # del paquete (ligero, completo y rebuild), sin depender del cache del server.
     if "mex_lib_cs" in (bank_libs or []):
         files["mex_lib_cs/__init__.py"] = _MEX_LIB_CS
+    files["setup.sh"] = _SETUP_SH
     files["run.sh"] = _RUN_SH
     files["pytest.ini"] = _PYTEST_INI   # pytest solo en tests/, ignora __MACOSX/vendor
     files["setup.py"] = _SETUP
-    # Ambiente completo: setup.sh que instala PySpark OFFLINE desde vendor/.
-    if full_env:
-        files["setup.sh"] = _SETUP_SH_FULL
     files["README.md"] = _readme_custom(
         include_bank_libs, gen_sources, report, extra_steps,
         include_monitoring=include_monitoring, separate_monitoring=separate_monitoring,
@@ -2334,7 +2256,7 @@ para Python 3.8–3.14) y un `setup.sh` que monta todo **sin internet**:
 bash setup.sh
 ```
 `setup.sh` crea el venv con TU Python (3.8+ del sistema), instala PySpark desde
-`vendor/` offline, instala el framework y corre las pruebas. Requisitos en la
+`vendor/` offline, instala el framework (no corre el modelo: eso lo hace `bash run.sh`). Requisitos en la
 máquina: Python 3.8+ y un JDK (Java) para Spark. (Python y Java NO se empaquetan;
 sí las dependencias Python.)
 '''
@@ -2449,13 +2371,12 @@ def build_mlops_package(include_bank_libs=True, extra_steps=False,
         "tests/test_aggregates.py": _TEST,
         "main.py": _MAIN_PY,
         "requirements.txt": _requirements(include_bank_libs, extra_steps),
+        "setup.sh": _SETUP_SH,
         "run.sh": _RUN_SH,
         "pytest.ini": _PYTEST_INI,
         "README.md": _readme(include_bank_libs),
         "setup.py": _SETUP,
     }
-    if full_env:
-        files["setup.sh"] = _SETUP_SH_FULL
     mon_in_pkg = include_monitoring and not separate_monitoring
     files.update(_extra_step_files(
         extra_steps, include_monitoring=mon_in_pkg, monitoring_target="package"))
@@ -2536,7 +2457,7 @@ def package_manifest(include_bank_libs=True):
         {"from": "GroupBy con herencia multiple", "to": "router por registro (una linea por fuente)"},
         {"from": "test() que imprime 'working!'", "to": "pytest real con fixture de Spark"},
         {"from": "try/except que silencian errores", "to": "excepciones explicitas + logging"},
-        {"from": "sin entorno reproducible", "to": "run.sh crea venv + instala + prueba"},
+        {"from": "sin entorno reproducible", "to": "setup.sh monta el venv; run.sh solo corre el modelo"},
     ]
     tree = [
         "framework_mlops_v2/core/base_aggregate.py",
@@ -2544,7 +2465,7 @@ def package_manifest(include_bank_libs=True):
         "framework_mlops_v2/aggregates/{atms,s15,pnl,router}.py",
         "framework_mlops_v2/features/ratios.py",
         "tests/test_aggregates.py",
-        "requirements.txt  ·  run.sh  ·  setup.py  ·  README.md",
+        "requirements.txt  ·  setup.sh  ·  run.sh  ·  setup.py  ·  README.md",
     ]
     return {"improvements": improvements, "tree": tree,
             "include_bank_libs": include_bank_libs}
