@@ -437,6 +437,66 @@ _STDLIB_AND_KNOWN = {
 }
 
 
+# ---------------------------------------------------------------------------
+# STDLIB: nombres de modulos de la libreria estandar de Python. NUNCA son libs del
+# banco ni paquetes pip. 'sys.stdlib_module_names' solo existe en Python 3.10+, y el
+# portal del banco corre en Python 3.8 (Windows): ahi esa lista no existe y 'email',
+# 'types', etc. se colaban en requirements-bank.txt ("No matching distribution
+# found for email"). Por eso se embebe la lista (incluye modulos de 3.8 que ya no
+# estan en versiones nuevas) y ademas se comprueba contra el interprete real.
+# ---------------------------------------------------------------------------
+_STDLIB_FALLBACK = frozenset("""
+__future__ abc aifc annotationlib antigravity argparse array ast asynchat asyncio
+asyncore atexit audioop base64 bdb binascii binhex bisect builtins bz2 cProfile calendar
+cgi cgitb chunk cmath cmd code codecs codeop collections colorsys compileall compression
+concurrent configparser contextlib contextvars copy copyreg crypt csv ctypes curses
+dataclasses datetime dbm decimal difflib dis distutils doctest dummy_threading email
+encodings ensurepip enum errno faulthandler fcntl filecmp fileinput fnmatch formatter
+fractions ftplib functools gc genericpath getopt getpass gettext glob graphlib grp gzip
+hashlib heapq hmac html http idlelib imaplib imghdr imp importlib inspect io ipaddress
+itertools json keyword lib2to3 linecache locale logging lzma macpath mailbox mailcap
+marshal math mimetypes mmap modulefinder msilib msvcrt multiprocessing netrc nis nntplib
+nt ntpath nturl2path numbers opcode operator optparse os ossaudiodev parser pathlib pdb
+pickle pickletools pipes pkgutil platform plistlib poplib posix posixpath pprint profile
+pstats pty pwd py_compile pyclbr pydoc pydoc_data pyexpat queue quopri random re
+readline reprlib resource rlcompleter runpy sched secrets select selectors shelve shlex
+shutil signal site smtpd smtplib sndhdr socket socketserver spwd sqlite3 sre_compile
+sre_constants sre_parse ssl stat statistics string stringprep struct subprocess sunau
+symbol symtable sys sysconfig syslog tabnanny tarfile telnetlib tempfile termios
+textwrap this threading time timeit tkinter tkinter.tix token tokenize tomllib trace
+traceback tracemalloc tty turtle turtledemo types typing unicodedata unittest urllib uu
+uuid venv warnings wave weakref webbrowser winreg winsound wsgiref xdrlib xml xmlrpc
+zipapp zipfile zipimport zlib zoneinfo
+""".split())
+
+
+def _is_stdlib_module(name):
+    """True si 'name' (modulo de primer nivel) es de la stdlib de Python. Funciona
+    igual en Python 3.8 y 3.14: (1) lista nativa si existe, (2) lista embebida,
+    (3) find_spec: el modulo vive bajo el directorio de la stdlib, no en
+    site-packages."""
+    import sys as _s
+    n = (name or "").strip()
+    if not n:
+        return False
+    if n in getattr(_s, "stdlib_module_names", ()) or n in _STDLIB_FALLBACK:
+        return True
+    try:
+        import importlib.util as _iu
+        import sysconfig as _sc
+        spec = _iu.find_spec(n)
+        origin = getattr(spec, "origin", None) if spec else None
+        if origin in ("built-in", "frozen"):
+            return True
+        if origin:
+            std = os.path.abspath(_sc.get_paths()["stdlib"])
+            o = os.path.abspath(origin)
+            return o.startswith(std) and "site-packages" not in o and "dist-packages" not in o
+    except Exception:
+        pass
+    return False
+
+
 def _detect_bank_imports(source_codes):
     """Escanea el codigo ORIGINAL (pandas) de las fuentes y devuelve, ordenados,
     los modulos de PRIMER nivel importados que NO son stdlib ni del stack open
@@ -474,11 +534,9 @@ def _detect_bank_imports(source_codes):
         # Modulos de la STDLIB de Python (email, os, io, ...): NUNCA son libs del
         # banco. Se detectan automaticamente con sys.stdlib_module_names (3.10+)
         # para no mantener una lista manual que siempre tiene huecos (p.ej. 'email').
-        import sys as _sys2
-        _stdlib = set(getattr(_sys2, "stdlib_module_names", ()))
         for mod in mods:
             key = mod.strip()
-            if not key or key in _STDLIB_AND_KNOWN or key in _stdlib:
+            if not key or key in _STDLIB_AND_KNOWN or _is_stdlib_module(key):
                 continue
             # Preservar primer orden de aparicion.
             found.setdefault(key, True)
@@ -581,7 +639,7 @@ def _requirements_bank(bank_libs):
     # Separar VERIFICADOS (activos) de INCOMPLETOS (comentados con el motivo).
     verified, incomplete = [], []
     for m in bank_libs or []:
-        if m in _BANK_PATH_MODULES:
+        if m in _BANK_PATH_MODULES or _is_stdlib_module(m):
             continue
         name = _bank_pkg_name(m)
         if name in _BANK_PKG_INCOMPLETE:
@@ -1200,6 +1258,76 @@ def main():
 
 if __name__ == "__main__":
     main()
+'''
+
+
+# mex_lib_cs — FACHADA (agregador) de las mex-lib del banco. El codigo del banco hace
+#   from mex_lib_cs import Extract, GroupBy, GeneratePivot, ...
+# pero 'mex_lib_cs' nunca se entrego como paquete: es una capa que re-exporta las
+# clases de las mex-lib*. La escribimos nosotros (NO es codigo del banco), por eso
+# va EMBEBIDA en el generador y sale en TODOS los entornos (ligero, completo y
+# rebuild) sin depender del cache de librerias del servidor.
+_MEX_LIB_CS = '''# -*- coding: utf-8 -*-
+"""mex_lib_cs — fachada de las librerias mex-lib* del banco (generada por BNX).
+
+Re-exporta bajo un solo import las clases de cada libreria:
+
+    from mex_lib_cs import (Extract, GroupBy, GeneratePivot, GenerateRatios,
+        ColumnsToVector, FeaturesVectorAssembler, MissingTreatment,
+        FeatureEngineering, WeeklyTFrom)
+
+Cada clase se carga de forma independiente: si su libreria no esta instalada o esta
+incompleta, ese nombre queda como un PLACEHOLDER que falla con un mensaje claro
+SOLO al usarlo (instanciarlo); el import de mex_lib_cs nunca se cae por una sola
+libreria. mex_lib_cs.disponibles() dice cuales cargaron.
+"""
+import importlib
+
+# (nombre exportado, modulo de origen, de donde sale)
+_EXPORTS = (
+    ("Extract", "lib_extract", "mex-libextract"),
+    ("GroupBy", "lib_group_by", "mex-libgroupby"),
+    ("GeneratePivot", "lib_generate_pivot", "mex-libgeneratepivot"),
+    ("GenerateRatios", "lib_generate_ratios", "mex-libgenerateratios"),
+    ("ColumnsToVector", "lib_columns2_vector", "mex-libcolumns2vector"),
+    ("FeaturesVectorAssembler", "lib_vector_assembler", "mex-libvectorassembler"),
+    ("MissingTreatment", "lib_missing_treatment", "mex-libmissingtreatment"),
+    ("FeatureEngineering", "lib_feature_engineering", "mex-libfeatureengineering"),
+    ("WeeklyTFrom", "toolbox.weeks", "toolbox (modulo de PYTHONPATH / bank_pkg)"),
+)
+
+
+def _placeholder(nombre, modulo, origen, causa):
+    msg = ("mex_lib_cs.%s no esta disponible: no se pudo importar '%s' (%s). %s"
+           % (nombre, modulo, origen, causa))
+
+    class _Faltante(object):
+        __bnx_missing__ = True
+
+        def __init__(self, *args, **kwargs):
+            raise ImportError(msg)
+
+    _Faltante.__name__ = nombre
+    _Faltante.__qualname__ = nombre
+    return _Faltante
+
+
+def _cargar(nombre, modulo, origen):
+    try:
+        return getattr(importlib.import_module(modulo), nombre)
+    except Exception as e:  # modulo ausente, incompleto o con dependencia faltante
+        return _placeholder(nombre, modulo, origen, "%s: %s" % (type(e).__name__, e))
+
+
+for _nombre, _modulo, _origen in _EXPORTS:
+    globals()[_nombre] = _cargar(_nombre, _modulo, _origen)
+
+__all__ = [n for n, _m, _o in _EXPORTS]
+
+
+def disponibles():
+    """{nombre: True/False} segun si la clase cargo de su libreria real."""
+    return dict((n, not getattr(globals()[n], "__bnx_missing__", False)) for n in __all__)
 '''
 
 
@@ -2135,6 +2263,10 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     files["requirements.txt"] = _requirements(include_bank_libs, extra_steps, bank_libs)
     if bank_libs:
         files["requirements-bank.txt"] = _requirements_bank(bank_libs)
+    # 'mex_lib_cs' es una fachada que escribimos nosotros: va EMBEBIDA en la raiz
+    # del paquete (ligero, completo y rebuild), sin depender del cache del server.
+    if "mex_lib_cs" in (bank_libs or []):
+        files["mex_lib_cs/__init__.py"] = _MEX_LIB_CS
     files["run.sh"] = _RUN_SH
     files["pytest.ini"] = _PYTEST_INI   # pytest solo en tests/, ignora __MACOSX/vendor
     files["setup.py"] = _SETUP
@@ -2265,6 +2397,12 @@ completo** (pesan ~260 KB, son Python puro). Se instalan con `--no-index` desde
 ahí (ver `requirements-bank.txt`). Los módulos de PYTHONPATH se copian a
 `./bank_pkg` y `main.py` los agrega al path solo:
 {path_md}
+
+> `mex_lib_cs` NO es un paquete pip: es una **fachada** que BNX genera en la raíz
+> del paquete (`mex_lib_cs/`) y que re-exporta las clases de las `mex-lib*`
+> (`Extract`, `GroupBy`, `GeneratePivot`, ...). Viene en todos los entornos. Si una
+> `mex-lib` no está instalada o está incompleta, esa clase falla con un mensaje claro
+> solo al usarla; `mex_lib_cs.disponibles()` dice cuáles cargaron.
 
 ### ⛔ NO empaquetadas (sdist INCOMPLETO en el origen)
 Estas vienen defectuosas desde el `.tar.gz` del banco (les falta código). **No**
