@@ -609,6 +609,17 @@ def _requirements_bank(bank_libs):
     return "\n".join(lines) + "\n"
 
 
+# pytest.ini: pytest SOLO busca tests en tests/ y nunca entra a vendor/, bank_pkg/,
+# .venv/ ni a la basura de macOS (__MACOSX). Sin esto, 'pytest -q' desde la raiz
+# recorre todo el arbol y revienta con PermissionError en __MACOSX/**/conftest.py
+# (carpeta que Finder crea al comprimir) u otras carpetas sin permiso de lectura.
+_PYTEST_INI = '''[pytest]
+testpaths = tests
+norecursedirs = __MACOSX vendor bank_pkg .venv venv build dist .git node_modules *.egg-info
+python_files = test_*.py
+addopts = -p no:cacheprovider
+'''
+
 # setup.sh del AMBIENTE COMPLETO: crea el venv e instala PySpark OFFLINE desde
 # vendor/ (igual que el bundle de Data Sintetica). Monta todo sin internet.
 _SETUP_SH_FULL = '''#!/usr/bin/env bash
@@ -617,6 +628,12 @@ _SETUP_SH_FULL = '''#!/usr/bin/env bash
 # version de Python, instala el framework (pip install -e .) y corre las pruebas.
 # Uso:  bash setup.sh
 set -e
+
+# Basura de macOS (si el ZIP se comprimio/re-comprimio en Finder): la carpeta
+# __MACOSX y los archivos ._* (resource forks) rompen pytest con PermissionError.
+rm -rf __MACOSX 2>/dev/null || true
+find . -name '._*' -not -path './.venv/*' -delete 2>/dev/null || true
+find . -name '.DS_Store' -not -path './.venv/*' -delete 2>/dev/null || true
 
 PY="${PYTHON:-python3}"
 echo "[1/5] Python: $($PY --version 2>&1)"
@@ -724,6 +741,12 @@ _RUN_SH = '''#!/usr/bin/env bash
 # Si el paquete trae vendor/ (ambiente completo) monta TODO OFFLINE, sin internet.
 # Uso:  bash run.sh
 set -e
+
+# Basura de macOS (si el ZIP se comprimio/re-comprimio en Finder): la carpeta
+# __MACOSX y los archivos ._* (resource forks) rompen pytest con PermissionError.
+rm -rf __MACOSX 2>/dev/null || true
+find . -name '._*' -not -path './.venv/*' -delete 2>/dev/null || true
+find . -name '.DS_Store' -not -path './.venv/*' -delete 2>/dev/null || true
 
 PY="${PYTHON:-python3}"
 echo "[1/4] Creando entorno virtual .venv ..."
@@ -1186,9 +1209,11 @@ def _iter_py_files():
         if os.path.isfile(t) and t.endswith(".py"):
             yield t
         elif os.path.isdir(t):
-            for dp, _dn, fns in os.walk(t):
+            for dp, dn, fns in os.walk(t):
+                # No entrar a basura de macOS ni a carpetas sin permiso.
+                dn[:] = [d for d in dn if d not in ("__MACOSX", "__pycache__")]
                 for fn in fns:
-                    if fn.endswith(".py"):
+                    if fn.endswith(".py") and not fn.startswith("._"):
                         yield os.path.join(dp, fn)
 
 
@@ -2064,6 +2089,7 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     if bank_libs:
         files["requirements-bank.txt"] = _requirements_bank(bank_libs)
     files["run.sh"] = _RUN_SH
+    files["pytest.ini"] = _PYTEST_INI   # pytest solo en tests/, ignora __MACOSX/vendor
     files["setup.py"] = _SETUP
     # Ambiente completo: setup.sh que instala PySpark OFFLINE desde vendor/.
     if full_env:
@@ -2239,6 +2265,7 @@ def build_mlops_package(include_bank_libs=True, extra_steps=False,
         "main.py": _MAIN_PY,
         "requirements.txt": _requirements(include_bank_libs, extra_steps),
         "run.sh": _RUN_SH,
+        "pytest.ini": _PYTEST_INI,
         "README.md": _readme(include_bank_libs),
         "setup.py": _SETUP,
     }
