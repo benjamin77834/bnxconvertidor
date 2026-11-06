@@ -999,6 +999,7 @@ aggregates (spark.read.* -> datos de juguete) y corre cada fuente mostrando
 entrada -> salida. Las fuentes con un '# TODO py2spark' pendiente se marcan.
 """
 import argparse
+import glob
 import json
 import os
 import sys
@@ -1088,18 +1089,35 @@ def _source_query(s, scfg, cfg_dir):
     return q
 def _extract_sources(spark, fuentes, src_cfg, prev, cfg_dir):
     """Ejecuta el query de cada fuente en la sesion de Spark y lo baja a parquet
-    en <prev>/<table_name>. Devuelve las fuentes que fallaron al extraer."""
+    en <prev>/<table_name>. Devuelve las fuentes que fallaron al extraer.
+    Imprime el QUERY real y verifica que el parquet quedo escrito (si no, falla)."""
     fallidas = []
     for s in fuentes:
         scfg = src_cfg.get(s) or {}
         q = _source_query(s, scfg, cfg_dir)
-        if q is None:
-            continue
         dest = os.path.join(prev, scfg.get("table_name", s))
+        if q is None:
+            # Sin query NO se escribe parquet: antes se saltaba en silencio y
+            # '--extract-only' lo contaba como OK aunque no bajara nada.
+            if os.path.isdir(dest) and glob.glob(os.path.join(dest, "*.parquet")):
+                print("[extract] %s: sin query; se usa el parquet existente en %s" % (s, dest))
+            else:
+                print("[extract] %s: SIN query/query_file/source_table y NO hay parquet "
+                      "en %s -> nada que extraer." % (s, dest))
+                fallidas.append(s)
+            continue
         print("[extract] %s -> %s" % (s, dest))
+        print("          QUERY: %s" % " ".join(q.split()))
         try:
-            spark.sql(q).write.mode("overwrite").parquet(dest)
-            print("          OK (%d filas)" % spark.read.parquet(dest).count())
+            df = spark.sql(q)
+            df.write.mode("overwrite").parquet(dest)
+            # Verificar de verdad que se escribio (archivos .parquet + conteo).
+            escritos = glob.glob(os.path.join(dest, "*.parquet"))
+            filas = spark.read.parquet(dest).count()
+            if not escritos:
+                raise RuntimeError("el write no dejo archivos .parquet en %s" % dest)
+            print("          OK: %d filas, %d archivo(s) parquet en %s"
+                  % (filas, len(escritos), dest))
         except Exception as e:
             causa = str(e).strip().splitlines()[0][:200] if str(e).strip() else type(e).__name__
             print("          ERROR extrayendo '%s': %s" % (s, causa))
@@ -1271,10 +1289,18 @@ def main():
             # 1) Extraccion propia de ESTA fuente (si trae query/source_table).
             if not demo and not args.skip_extract:
                 if _extract_sources(spark, [s], src_cfg, prev, cfg_dir):
-                    raise RuntimeError("fallo la extraccion de '%s'" % s)
+                    raise RuntimeError("no se extrajo/escribio el parquet de '%s' "
+                                       "(revisa el QUERY de arriba)" % s)
             if args.extract_only:
-                print("  extract-only: parquet en", os.path.join(prev, scfg.get("table_name", s)))
-                ok += 1
+                # Solo OK si el parquet existe DE VERDAD.
+                dest = os.path.join(prev, scfg.get("table_name", s))
+                if glob.glob(os.path.join(dest, "*.parquet")):
+                    print("  extract-only OK: parquet escrito en", dest)
+                    ok += 1
+                else:
+                    print("  extract-only ERROR: no hay parquet en", dest,
+                          "(la fuente no tiene query o el write no escribio nada)")
+                    fail += 1
                 continue
             # 2) Aggregate de ESTA fuente.
             GroupBy(s, previous_path=prev, agg_dict=scfg,
