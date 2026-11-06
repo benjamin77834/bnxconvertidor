@@ -791,8 +791,12 @@ bash setup.sh       # con vendor/: PySpark OFFLINE; sin vendor/: por internet`}<
 
           <div style={step}>2) Correr el framework (entry point: main.py)</div>
           <pre style={pre}>{`bash run.sh                      # modo DEMO (datos sintéticos, sin configurar)
-bash run.sh --config cfg.json              # todas las fuentes (cada una es un job independiente)
+bash run.sh --config cfg.json              # todas las fuentes (cada una job independiente; PIVOTE corre 1º)
 bash run.sh --config cfg.json --source X   # UNA sola fuente (job aislado p/ Airflow/cron)`}</pre>
+          <p style={{ margin: '6px 0 0', fontSize: 11.5, color: t.muted || '#94a3b8' }}>
+            Todas comparten la <b>SparkSession</b>. El proceso <b>pivote</b> corre primero (márcalo con
+            <code>{' "pivot": true'}</code> en el <code>cfg.json</code> o nómbralo <code>pivote</code>).
+          </p>
 
           <div style={step}>3) cfg.json para datos reales</div>
           <pre style={pre}>{`{

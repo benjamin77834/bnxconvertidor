@@ -989,8 +989,11 @@ Sin query, usa el parquet que ya exista en esa ruta. --skip-extract reutiliza
 los parquets ya bajados; --extract-only solo baja los datos.
 
 Cada fuente es un JOB INDEPENDIENTE, no una secuencia: si una falla, las demas
-siguen. Para lanzar una sola como job aislado (p.ej. desde Airflow/cron, una
-tarea por fuente):  python main.py --config cfg.json --source <nombre>
+siguen. Todas comparten la misma SparkSession. El proceso PIVOTE corre SIEMPRE
+primero (las demas dependen de su salida); se marca con "pivot": true en el
+cfg.json, o nombrando la fuente 'pivote'/'pivot'. Para lanzar una sola como job
+aislado (p.ej. una tarea por fuente en Airflow/cron):
+    python main.py --config cfg.json --source <nombre>
 En DEMO genera datos sinteticos, neutraliza las lecturas externas de los
 aggregates (spark.read.* -> datos de juguete) y corre cada fuente mostrando
 entrada -> salida. Las fuentes con un '# TODO py2spark' pendiente se marcan.
@@ -1102,6 +1105,26 @@ def _extract_sources(spark, fuentes, src_cfg, prev, cfg_dir):
             print("          ERROR extrayendo '%s': %s" % (s, causa))
             fallidas.append(s)
     return fallidas
+def _orden_pivote_primero(fuentes, src_cfg):
+    """Ordena las fuentes dejando el PIVOTE de primero (el resto conserva su orden).
+    El pivote es el proceso del que dependen los demas, por eso corre antes.
+    Se detecta por:
+      1) una fuente marcada  "pivot": true  en su config, o
+      2) su nombre normalizado es 'pivote' o 'pivot'.
+    Si no hay pivote, se respeta el orden original."""
+    def _es_pivote(s):
+        scfg = src_cfg.get(s) or {}
+        if isinstance(scfg, dict) and scfg.get("pivot"):
+            return True
+        norm = str(s).strip().lower().replace("-", "_")
+        return norm in ("pivote", "pivot") or norm.endswith("_pivote") or norm.endswith("_pivot")
+    pivotes = [s for s in fuentes if _es_pivote(s)]
+    resto = [s for s in fuentes if s not in pivotes]
+    if pivotes:
+        print("[orden] pivote primero:", ", ".join(pivotes))
+    return pivotes + resto
+
+
 def _report_optimizations():
     """Resumen de las optimizaciones de Spark ya aplicadas al generar el paquete
     (cache / broadcast / coalesce). BNX las aplico en el portal; aqui las
@@ -1230,10 +1253,15 @@ def main():
         print("previous_path:", prev)
         src_cfg = cfg.get("sources") or {s: {"table_name": s} for s in REGISTRY}
     fuentes = [args.source] if args.source else list(src_cfg.keys())
+    # PIVOTE primero: las demas fuentes dependen de su salida, asi que el proceso
+    # pivote SIEMPRE corre antes. Se identifica por nombre ('pivote'/'pivot') o
+    # marcando la fuente con "pivot": true en el cfg.json.
+    fuentes = _orden_pivote_primero(fuentes, src_cfg)
     ok = fail = 0
-    # Cada fuente es un JOB INDEPENDIENTE: extrae su query y corre su aggregate en
-    # su propio bloque aislado. Una fuente que falla NO tumba a las demas. Para
-    # correr una sola como job separado desde tu orquestador:  run.sh --source X
+    # Cada fuente es un JOB (comparte la misma SparkSession, que se pasa a cada
+    # aggregate). Extrae su query y corre su aggregate en su propio bloque aislado;
+    # una que falla NO tumba a las demas. Para correr una sola como job separado
+    # desde tu orquestador (respetando que pivote fue primero):  run.sh --source X
     for s in fuentes:
         if s not in REGISTRY:
             print("\\n[skip] fuente no registrada:", s); continue
@@ -1287,6 +1315,12 @@ _CFG_EXAMPLE = '''{
     }
   },
   "sources": {
+    "pivote": {
+      "table_name": "pivote",
+      "pivot": true,
+      "query": "SELECT * FROM mi_base.tabla_pivote WHERE fecha >= '2024-01-01'",
+      "limit": 100000
+    },
     "data_pull": {
       "table_name": "data_pull",
       "query": "SELECT * FROM mi_base.mi_tabla WHERE fecha >= '2024-01-01'",
