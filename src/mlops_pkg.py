@@ -988,6 +988,14 @@ a la sesion de Spark/Hive, ejecuta el query y BAJA el resultado a parquet en
 Sin query, usa el parquet que ya exista en esa ruta. --skip-extract reutiliza
 los parquets ya bajados; --extract-only solo baja los datos.
 
+SETTINGS DEL BANCO (bin/settings/<modelo>/pivot.json, datapull.json) se leen TAL CUAL:
+    python main.py --config pivot.json --env uat --cohort 202501 [--root <general_root>]
+Cada tabla de 'tables_info' ({database, table, columns, where}) se convierte en
+ select <columns> from <database>.<table> where <where>   (los '{}' del where se
+llenan con las fechas del cohort/lag, igual que el job original) y se baja a
+parquet en <general_root>/<working_path>/<tabla>. --env: prod|uat|sbx;
+general_root sale de settings/jobs.json (junto al config) o de --root.
+
 Cada fuente es un JOB INDEPENDIENTE, no una secuencia: si una falla, las demas
 siguen. Todas comparten la misma SparkSession. El proceso PIVOTE corre SIEMPRE
 primero (las demas dependen de su salida); se marca con "pivot": true en el
@@ -1207,6 +1215,101 @@ def _ensure_parquet_codec(spark, work):
         shutil.rmtree(probe, ignore_errors=True)
 
 
+# ---------------------------------------------------------------------------
+# Formato de settings DEL BANCO (bin/settings/<modelo>/pivot.json, datapull.json):
+#   {"prod": {...}, "uat": {...}, "sbx": {...}}  y en cada ambiente:
+#     "tables_info": {nombre: {"database", "table", "columns": [...], "where"}},
+#     "working_path": "rps/working_path/{}/pivot/",  "lag": 1, ...
+# El 'where' trae '{}' que el job original llena con fechas del cohort; aqui se
+# replica la misma regla de load_tables()/hive_table_to_df() del framework.
+# ---------------------------------------------------------------------------
+_MESES = {"01": "ene", "02": "feb", "03": "mar", "04": "abr", "05": "may", "06": "jun",
+          "07": "jul", "08": "ago", "09": "sep", "10": "oct", "11": "nov", "12": "dic"}
+def _is_bank_settings(cfg):
+    """True si el JSON es del formato del banco (ambientes con tables_info)."""
+    if isinstance(cfg.get("tables_info"), dict):
+        return True
+    return any(isinstance(v, dict) and isinstance(v.get("tables_info"), dict)
+               for v in cfg.values())
+def _bank_env(cfg, env):
+    """Devuelve (nombre_env, settings_del_env)."""
+    if isinstance(cfg.get("tables_info"), dict):
+        return (env or "-"), cfg
+    envs = [k for k, v in cfg.items() if isinstance(v, dict) and "tables_info" in v]
+    if env:
+        if env not in envs:
+            raise SystemExit("Ambiente '%s' no existe en el config. Opciones: %s" % (env, envs))
+        return env, cfg[env]
+    elegido = "uat" if "uat" in envs else envs[0]
+    print("[config] ambiente no indicado (--env); se usa '%s'. Opciones: %s" % (elegido, envs))
+    return elegido, cfg[elegido]
+def _cohort_dates(cohort, lag):
+    """Igual que el job del banco: vintage = cohort+'01';
+    start = 1er dia de (vintage - lag meses); end = ultimo dia de ese mes."""
+    import calendar
+    y, m = int(cohort[:4]), int(cohort[4:6])
+    m -= int(lag)
+    while m <= 0:
+        m += 12
+        y -= 1
+    start = "%04d-%02d-01" % (y, m)
+    end = "%04d-%02d-%02d" % (y, m, calendar.monthrange(y, m)[1])
+    return start, end
+def _bank_query(info, start, end):
+    """SELECT <columns> FROM <database>.<table> [WHERE <where con fechas>]."""
+    mes = _MESES[start[5:7]]
+    cols = [c.format(mes) if "{}" in c else c for c in (info.get("columns") or [])]
+    fields = ", ".join(cols) if cols else "*"
+    q = "select %s from %s.%s" % (fields, info["database"], info["table"])
+    where = info.get("where")
+    if where:
+        n = where.count("{}")
+        if n == 0:
+            args_w = []
+        elif n == 1:
+            # 1 placeholder: 'periodo = {}' usa el anio; el resto la fecha fin.
+            args_w = [start[:4]] if "periodo" in where.lower() else [end]
+        else:
+            args_w = ([start, end] * n)[:n]
+        q += " where " + where.format(*args_w)
+    return q
+def _bank_sources(cfg, args, cfg_dir):
+    """Convierte el settings del banco a (src_cfg, previous_path)."""
+    env, st = _bank_env(cfg, args.env)
+    cohort = args.cohort
+    if not cohort:
+        import datetime
+        cohort = datetime.date.today().strftime("%Y%m")
+        print("[config] cohort no indicado (--cohort YYYYMM); se usa", cohort)
+    lag = st.get("lag", 1)
+    start, end = _cohort_dates(cohort, lag)
+    print("[config] env=%s cohort=%s lag=%s -> fechas %s .. %s" % (env, cohort, lag, start, end))
+    # general_root: --root, o settings/jobs.json junto al config, o ./data
+    root = args.root
+    if not root:
+        for cand in (os.path.join(cfg_dir, "jobs.json"),
+                     os.path.join(os.path.dirname(cfg_dir), "jobs.json")):
+            if os.path.isfile(cand):
+                try:
+                    root = json.load(open(cand, encoding="utf-8"))[env]["general_root"]
+                    print("[config] general_root desde", cand)
+                except Exception:
+                    root = None
+                break
+    if not root:
+        root = os.path.join(_here, "data")
+    wp = (st.get("working_path") or "working_path/{}/").format(cohort)
+    prev = os.path.join(root, wp).rstrip("/")
+    src = {}
+    for name, info in st["tables_info"].items():
+        if not isinstance(info, dict) or "table" not in info or "database" not in info:
+            print("[config] tables_info.%s sin database/table; se omite" % name)
+            continue
+        src[name] = {"table_name": name, "query": _bank_query(info, start, end)}
+    print("[config] %d tabla(s) en tables_info: %s" % (len(src), ", ".join(src)))
+    return src, prev
+
+
 def main():
     ap = argparse.ArgumentParser(description="Framework MLOps v2 — entry point")
     ap.add_argument("--config", help="JSON con previous_path y sources (datos reales)")
@@ -1215,10 +1318,14 @@ def main():
                     help="no ejecutar los query; usar los parquets ya bajados")
     ap.add_argument("--extract-only", action="store_true",
                     help="solo bajar los query a parquet, sin correr los aggregates")
+    ap.add_argument("--env", help="ambiente del settings del banco: prod | uat | sbx")
+    ap.add_argument("--cohort", help="cohort YYYYMM para las fechas del where (default: mes actual)")
+    ap.add_argument("--root", help="general_root (default: settings/jobs.json o ./data)")
     args = ap.parse_args()
     demo = not args.config
     cfg = {} if demo else _load_config(args.config)
     cfg_dir = os.path.dirname(os.path.abspath(args.config)) if args.config else _here
+    bank_fmt = (not demo) and _is_bank_settings(cfg)
     scfg_spark = cfg.get("spark") or {}
     work = _work_dir()
     # tmp de Java/Spark/snappy dentro del paquete (escribible), no en /tmp.
@@ -1237,7 +1344,7 @@ def main():
     _src0 = cfg.get("sources") or {}
     _usa_sql = any(isinstance(v, dict) and (v.get("query") or v.get("query_file")
                                             or v.get("source_table")) for v in _src0.values())
-    if scfg_spark.get("hive", _usa_sql):
+    if scfg_spark.get("hive", _usa_sql or bank_fmt):
         try:
             builder = builder.enableHiveSupport()
         except Exception as e:
@@ -1262,6 +1369,13 @@ def main():
             synth.write.mode("overwrite").parquet(os.path.join(prev, s))
         _patch_reads(spark, synth)
         src_cfg = {s: {"table_name": s} for s in REGISTRY}
+    elif bank_fmt:
+        # Settings del banco (pivot.json/datapull.json): cada tabla de tables_info
+        # se baja a parquet en <general_root>/<working_path>/<tabla>.
+        base = None
+        src_cfg, prev = _bank_sources(cfg, args, cfg_dir)
+        os.makedirs(prev, exist_ok=True)
+        print("previous_path:", prev)
     else:
         base = None
         prev = cfg.get("previous_path") or os.path.join(_here, "data", "datapull")
@@ -1270,7 +1384,16 @@ def main():
         os.makedirs(prev, exist_ok=True)
         print("previous_path:", prev)
         src_cfg = cfg.get("sources") or {s: {"table_name": s} for s in REGISTRY}
-    fuentes = [args.source] if args.source else list(src_cfg.keys())
+    if bank_fmt and args.source and args.source not in src_cfg:
+        # --source es el JOB (p.ej. job_3), no una tabla: se bajan TODAS las
+        # tablas del config y luego corre el aggregate del job si esta registrado.
+        print("[config] '%s' no es una tabla de tables_info: se extraen todas las "
+              "tablas del config para ese job." % args.source)
+        fuentes = list(src_cfg.keys())
+        job_agg = args.source
+    else:
+        fuentes = [args.source] if args.source else list(src_cfg.keys())
+        job_agg = None
     # PIVOTE primero: las demas fuentes dependen de su salida, asi que el proceso
     # pivote SIEMPRE corre antes. Se identifica por nombre ('pivote'/'pivot') o
     # marcando la fuente con "pivot": true en el cfg.json.
@@ -1281,7 +1404,7 @@ def main():
     # una que falla NO tumba a las demas. Para correr una sola como job separado
     # desde tu orquestador (respetando que pivote fue primero):  run.sh --source X
     for s in fuentes:
-        if s not in REGISTRY:
+        if s not in REGISTRY and not bank_fmt:
             print("\\n[skip] fuente no registrada:", s); continue
         print("\\n" + "-" * 64); print("FUENTE:", s)
         scfg = src_cfg.get(s, {"table_name": s})
@@ -1291,6 +1414,11 @@ def main():
                 if _extract_sources(spark, [s], src_cfg, prev, cfg_dir):
                     raise RuntimeError("no se extrajo/escribio el parquet de '%s' "
                                        "(revisa el QUERY de arriba)" % s)
+            if bank_fmt and s not in REGISTRY and not args.extract_only:
+                # Tabla del settings del banco: solo se baja; no tiene aggregate.
+                print("  OK (tabla extraida; sin aggregate registrado para '%s')" % s)
+                ok += 1
+                continue
             if args.extract_only:
                 # Solo OK si el parquet existe DE VERDAD.
                 dest = os.path.join(prev, scfg.get("table_name", s))
@@ -1315,6 +1443,22 @@ def main():
             print("  ERROR:", type(e).__name__, "-", str(e)[:120])
             print("  (revisa los '# TODO py2spark' de aggregates/%s.py)" % s)
             fail += 1
+    # --source <job> con settings del banco: tras bajar sus tablas, corre su aggregate.
+    if job_agg and not args.extract_only:
+        print("\\n" + "-" * 64); print("JOB:", job_agg)
+        if job_agg not in REGISTRY:
+            print("  [aviso] '%s' no esta en REGISTRY; solo se bajaron las tablas." % job_agg)
+        elif fail:
+            print("  [skip] no corre el aggregate: fallo la extraccion de alguna tabla.")
+        else:
+            try:
+                GroupBy(job_agg, previous_path=prev, agg_dict={"table_name": job_agg},
+                        sqlContext=spark).aggregate()
+                print("  OK -> aggregate de '%s' terminado" % job_agg)
+                ok += 1
+            except Exception as e:
+                print("  ERROR:", type(e).__name__, "-", str(e)[:160])
+                fail += 1
 
     print("\\n" + "=" * 64)
     print("RESULTADO: %d fuente(s) OK, %d con error." % (ok, fail))
