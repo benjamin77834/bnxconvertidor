@@ -1177,6 +1177,66 @@ def _preflight(spark, chk):
         return ("la tabla %s existe pero le faltan estas COLUMNAS: %s. Columnas reales: %s"
                 % (full, ", ".join(faltan), ", ".join(sorted(reales))))
     return None
+def _fs_path(spark, p):
+    """(FileSystem, Path) de Hadoop para la ruta: sin esquema usa fs.defaultFS
+    (HDFS en el cluster; disco local en modo local)."""
+    jvm = spark._jvm
+    path = jvm.org.apache.hadoop.fs.Path(p)
+    return path.getFileSystem(spark._jsc.hadoopConfiguration()), path
+def _fs_mkdirs(spark, p):
+    try:
+        fs, path = _fs_path(spark, p)
+        if fs.mkdirs(path) or fs.exists(path):
+            return True
+        print("[aviso] no se pudo crear la carpeta de salida %s (permisos?)" % _fs_uri(spark, p))
+        return False
+    except Exception as e:
+        print("[aviso] no se pudo crear %s: %s" % (p, _err_text(e)))
+        return False
+def _fs_delete(spark, p):
+    try:
+        fs, path = _fs_path(spark, p)
+        fs.delete(path, True)
+    except Exception:
+        pass
+def _fs_parquet_files(spark, p):
+    """Numero de archivos .parquet en la carpeta (HDFS o local); 0 si no existe."""
+    try:
+        fs, path = _fs_path(spark, p)
+        if not fs.exists(path):
+            return 0
+        return sum(1 for st in fs.listStatus(path) if st.getPath().getName().endswith(".parquet"))
+    except Exception:
+        return 0
+def _fs_uri(spark, p):
+    """Ruta completamente calificada (hdfs://... o file:/...) para los mensajes."""
+    try:
+        fs, path = _fs_path(spark, p)
+        return str(fs.makeQualified(path).toString())
+    except Exception:
+        return p
+def _err_text(e, n=700):
+    """Causa REAL de un error de Spark/Java (no solo 'An error occurred while
+    calling o39.parquet'): recorre la cadena de causas de la excepcion Java."""
+    try:
+        je = getattr(e, "java_exception", None)
+        if je is not None:
+            partes, c, vistos = [], je, 0
+            while c is not None and vistos < 6:
+                t = str(c.toString())
+                if t not in partes:
+                    partes.append(t)
+                c = c.getCause()
+                vistos += 1
+            # La causa RAIZ (la ultima) es la que dice ruta/permiso: va primero.
+            raiz = partes[-1]
+            if len(partes) > 1:
+                return ("causa raiz: %s  (origen: %s)" % (raiz, partes[0][:160]))[:n]
+            return raiz[:n]
+    except Exception:
+        pass
+    msg = str(e).strip()
+    return " ".join(msg.split("\\n")[0].split())[:n] if msg else type(e).__name__
 def _extract_sources(spark, fuentes, src_cfg, prev, cfg_dir, dry_run=False):
     """Ejecuta el query de cada fuente en la sesion de Spark y lo baja a parquet
     en <prev>/<table_name>. Devuelve las fuentes que fallaron al extraer.
@@ -1189,7 +1249,7 @@ def _extract_sources(spark, fuentes, src_cfg, prev, cfg_dir, dry_run=False):
         if q is None:
             # Sin query NO se escribe parquet: antes se saltaba en silencio y
             # '--extract-only' lo contaba como OK aunque no bajara nada.
-            if os.path.isdir(dest) and glob.glob(os.path.join(dest, "*.parquet")):
+            if _fs_parquet_files(spark, dest):
                 print("[extract] %s: sin query; se usa el parquet existente en %s" % (s, dest))
             else:
                 print("[extract] %s: SIN query/query_file/source_table y NO hay parquet "
@@ -1213,16 +1273,14 @@ def _extract_sources(spark, fuentes, src_cfg, prev, cfg_dir, dry_run=False):
             df = spark.sql(q)
             df.write.mode("overwrite").parquet(dest)
             # Verificar de verdad que se escribio (archivos .parquet + conteo).
-            escritos = glob.glob(os.path.join(dest, "*.parquet"))
+            escritos = _fs_parquet_files(spark, dest)
             filas = spark.read.parquet(dest).count()
             if not escritos:
-                raise RuntimeError("el write no dejo archivos .parquet en %s" % dest)
+                raise RuntimeError("el write no dejo archivos .parquet en %s" % _fs_uri(spark, dest))
             print("          OK: %d filas, %d archivo(s) parquet en %s"
-                  % (filas, len(escritos), dest))
+                  % (filas, escritos, _fs_uri(spark, dest)))
         except Exception as e:
-            msg = str(e).strip()
-            causa = " ".join(msg.split("\\n")[0].split())[:600] if msg else type(e).__name__
-            print("          ERROR extrayendo '%s': %s" % (s, causa))
+            print("          ERROR extrayendo '%s': %s" % (s, _err_text(e)))
             if problema:
                 print("          (pista: %s)" % problema)
             fallidas.append(s)
@@ -1288,27 +1346,36 @@ def _work_dir():
     return tempfile.gettempdir()
 
 
-def _ensure_parquet_codec(spark, work):
-    """Comprueba que se pueda ESCRIBIR parquet con el codec por defecto (snappy).
-    Si falla (libreria nativa no cargable, /tmp noexec...), cae a 'uncompressed'
-    y lo avisa, en vez de reventar con un stack de Java ilegible. Se puede forzar
-    con la variable BNX_PARQUET_CODEC (snappy|gzip|uncompressed|zstd)."""
+def _ensure_parquet_codec(spark, out_dir):
+    """Comprueba que se pueda ESCRIBIR parquet con el codec por defecto (snappy) EN
+    LA RUTA DE SALIDA real (en el cluster es HDFS, no el disco del servidor). Si
+    falla, prueba 'uncompressed'; si tambien falla, NO aborta: avisa con la causa
+    real (permisos/ruta) y deja que la extraccion reporte el error por tabla.
+    Se puede forzar con BNX_PARQUET_CODEC (snappy|gzip|uncompressed|zstd)."""
     forced = os.environ.get("BNX_PARQUET_CODEC")
     if forced:
         spark.conf.set("spark.sql.parquet.compression.codec", forced)
         print("[codec] parquet forzado a '%s' (BNX_PARQUET_CODEC)" % forced)
         return
-    probe = os.path.join(work, "_codec_probe")
+    probe = out_dir.rstrip("/") + "/_bnx_codec_probe"
     try:
         spark.range(1).write.mode("overwrite").parquet(probe)
     except Exception as e:
-        causa = str(e).strip().splitlines()[0][:200] if str(e).strip() else type(e).__name__
+        causa = _err_text(e, 400)
+        if "ermission" in causa or "AccessControl" in causa:
+            print("[aviso] SIN PERMISO de escritura en %s: %s" % (_fs_uri(spark, out_dir), causa))
+            print("        Revisa base_path/--base-path (debe ser una ruta HDFS donde puedas escribir).")
+            return
         print("[aviso] no se pudo escribir parquet con el codec por defecto: %s" % causa)
-        print("        Se usa 'uncompressed'. (Suele ser /tmp noexec o snappy nativo.)")
+        print("        Se prueba 'uncompressed'.")
         spark.conf.set("spark.sql.parquet.compression.codec", "uncompressed")
-        spark.range(1).write.mode("overwrite").parquet(probe)   # si falla aqui, es otro tema
+        try:
+            spark.range(1).write.mode("overwrite").parquet(probe)
+        except Exception as e2:
+            print("[aviso] tampoco con 'uncompressed' en %s: %s"
+                  % (_fs_uri(spark, out_dir), _err_text(e2, 400)))
     finally:
-        shutil.rmtree(probe, ignore_errors=True)
+        _fs_delete(spark, probe)
 
 
 # ---------------------------------------------------------------------------
@@ -1431,8 +1498,12 @@ def _bank_sources(cfg, args, cfg_dir, spark=None):
     lag = st.get("lag", 1)
     start, end = _cohort_dates(cohort, lag)
     print("[config] env=%s cohort=%s lag=%s -> fechas %s .. %s" % (env, cohort, lag, start, end))
-    # general_root: --root, o settings/jobs.json junto al config, o ./data
-    root = args.root
+    # Raiz de salida (en el cluster: ruta HDFS). Prioridad:
+    #   --base-path  >  "base_path" del ambiente  >  "base_path" global del JSON
+    #   >  --root  >  settings/jobs.json (general_root)  >  ./data
+    root = (args.base_path or st.get("base_path") or cfg.get("base_path") or args.root)
+    if root:
+        print("[config] base_path de salida:", root)
     if not root:
         for cand in (os.path.join(cfg_dir, "jobs.json"),
                      os.path.join(os.path.dirname(cfg_dir), "jobs.json")):
@@ -1446,7 +1517,7 @@ def _bank_sources(cfg, args, cfg_dir, spark=None):
     if not root:
         root = os.path.join(_here, "data")
     wp = (st.get("working_path") or "working_path/{}/").format(cohort)
-    prev = os.path.join(root, wp).rstrip("/")
+    prev = (root.rstrip("/") + "/" + wp.lstrip("/")).rstrip("/")
     src = {}
     for name, info in st["tables_info"].items():
         if not isinstance(info, dict) or "table" not in info or "database" not in info:
@@ -1471,6 +1542,8 @@ def main():
                     help="solo imprime los QUERY que se ejecutarian; no toca Spark/Hive ni escribe")
     ap.add_argument("--env", help="ambiente del settings del banco: prod | uat | sbx")
     ap.add_argument("--cohort", help="cohort YYYYMM para las fechas del where (default: mes actual)")
+    ap.add_argument("--base-path", dest="base_path",
+                    help="ruta base de SALIDA (HDFS en el cluster); se le agrega working_path")
     ap.add_argument("--root", help="general_root (default: settings/jobs.json o ./data)")
     args = ap.parse_args()
     demo = not args.config
@@ -1509,7 +1582,6 @@ def main():
             print("[aviso] no se pudo habilitar Hive:", str(e)[:120])
     spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
-    _ensure_parquet_codec(spark, work)
 
     print("=" * 64)
     print("FRAMEWORK MLOPS v2 — %s" % ("DEMO (datos sinteticos)" if demo else "DATOS REALES"))
@@ -1532,16 +1604,18 @@ def main():
         # se baja a parquet en <general_root>/<working_path>/<tabla>.
         base = None
         src_cfg, prev = _bank_sources(cfg, args, cfg_dir, spark)
-        os.makedirs(prev, exist_ok=True)
-        print("previous_path:", prev)
+        _fs_mkdirs(spark, prev)
+        print("previous_path:", _fs_uri(spark, prev))
     else:
         base = None
         prev = cfg.get("previous_path") or os.path.join(_here, "data", "datapull")
-        if not os.path.isabs(prev):
+        if "://" not in prev and not os.path.isabs(prev):
             prev = os.path.join(cfg_dir, prev)
-        os.makedirs(prev, exist_ok=True)
-        print("previous_path:", prev)
+        _fs_mkdirs(spark, prev)
+        print("previous_path:", _fs_uri(spark, prev))
         src_cfg = cfg.get("sources") or {s: {"table_name": s} for s in REGISTRY}
+    if not args.dry_run:
+        _ensure_parquet_codec(spark, prev)
     if bank_fmt and args.source and args.source not in src_cfg:
         # --source es el JOB (p.ej. job_3), no una tabla: se bajan TODAS las
         # tablas del config y luego corre el aggregate del job si esta registrado.
@@ -1583,8 +1657,8 @@ def main():
             if args.extract_only:
                 # Solo OK si el parquet existe DE VERDAD.
                 dest = os.path.join(prev, scfg.get("table_name", s))
-                if glob.glob(os.path.join(dest, "*.parquet")):
-                    print("  extract-only OK: parquet escrito en", dest)
+                if _fs_parquet_files(spark, dest):
+                    print("  extract-only OK: parquet escrito en", _fs_uri(spark, dest))
                     ok += 1
                 else:
                     print("  extract-only ERROR: no hay parquet en", dest,
@@ -1665,7 +1739,13 @@ bash run.sh --config pivot.json --env uat --cohort 202501 --source job_3
 - `--env`: prod | uat | sbx. Si no se indica, se elige el ambiente cuyas bases
   existen en el metastore.
 - `--cohort`: YYYYMM (default: mes actual).
-- `--root`: general_root (default: `settings/jobs.json` junto al config, o `./data`).
+- **Ruta de SALIDA** = `base_path` + `working_path` (con el cohort). En el cluster es
+  una ruta **HDFS** (no el disco del servidor). Agrega al `pivot.json`:
+  `"base_path": "/data/gcgaeapmxcgnu/managed/hive/gcgaeapmxcgnu_managed/"`
+  (a nivel global o dentro de cada ambiente), o pasala por CLI con `--base-path`.
+  Prioridad: `--base-path` > `base_path` del ambiente > `base_path` global > `--root`
+  > `settings/jobs.json` (general_root) > `./data`.
+  La linea `previous_path: hdfs://...` confirma a donde se escribe.
 - `--skip-extract`: reutiliza los parquets ya bajados.
 
 ## 3) IMPORTANTE: usar el metastore del CLUSTER
@@ -1701,6 +1781,8 @@ Como saber cual Spark se esta usando (lineas al inicio de la corrida):
 - `which spark-submit spark3-submit`
 - `ls /etc/spark*/conf/hive-site.xml /etc/hive/conf/hive-site.xml`
 - Con que herramienta se consulta la tabla cuando SI funciona (Hue, beeline, pyspark).
+- Si el error es de escritura (`Mkdirs failed`, `Permission denied`, `AccessControlException`):
+  la `previous_path` no es escribible -> revisa `base_path` / `--base-path`.
 
 ## 5) Orden de los procesos
 - Todos comparten la misma SparkSession.

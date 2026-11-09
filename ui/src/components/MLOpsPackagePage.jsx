@@ -802,7 +802,10 @@ bash run.sh --config cfg.json --source X   # UNA sola fuente (job aislado p/ Air
           <pre style={pre}>{`# ver los QUERY sin ejecutar (recomendado la 1a vez)
 bash run.sh --config pivot.json --env uat --cohort 202501 --dry-run
 # bajar las tablas de tables_info a parquet
-bash run.sh --config pivot.json --env uat --cohort 202501 --extract-only`}</pre>
+bash run.sh --config pivot.json --env uat --cohort 202501 --extract-only
+# salida en HDFS = base_path + working_path  (en el JSON o por CLI)
+#   "base_path": "/data/<usuario>/managed/hive/<usuario>_managed/"
+bash run.sh --config pivot.json --env uat --cohort 202501 --base-path /data/.../managed/ --extract-only`}</pre>
           <div style={step}>4) Metastore del clúster (si sale "la base no existe")</div>
           <pre style={pre}>{`# A) Spark del clúster (recomendado)
 BNX_SPARK=cluster bash run.sh --config pivot.json --env uat --cohort 202501 --extract-only
