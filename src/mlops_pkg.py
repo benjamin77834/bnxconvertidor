@@ -798,6 +798,19 @@ if [ ! -f .venv/bin/activate ]; then
   echo "❌ No existe .venv. Monta el entorno primero:  bash setup.sh" >&2
   exit 1
 fi
+# Spark del CLUSTER (opcional): BNX_SPARK=cluster bash run.sh ...
+# Usa el spark-submit del nodo (el mismo metastore que Hue/beeline/pyspark del
+# cluster) con el Python del venv para las librerias. Se busca ANTES de activar el
+# venv para no tomar el spark-submit que trae el pyspark de pip.
+CLUSTER_SUBMIT=""
+if [ "${BNX_SPARK:-}" = "cluster" ]; then
+  CLUSTER_SUBMIT="${BNX_SPARK_SUBMIT:-$(command -v spark3-submit || command -v spark-submit || true)}"
+  if [ -z "$CLUSTER_SUBMIT" ]; then
+    echo "❌ BNX_SPARK=cluster pero no hay spark-submit del cluster en el PATH." >&2
+    echo "   Indica la ruta: BNX_SPARK_SUBMIT=/ruta/spark-submit BNX_SPARK=cluster bash run.sh ..." >&2
+    exit 1
+  fi
+fi
 . .venv/bin/activate
 
 # Modulos de path del banco (toolbox, bnmxverse, utils) que dejo setup.sh.
@@ -827,6 +840,13 @@ else
   echo "         Para tablas del banco: export SPARK_CONF_DIR=<dir con hive-site.xml>"
 fi
 
+if [ -n "$CLUSTER_SUBMIT" ]; then
+  echo "[run.sh] Spark del CLUSTER: $CLUSTER_SUBMIT (python del venv)"
+  export PYSPARK_PYTHON="$PWD/.venv/bin/python"
+  export PYSPARK_DRIVER_PYTHON="$PWD/.venv/bin/python"
+  export BNX_CLUSTER_SPARK=1
+  exec "$CLUSTER_SUBMIT" --master "${BNX_MASTER:-yarn}" --deploy-mode client main.py "$@"
+fi
 exec python main.py "$@"
 '''
 
@@ -1182,9 +1202,11 @@ def _extract_sources(spark, fuentes, src_cfg, prev, cfg_dir, dry_run=False):
         if chk:
             problema = _preflight(spark, chk)
             if problema:
-                print("          ERROR extrayendo '%s': %s" % (s, problema))
-                fallidas.append(s)
-                continue
+                # Solo AVISO: con permisos restringidos (Ranger/Sentry) el catalogo
+                # puede no listar la base aunque el SELECT si funcione. Se intenta igual.
+                print("          [aviso preflight] %s -> se intenta el query de todos modos" % problema)
+        else:
+            problema = None
         try:
             df = spark.sql(q)
             df.write.mode("overwrite").parquet(dest)
@@ -1199,6 +1221,8 @@ def _extract_sources(spark, fuentes, src_cfg, prev, cfg_dir, dry_run=False):
             msg = str(e).strip()
             causa = " ".join(msg.split("\\n")[0].split())[:600] if msg else type(e).__name__
             print("          ERROR extrayendo '%s': %s" % (s, causa))
+            if problema:
+                print("          (pista: %s)" % problema)
             fallidas.append(s)
     return fallidas
 def _orden_pivote_primero(fuentes, src_cfg):
@@ -1455,13 +1479,20 @@ def main():
     work = _work_dir()
     # tmp de Java/Spark/snappy dentro del paquete (escribible), no en /tmp.
     jopts = "-Djava.io.tmpdir=%s -Dorg.xerial.snappy.tempdir=%s" % (work, work)
-    builder = (SparkSession.builder
-               .master(scfg_spark.get("master", "local[1]"))
-               .appName(scfg_spark.get("app_name", "framework_mlops_v2"))
-               .config("spark.ui.enabled", "false")
-               .config("spark.sql.shuffle.partitions", "2")
-               .config("spark.local.dir", work)
-               .config("spark.driver.extraJavaOptions", jopts))
+    cluster = os.environ.get("BNX_CLUSTER_SPARK") == "1"
+    builder = SparkSession.builder.appName(scfg_spark.get("app_name", "framework_mlops_v2"))
+    if cluster:
+        # Lanzado con el spark-submit del cluster: master/conf/metastore vienen de
+        # alli (--master yarn, spark-defaults, hive-site.xml). No los pisamos.
+        if scfg_spark.get("master"):
+            builder = builder.master(scfg_spark["master"])
+        print("[spark] modo CLUSTER (spark-submit del nodo)")
+    else:
+        builder = (builder.master(scfg_spark.get("master", "local[1]"))
+                   .config("spark.ui.enabled", "false")
+                   .config("spark.sql.shuffle.partitions", "2")
+                   .config("spark.local.dir", work)
+                   .config("spark.driver.extraJavaOptions", jopts))
     for k, v in (scfg_spark.get("conf") or {}).items():   # conf extra del JSON
         builder = builder.config(k, str(v))
     # Hive (tablas del catalogo/metastore): "spark.hive": true, o automatico si
