@@ -1095,7 +1095,38 @@ def _source_query(s, scfg, cfg_dir):
     if scfg.get("limit"):
         q = "SELECT * FROM (%s) bnx_q LIMIT %d" % (q, int(scfg["limit"]))
     return q
-def _extract_sources(spark, fuentes, src_cfg, prev, cfg_dir):
+def _preflight(spark, chk):
+    """Antes de ejecutar: verifica que <db>.<table> exista y que las columnas
+    simples del 'columns' del JSON existan en la tabla. Devuelve un mensaje claro
+    (tabla inexistente vs columna inexistente) o None si todo cuadra."""
+    import re
+    full = "%s.%s" % (chk["db"], chk["table"])
+    try:
+        existe = spark.catalog.tableExists(full)
+    except Exception:
+        existe = True   # no se puede comprobar; que lo diga el query
+    if not existe:
+        try:
+            dbs = [d.name for d in spark.catalog.listDatabases()]
+        except Exception:
+            dbs = []
+        hint = ("" if not dbs or chk["db"] in dbs else
+                " (la base '%s' NO existe en este metastore; revisa --env)" % chk["db"])
+        return "la TABLA %s no existe%s" % (full, hint)
+    try:
+        reales = {c.lower() for c in spark.table(full).columns}
+    except Exception:
+        return None
+    faltan = []
+    for c in chk["columns"]:
+        c0 = c.strip()
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", c0) and c0.lower() not in reales:
+            faltan.append(c0)
+    if faltan:
+        return ("la tabla %s existe pero le faltan estas COLUMNAS: %s. Columnas reales: %s"
+                % (full, ", ".join(faltan), ", ".join(sorted(reales))))
+    return None
+def _extract_sources(spark, fuentes, src_cfg, prev, cfg_dir, dry_run=False):
     """Ejecuta el query de cada fuente en la sesion de Spark y lo baja a parquet
     en <prev>/<table_name>. Devuelve las fuentes que fallaron al extraer.
     Imprime el QUERY real y verifica que el parquet quedo escrito (si no, falla)."""
@@ -1116,6 +1147,15 @@ def _extract_sources(spark, fuentes, src_cfg, prev, cfg_dir):
             continue
         print("[extract] %s -> %s" % (s, dest))
         print("          QUERY: %s" % " ".join(q.split()))
+        if dry_run:
+            continue
+        chk = scfg.get("_check")
+        if chk:
+            problema = _preflight(spark, chk)
+            if problema:
+                print("          ERROR extrayendo '%s': %s" % (s, problema))
+                fallidas.append(s)
+                continue
         try:
             df = spark.sql(q)
             df.write.mode("overwrite").parquet(dest)
@@ -1127,7 +1167,8 @@ def _extract_sources(spark, fuentes, src_cfg, prev, cfg_dir):
             print("          OK: %d filas, %d archivo(s) parquet en %s"
                   % (filas, len(escritos), dest))
         except Exception as e:
-            causa = str(e).strip().splitlines()[0][:200] if str(e).strip() else type(e).__name__
+            msg = str(e).strip()
+            causa = " ".join(msg.split("\\n")[0].split())[:600] if msg else type(e).__name__
             print("          ERROR extrayendo '%s': %s" % (s, causa))
             fallidas.append(s)
     return fallidas
@@ -1305,7 +1346,9 @@ def _bank_sources(cfg, args, cfg_dir):
         if not isinstance(info, dict) or "table" not in info or "database" not in info:
             print("[config] tables_info.%s sin database/table; se omite" % name)
             continue
-        src[name] = {"table_name": name, "query": _bank_query(info, start, end)}
+        src[name] = {"table_name": name, "query": _bank_query(info, start, end),
+                     "_check": {"db": info["database"], "table": info["table"],
+                                "columns": list(info.get("columns") or [])}}
     print("[config] %d tabla(s) en tables_info: %s" % (len(src), ", ".join(src)))
     return src, prev
 
@@ -1318,6 +1361,8 @@ def main():
                     help="no ejecutar los query; usar los parquets ya bajados")
     ap.add_argument("--extract-only", action="store_true",
                     help="solo bajar los query a parquet, sin correr los aggregates")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="solo imprime los QUERY que se ejecutarian; no toca Spark/Hive ni escribe")
     ap.add_argument("--env", help="ambiente del settings del banco: prod | uat | sbx")
     ap.add_argument("--cohort", help="cohort YYYYMM para las fechas del where (default: mes actual)")
     ap.add_argument("--root", help="general_root (default: settings/jobs.json o ./data)")
@@ -1411,9 +1456,12 @@ def main():
         try:
             # 1) Extraccion propia de ESTA fuente (si trae query/source_table).
             if not demo and not args.skip_extract:
-                if _extract_sources(spark, [s], src_cfg, prev, cfg_dir):
+                if _extract_sources(spark, [s], src_cfg, prev, cfg_dir, args.dry_run):
                     raise RuntimeError("no se extrajo/escribio el parquet de '%s' "
                                        "(revisa el QUERY de arriba)" % s)
+            if args.dry_run:
+                ok += 1
+                continue
             if bank_fmt and s not in REGISTRY and not args.extract_only:
                 # Tabla del settings del banco: solo se baja; no tiene aggregate.
                 print("  OK (tabla extraida; sin aggregate registrado para '%s')" % s)
