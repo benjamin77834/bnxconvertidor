@@ -798,11 +798,20 @@ bash run.sh --config cfg.json --source X   # UNA sola fuente (job aislado p/ Air
             <code>{' "pivot": true'}</code> en el <code>cfg.json</code> o nómbralo <code>pivote</code>).
           </p>
 
-          <div style={step}>3) cfg.json para datos reales</div>
-          <pre style={pre}>{`{
-  "previous_path": "/ruta/con/parquets",
-  "sources": { "bureau": { "table_name": "bureau" } }
-}`}</pre>
+          <div style={step}>3) Settings del banco (pivot.json / datapull.json)</div>
+          <pre style={pre}>{`# ver los QUERY sin ejecutar (recomendado la 1a vez)
+bash run.sh --config pivot.json --env uat --cohort 202501 --dry-run
+# bajar las tablas de tables_info a parquet
+bash run.sh --config pivot.json --env uat --cohort 202501 --extract-only`}</pre>
+          <div style={step}>4) Metastore del clúster (si sale "la base no existe")</div>
+          <pre style={pre}>{`# A) Spark del clúster (recomendado)
+BNX_SPARK=cluster bash run.sh --config pivot.json --env uat --cohort 202501 --extract-only
+# B) PySpark del venv apuntando a la config del clúster
+export SPARK_CONF_DIR=/etc/spark/conf   # carpeta con hive-site.xml`}</pre>
+          <p style={{ margin: '6px 0 0', fontSize: 11.5, color: '#fbbf24' }}>
+            ⚠️ Si la tabla sí se consulta en Hue/beeline pero aquí "no existe", el PySpark del venv no está
+            conectado al metastore del clúster. Todo el detalle viene en <code>NOTAS_EJECUCION.md</code> dentro del ZIP.
+          </p>
 
           <p style={{ margin: '10px 0 0', fontSize: 11.5, color: t.muted || '#94a3b8' }}>
             <code>main.py</code> orquesta el pipeline, reporta las <b>optimizaciones de Spark</b> aplicadas

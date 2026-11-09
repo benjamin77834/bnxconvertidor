@@ -876,6 +876,8 @@ def _readme(include_bank_libs):
         "(firmado) y la clave pública. Verifica integridad + firma antes de "
         "desplegar; si algún `.py` fue alterado, la verificación falla.")
     return f'''# Framework MLOps v2 (mejorado)
+> 📌 **Antes de correr con datos reales lee `NOTAS_EJECUCION.md`**: como leer el `pivot.json` del banco (`--env/--cohort/--dry-run`) y como usar el metastore del cluster (`BNX_SPARK=cluster` o `SPARK_CONF_DIR`) si sale "la base no existe".
+
 
 Paquete NUEVO generado por BNX a partir del analisis del framework actual.
 **No contiene codigo propietario del banco**: es una reimplementacion limpia del
@@ -1633,6 +1635,78 @@ if __name__ == "__main__":
     main()
 '''
 
+
+_NOTAS_EJECUCION = '''# Notas de ejecucion — Framework MLOps v2
+
+## 1) Montar el entorno (una sola vez)
+```bash
+bash setup.sh            # crea .venv e instala todo (offline si viene vendor/)
+bash setup.sh --test     # (opcional) ademas corre pytest
+```
+`run.sh` NO instala nada: solo corre el modelo con el entorno ya montado.
+
+## 2) Correr con los settings del banco (pivot.json / datapull.json)
+Los JSON de `bin/settings/<modelo>/` se leen tal cual (ambientes prod/uat/sbx con
+`tables_info`). Cada tabla se convierte en
+`select <columns> from <database>.<table> where <where>` (los `{}` del where se
+llenan con las fechas del cohort) y se baja a parquet en
+`<general_root>/<working_path>/<tabla>`.
+
+```bash
+# Ver los QUERY sin ejecutar nada (recomendado la primera vez)
+bash run.sh --config pivot.json --env uat --cohort 202501 --dry-run
+
+# Bajar las tablas a parquet
+bash run.sh --config pivot.json --env uat --cohort 202501 --extract-only
+
+# Todo (extraer + aggregates); un job concreto
+bash run.sh --config pivot.json --env uat --cohort 202501 --source job_3
+```
+- `--env`: prod | uat | sbx. Si no se indica, se elige el ambiente cuyas bases
+  existen en el metastore.
+- `--cohort`: YYYYMM (default: mes actual).
+- `--root`: general_root (default: `settings/jobs.json` junto al config, o `./data`).
+- `--skip-extract`: reutiliza los parquets ya bajados.
+
+## 3) IMPORTANTE: usar el metastore del CLUSTER
+Si sale **"la base ... NO existe en este metastore"** pero la tabla SI se consulta
+desde Hue / beeline / el pyspark del cluster, NO es el JSON: el PySpark del `.venv`
+es standalone y, sin el `hive-site.xml` del cluster, crea un metastore LOCAL vacio
+(solo ve la base `default`).
+
+Opcion A (recomendada): correr con el **Spark del cluster**
+```bash
+BNX_SPARK=cluster bash run.sh --config pivot.json --env uat --cohort 202501 --extract-only
+# si spark-submit no esta en el PATH:
+BNX_SPARK_SUBMIT=/ruta/spark-submit BNX_SPARK=cluster bash run.sh ...
+# master por defecto yarn; para otro:  BNX_MASTER=local[2]
+```
+
+Opcion B: apuntar el PySpark del venv a la config del cluster
+```bash
+export SPARK_CONF_DIR=/etc/spark/conf     # carpeta que contiene hive-site.xml
+bash run.sh --config pivot.json --env uat --cohort 202501 --extract-only
+```
+`run.sh` ya busca solo `hive-site.xml` en `/etc/spark/conf`, `/etc/spark3/conf`,
+`/etc/spark2/conf`, `/opt/cloudera/parcels/CDH/lib/spark/conf` y `/etc/hive/conf`.
+
+Como saber cual Spark se esta usando (lineas al inicio de la corrida):
+- `[run.sh] SPARK_CONF_DIR=...`  -> encontro la config del cluster.
+- `[run.sh] AVISO: no se encontro hive-site.xml` -> metastore LOCAL (no vera tablas del banco).
+- `[spark] modo CLUSTER` -> corre con el spark-submit del nodo.
+- `[metastore] catalogo=... | hive.metastore.uris=... | N base(s) visibles`
+
+## 4) Si algo falla, enviar
+- Las lineas `[run.sh]`, `[spark]`, `[metastore]` y `QUERY:` de la corrida.
+- `which spark-submit spark3-submit`
+- `ls /etc/spark*/conf/hive-site.xml /etc/hive/conf/hive-site.xml`
+- Con que herramienta se consulta la tabla cuando SI funciona (Hue, beeline, pyspark).
+
+## 5) Orden de los procesos
+- Todos comparten la misma SparkSession.
+- El proceso **pivote** corre siempre primero (marcar `"pivot": true` o nombrarlo `pivote`).
+- Cada fuente es un job independiente: si una falla, las demas siguen.
+'''
 
 _CFG_EXAMPLE = '''{
   "previous_path": "data/datapull",
@@ -2669,6 +2743,7 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     files["setup.sh"] = _SETUP_SH
     files["run.sh"] = _RUN_SH
     files["cfg.example.json"] = _CFG_EXAMPLE
+    files["NOTAS_EJECUCION.md"] = _NOTAS_EJECUCION
     files["pytest.ini"] = _PYTEST_INI   # pytest solo en tests/, ignora __MACOSX/vendor
     files["setup.py"] = _SETUP
     files["README.md"] = _readme_custom(
@@ -2812,7 +2887,10 @@ Si tu servidor tiene acceso al **Artifactory privado**, pueden intentarse desde 
 pip install -r requirements-bank.txt --index-url https://<artifactory-interno>/simple
 ```
 '''
-    return base + banklibs + mon + f'''
+    return base + banklibs + mon + '''
+> 📌 **Antes de correr con datos reales lee `NOTAS_EJECUCION.md`**: como leer el `pivot.json` del banco (`--env/--cohort/--dry-run`) y como usar el metastore del cluster (`BNX_SPARK=cluster` o `SPARK_CONF_DIR`) si sale "la base no existe".
+
+''' + f'''
 
 ## Fuentes generadas desde tu código
 Cada archivo que subiste se convirtió a PySpark y se envolvió como un aggregate
@@ -2850,6 +2928,7 @@ def build_mlops_package(include_bank_libs=True, extra_steps=False,
         "setup.sh": _SETUP_SH,
         "run.sh": _RUN_SH,
         "cfg.example.json": _CFG_EXAMPLE,
+        "NOTAS_EJECUCION.md": _NOTAS_EJECUCION,
         "pytest.ini": _PYTEST_INI,
         "README.md": _readme(include_bank_libs),
         "setup.py": _SETUP,
