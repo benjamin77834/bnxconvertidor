@@ -1471,6 +1471,50 @@ def _bank_query(info, start, end):
             args_w = ([start, end] * n)[:n]
         q += " where " + where.format(*args_w)
     return q
+_BASE_KEYS = ("base_path", "basePath", "BASE_PATH", "base_dir", "output_base_path")
+def _pick_key(d, keys):
+    if not isinstance(d, dict):
+        return None
+    low = {str(k).lower(): v for k, v in d.items()}
+    for k in keys:
+        v = d.get(k)
+        if v is None:
+            v = low.get(k.lower())
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return None
+def _resolve_base_path(cfg, st, env, args, cfg_dir):
+    """Ruta base de SALIDA y de donde salio. Prioridad:
+    --base-path > BNX_BASE_PATH > base_path del ambiente > base_path global >
+    --root > settings/jobs.json (base_path o general_root del ambiente)."""
+    if getattr(args, "base_path", None):
+        return args.base_path, "--base-path"
+    if os.environ.get("BNX_BASE_PATH"):
+        return os.environ["BNX_BASE_PATH"], "variable BNX_BASE_PATH"
+    v = _pick_key(st, _BASE_KEYS)
+    if v:
+        return v, "base_path del ambiente '%s' en el JSON" % env
+    v = _pick_key(cfg, _BASE_KEYS)
+    if v:
+        return v, "base_path global del JSON"
+    if getattr(args, "root", None):
+        return args.root, "--root"
+    for cand in (os.path.join(cfg_dir, "jobs.json"),
+                 os.path.join(os.path.dirname(cfg_dir), "jobs.json")):
+        if os.path.isfile(cand):
+            try:
+                jenv = json.load(open(cand, encoding="utf-8")).get(env) or {}
+                v = _pick_key(jenv, _BASE_KEYS + ("general_root",))
+                if v:
+                    return v, "%s (%s)" % (cand, env)
+            except Exception:
+                pass
+    return None, None
+def _default_fs(spark):
+    try:
+        return str(spark._jsc.hadoopConfiguration().get("fs.defaultFS") or "file:///")
+    except Exception:
+        return "file:///"
 def _bank_sources(cfg, args, cfg_dir, spark=None):
     """Convierte el settings del banco a (src_cfg, previous_path)."""
     if spark is not None:
@@ -1498,24 +1542,26 @@ def _bank_sources(cfg, args, cfg_dir, spark=None):
     lag = st.get("lag", 1)
     start, end = _cohort_dates(cohort, lag)
     print("[config] env=%s cohort=%s lag=%s -> fechas %s .. %s" % (env, cohort, lag, start, end))
-    # Raiz de salida (en el cluster: ruta HDFS). Prioridad:
-    #   --base-path  >  "base_path" del ambiente  >  "base_path" global del JSON
-    #   >  --root  >  settings/jobs.json (general_root)  >  ./data
-    root = (args.base_path or st.get("base_path") or cfg.get("base_path") or args.root)
-    if root:
-        print("[config] base_path de salida:", root)
+    # Raiz de salida (en el cluster: ruta HDFS). Ver _resolve_base_path.
+    root, origen = _resolve_base_path(cfg, st, env, args, cfg_dir)
+    default_fs = _default_fs(spark) if spark is not None else "file:///"
     if not root:
-        for cand in (os.path.join(cfg_dir, "jobs.json"),
-                     os.path.join(os.path.dirname(cfg_dir), "jobs.json")):
-            if os.path.isfile(cand):
-                try:
-                    root = json.load(open(cand, encoding="utf-8"))[env]["general_root"]
-                    print("[config] general_root desde", cand)
-                except Exception:
-                    root = None
-                break
-    if not root:
+        if not default_fs.startswith("file:"):
+            # En HDFS NUNCA usamos la carpeta del paquete (/data/1/... del servidor):
+            # no hay permiso y no es donde debe quedar la salida.
+            raise SystemExit(
+                "\\n[config] ERROR: falta la ruta base de SALIDA en HDFS (defaultFS=%s).\\n"
+                "  No se encontro 'base_path' en el JSON (ni en el ambiente '%s', ni global),\\n"
+                "  ni --base-path, ni BNX_BASE_PATH, ni general_root en settings/jobs.json.\\n"
+                "  Agrega al pivot.json (global o dentro de \\"%s\\"):\\n"
+                "      \\"base_path\\": \\"/data/<usuario>/managed/hive/<usuario>_managed/\\"\\n"
+                "  o corre con:  --base-path /data/<usuario>/managed/hive/<usuario>_managed/\\n"
+                "  Llaves de primer nivel en el JSON: %s\\n"
+                "  Llaves del ambiente '%s': %s"
+                % (default_fs, env, env, sorted(cfg.keys()), env, sorted(st.keys())))
         root = os.path.join(_here, "data")
+        origen = "default local ./data (sin base_path)"
+    print("[config] base_path de salida: %s   (origen: %s)" % (root, origen))
     wp = (st.get("working_path") or "working_path/{}/").format(cohort)
     prev = (root.rstrip("/") + "/" + wp.lstrip("/")).rstrip("/")
     src = {}
@@ -1645,7 +1691,7 @@ def main():
             if not demo and not args.skip_extract:
                 if _extract_sources(spark, [s], src_cfg, prev, cfg_dir, args.dry_run):
                     raise RuntimeError("no se extrajo/escribio el parquet de '%s' "
-                                       "(revisa el QUERY de arriba)" % s)
+                                       "(ver la causa raiz de arriba)" % s)
             if args.dry_run:
                 ok += 1
                 continue
@@ -1675,8 +1721,9 @@ def main():
                 out.show(5, truncate=False)
             ok += 1
         except Exception as e:
-            print("  ERROR:", type(e).__name__, "-", str(e)[:120])
-            print("  (revisa los '# TODO py2spark' de aggregates/%s.py)" % s)
+            print("  ERROR:", type(e).__name__, "-", str(e)[:200])
+            if "no se extrajo" not in str(e):
+                print("  (revisa los '# TODO py2spark' de aggregates/%s.py)" % s)
             fail += 1
     # --source <job> con settings del banco: tras bajar sus tablas, corre su aggregate.
     if job_agg and not args.extract_only:
@@ -1743,9 +1790,12 @@ bash run.sh --config pivot.json --env uat --cohort 202501 --source job_3
   una ruta **HDFS** (no el disco del servidor). Agrega al `pivot.json`:
   `"base_path": "/data/gcgaeapmxcgnu/managed/hive/gcgaeapmxcgnu_managed/"`
   (a nivel global o dentro de cada ambiente), o pasala por CLI con `--base-path`.
-  Prioridad: `--base-path` > `base_path` del ambiente > `base_path` global > `--root`
-  > `settings/jobs.json` (general_root) > `./data`.
-  La linea `previous_path: hdfs://...` confirma a donde se escribe.
+  Prioridad: `--base-path` > variable `BNX_BASE_PATH` > `base_path` del ambiente >
+  `base_path` global > `--root` > `settings/jobs.json` (base_path/general_root).
+  En HDFS, si no hay ninguna, el programa SE DETIENE con un mensaje (nunca escribe
+  en la carpeta del paquete del servidor).
+  Las lineas `[config] base_path de salida: ... (origen: ...)` y
+  `previous_path: hdfs://...` confirman de donde salio y a donde se escribe.
 - `--skip-extract`: reutiliza los parquets ya bajados.
 
 ## 3) IMPORTANTE: usar el metastore del CLUSTER
