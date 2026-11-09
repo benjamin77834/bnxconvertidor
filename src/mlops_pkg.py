@@ -803,6 +803,30 @@ fi
 # Modulos de path del banco (toolbox, bnmxverse, utils) que dejo setup.sh.
 if [ -d bank_pkg ]; then export PYTHONPATH="$PWD/bank_pkg:${PYTHONPATH:-}"; fi
 
+# Metastore del CLUSTER: el PySpark del venv es standalone y, sin hive-site.xml,
+# crea un metastore LOCAL vacio (las tablas del banco "no existen"). Si el nodo
+# tiene la config de Spark/Hive del cluster (Cloudera/edge node), la usamos.
+if [ -z "${SPARK_CONF_DIR:-}" ]; then
+  for d in /etc/spark/conf /etc/spark3/conf /etc/spark2/conf /opt/cloudera/parcels/CDH/lib/spark/conf; do
+    if [ -f "$d/hive-site.xml" ]; then export SPARK_CONF_DIR="$d"; break; fi
+  done
+  if [ -z "${SPARK_CONF_DIR:-}" ] && [ -f /etc/hive/conf/hive-site.xml ]; then
+    # Solo hay hive-site.xml de Hive: armamos un conf dir propio con el.
+    mkdir -p .bnx_tmp/spark_conf
+    cp /etc/hive/conf/hive-site.xml .bnx_tmp/spark_conf/
+    export SPARK_CONF_DIR="$PWD/.bnx_tmp/spark_conf"
+  fi
+fi
+if [ -z "${HADOOP_CONF_DIR:-}" ] && [ -d /etc/hadoop/conf ]; then
+  export HADOOP_CONF_DIR=/etc/hadoop/conf
+fi
+if [ -n "${SPARK_CONF_DIR:-}" ]; then
+  echo "[run.sh] SPARK_CONF_DIR=$SPARK_CONF_DIR (metastore del cluster)"
+else
+  echo "[run.sh] AVISO: no se encontro hive-site.xml; Spark usara un metastore LOCAL."
+  echo "         Para tablas del banco: export SPARK_CONF_DIR=<dir con hive-site.xml>"
+fi
+
 exec python main.py "$@"
 '''
 
@@ -1110,8 +1134,13 @@ def _preflight(spark, chk):
             dbs = [d.name for d in spark.catalog.listDatabases()]
         except Exception:
             dbs = []
-        hint = ("" if not dbs or chk["db"] in dbs else
-                " (la base '%s' NO existe en este metastore; revisa --env)" % chk["db"])
+        if dbs and set(dbs) <= {"default"}:
+            hint = (" (este Spark solo ve la base 'default': NO esta conectado al metastore "
+                    "del cluster; ver el AVISO [metastore] de arriba / SPARK_CONF_DIR)")
+        elif dbs and chk["db"] not in dbs:
+            hint = " (la base '%s' NO existe en este metastore; revisa --env)" % chk["db"]
+        else:
+            hint = ""
         return "la TABLA %s no existe%s" % (full, hint)
     try:
         reales = {c.lower() for c in spark.table(full).columns}
@@ -1272,8 +1301,34 @@ def _is_bank_settings(cfg):
         return True
     return any(isinstance(v, dict) and isinstance(v.get("tables_info"), dict)
                for v in cfg.values())
-def _bank_env(cfg, env):
-    """Devuelve (nombre_env, settings_del_env)."""
+def _metastore_info(spark):
+    """Diagnostico del catalogo: (catalogo, hive.metastore.uris, bases visibles).
+    Primero se listan las bases: eso inicializa el catalogo y carga hive-site.xml."""
+    try:
+        dbs = sorted(d.name for d in spark.catalog.listDatabases())
+    except Exception:
+        dbs = []
+    try:
+        impl = spark.conf.get("spark.sql.catalogImplementation", "in-memory")
+    except Exception:
+        impl = "?"
+    uris = ""
+    try:
+        uris = spark.sparkContext._jsc.hadoopConfiguration().get("hive.metastore.uris") or ""
+    except Exception:
+        pass
+    if not uris:
+        try:
+            uris = spark.conf.get("spark.hadoop.hive.metastore.uris", "") or ""
+        except Exception:
+            pass
+    return impl, uris, dbs
+def _env_dbs(st):
+    return {i["database"] for i in (st.get("tables_info") or {}).values()
+            if isinstance(i, dict) and i.get("database")}
+def _bank_env(cfg, env, spark=None):
+    """Devuelve (nombre_env, settings_del_env). Sin --env, elige el ambiente cuyas
+    bases EXISTEN en el metastore (en vez de adivinar 'uat')."""
     if isinstance(cfg.get("tables_info"), dict):
         return (env or "-"), cfg
     envs = [k for k, v in cfg.items() if isinstance(v, dict) and "tables_info" in v]
@@ -1281,8 +1336,17 @@ def _bank_env(cfg, env):
         if env not in envs:
             raise SystemExit("Ambiente '%s' no existe en el config. Opciones: %s" % (env, envs))
         return env, cfg[env]
+    if spark is not None:
+        impl, uris, dbs = _metastore_info(spark)
+        lower = {d.lower() for d in dbs}
+        cand = [e for e in envs if _env_dbs(cfg[e]) and
+                all(d.lower() in lower for d in _env_dbs(cfg[e]))]
+        if cand:
+            print("[config] --env no indicado; por las bases del metastore se usa '%s'" % cand[0])
+            return cand[0], cfg[cand[0]]
     elegido = "uat" if "uat" in envs else envs[0]
-    print("[config] ambiente no indicado (--env); se usa '%s'. Opciones: %s" % (elegido, envs))
+    print("[config] --env no indicado y ningun ambiente coincide con el metastore; "
+          "se usa '%s'. Opciones: %s" % (elegido, envs))
     return elegido, cfg[elegido]
 def _cohort_dates(cohort, lag):
     """Igual que el job del banco: vintage = cohort+'01';
@@ -1314,9 +1378,25 @@ def _bank_query(info, start, end):
             args_w = ([start, end] * n)[:n]
         q += " where " + where.format(*args_w)
     return q
-def _bank_sources(cfg, args, cfg_dir):
+def _bank_sources(cfg, args, cfg_dir, spark=None):
     """Convierte el settings del banco a (src_cfg, previous_path)."""
-    env, st = _bank_env(cfg, args.env)
+    if spark is not None:
+        impl, uris, dbs = _metastore_info(spark)
+        print("[metastore] catalogo=%s | hive.metastore.uris=%s | %d base(s) visibles"
+              % (impl, uris or "(vacio)", len(dbs)))
+        if impl != "hive" or (not uris and set(dbs) <= {"default"}):
+            print("[metastore] AVISO: esta SparkSession NO esta conectada al metastore del "
+                  "cluster (catalogo '%s', uris %s). El PySpark del venv es standalone: "
+                  "ve solo un metastore LOCAL vacio, por eso las tablas del banco 'no "
+                  "existen'. Soluciones: (a) correr con el Spark del cluster "
+                  "(spark-submit / pyspark del edge node), o (b) apuntar a su config: "
+                  "export SPARK_CONF_DIR=/etc/spark/conf  (o copiar hive-site.xml a "
+                  "$VIRTUAL_ENV/lib/python*/site-packages/pyspark/conf/) y/o "
+                  "en el cfg: 'spark': {'conf': {'hive.metastore.uris': 'thrift://host:9083'}}"
+                  % (impl, uris or "vacio"))
+        if dbs:
+            print("[metastore] bases visibles:", ", ".join(dbs[:25]) + (" ..." if len(dbs) > 25 else ""))
+    env, st = _bank_env(cfg, args.env, spark)
     cohort = args.cohort
     if not cohort:
         import datetime
@@ -1418,7 +1498,7 @@ def main():
         # Settings del banco (pivot.json/datapull.json): cada tabla de tables_info
         # se baja a parquet en <general_root>/<working_path>/<tabla>.
         base = None
-        src_cfg, prev = _bank_sources(cfg, args, cfg_dir)
+        src_cfg, prev = _bank_sources(cfg, args, cfg_dir, spark)
         os.makedirs(prev, exist_ok=True)
         print("previous_path:", prev)
     else:
