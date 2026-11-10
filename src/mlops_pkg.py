@@ -770,6 +770,83 @@ if [ -n "$PYSPARK_HOME" ]; then
   chmod -R +x "$PYSPARK_HOME/sbin" 2>/dev/null || true
 fi
 
+# ---------------------------------------------------------------------------
+# Config de Spark DENTRO del venv (queda fija al bajar/montar el paquete):
+#  - .venv/spark_conf = copia de la config del cluster (spark-defaults, hive-site,
+#    core/hdfs/yarn-site, spark-env) + los ajustes BNX al final.
+#  - el 'activate' del venv exporta SPARK_CONF_DIR/HADOOP_CONF_DIR y un tmp propio
+#    para Java (JAVA_TOOL_OPTIONS), asi CUALQUIER uso del venv (run.sh, python
+#    main.py, pyspark, spark-submit) ve el metastore/HDFS del cluster y no usa /tmp
+#    (noexec en servidores del banco: rompe zstd-jni/snappy nativos).
+# ---------------------------------------------------------------------------
+VENV_ABS="$(cd .venv && pwd)"
+PKG_ABS="$(pwd)"
+SPARK_VENV_CONF="$VENV_ABS/spark_conf"
+BNX_TMP_ABS="${BNX_TMPDIR:-$PKG_ABS/.bnx_tmp}"
+mkdir -p "$SPARK_VENV_CONF" "$BNX_TMP_ABS"
+CLUSTER_CONF=""
+for d in "${SPARK_CONF_DIR:-}" /etc/spark/conf /etc/spark3/conf /etc/spark2/conf /opt/cloudera/parcels/CDH/lib/spark/conf; do
+  if [ -n "$d" ] && [ -d "$d" ] && [ "$d" != "$SPARK_VENV_CONF" ] && \
+     { [ -f "$d/spark-defaults.conf" ] || [ -f "$d/hive-site.xml" ]; }; then
+    CLUSTER_CONF="$d"; break
+  fi
+done
+if [ -n "$CLUSTER_CONF" ]; then
+  echo "      Copiando config de Spark del cluster ($CLUSTER_CONF) a .venv/spark_conf ..."
+  cp -R "$CLUSTER_CONF"/. "$SPARK_VENV_CONF"/ 2>/dev/null || true
+  chmod -R u+w "$SPARK_VENV_CONF" 2>/dev/null || true
+  # spark-env.sh del cluster (CDH) mete los jars del cluster en el classpath: con el
+  # PySpark del venv choca. Se guarda aparte; spark-submit del cluster usa su conf.
+  if [ -f "$SPARK_VENV_CONF/spark-env.sh" ]; then
+    mv -f "$SPARK_VENV_CONF/spark-env.sh" "$SPARK_VENV_CONF/spark-env.sh.cluster"
+  fi
+else
+  echo "      (no se encontro config de Spark del cluster; .venv/spark_conf solo con ajustes BNX)"
+fi
+[ -f "$SPARK_VENV_CONF/hive-site.xml" ] || { [ -f /etc/hive/conf/hive-site.xml ] && cp /etc/hive/conf/hive-site.xml "$SPARK_VENV_CONF"/; } || true
+for x in core-site.xml hdfs-site.xml yarn-site.xml; do
+  [ -f "$SPARK_VENV_CONF/$x" ] || { [ -f "/etc/hadoop/conf/$x" ] && cp "/etc/hadoop/conf/$x" "$SPARK_VENV_CONF"/; } || true
+done
+# Ajustes BNX (se reescriben en cada setup; van AL FINAL para ganar).
+touch "$SPARK_VENV_CONF/spark-defaults.conf"
+sed -i.bak '/# >>> BNX/,/# <<< BNX/d' "$SPARK_VENV_CONF/spark-defaults.conf" 2>/dev/null || true
+rm -f "$SPARK_VENV_CONF/spark-defaults.conf.bak"
+cat >> "$SPARK_VENV_CONF/spark-defaults.conf" <<EOF_BNX
+# >>> BNX (framework_mlops_v2)
+# lz4 tiene fallback Java puro; zstd-jni nativo falla con /tmp noexec.
+spark.io.compression.codec                  lz4
+spark.shuffle.mapStatus.compression.codec   lz4
+spark.local.dir                             $BNX_TMP_ABS
+# <<< BNX
+EOF_BNX
+if [ -f "$SPARK_VENV_CONF/hive-site.xml" ]; then
+  echo "      hive-site.xml en .venv/spark_conf -> el venv ve el metastore del cluster."
+else
+  echo "      ⚠  sin hive-site.xml: el venv usara un metastore LOCAL (no vera tablas del banco)."
+  echo "         Copia el del cluster a $SPARK_VENV_CONF/ y vuelve a activar el venv."
+fi
+# Hook en el activate del venv (idempotente).
+ACT=".venv/bin/activate"
+sed -i.bak '/# >>> BNX env/,/# <<< BNX env/d' "$ACT" 2>/dev/null || true
+rm -f "$ACT.bak"
+cat >> "$ACT" <<EOF_ACT
+# >>> BNX env (framework_mlops_v2)
+export SPARK_CONF_DIR="$SPARK_VENV_CONF"
+export BNX_CLUSTER_SPARK_CONF="$CLUSTER_CONF"
+if [ -z "\\${HADOOP_CONF_DIR:-}" ] && [ -d /etc/hadoop/conf ]; then export HADOOP_CONF_DIR=/etc/hadoop/conf; fi
+export BNX_TMPDIR="$BNX_TMP_ABS"
+mkdir -p "\\$BNX_TMPDIR" 2>/dev/null || true
+export TMPDIR="\\$BNX_TMPDIR"
+case " \\${JAVA_TOOL_OPTIONS:-} " in
+  *"-Djava.io.tmpdir="*) ;;
+  *) export JAVA_TOOL_OPTIONS="-Djava.io.tmpdir=\\$BNX_TMPDIR -Dorg.xerial.snappy.tempdir=\\$BNX_TMPDIR -Djna.tmpdir=\\$BNX_TMPDIR \\${JAVA_TOOL_OPTIONS:-}" ;;
+esac
+export BNX_IO_CODEC="\\${BNX_IO_CODEC:-lz4}"
+# <<< BNX env
+EOF_ACT
+echo "      Entorno virtual configurado: SPARK_CONF_DIR=.venv/spark_conf, tmp=$BNX_TMP_ABS"
+. "$ACT"
+
 echo "[3/4] Verificando dependencias (check_env.py) ..."
 # Avisa si falta alguna libreria que el codigo importa (no aborta el montaje).
 python check_env.py || echo "  ⚠️  Faltan librerias (ver arriba). Instalalas antes de produccion."
@@ -854,6 +931,12 @@ if [ -n "$CLUSTER_SUBMIT" ]; then
   export TMPDIR="$BNX_TMP"
   JOPTS="-Djava.io.tmpdir=$BNX_TMP -Dorg.xerial.snappy.tempdir=$BNX_TMP -Djna.tmpdir=$BNX_TMP"
   echo "[run.sh] tmp de la JVM: $BNX_TMP (no /tmp)"
+  # spark-submit del CLUSTER con SU config (spark-env.sh/yarn-conf); los ajustes
+  # BNX (lz4, tmp) van por --conf / --driver-java-options.
+  if [ -n "${BNX_CLUSTER_SPARK_CONF:-}" ]; then
+    export SPARK_CONF_DIR="$BNX_CLUSTER_SPARK_CONF"
+    echo "[run.sh] SPARK_CONF_DIR del cluster: $SPARK_CONF_DIR"
+  fi
   exec "$CLUSTER_SUBMIT" --master "${BNX_MASTER:-yarn}" --deploy-mode client \\
     --driver-java-options "$JOPTS" \\
     --conf spark.io.compression.codec="${BNX_IO_CODEC:-lz4}" \\
@@ -1786,6 +1869,18 @@ bash setup.sh            # crea .venv e instala todo (offline si viene vendor/)
 bash setup.sh --test     # (opcional) ademas corre pytest
 ```
 `run.sh` NO instala nada: solo corre el modelo con el entorno ya montado.
+
+`setup.sh` deja el **entorno virtual ya configurado para el cluster** (no depende
+de run.sh): al activar `.venv` (`. .venv/bin/activate`) quedan listos
+- `SPARK_CONF_DIR=.venv/spark_conf`: copia de la config de Spark del cluster
+  (spark-defaults, hive-site.xml, core/hdfs/yarn-site) + ajustes BNX al final
+  (`lz4` para shuffle/mapStatus, `spark.local.dir` propio);
+- `JAVA_TOOL_OPTIONS` con `-Djava.io.tmpdir=./.bnx_tmp` (no `/tmp`, que suele ser noexec);
+- `TMPDIR=./.bnx_tmp`.
+Asi `python main.py`, `pyspark` o `spark-submit` desde el venv ya ven el
+metastore/HDFS del cluster y no fallan con zstd/snappy nativos. Si el
+`hive-site.xml` del cluster esta en otra ruta: `SPARK_CONF_DIR=/ruta bash setup.sh`.
+(Es normal ver "Picked up JAVA_TOOL_OPTIONS: ..." al arrancar Java.)
 
 ## 2) Correr con los settings del banco (pivot.json / datapull.json)
 Los JSON de `bin/settings/<modelo>/` se leen tal cual (ambientes prod/uat/sbx con
