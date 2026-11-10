@@ -434,7 +434,9 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                       {r.ok ? '✅' : '⚠️'} <b>{r.source || r.name}</b>
                       <span style={{ color: t.muted || '#94a3b8' }}> ← {r.name}</span>
                       {r.file && <span style={{ color: t.dim || '#64748b' }}> · {r.file}</span>}
-                      {r.ok
+                      {r.ok && r.verbatim
+                        ? <span style={{ color: '#38bdf8' }}> · ya era PySpark: copiado completo, sin conversión</span>
+                        : r.ok
                         ? ((r.todos || []).length
                           ? <span style={{ color: '#f59e0b' }}> · {r.todos.length} línea(s) a revisar</span>
                           : <span style={{ color: '#22c55e' }}> · conversión limpia</span>)

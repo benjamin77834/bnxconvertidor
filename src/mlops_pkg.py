@@ -2336,7 +2336,38 @@ def _hoist_module_imports(code):
     return "\n".join(imports), "\n".join(rest)
 
 
-def _aggregate_from_pyspark(source, pyspark_code, original_pandas):
+def _is_pyspark_source(code):
+    """True si el archivo YA es PySpark (importa pyspark). Esos archivos (p.ej. los
+    job.py del framework del banco) NO deben pasar por el conversor pandas->PySpark:
+    reescribe el codigo (pierde comentarios/formato, mete 'pass' en docstrings) y,
+    con librerias ML (xgboost), sustituye logica por un esqueleto MLlib."""
+    return _re.search(r"^\s*(from\s+pyspark[\w.]*\s+import|import\s+pyspark)",
+                      code or "", _re.M) is not None
+
+
+def _hoist_imports_ast(code):
+    """Como _hoist_module_imports pero con el AST: sube los imports de NIVEL
+    SUPERIOR completos (incluye imports de varias lineas con parentesis o '\\')
+    sin tocar el resto del texto (comentarios y formato intactos)."""
+    import ast as _ast
+    try:
+        tree = _ast.parse(code)
+    except SyntaxError:
+        return _hoist_module_imports(code)
+    lines = code.split("\n")
+    drop, imports = set(), []
+    for node in tree.body:
+        if isinstance(node, (_ast.Import, _ast.ImportFrom)):
+            end = getattr(node, "end_lineno", node.lineno)
+            txt = "\n".join(lines[node.lineno - 1:end]).strip()
+            if txt not in imports:
+                imports.append(txt)
+            drop.update(range(node.lineno - 1, end))
+    rest = [ln for i, ln in enumerate(lines) if i not in drop]
+    return "\n".join(imports), "\n".join(rest)
+
+
+def _aggregate_from_pyspark(source, pyspark_code, original_pandas, verbatim=False):
     """Envuelve PySpark convertido en el contrato del framework v2.
 
     El codigo convertido se coloca en `_aggregate_df(self, df)`. El df de entrada
@@ -2351,7 +2382,7 @@ def _aggregate_from_pyspark(source, pyspark_code, original_pandas):
     # Subir los imports al nivel de MODULO. Imprescindible para 'from X import *'
     # (Python prohibe import * dentro de metodos -> SyntaxError). Tambien deja el
     # metodo mas limpio.
-    hoisted, body = _hoist_module_imports(body)
+    hoisted, body = (_hoist_imports_ast(body) if verbatim else _hoist_module_imports(body))
     # Neutralizar imports de modulos que NO estaran (modeling_tools, etc.): el
     # archivo debe importar sin romper (try/except ImportError).
     hoisted = _neutralize_missing_imports(hoisted)
@@ -2361,6 +2392,15 @@ def _aggregate_from_pyspark(source, pyspark_code, original_pandas):
     has_out = _re.search(r"\bdf_out\b", body) is not None
     tail = "" if has_out else "\n# BNX: no se detecto 'df_out'; se devuelve el df de entrada.\ndf_out = df"
     extra_imports = ("\n" + hoisted + "\n") if hoisted.strip() else "\n"
+    if verbatim:
+        footer = ("# --- BNX: el archivo original YA era PySpark; arriba va COMPLETO y sin\n"
+                  "# conversion (comentarios, formato y logica intactos). Solo se subieron\n"
+                  "# los imports al nivel de modulo y se indento dentro de _aggregate_df.")
+    else:
+        footer = ("# --- Codigo de negocio ORIGINAL (pandas), como referencia ---\n"
+                  "# Se guarda COMENTADO (no como string literal) para que un docstring con triple\n"
+                  "# comilla o comillas internas en el original no rompa la sintaxis de este archivo.\n"
+                  + _as_comment_block(original_pandas))
     return f'''# framework_mlops_v2/aggregates/{source}.py
 """Fuente '{source}': generada por BNX desde el Python del negocio.
 Convertida a PySpark y envuelta en el contrato del framework v2.
@@ -2379,10 +2419,7 @@ class {cls}(BaseAggregate):
         return df_out
 
 
-# --- Codigo de negocio ORIGINAL (pandas), como referencia ---
-# Se guarda COMENTADO (no como string literal) para que un docstring con triple
-# comilla o comillas internas en el original no rompa la sintaxis de este archivo.
-{_as_comment_block(original_pandas)}
+{footer}
 '''
 
 
@@ -2932,7 +2969,13 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
             src = f"{base}_{n}"
         seen.add(src)
 
-        conv = convert_fn(pandas_code)
+        verbatim = _is_pyspark_source(pandas_code)
+        if verbatim:
+            # Ya es PySpark: se copia TAL CUAL (comentarios, formato y logica
+            # completos). Sin conversor ni optimizador, que lo reescribirian.
+            conv = {"ok": True, "code": pandas_code, "warnings": [], "unsupported": []}
+        else:
+            conv = convert_fn(pandas_code)
         if not conv or conv.get("ok") is False:
             reason = (conv or {}).get("unsupported", ["no es Python valido"])
             report.append({"name": raw_name, "source": src, "ok": False,
@@ -2944,7 +2987,7 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
             pyspark_code = conv.get("code", "")
             warnings = conv.get("warnings", []) or []
             unsupported = conv.get("unsupported", []) or []
-            if optimize and optimize_fn:
+            if optimize and optimize_fn and not verbatim:
                 try:
                     opt = optimize_fn(pyspark_code)
                     if opt and opt.get("code"):
@@ -2952,11 +2995,12 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
                 except Exception:
                     pass
             report.append({"name": raw_name, "source": src, "ok": True,
-                           "warnings": len(warnings), "unsupported": len(unsupported)})
+                           "warnings": len(warnings), "unsupported": len(unsupported),
+                           "verbatim": verbatim})
 
         gen_sources.append(src)
         rel_path = f"framework_mlops_v2/aggregates/{src}.py"
-        agg_code = _aggregate_from_pyspark(src, pyspark_code, pandas_code)
+        agg_code = _aggregate_from_pyspark(src, pyspark_code, pandas_code, verbatim=verbatim)
         files[rel_path] = agg_code
         # Extraer los TODO (lineas no traducibles) CON su numero de linea en el
         # ARCHIVO generado (donde el usuario los abrira), para el reporte.
