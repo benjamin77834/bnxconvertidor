@@ -543,6 +543,54 @@ def _detect_bank_imports(source_codes):
     return sorted(found.keys())
 
 
+# Open source que el codigo del banco importa y que NO esta en el core de
+# requirements.txt: modulo importado -> paquete pip.
+_EXTRA_PIP = {
+    "cytoolz": "cytoolz", "toolz": "toolz", "unidecode": "Unidecode",
+    "cloudpickle": "cloudpickle", "joblib": "joblib", "dateutil": "python-dateutil",
+    "pytz": "pytz", "six": "six", "sklearn": "scikit-learn", "xgboost": "xgboost",
+    "lightgbm": "lightgbm", "scipy": "scipy", "statsmodels": "statsmodels",
+    "matplotlib": "matplotlib", "seaborn": "seaborn", "yaml": "PyYAML",
+    "openpyxl": "openpyxl", "xlrd": "xlrd", "pyarrow": "pyarrow", "requests": "requests",
+    "tqdm": "tqdm", "dill": "dill",
+}
+# Dependencias de una lib (para instalar offline sin --no-deps fallido).
+_EXTRA_DEPS = {"cytoolz": ["toolz"]}
+
+
+def _detect_extra_imports(source_codes):
+    """Paquetes pip open source que importa el codigo (fuera del core)."""
+    mods = set()
+    for code in source_codes or []:
+        try:
+            tree = _ast_mod.parse(code or "")
+        except Exception:
+            continue
+        for node in _ast_mod.walk(tree):
+            if isinstance(node, _ast_mod.Import):
+                for a in node.names:
+                    mods.add(a.name.split(".")[0])
+            elif isinstance(node, _ast_mod.ImportFrom) and not node.level and node.module:
+                mods.add(node.module.split(".")[0])
+    pkgs = []
+    for m in sorted(mods):
+        if m in _EXTRA_PIP:
+            for dep in _EXTRA_DEPS.get(m, []) + [m]:
+                name = _EXTRA_PIP.get(dep, dep)
+                if name not in pkgs:
+                    pkgs.append(name)
+    return pkgs
+
+
+def _requirements_extra(pkgs):
+    lines = [
+        "# Librerias OPEN SOURCE que importa tu codigo (fuera del core).",
+        "# setup.sh las instala UNA POR UNA: offline desde vendor/ y vendor/bank/;",
+        "# si no estan, por internet. Si alguna falla, no detiene las demas.",
+    ]
+    return "\n".join(lines + list(pkgs)) + "\n"
+
+
 def _requirements(include_bank_libs, extra_steps=False, bank_libs=None):
     base = [
         "# Framework MLOps v2 — dependencias",
@@ -679,7 +727,7 @@ addopts = -p no:cacheprovider
 '''
 
 _SETUP_SH = '''#!/usr/bin/env bash
-# setup.sh — MONTA el entorno (una sola vez): crea .venv e instala todo.
+# setup.sh - MONTA el entorno (una sola vez): crea .venv e instala todo.
 # Si el paquete trae vendor/ (ambiente completo) monta TODO OFFLINE, sin internet.
 # NO corre el modelo: para eso usa  bash run.sh
 # Uso:  bash setup.sh            (monta el entorno)
@@ -735,6 +783,22 @@ else
   python -m pip install -e .
 fi
 
+# Librerias OPEN SOURCE extra que importa el codigo (cytoolz, unidecode, ...).
+# Una por una: offline desde vendor/ y vendor/bank/; si no, por internet.
+if [ -f requirements-extra.txt ]; then
+  echo "      Instalando librerias open source extra (requirements-extra.txt) ..."
+  EXTRA_LINKS="$BANK_LINKS"
+  if [ -n "$VENDOR_DIR" ]; then EXTRA_LINKS="--find-links $VENDOR_DIR $EXTRA_LINKS"; fi
+  grep -v '^[[:space:]]*#' requirements-extra.txt | grep -v '^[[:space:]]*$' | while read -r PKG; do
+    if [ -n "$EXTRA_LINKS" ] && python -m pip install --no-index $EXTRA_LINKS "$PKG" >/dev/null 2>&1; then
+      echo "        OK (offline) $PKG"
+    elif python -m pip install $BANK_LINKS "$PKG" >/dev/null 2>&1; then
+      echo "        OK (internet) $PKG"
+    else
+      echo "        [!]  No se pudo instalar $PKG (sin wheel para esta version de Python y sin internet)."
+    fi
+  done
+fi
 # Librerias INTERNAS del banco (si las hay). Preferimos OFFLINE desde vendor/bank/
 # (sdist empaquetados); si no estan, caemos al Artifactory privado. El codigo de
 # path (toolbox/bnmxverse/utils) se copia a ./bank_pkg y se expone via PYTHONPATH.
@@ -743,13 +807,13 @@ if [ -f requirements-bank.txt ]; then
     echo "      Instalando librerias internas del banco OFFLINE desde vendor/bank/ ..."
     python -m pip install --no-index --find-links vendor/bank -r requirements-bank.txt || \
       python -m pip install --no-index --find-links vendor/bank vendor/bank/*.tar.gz || \
-      echo "      ⚠️  Fallo la instalacion offline de libs del banco. Revisa vendor/bank/."
+      echo "      [!]  Fallo la instalacion offline de libs del banco. Revisa vendor/bank/."
   else
     echo "      Instalando librerias internas del banco (Artifactory privado) ..."
     # Descomenta y apunta a tu Artifactory si hace falta un indice explicito:
     # python -m pip install -r requirements-bank.txt --index-url https://<artifactory-interno>/simple
     python -m pip install -r requirements-bank.txt || \
-      echo "      ⚠️  No se pudieron instalar las libs del banco (sin acceso al Artifactory)."
+      echo "      [!]  No se pudieron instalar las libs del banco (sin acceso al Artifactory)."
   fi
 fi
 # Modulos de path del banco (toolbox, bnmxverse, utils): no son pip, van en PYTHONPATH.
@@ -822,7 +886,7 @@ EOF_BNX
 if [ -f "$SPARK_VENV_CONF/hive-site.xml" ]; then
   echo "      hive-site.xml en .venv/spark_conf -> el venv ve el metastore del cluster."
 else
-  echo "      ⚠  sin hive-site.xml: el venv usara un metastore LOCAL (no vera tablas del banco)."
+  echo "      [!]  sin hive-site.xml: el venv usara un metastore LOCAL (no vera tablas del banco)."
   echo "         Copia el del cluster a $SPARK_VENV_CONF/ y vuelve a activar el venv."
 fi
 # Hook en el activate del venv (idempotente).
@@ -849,7 +913,7 @@ echo "      Entorno virtual configurado: SPARK_CONF_DIR=.venv/spark_conf, tmp=$B
 
 echo "[3/4] Verificando dependencias (check_env.py) ..."
 # Avisa si falta alguna libreria que el codigo importa (no aborta el montaje).
-python check_env.py || echo "  ⚠️  Faltan librerias (ver arriba). Instalalas antes de produccion."
+python check_env.py || echo "  [!]  Faltan librerias (ver arriba). Instalalas antes de produccion."
 
 if [ "${1:-}" = "--test" ]; then
   echo "[4/4] Ejecutando pruebas (pytest) ..."
@@ -859,20 +923,20 @@ else
 fi
 
 echo ""
-echo "✅ Entorno listo. Para correr el modelo:  bash run.sh"
+echo "[OK] Entorno listo. Para correr el modelo:  bash run.sh"
 echo "   Datos reales:  bash run.sh --config cfg.json"
 '''
 
 # run.sh — SOLO ejecuta el modelo (main.py) en el entorno ya montado por setup.sh.
 _RUN_SH = '''#!/usr/bin/env bash
-# run.sh — corre el modelo (main.py) con el entorno de setup.sh. No instala nada.
+# run.sh - corre el modelo (main.py) con el entorno de setup.sh. No instala nada.
 # Uso:  bash run.sh                      (modo demo, datos sinteticos)
 #       bash run.sh --config cfg.json    (datos reales)
 set -e
 cd "$(dirname "$0")"
 
 if [ ! -f .venv/bin/activate ]; then
-  echo "❌ No existe .venv. Monta el entorno primero:  bash setup.sh" >&2
+  echo "[ERROR] No existe .venv. Monta el entorno primero:  bash setup.sh" >&2
   exit 1
 fi
 # Spark del CLUSTER (opcional): BNX_SPARK=cluster bash run.sh ...
@@ -883,7 +947,7 @@ CLUSTER_SUBMIT=""
 if [ "${BNX_SPARK:-}" = "cluster" ]; then
   CLUSTER_SUBMIT="${BNX_SPARK_SUBMIT:-$(command -v spark3-submit || command -v spark-submit || true)}"
   if [ -z "$CLUSTER_SUBMIT" ]; then
-    echo "❌ BNX_SPARK=cluster pero no hay spark-submit del cluster en el PATH." >&2
+    echo "[ERROR] BNX_SPARK=cluster pero no hay spark-submit del cluster en el PATH." >&2
     echo "   Indica la ruta: BNX_SPARK_SUBMIT=/ruta/spark-submit BNX_SPARK=cluster bash run.sh ..." >&2
     exit 1
   fi
@@ -948,11 +1012,11 @@ exec python main.py "$@"
 
 # run.sh del paquete de monitoreo (sin main.py): corre sus pruebas.
 _RUN_SH_METRICS = '''#!/usr/bin/env bash
-# run.sh — corre las pruebas del monitoreo en el entorno montado por setup.sh.
+# run.sh - corre las pruebas del monitoreo en el entorno montado por setup.sh.
 set -e
 cd "$(dirname "$0")"
 if [ ! -f .venv/bin/activate ]; then
-  echo "❌ No existe .venv. Monta el entorno primero:  bash setup.sh" >&2
+  echo "[ERROR] No existe .venv. Monta el entorno primero:  bash setup.sh" >&2
   exit 1
 fi
 . .venv/bin/activate
@@ -2066,7 +2130,7 @@ def disponibles():
 # puede correr a mano:  python check_env.py
 _CHECK_ENV = '''#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""check_env.py — Verificador de dependencias del Framework MLOps v2.
+"""check_env.py - Verificador de dependencias del Framework MLOps v2.
 
 Escanea TODOS los imports de primer nivel del codigo del paquete
 (framework_mlops_v2/, main.py) y comprueba que cada modulo se pueda importar en
@@ -2082,6 +2146,12 @@ import ast
 import importlib.util
 import os
 import sys
+# Modulos de PYTHONPATH del banco (toolbox, bnmxverse, utils): main.py los agrega
+# al path desde ./bank_pkg; aqui igual, para no reportarlos como faltantes.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for _cand in (os.path.join(_HERE, "bank_pkg"), os.path.join(_HERE, "vendor", "bank", "pkgcode"), _HERE):
+    if os.path.isdir(_cand) and _cand not in sys.path:
+        sys.path.insert(0, _cand)
 
 # Modulos del stack open source que el framework usa (deben estar instalados).
 _STACK = {
@@ -3039,6 +3109,11 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     files["requirements.txt"] = _requirements(include_bank_libs, extra_steps, bank_libs)
     if bank_libs:
         files["requirements-bank.txt"] = _requirements_bank(bank_libs)
+    extra_pkgs = _detect_extra_imports(original_codes)
+    if extra_steps:
+        extra_pkgs = [p for p in extra_pkgs if p not in ("xgboost", "scikit-learn")]
+    if extra_pkgs:
+        files["requirements-extra.txt"] = _requirements_extra(extra_pkgs)
     # 'mex_lib_cs' es una fachada que escribimos nosotros: va EMBEBIDA en la raiz
     # del paquete (ligero, completo y rebuild), sin depender del cache del server.
     if "mex_lib_cs" in (bank_libs or []):
