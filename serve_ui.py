@@ -385,6 +385,13 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             return "".join(c if (c.isalnum() or c in "-_.") else "_" for c in str(name)).strip("_") or "item"
 
         try:
+            # ---- Sincronizacion S3 <-> local bajo demanda (boton en Grafos) ----
+            if action == "sync":
+                self._json_response(200, _library_sync_now(trigger="manual"))
+                return
+            if action == "sync_status":
+                self._json_response(200, dict(_LIBRARY_SYNC_LAST))
+                return
             # ---- Contrato GraphLibrary.jsx (grafos planos) ----
             if action == "list":
                 graphs = []
@@ -4164,7 +4171,7 @@ def _s3_delete_library_file(rel_path):
     return ok
 
 
-def _sync_library_from_s3():
+def _sync_library_from_s3(force=False):
     """Sincroniza la biblioteca de grafos desde S3 (DataLab) a ./bnx_library/.
 
     Los grafos NO viajan por git (bnx_library/ esta en .gitignore); viven en
@@ -4176,7 +4183,7 @@ def _sync_library_from_s3():
     (el server sigue funcionando con los grafos que ya haya en disco).
     Se puede desactivar con BNX_SKIP_LIBRARY_SYNC=1.
     """
-    if os.environ.get("BNX_SKIP_LIBRARY_SYNC") == "1":
+    if os.environ.get("BNX_SKIP_LIBRARY_SYNC") == "1" and not force:
         return
     dest = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bnx_library")
     os.makedirs(dest, exist_ok=True)
@@ -4201,6 +4208,19 @@ def _sync_library_from_s3():
                 print("[*] Biblioteca de grafos al dia.")
                 return
             msg = (proc.stderr or "").strip().splitlines()
+            # 'aws s3 sync' SIGUE con el resto de archivos y solo marca error al
+            # final. Si los unicos errores son conflictos objeto-vs-carpeta (p.ej.
+            # un marcador de carpeta de 0 bytes en S3 sin '/' final, que choca con
+            # la carpeta local del mismo nombre), lo demas SI se bajo: no es fallo.
+            errs = [m for m in msg if m.strip()]
+            conflictos = [m for m in errs if "Is a directory" in m or "Not a directory" in m]
+            if errs and len(conflictos) == len(errs):
+                print("[*] Biblioteca de grafos al dia "
+                      f"({len(conflictos)} objeto(s) de S3 omitidos por chocar con una carpeta local).")
+                for m in conflictos[:5]:
+                    k = m.split(" to ")[0].replace("download failed: ", "").strip()
+                    print(f"    - omitido: {k}  (marcador de carpeta vacio en S3; se puede borrar)")
+                return
             print(f"[i] aws cli fallo ({msg[-1] if msg else 'error'}), intento con boto3...")
         except subprocess.TimeoutExpired:
             print("[i] aws cli timeout, intento con boto3...")
@@ -4231,6 +4251,8 @@ def _sync_library_from_s3():
                 if not rel or rel.endswith("/") or rel.startswith("Repo_Git/"):
                     continue
                 local_path = os.path.join(dest, *rel.split("/"))
+                if os.path.isdir(local_path):
+                    continue  # marcador de carpeta en S3 que choca con una carpeta local
                 # Descargar solo si falta o cambio de tamano (sync incremental simple).
                 if os.path.exists(local_path) and os.path.getsize(local_path) == obj.get("Size", -1):
                     continue
@@ -4243,7 +4265,7 @@ def _sync_library_from_s3():
               "El server sigue con los grafos que ya haya en disco.")
 
 
-def _push_library_to_s3():
+def _push_library_to_s3(force=False):
     """Sube a S3 los grafos que estan en LOCAL (./bnx_library/) y faltan o
     cambiaron en el bucket. Complementa al sync de descarga: sin esto, los
     grafos que ya existian en disco ANTES de activar S3 nunca llegaban al bucket
@@ -4252,7 +4274,7 @@ def _push_library_to_s3():
     Best-effort (AWS CLI primero, luego boto3). Se puede desactivar con
     BNX_SKIP_LIBRARY_PUSH=1. Excluye _flat/ no: _flat SI se sube (son grafos
     planos). Excluye Repo_Git/ y .DS_Store."""
-    if os.environ.get("BNX_SKIP_LIBRARY_PUSH") == "1":
+    if os.environ.get("BNX_SKIP_LIBRARY_PUSH") == "1" and not force:
         return
     src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bnx_library")
     if not os.path.isdir(src):
@@ -4318,6 +4340,74 @@ def _push_library_to_s3():
         print(f"[i] Push biblioteca omitido (boto3): {e}.")
 
 
+import threading as _lib_threading
+_LIBRARY_SYNC_LOCK = _lib_threading.Lock()
+_LIBRARY_SYNC_LAST = {"when": None, "ok": None, "log": [], "trigger": None}
+
+
+def _library_sync_now(trigger="manual"):
+    """Sincroniza la biblioteca S3 <-> local AHORA (baja y sube) y devuelve un
+    diagnostico {ok, log, local_files, when}. Captura los mensajes de las
+    funciones de sync para mostrarlos en la UI (antes solo iban a la consola y,
+    si fallaba, nadie se enteraba)."""
+    import contextlib, io as _io, time as _time
+    if not _LIBRARY_SYNC_LOCK.acquire(blocking=False):
+        return {"ok": False, "busy": True, "log": ["Ya hay una sincronizacion en curso."]}
+    try:
+        buf = _io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            profile, bucket, prefix = _library_s3_config()
+            print(f"[*] Destino: s3://{bucket}/{prefix} (perfil AWS '{profile}')")
+            try:
+                _sync_library_from_s3(force=True)
+            except Exception as e:
+                print(f"[i] descarga fallo: {type(e).__name__}: {e}")
+            try:
+                _push_library_to_s3(force=True)
+            except Exception as e:
+                print(f"[i] subida fallo: {type(e).__name__}: {e}")
+        log = [ln for ln in buf.getvalue().splitlines() if ln.strip()]
+        for ln in log:
+            print(ln)   # tambien a la consola del server
+        # OK si AMBAS direcciones terminaron (aunque la CLI fallara y boto3 lo resolviera).
+        ok = any(("al dia" in ln) for ln in log) and any(("subida a S3" in ln) for ln in log)
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bnx_library")
+        n = 0
+        for rd, _d, fs in os.walk(root):
+            if "Repo_Git" in rd or "__pycache__" in rd:
+                continue
+            n += sum(1 for f in fs if f != ".DS_Store")
+        if not ok:
+            log.append("[?] Revisa en esta maquina: 'aws --version', el perfil '%s' en ~/.aws "
+                       "(o variables AWS_*), y que la red permita llegar a S3. Variables: "
+                       "BNX_AWS_PROFILE / BNX_S3_BUCKET / BNX_S3_PREFIX." % profile)
+        res = {"ok": ok, "log": log, "local_files": n,
+               "when": _time.strftime("%Y-%m-%d %H:%M:%S"), "trigger": trigger}
+        _LIBRARY_SYNC_LAST.update(res)
+        return res
+    finally:
+        _LIBRARY_SYNC_LOCK.release()
+
+
+def _library_periodic_sync():
+    """Sincroniza cada BNX_LIBRARY_SYNC_EVERY minutos (default 10; 0 = apagado).
+    Antes solo se sincronizaba al ARRANCAR: lo que otra maquina guardaba despues
+    no llegaba hasta reiniciar el server."""
+    import time as _time
+    try:
+        every = float(os.environ.get("BNX_LIBRARY_SYNC_EVERY", "10"))
+    except ValueError:
+        every = 10.0
+    if every <= 0 or os.environ.get("BNX_SKIP_LIBRARY_SYNC") == "1":
+        return
+    while True:
+        _time.sleep(every * 60)
+        try:
+            _library_sync_now(trigger="periodico")
+        except Exception as e:
+            print(f"[i] sync periodico fallo: {e}")
+
+
 def _git_version():
     """Devuelve el commit de git actual (corto + fecha) para saber que version
     del codigo esta corriendo el server. Asi, tras un 'git pull', se ve de un
@@ -4362,6 +4452,7 @@ if __name__ == "__main__":
         _sync_library_from_s3()   # S3 -> local (descarga incremental)
         _push_library_to_s3()     # local -> S3 (subida incremental)
     _threading.Thread(target=_library_bidirectional_sync, daemon=True).start()
+    _threading.Thread(target=_library_periodic_sync, daemon=True).start()
 
     import socket as _socket
 

@@ -22,7 +22,23 @@ export default function GrafosPage({ theme, onLoadToCompiler }) {
 
   const card = { background: t.card || '#1e2433', border: `1px solid ${t.border || '#334155'}`, borderRadius: 10, padding: 16 }
 
+  const [syncing, setSyncing] = useState(false)
+  const [syncResult, setSyncResult] = useState(null)
   useEffect(() => { fetchProjects() }, [])
+  // Sincroniza la biblioteca con S3 bajo demanda (baja + sube) y muestra el
+  // resultado o el motivo del fallo (antes solo ocurria al arrancar el server).
+  const syncLibrary = async () => {
+    setSyncing(true)
+    try {
+      const form = new FormData(); form.append('action', 'sync')
+      const res = await fetch(LIBRARY_URL, { method: 'POST', body: form })
+      const data = await res.json()
+      setSyncResult(data)
+      if (data.ok) await fetchProjects()
+    } catch (e) {
+      setSyncResult({ ok: false, log: ['No se pudo contactar al servidor: ' + e.message] })
+    } finally { setSyncing(false) }
+  }
 
   const fetchProjects = async () => {
     setLoading(true)
@@ -290,10 +306,39 @@ export default function GrafosPage({ theme, onLoadToCompiler }) {
           </div>
         </div>
       )}
-      <div>
-        <h2 style={{ fontSize: 22, fontWeight: 700, color: t.text || '#e2e8f0', margin: 0 }}>Proyectos de Grafos</h2>
-        <p style={{ fontSize: 13, color: t.dim || '#64748b', marginTop: 4 }}>Selecciona archivos (.mp, .xfr, .pset, .plan, .cbl, .alg) y compila desde aqui</p>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+        <div>
+          <h2 style={{ fontSize: 22, fontWeight: 700, color: t.text || '#e2e8f0', margin: 0 }}>Proyectos de Grafos</h2>
+          <p style={{ fontSize: 13, color: t.dim || '#64748b', marginTop: 4 }}>Selecciona archivos (.mp, .xfr, .pset, .plan, .cbl, .alg) y compila desde aqui</p>
+        </div>
+        <button
+          onClick={syncLibrary}
+          disabled={syncing}
+          aria-label="Sincronizar grafos con S3"
+          title="Baja de S3 los grafos de otras máquinas y sube los de esta"
+          style={{ padding: '7px 14px', borderRadius: 8, border: `1px solid ${t.border || '#334155'}`,
+                   background: syncing ? '#334155' : '#0e7490', color: '#fff', fontSize: 12.5,
+                   fontWeight: 600, cursor: syncing ? 'wait' : 'pointer', whiteSpace: 'nowrap' }}>
+          {syncing ? 'Sincronizando…' : '🔄 Sincronizar'}
+        </button>
       </div>
+      {syncResult && (
+        <div role="status" style={{ ...card, padding: 10, borderColor: syncResult.ok ? '#15803d' : '#b45309' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <b style={{ fontSize: 12.5, color: syncResult.ok ? '#22c55e' : '#f59e0b' }}>
+              {syncResult.ok
+                ? `Grafos sincronizados (${syncResult.local_files ?? '?'} archivos en esta máquina)`
+                : 'No se pudo sincronizar con S3'}
+              {syncResult.when ? ` · ${syncResult.when}` : ''}
+            </b>
+            <button onClick={() => setSyncResult(null)} aria-label="Cerrar resultado de sincronización"
+              style={{ background: 'none', border: 'none', color: t.muted || '#94a3b8', cursor: 'pointer' }}>✕</button>
+          </div>
+          <pre style={{ margin: '6px 0 0', fontSize: 11, whiteSpace: 'pre-wrap', color: t.muted || '#94a3b8', maxHeight: 160, overflowY: 'auto' }}>
+            {(syncResult.log || []).join('\n')}
+          </pre>
+        </div>
+      )}
 
       <div style={{ display: 'flex', gap: 20, flex: 1, minHeight: 0 }}>
         {/* Col 1: Proyectos */}
