@@ -845,7 +845,20 @@ if [ -n "$CLUSTER_SUBMIT" ]; then
   export PYSPARK_PYTHON="$PWD/.venv/bin/python"
   export PYSPARK_DRIVER_PYTHON="$PWD/.venv/bin/python"
   export BNX_CLUSTER_SPARK=1
-  exec "$CLUSTER_SUBMIT" --master "${BNX_MASTER:-yarn}" --deploy-mode client main.py "$@"
+  # /tmp del servidor suele estar 'noexec': las librerias nativas que Java extrae
+  # ahi (zstd-jni, snappy) fallan con "failed to map segment from shared object".
+  # Le damos a la JVM del driver un tmp propio y usamos lz4 (tiene fallback Java
+  # puro) para la compresion interna de Spark en vez de zstd.
+  BNX_TMP="${BNX_TMPDIR:-$PWD/.bnx_tmp}"
+  mkdir -p "$BNX_TMP"
+  export TMPDIR="$BNX_TMP"
+  JOPTS="-Djava.io.tmpdir=$BNX_TMP -Dorg.xerial.snappy.tempdir=$BNX_TMP -Djna.tmpdir=$BNX_TMP"
+  echo "[run.sh] tmp de la JVM: $BNX_TMP (no /tmp)"
+  exec "$CLUSTER_SUBMIT" --master "${BNX_MASTER:-yarn}" --deploy-mode client \\
+    --driver-java-options "$JOPTS" \\
+    --conf spark.io.compression.codec="${BNX_IO_CODEC:-lz4}" \\
+    --conf spark.shuffle.mapStatus.compression.codec="${BNX_IO_CODEC:-lz4}" \\
+    main.py "$@"
 fi
 exec python main.py "$@"
 '''
@@ -1599,7 +1612,8 @@ def main():
     scfg_spark = cfg.get("spark") or {}
     work = _work_dir()
     # tmp de Java/Spark/snappy dentro del paquete (escribible), no en /tmp.
-    jopts = "-Djava.io.tmpdir=%s -Dorg.xerial.snappy.tempdir=%s" % (work, work)
+    jopts = ("-Djava.io.tmpdir=%s -Dorg.xerial.snappy.tempdir=%s -Djna.tmpdir=%s"
+             % (work, work, work))
     cluster = os.environ.get("BNX_CLUSTER_SPARK") == "1"
     builder = SparkSession.builder.appName(scfg_spark.get("app_name", "framework_mlops_v2"))
     if cluster:
@@ -1614,6 +1628,13 @@ def main():
                    .config("spark.sql.shuffle.partitions", "2")
                    .config("spark.local.dir", work)
                    .config("spark.driver.extraJavaOptions", jopts))
+    # Compresion INTERNA de Spark (shuffle/mapStatus): lz4 en vez de zstd. zstd-jni
+    # es nativo y se extrae a /tmp; en servidores con /tmp 'noexec' revienta con
+    # UnsatisfiedLinkError (libzstd-jni ... failed to map segment). lz4 tiene
+    # fallback en Java puro. Se puede cambiar en el cfg: spark.conf o BNX_IO_CODEC.
+    _io_codec = os.environ.get("BNX_IO_CODEC", "lz4")
+    builder = (builder.config("spark.io.compression.codec", _io_codec)
+                      .config("spark.shuffle.mapStatus.compression.codec", _io_codec))
     for k, v in (scfg_spark.get("conf") or {}).items():   # conf extra del JSON
         builder = builder.config(k, str(v))
     # Hive (tablas del catalogo/metastore): "spark.hive": true, o automatico si
@@ -1834,7 +1855,18 @@ Como saber cual Spark se esta usando (lineas al inicio de la corrida):
 - Si el error es de escritura (`Mkdirs failed`, `Permission denied`, `AccessControlException`):
   la `previous_path` no es escribible -> revisa `base_path` / `--base-path`.
 
-## 5) Orden de los procesos
+## 5) Errores de librerias nativas (/tmp noexec)
+Si sale `UnsatisfiedLinkError ... libzstd-jni ... failed to map segment from shared
+object` (o lo mismo con snappy), NO es el query ni falta un paquete: Java extrae la
+libreria nativa a `/tmp` y el servidor tiene `/tmp` montado sin ejecucion.
+El paquete ya lo evita:
+- la JVM usa `./.bnx_tmp` como tmp (cambiar con `BNX_TMPDIR=/ruta/con/exec`);
+- la compresion interna de Spark usa `lz4` (fallback Java puro) en vez de `zstd`
+  (cambiar con `BNX_IO_CODEC=snappy|zstd|lz4`);
+- el parquet cae a `uncompressed` si snappy no carga (forzar con `BNX_PARQUET_CODEC`).
+La linea `[run.sh] tmp de la JVM: ...` confirma la ruta usada.
+
+## 6) Orden de los procesos
 - Todos comparten la misma SparkSession.
 - El proceso **pivote** corre siempre primero (marcar `"pivot": true` o nombrarlo `pivote`).
 - Cada fuente es un job independiente: si una falla, las demas siguen.
