@@ -383,6 +383,13 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
 
         def _safe(name):
             return "".join(c if (c.isalnum() or c in "-_.") else "_" for c in str(name)).strip("_") or "item"
+        def _safe_rel(name):
+            """Ruta RELATIVA dentro del proyecto (admite subcarpetas: '9/a.mp').
+            Cada parte se sanea y se descartan '.', '..' y vacios: nunca sale del
+            proyecto."""
+            parts = [x for x in str(name).replace("\\", "/").split("/")
+                     if x and x not in (".", "..")]
+            return os.path.join(*[_safe(x) for x in parts]) if parts else "item"
 
         try:
             # ---- Sincronizacion S3 <-> local bajo demanda (boton en Grafos) ----
@@ -462,17 +469,24 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 dp = os.path.join(root, proj)
                 files_list = []
                 if os.path.isdir(dp):
-                    for fn in sorted(os.listdir(dp)):
-                        fp = os.path.join(dp, fn)
-                        if os.path.isfile(fp):
-                            files_list.append({"name": fn, "size": os.path.getsize(fp)})
+                    # TODO el arbol del proyecto (incluye subcarpetas: p.ej. latam_DAP/9/*.mp).
+                    # Antes solo se listaba la raiz y los proyectos con subcarpetas se veian vacios.
+                    for rd, dns, fns in os.walk(dp):
+                        dns[:] = sorted(d for d in dns if not d.startswith(".") and d != "__pycache__")
+                        for fn in sorted(fns):
+                            if fn.startswith(".") or fn.endswith(".pyc"):
+                                continue
+                            fp = os.path.join(rd, fn)
+                            rel = os.path.relpath(fp, dp).replace(os.sep, "/")
+                            files_list.append({"name": rel, "size": os.path.getsize(fp)})
                 self._json_response(200, {"files": files_list})
                 return
 
             if action == "download":
                 proj = _safe(fields.get("project", ""))
-                fname = _safe(fields.get("file", ""))
+                fname = _safe_rel(fields.get("file", ""))
                 fp = os.path.join(root, proj, fname)
+                fname = fname.replace(os.sep, "/")
                 if os.path.isfile(fp):
                     with open(fp, "r", encoding="utf-8", errors="replace") as f:
                         content = f.read()
@@ -527,10 +541,11 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 proj = _safe(fields.get("project", ""))
                 fname = fields.get("file")
                 if fname:
-                    p = os.path.join(root, proj, _safe(fname))
-                    if os.path.exists(p):
+                    rel = _safe_rel(fname)
+                    p = os.path.join(root, proj, rel)
+                    if os.path.isfile(p):
                         os.unlink(p)
-                    _s3_delete_library_file(os.path.join(proj, _safe(fname)))
+                    _s3_delete_library_file(os.path.join(proj, rel))
                     self._json_response(200, {"deleted": f"{proj}/{fname}"})
                 else:
                     import shutil

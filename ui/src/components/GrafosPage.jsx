@@ -222,7 +222,7 @@ export default function GrafosPage({ theme, onLoadToCompiler }) {
           mp: result.generated_mp || '',
           xfr: result.generated_xfr || '',
           dml: result.generated_dml || '',
-          name: f.name.replace(/\.(cbl|cob|cobol|alg|algol)$/i, ''),
+          name: f.name.split('/').pop().replace(/\.(cbl|cob|cobol|alg|algol)$/i, ''),
           code: result.code || '',
           result,
         })
@@ -460,7 +460,7 @@ export default function GrafosPage({ theme, onLoadToCompiler }) {
                 <div style={{ display: 'flex', gap: 4 }}>
                   <button onClick={() => downloadFile(selectedFile)} style={{ padding: '4px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer', background: 'transparent', border: `1px solid ${t.border || '#334155'}`, color: t.muted || '#94a3b8' }}>📥</button>
                   {selectedFile.name.endsWith('.mp') && (
-                    <button onClick={() => onLoadToCompiler && onLoadToCompiler({ mp: fileContent, xfr: '', name: selectedFile.name.replace('.mp', '') })} style={{ padding: '4px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer', background: '#22c55e', color: '#000', border: 'none', fontWeight: 600 }}>🚀 Compilar</button>
+                    <button onClick={() => onLoadToCompiler && onLoadToCompiler({ mp: fileContent, xfr: '', name: selectedFile.name.split('/').pop().replace('.mp', '') })} style={{ padding: '4px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer', background: '#22c55e', color: '#000', border: 'none', fontWeight: 600 }}>🚀 Compilar</button>
                   )}
                   {/\.(cbl|cob|cobol)$/i.test(selectedFile.name) && (
                     <button onClick={() => convertLegacy(selectedFile, 'cobol')} disabled={compiling} style={{ padding: '4px 8px', borderRadius: 4, fontSize: 10, cursor: compiling ? 'not-allowed' : 'pointer', background: '#a855f7', color: '#fff', border: 'none', fontWeight: 600 }}>{compiling ? '⏳...' : '📋 COBOL → PySpark'}</button>
