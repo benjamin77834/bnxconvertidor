@@ -313,8 +313,11 @@ biblioteca:
 
 Ninguna dirección borra: la unión local + S3 **solo crece**. Así cada máquina
 aporta sus grafos al bucket y recibe los de las demás — nunca se pierden grafos.
-Se puede desactivar la bajada con `BNX_SKIP_LIBRARY_SYNC=1` y la subida con
-`BNX_SKIP_LIBRARY_PUSH=1`.
+La sincronización **siempre se intenta al arrancar** el server (bajada + subida);
+si falla, se reintenta a los 30 s, 2 min y 5 min. Además corre cada
+`BNX_LIBRARY_SYNC_EVERY` minutos (default 10; `0` lo apaga) y bajo demanda con el
+botón **🔄 Sincronizar** de la página de Grafos, que muestra el resultado o el
+motivo del fallo.
 
 ### Configuración (variables de entorno)
 
@@ -323,8 +326,7 @@ Se puede desactivar la bajada con `BNX_SKIP_LIBRARY_SYNC=1` y la subida con
 | `BNX_AWS_PROFILE` | `monkeyapp` | Perfil de `~/.aws` para acceder a S3 |
 | `BNX_S3_BUCKET` | `bnx-e2e-test` | Bucket donde viven los grafos |
 | `BNX_S3_PREFIX` | `library/` | Prefijo (carpeta) dentro del bucket |
-| `BNX_SKIP_LIBRARY_SYNC` | — | `=1` omite la **bajada** de S3 al arrancar |
-| `BNX_SKIP_LIBRARY_PUSH` | — | `=1` omite la **subida** local→S3 al arrancar |
+| `BNX_LIBRARY_SYNC_EVERY` | `10` | Minutos entre sincronizaciones periódicas (`0` = apagado). La de arranque siempre se hace |
 
 Por defecto apunta a la cuenta **monkey** (`034711235858`), bucket
 `s3://bnx-e2e-test/library/`, perfil `monkeyapp`. Para usar otra cuenta/bucket,

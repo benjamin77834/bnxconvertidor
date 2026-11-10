@@ -24,7 +24,15 @@ export default function GrafosPage({ theme, onLoadToCompiler }) {
 
   const [syncing, setSyncing] = useState(false)
   const [syncResult, setSyncResult] = useState(null)
-  useEffect(() => { fetchProjects() }, [])
+  useEffect(() => {
+    fetchProjects()
+    // Resultado de la ultima sincronizacion (la de arranque del server incluida).
+    const form = new FormData(); form.append('action', 'sync_status')
+    fetch(LIBRARY_URL, { method: 'POST', body: form })
+      .then(r => r.json())
+      .then(d => { if (d && d.when) setSyncResult(d) })
+      .catch(() => {})
+  }, [])
   // Sincroniza la biblioteca con S3 bajo demanda (baja + sube) y muestra el
   // resultado o el motivo del fallo (antes solo ocurria al arrancar el server).
   const syncLibrary = async () => {
@@ -330,6 +338,7 @@ export default function GrafosPage({ theme, onLoadToCompiler }) {
                 ? `Grafos sincronizados (${syncResult.local_files ?? '?'} archivos en esta máquina)`
                 : 'No se pudo sincronizar con S3'}
               {syncResult.when ? ` · ${syncResult.when}` : ''}
+              {syncResult.trigger ? ` (${syncResult.trigger})` : ''}
             </b>
             <button onClick={() => setSyncResult(null)} aria-label="Cerrar resultado de sincronización"
               style={{ background: 'none', border: 'none', color: t.muted || '#94a3b8', cursor: 'pointer' }}>✕</button>

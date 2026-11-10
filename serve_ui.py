@@ -4073,7 +4073,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
 #   BNX_AWS_PROFILE  (perfil ~/.aws)      default: monkeyapp
 #   BNX_S3_BUCKET    (bucket de grafos)   default: bnx-e2e-test
 #   BNX_S3_PREFIX    (prefijo/carpeta)    default: library/
-#   BNX_SKIP_LIBRARY_SYNC=1  -> omite el sync de arranque
+#   (el sync de ARRANQUE siempre se intenta, con reintentos; BNX_SKIP_* ya no lo apaga)
+#   BNX_LIBRARY_SYNC_EVERY   (minutos entre syncs periodicos; 0 = apagado) default: 10
 # ============================================================
 def _library_s3_config():
     """Devuelve (profile, bucket, prefix) de la biblioteca en S3."""
@@ -4398,7 +4399,7 @@ def _library_periodic_sync():
         every = float(os.environ.get("BNX_LIBRARY_SYNC_EVERY", "10"))
     except ValueError:
         every = 10.0
-    if every <= 0 or os.environ.get("BNX_SKIP_LIBRARY_SYNC") == "1":
+    if every <= 0:
         return
     while True:
         _time.sleep(every * 60)
@@ -4447,10 +4448,23 @@ if __name__ == "__main__":
     # el arranque). Primero BAJA de S3 lo que falte en local, luego SUBE a S3 lo
     # que falte en el bucket. Ninguna direccion BORRA: la union local+S3 solo
     # CRECE (cada maquina aporta sus grafos y recibe los de las demas).
+    # SIEMPRE se intenta al arrancar (no depende de BNX_SKIP_*). Si falla (red,
+    # credenciales, S3 no disponible), se REINTENTA a los 30 s, 2 min y 5 min; el
+    # resultado queda en _LIBRARY_SYNC_LAST y la pagina de Grafos lo muestra.
     import threading as _threading
+    import time as _sync_time
     def _library_bidirectional_sync():
-        _sync_library_from_s3()   # S3 -> local (descarga incremental)
-        _push_library_to_s3()     # local -> S3 (subida incremental)
+        for intento, espera in enumerate((0, 30, 120, 300), start=1):
+            if espera:
+                print(f"[*] Reintento {intento} de sincronizacion de grafos en {espera} s...")
+                _sync_time.sleep(espera)
+            res = _library_sync_now(trigger="arranque" if intento == 1 else f"arranque (reintento {intento - 1})")
+            if res.get("busy"):
+                continue
+            if res.get("ok"):
+                print(f"[*] Grafos sincronizados con S3 al arrancar ({res.get('local_files')} archivos locales).")
+                return
+            print("[!] No se pudo sincronizar grafos con S3 al arrancar (ver mensajes arriba).")
     _threading.Thread(target=_library_bidirectional_sync, daemon=True).start()
     _threading.Thread(target=_library_periodic_sync, daemon=True).start()
 
