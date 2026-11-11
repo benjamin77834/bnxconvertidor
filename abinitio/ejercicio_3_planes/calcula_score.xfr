@@ -1,0 +1,9 @@
+out :: reformat(in) =
+begin
+  out.id_cliente :: in.id_cliente;
+  out.nombre :: in.nombre;
+  out.total_monto :: in.total_monto;
+  out.num_tx :: in.num_tx;
+  out.score_riesgo :: if (in.limite_credito > 0) (in.total_monto * 100) / in.limite_credito else 100;
+  out.nivel_riesgo :: if (in.total_monto > in.limite_credito) "ALTO" else "NORMAL";
+end;

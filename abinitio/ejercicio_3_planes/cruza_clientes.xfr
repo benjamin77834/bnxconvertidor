@@ -1,0 +1,9 @@
+out :: join(in0, in1) =
+begin
+  out.id_cliente :: in0.id_cliente;
+  out.nombre :: in1.nombre;
+  out.nivel_cliente :: in1.nivel_cliente;
+  out.limite_credito :: in1.limite_credito;
+  out.total_monto :: in0.total_monto;
+  out.num_tx :: in0.num_tx;
+end;

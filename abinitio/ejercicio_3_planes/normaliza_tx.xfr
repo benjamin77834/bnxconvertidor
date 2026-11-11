@@ -1,0 +1,9 @@
+out :: reformat(in) =
+begin
+  out.id_tx :: in.id_tx;
+  out.id_cliente :: string_lrtrim(in.id_cliente);
+  out.fecha_tx :: in.fecha_tx;
+  out.tipo_tx :: string_upcase(in.tipo_tx);
+  out.monto :: in.monto;
+  out.estatus :: in.estatus;
+end;

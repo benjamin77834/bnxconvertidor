@@ -1,0 +1,6 @@
+out :: rollup(in) =
+begin
+  out.id_cliente :: in.id_cliente;
+  out.total_monto :: sum(in.monto);
+  out.num_tx :: count(in.id_tx);
+end;

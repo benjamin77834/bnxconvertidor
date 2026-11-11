@@ -1,0 +1,9 @@
+out :: reformat(in) =
+begin
+  out.id_cliente :: in.id_cliente;
+  out.nombre :: in.nombre;
+  out.segmento :: in.segmento;
+  out.fecha_alta :: in.fecha_alta;
+  out.limite_credito :: in.limite_credito;
+  out.nivel_cliente :: if (in.limite_credito >= 50000) "PREMIUM" else "ESTANDAR";
+end;
