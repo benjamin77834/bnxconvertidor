@@ -3515,7 +3515,9 @@ def _seleccionar_wheels(serie_dir, req_lineas, extra_steps=False, incluir_spark=
         os.makedirs(dl, exist_ok=True)
         bajo_algo = False
         for v in list(faltan):
-            reqs = _reqs_para(v, req_lineas, incluir_spark)
+            # Sin pyspark/py4j: en PyPI pyspark es sdist (no hay wheel binaria) y con
+            # --only-binary tumbaria toda la bajada; su wheel ya viene en el cache.
+            reqs = _reqs_para(v, req_lineas, incluir_spark=False)
             intento = (serie_dir, v, tuple(reqs))
             if intento in _descarga_fallida:
                 continue          # ya fallo en este proceso (sin red): no reintentar
@@ -4239,123 +4241,93 @@ def _verify_resolve_linux(pkg_root, py_target, _log, steps, timeout):
     import tempfile as _tf
     import shutil as _sh
 
-    # Serie/ABI/plataforma del destino.
-    serie = "py38-311" if py_target == "py38-311" else "py312plus"
-    pyver = "3.8" if serie == "py38-311" else "3.12"
-    abi = "cp38" if serie == "py38-311" else "cp312"
-    plat = "manylinux2014_x86_64"
-    vendor_dir = os.path.join(pkg_root, "vendor", serie)
+    # Series del destino: 'all' verifica las dos. Cada serie se prueba en TODAS sus
+    # versiones de Python (3.8-3.11 / 3.12-3.13): las wheels binarias son por version.
+    series = {"py38-311": ["py38-311"], "py312plus": ["py312plus"]}.get(
+        py_target, ["py38-311", "py312plus"])
+    plats = ["manylinux2014_x86_64", "manylinux_2_17_x86_64", "manylinux_2_28_x86_64"]
     bank_dir = os.path.join(pkg_root, "vendor", "bank")
-    links = []
-    for d in (vendor_dir, bank_dir):
-        if os.path.isdir(d):
-            links += ["--find-links", d]
 
     _log("== Verificacion emulando el SERVIDOR LINUX del banco ==")
-    _log("Target: Python %s / %s / %s (resolucion con pip, sin instalar).\n"
-         % (pyver, abi, plat))
+    _log("Se resuelve con pip, sin instalar, en CADA version de Python de la serie.\n")
 
-    def _resolve_one(req):
-        """Resuelve UN requisito para Linux desde vendor. Devuelve (ok, nombre).
-        Permite sdist (.tar.gz de las mex-lib) ademas de wheels; respeta el marker
-        de version de Python (pyspark) descartando la linea que no aplica a pyver."""
-        # Marker 'python_version': saltar la linea que NO aplica al target.
-        base = req
-        if ";" in req:
-            spec, marker = req.split(";", 1)
-            marker = marker.strip()
-            py_is_312plus = (pyver != "3.8")
-            if "python_version <" in marker and py_is_312plus:
-                return True, None   # no aplica a 3.12+: se ignora
-            if "python_version >=" in marker and not py_is_312plus:
-                return True, None   # no aplica a 3.8: se ignora
-            base = spec.strip()
-        if not base:
-            return True, None
-        name = _re.split(r"[<>=!~ ]", base, 1)[0].strip()
-        # Las mex-lib del banco son sdist (.tar.gz). pip con --platform exige
-        # --only-binary (rechaza sdist), asi que para ellas comprobamos que el
-        # archivo exista en vendor/bank (normalizando guion/underscore).
-        nlow = name.lower().replace("_", "-")
-        if nlow.startswith("mex"):
-            found = False
-            if os.path.isdir(bank_dir):
-                for f in os.listdir(bank_dir):
-                    if f.lower().replace("_", "-").startswith(nlow) and f.endswith((".tar.gz", ".whl")):
-                        found = True
-                        break
-            return found, (None if found else name)
-        tmp = _tf.mkdtemp(prefix="bnx_res_")
-        try:
-            # Wheels binarios: resolver para la plataforma Linux objetivo.
-            cmd = ([_sys.executable, "-m", "pip", "download", "--no-index", "--no-deps",
-                    "--only-binary=:all:"]
-                   + links + ["--python-version", pyver, "--implementation", "cp",
-                              "--abi", abi, "--abi", "abi3", "--abi", "none",
-                              "--platform", plat, "--platform", "any",
-                              "-d", tmp, base])
-            p = _sp.run(cmd, capture_output=True, text=True, timeout=timeout)
-            ok = p.returncode == 0
-            return ok, (None if ok else name)
-        finally:
-            _sh.rmtree(tmp, ignore_errors=True)
-
-    def _resolve(nombre, reqs):
-        """Resuelve cada requisito por separado (asi un marker que no aplica no
-        tumba al resto). Devuelve (ok, faltantes)."""
-        if not reqs:
-            return True, []
-        _log("$ pip download (Linux %s) — %d requisitos" % (abi, len(reqs)))
-        faltan = []
-        for r in reqs:
-            ok1, missing = _resolve_one(r)
-            if not ok1 and missing:
-                faltan.append(missing)
-        ok = not faltan
-        if ok:
-            _log("  OK: todas resuelven para Linux.\n")
-        else:
-            _log("  Faltan: %s\n" % ", ".join(faltan))
-        steps.append({"name": nombre, "exit_code": 0 if ok else 1, "ok": ok})
-        return ok, faltan
-
-    # Leer requirements (core) y requirements-bank (banco), ignorando comentarios.
     def _read_reqs(path):
         reqs = []
         if os.path.isfile(path):
             for ln in open(path, encoding="utf-8"):
-                s = ln.strip()
-                if not s or s.startswith("#"):
-                    continue
-                # quitar comentario al final y marker de pyspark (ya resuelto)
-                s = s.split("#", 1)[0].strip()
-                if s:
-                    reqs.append(s)
+                s_ = ln.split("#", 1)[0].strip()
+                if s_:
+                    reqs.append(s_)
         return reqs
 
     core = _read_reqs(os.path.join(pkg_root, "requirements.txt"))
     bank = _read_reqs(os.path.join(pkg_root, "requirements-bank.txt"))
 
-    ok_core, falta_core = _resolve("core (requirements.txt)", core)
-    ok_bank, falta_bank = (True, [])
-    if bank:
-        ok_bank, falta_bank = _resolve("banco (requirements-bank.txt)", bank)
+    def _mex_ok(name):
+        nlow = name.lower().replace("_", "-")
+        return os.path.isdir(bank_dir) and any(
+            f.lower().replace("_", "-").startswith(nlow) and f.endswith((".tar.gz", ".whl"))
+            for f in os.listdir(bank_dir))
 
-    faltantes = sorted(set(falta_core + falta_bank))
+    faltan_por_ver = {}
+    for serie in series:
+        vendor_dir = os.path.join(pkg_root, "vendor", serie)
+        links = []
+        for d in (vendor_dir, bank_dir):
+            if os.path.isdir(d):
+                links += ["--find-links", d]
+        # Paquete LIGERO: no trae PySpark a proposito (se usa el del cluster).
+        ligero = not (os.path.isdir(vendor_dir) and any(
+            f.startswith("pyspark-") for f in os.listdir(vendor_dir)))
+        if ligero:
+            _log("[%s] paquete LIGERO: PySpark no se verifica (en el servidor se usa el Spark "
+                 "del cluster: BNX_SPARK=cluster bash run.sh)." % serie)
+        for pyver in _SERIE_VERSIONES.get(serie, []):
+            abi = "cp" + pyver.replace(".", "")
+            reqs = _reqs_para(pyver, core, incluir_spark=not ligero)
+            faltan = []
+            for req in reqs + [b for b in bank if not b.lower().startswith("mex")]:
+                tmp = _tf.mkdtemp(prefix="bnx_res_")
+                try:
+                    cmd = ([_sys.executable, "-m", "pip", "download", "--no-index", "--no-deps",
+                            "--only-binary=:all:"] + links
+                           + ["--python-version", pyver, "--implementation", "cp",
+                              "--abi", abi, "--abi", "abi3", "--abi", "none"]
+                           + [x for pl in plats for x in ("--platform", pl)]
+                           + ["--platform", "any", "-d", tmp, req])
+                    ok1 = _sp.run(cmd, capture_output=True, text=True, timeout=timeout).returncode == 0
+                except Exception:
+                    ok1 = False
+                finally:
+                    _sh.rmtree(tmp, ignore_errors=True)
+                if not ok1:
+                    faltan.append(_re.split(r"[<>=!~ ;\[]", req, maxsplit=1)[0].strip())
+            # mex-lib del banco: son sdist (.tar.gz), se comprueba que esten en vendor/bank
+            faltan += [b for b in (_re.split(r"[<>=!~ ;]", x, maxsplit=1)[0].strip()
+                                   for x in bank if x.lower().startswith("mex")) if not _mex_ok(b)]
+            ok = not faltan
+            _log("$ Python %s (Linux %s): %d requisitos -> %s"
+                 % (pyver, abi, len(reqs), "OK" if ok else "faltan: " + ", ".join(sorted(set(faltan)))))
+            steps.append({"name": "Python %s (%s)" % (pyver, serie), "exit_code": 0 if ok else 1, "ok": ok})
+            if faltan:
+                faltan_por_ver["%s/%s" % (serie, pyver)] = sorted(set(faltan))
+
+    faltantes = sorted({f for fs in faltan_por_ver.values() for f in fs})
     ok_env = not faltantes
+    _log("")
     if ok_env:
-        _log("[OK] Todo el stack resuelve OFFLINE para el servidor Linux del banco.")
+        _log("[OK] Todo el stack resuelve OFFLINE para el servidor Linux en todas las versiones.")
     else:
-        _log("[FALTAN] para Linux: %s" % ", ".join(faltantes))
-        _log("  -> Carga lo que falte en 'Librerias del banco' (importar/descargar entorno).")
-    return {"ok_env": ok_env, "checks": {"ok": [], "missing": faltantes}}
+        _log("[FALTAN] para Linux:")
+        for k, fs in sorted(faltan_por_ver.items()):
+            _log("  - Python %s: %s" % (k.split("/")[1], ", ".join(fs)))
+        _log("  -> El cache de ESTE servidor del portal no tiene esas wheels. Importalo una vez:")
+        _log("       python importar_vendor.py bnx_vendor_all.zip   (y reinicia el portal)")
+        _log("     o cargalas en 'Librerias del banco'.")
+    return {"ok_env": ok_env, "checks": {"ok": [], "missing": faltantes,
+                                         "por_version": faltan_por_ver}}
 
 
-# --------------------------------------------------------------------------
-# GESTOR de librerias del banco (para la pagina "Librerias del banco" del portal).
-# Lee/escribe el cache .bnx_vendor_cache/bank_libs/. Permite listar, importar
-# desde una ruta/disco, eliminar y verificar que una mex-lib importe limpio.
-# --------------------------------------------------------------------------
 def bank_libs_list():
     """Inventario del cache de librerias del banco. Devuelve:
       {wheels: [{name, size, kind, pkg, status, reason}],
