@@ -38,14 +38,17 @@ def _dirs_for(serie):
     if serie == "all":
         dirs += ["py38-311", "py312plus", "mlops_deps"]
     elif serie == "py38-311":
-        # PySpark 3.5 + sus deps cp311 (py38-311) de mlops_deps.
+        # PySpark 3.5 + sus deps cp311 (py38-311) de mlops_deps. '_dl' = wheels que el
+        # generador bajo solo (cytoolz/unidecode/pandas para 3.9-3.10, ...).
         dirs += ["py38-311"]
         dirs += [os.path.join("mlops_deps", "py38-311"),
-                 os.path.join("mlops_deps", "py38-311_extra")]
+                 os.path.join("mlops_deps", "py38-311_extra"),
+                 os.path.join("mlops_deps", "py38-311_dl")]
     elif serie == "py312plus":
         dirs += ["py312plus"]
         dirs += [os.path.join("mlops_deps", "py312plus"),
-                 os.path.join("mlops_deps", "py312plus_extra")]
+                 os.path.join("mlops_deps", "py312plus_extra"),
+                 os.path.join("mlops_deps", "py312plus_dl")]
     return dirs
 
 
