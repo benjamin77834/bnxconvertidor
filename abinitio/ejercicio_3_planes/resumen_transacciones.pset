@@ -1,0 +1,5 @@
+!prototype|P|||$AI_MP/resumen_transacciones.mp
+FECHA_PROCESO||||20250115
+INPUT_FILE||||/banca/transacciones_validas.dat
+INPUT_INTERFACE_FILE||||/banca/clientes_segmentados.dat
+OUTPUT_FILE||||/banca/resumen_cliente_diario.dat

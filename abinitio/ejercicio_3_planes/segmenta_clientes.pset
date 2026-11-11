@@ -1,0 +1,5 @@
+!prototype|P|||$AI_MP/segmenta_clientes.mp
+FECHA_PROCESO||||20250115
+LIMITE_PREMIUM||||50000
+INPUT_FILE||||/banca/clientes_limpios.dat
+OUTPUT_FILE||||/banca/clientes_segmentados.dat

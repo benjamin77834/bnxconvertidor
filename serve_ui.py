@@ -3708,6 +3708,28 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._json_response(200, {"ok": True, "file": os.path.relpath(out, root)})
             return
 
+        if action == "nueva":
+            # Orquestacion desde cero (sin .plan): output/<proyecto>/orquestacion_<nombre>.json
+            try:
+                out = _orq.nueva(str(data.get("nombre") or ""), str(data.get("proyecto") or ""),
+                                 base=os.path.join(root, "output"))
+            except (ValueError, OSError) as e:
+                self._json_response(400, {"error": str(e)})
+                return
+            self._json_response(200, {"ok": True, "file": os.path.relpath(out, root)})
+            return
+
+        if action == "jobs":
+            # Jobs ya convertidos del proyecto (para agregar un paso "grafo" a mano)
+            proj = str(data.get("proyecto") or "")
+            if not re.fullmatch(proj_re, proj):
+                self._json_response(400, {"error": "proyecto invalido"})
+                return
+            odir = os.path.join(root, "output", proj)
+            jobs = sorted(os.path.relpath(f, root) for f in _glob.glob(os.path.join(odir, "*_spark.py")))
+            self._json_response(200, {"jobs": jobs})
+            return
+
         fp = self._orq_safe(data.get("file"), "output", orq_re)
         if not fp:
             self._json_response(400, {"error": "archivo invalido (debe ser output/**/orquestacion_*.json)"})

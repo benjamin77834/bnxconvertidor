@@ -1,0 +1,8 @@
+record
+  string(12) id_tx;
+  string(10) id_cliente;
+  string(10) fecha_tx;
+  string(10) tipo_tx;
+  decimal(12,2) monto;
+  string(2) estatus;
+end;

@@ -14,6 +14,124 @@ const STATUS_COLOR = {
   no_traducido: '#64748b',  // tarea de programa/script sin traduccion automatica
 }
 
+// Ubicacion de ejecucion de cada paso: color / icono / etiqueta
+const UBIC = {
+  local: { label: 'Local', icon: '🖥️', color: '#3b82f6' },
+  remoto: { label: 'Remoto', icon: '🔌', color: '#14b8a6' },
+  nube: { label: 'Nube', icon: '☁️', color: '#f97316' },
+}
+
+// Tipos de paso y campos de su formulario (kind: text|int|list|kv|json|bool|select|job)
+const TIPOS_UI = {
+  graph: { label: 'Grafo convertido (*_spark.py)', ubic: 'local', fields: [
+    { k: 'target', label: 'Job convertido del proyecto', kind: 'job', req: true }] },
+  python: { label: 'Python (.py)', ubic: 'local', fields: [
+    { k: 'target', label: 'Script .py', kind: 'text', req: true, ph: 'scripts/mi_script.py' },
+    { k: 'args', label: 'Argumentos (uno por línea)', kind: 'list' }] },
+  shell: { label: 'Shell / .ksh / .sh', ubic: 'local', fields: [
+    { k: 'comando', label: 'Comando o script', kind: 'text', req: true, ph: 'prepara_directorios.ksh arg1' }] },
+  spark_submit: { label: 'spark-submit', ubic: 'local', fields: [
+    { k: 'target', label: 'Job .py', kind: 'text', req: true, ph: 'output/proy/job_spark.py' },
+    { k: 'master', label: 'Master', kind: 'text', ph: 'local[*] / yarn' },
+    { k: 'spark_args', label: 'Args de spark-submit (uno por línea)', kind: 'list' },
+    { k: 'args', label: 'Argumentos del job (uno por línea)', kind: 'list' }] },
+  esperar_archivo: { label: 'Esperar archivo (sensor)', ubic: 'local', fields: [
+    { k: 'ruta', label: 'Ruta local (admite *) o s3://bucket/clave', kind: 'text', req: true },
+    { k: 'timeout_s', label: 'Timeout (s)', kind: 'int', ph: '300' },
+    { k: 'intervalo_s', label: 'Intervalo (s)', kind: 'int', ph: '10' },
+    { k: 'profile', label: 'AWS profile (si es s3://)', kind: 'text' },
+    { k: 'region', label: 'AWS region (si es s3://)', kind: 'text' }] },
+  ssh: { label: 'SSH (comando remoto)', ubic: 'remoto', fields: [
+    { k: 'host', label: 'Host', kind: 'text', req: true, ph: 'servidor.empresa.com' },
+    { k: 'usuario', label: 'Usuario', kind: 'text' },
+    { k: 'puerto', label: 'Puerto', kind: 'int', ph: '22' },
+    { k: 'identidad', label: 'Ruta de la clave (nunca su contenido)', kind: 'text', ph: '~/.ssh/id_ed25519' },
+    { k: 'comando', label: 'Comando remoto', kind: 'text', req: true }] },
+  http: { label: 'HTTP (webhook / API)', ubic: 'remoto', fields: [
+    { k: 'metodo', label: 'Método', kind: 'select', opts: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] },
+    { k: 'url', label: 'URL', kind: 'text', req: true, ph: 'https://...' },
+    { k: 'body', label: 'Body (JSON)', kind: 'json' },
+    { k: 'headers', label: 'Headers sin secretos (clave=valor por línea)', kind: 'kv' },
+    { k: 'token_env', label: 'Variable de entorno con el token (nombre)', kind: 'text', ph: 'MI_TOKEN' },
+    { k: 'timeout_s', label: 'Timeout (s)', kind: 'int', ph: '30' }] },
+  glue_job: { label: 'AWS Glue job', ubic: 'nube', fields: [
+    { k: 'job_name', label: 'Nombre del job', kind: 'text', req: true },
+    { k: 'args', label: 'Argumentos (--clave=valor por línea)', kind: 'kv' },
+    { k: 'profile', label: 'AWS profile', kind: 'text' }, { k: 'region', label: 'AWS region', kind: 'text' }] },
+  emr_step: { label: 'AWS EMR step (Spark)', ubic: 'nube', fields: [
+    { k: 'cluster_id', label: 'Cluster ID', kind: 'text', req: true, ph: 'j-XXXXXXXX' },
+    { k: 'script', label: 'Script en S3', kind: 'text', req: true, ph: 's3://bucket/job.py' },
+    { k: 'args', label: 'Argumentos (uno por línea)', kind: 'list' },
+    { k: 'nombre', label: 'Nombre del step', kind: 'text' },
+    { k: 'action_on_failure', label: 'Si falla', kind: 'select', opts: ['CONTINUE', 'CANCEL_AND_WAIT', 'TERMINATE_CLUSTER'] },
+    { k: 'profile', label: 'AWS profile', kind: 'text' }, { k: 'region', label: 'AWS region', kind: 'text' }] },
+  lambda: { label: 'AWS Lambda', ubic: 'nube', fields: [
+    { k: 'function_name', label: 'Función (nombre o ARN)', kind: 'text', req: true },
+    { k: 'payload', label: 'Payload (JSON)', kind: 'json' },
+    { k: 'profile', label: 'AWS profile', kind: 'text' }, { k: 'region', label: 'AWS region', kind: 'text' }] },
+  s3_copy: { label: 'S3 copiar (aws s3 cp)', ubic: 'nube', fields: [
+    { k: 'origen', label: 'Origen (local o s3://)', kind: 'text', req: true },
+    { k: 'destino', label: 'Destino (local o s3://)', kind: 'text', req: true },
+    { k: 'recursivo', label: 'Recursivo (carpeta)', kind: 'bool' },
+    { k: 'profile', label: 'AWS profile', kind: 'text' }, { k: 'region', label: 'AWS region', kind: 'text' }] },
+}
+
+const ubicDe = (a) => {
+  if (!a) return 'local'
+  if (a.type === 'esperar_archivo') return String(a.ruta || '').startsWith('s3://') ? 'nube' : 'local'
+  return TIPOS_UI[a.type]?.ubic || 'local'
+}
+
+// Texto corto de lo que hace un paso
+const resumenAccion = (a) => {
+  if (!a) return ''
+  const t = a.type
+  if (t === 'python' || t === 'spark_submit' || t === 'graph') return (a.target || '').split('/').pop()
+  if (t === 'shell') return a.comando
+  if (t === 'ssh') return `${a.usuario ? a.usuario + '@' : ''}${a.host}: ${a.comando}`
+  if (t === 'http') return `${a.metodo || 'GET'} ${a.url}`
+  if (t === 'esperar_archivo') return a.ruta
+  if (t === 'glue_job') return a.job_name
+  if (t === 'emr_step') return `${a.cluster_id} ${a.script}`
+  if (t === 'lambda') return a.function_name
+  if (t === 's3_copy') return `${a.origen} → ${a.destino}`
+  return ''
+}
+
+const campoATexto = (f, v) => {
+  if (f.kind === 'bool') return !!v
+  if (v === undefined || v === null) return ''
+  if (f.kind === 'list') return (v || []).join('\n')
+  if (f.kind === 'kv') return Object.entries(v || {}).map(([k, x]) => `${k}=${x}`).join('\n')
+  if (f.kind === 'json') return typeof v === 'string' ? v : JSON.stringify(v, null, 2)
+  return String(v)
+}
+
+// Texto del formulario -> valor del campo (undefined = vacío, no se envía)
+const textoACampo = (f, v) => {
+  if (f.kind === 'bool') return v ? true : undefined
+  const t = String(v ?? '').trim()
+  if (!t) return undefined
+  if (f.kind === 'int') {
+    if (!/^\d+$/.test(t)) throw new Error(`${f.label}: debe ser un entero`)
+    return Number(t)
+  }
+  if (f.kind === 'list') return String(v).split('\n').map(x => x.replace(/\r$/, '')).filter(x => x.trim() !== '')
+  if (f.kind === 'kv') {
+    const o = {}
+    String(v).split('\n').filter(x => x.trim()).forEach(l => {
+      const i = l.indexOf('=')
+      if (i < 1) throw new Error(`${f.label}: use clave=valor (línea: ${l})`)
+      o[l.slice(0, i).trim()] = l.slice(i + 1)
+    })
+    return o
+  }
+  if (f.kind === 'json') {
+    try { return JSON.parse(t) } catch { throw new Error(`${f.label}: JSON inválido`) }
+  }
+  return t
+}
+
 async function post(path, body) {
   const r = await fetch(`${ORQUESTADOR_URL}/${path}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -78,20 +196,25 @@ function StepNode({ data }) {
   const s = data.step
   const color = STATUS_COLOR[s.action?.status] || '#64748b'
   const tgt = s.action?.target ? s.action.target.split('/').pop() : (s.action?.source || '')
+  const nuevo = s.action?.type in TIPOS_UI && s.action.type !== 'graph'
+  const u = s.action?.type === 'plan' ? null : UBIC[ubicDe(s.action)]
   return (
     <div style={{
       width: 230, padding: '8px 10px', borderRadius: 8,
       background: data.theme.card || '#1e2433', color: data.theme.text || '#e2e8f0',
       border: `2px ${s.solo_en_fallo ? 'dashed' : 'solid'} ${data.selected ? '#38bdf8' : color}`,
+      boxShadow: u ? `inset 6px 0 0 ${u.color}` : undefined,
       opacity: s.enabled ? 1 : 0.45, fontSize: 12,
     }}>
       <Handle type="target" position={Position.Left} />
+      {u && <div style={{ fontSize: 10, fontWeight: 700, color: u.color }}>{u.icon} {u.label}</div>}
       <div style={{ fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
         {s.name}
       </div>
       <div style={{ fontSize: 10, color: data.theme.muted || '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
         {s.action?.type === 'plan'
           ? `${s.id} · 🧩 plan · ${s.action.pasos ?? '?'} pasos${s.action.pset ? ` · pset ${s.action.pset}` : ''}`
+          : nuevo ? `${s.id} · ${s.action.type}: ${resumenAccion(s.action)}`
           : `${s.id} · ${s.action?.type}${tgt ? `: ${tgt}` : ''}`}
       </div>
       <div style={{ fontSize: 10, marginTop: 2 }}>
@@ -256,6 +379,128 @@ function ComponerPanel({ t, btn, card, planes, actual, onCreado, onError }) {
   )
 }
 
+// Crear una orquestacion desde cero (sin .plan)
+function NuevaPanel({ t, btn, card, proyectos, proyectoInicial, onCreada, onError }) {
+  const [nombre, setNombre] = useState('')
+  const [proyecto, setProyecto] = useState(proyectoInicial || '')
+  const [busy, setBusy] = useState(false)
+  const ok = /^[A-Za-z0-9][\w.-]{0,80}$/.test(nombre.trim()) && /^[A-Za-z0-9][\w.-]{0,63}$/.test(proyecto.trim())
+  const crear = async () => {
+    setBusy(true)
+    try {
+      const d = await post('nueva', { nombre: nombre.trim(), proyecto: proyecto.trim() })
+      onCreada(d.file)
+    } catch (e) { onError(`No se creó: ${e.message}`) }
+    setBusy(false)
+  }
+  const inp = { ...btn(false), textAlign: 'left', minWidth: 200 }
+  return (
+    <div style={{ ...card, margin: '0 12px 8px', fontSize: 12 }}>
+      <div style={{ fontWeight: 700, marginBottom: 4 }}>✨ Nueva orquestación (desde cero)</div>
+      <div style={{ color: t.muted, marginBottom: 6 }}>
+        Crea una orquestación vacía en <code>output/&lt;proyecto&gt;/orquestacion_&lt;nombre&gt;.json</code>; después agrega pasos
+        (grafos convertidos, scripts, SSH, HTTP, AWS...) en el panel derecho.
+      </div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <input value={nombre} onChange={e => setNombre(e.target.value)} placeholder="Nombre, ej. cierre_diario" style={inp} />
+        <input list="nueva-proyectos" value={proyecto} onChange={e => setProyecto(e.target.value)}
+          placeholder="Proyecto (carpeta en output/)" style={inp} />
+        <datalist id="nueva-proyectos">{proyectos.map(p => <option key={p} value={p} />)}</datalist>
+        <button style={btn(true)} onClick={crear} disabled={busy || !ok}>Crear</button>
+      </div>
+    </div>
+  )
+}
+
+// Formulario para agregar/editar un paso de una orquestacion manual
+function PasoForm({ t, btn, plan, inicial, proyecto, onGuardar, onCancelar, onError }) {
+  const [tipo, setTipo] = useState(inicial?.action?.type || 'shell')
+  const [nombre, setNombre] = useState(inicial?.name || '')
+  const [vals, setVals] = useState(() => {
+    const v = {}
+    const def = TIPOS_UI[inicial?.action?.type]
+    ;(def?.fields || []).forEach(f => { v[f.k] = campoATexto(f, inicial.action[f.k]) })
+    return v
+  })
+  const [deps, setDeps] = useState(inicial?.depends_on || [])
+  const [jobs, setJobs] = useState([])
+  const def = TIPOS_UI[tipo]
+  const input = { ...btn(false), width: '100%', boxSizing: 'border-box', textAlign: 'left', fontFamily: 'inherit' }
+  useEffect(() => {
+    if (tipo !== 'graph' || !proyecto) return
+    post('jobs', { proyecto }).then(d => setJobs(d.jobs || [])).catch(() => setJobs([]))
+  }, [tipo, proyecto])
+  const otros = plan.steps.filter(s => s.id !== inicial?.id)
+  const u = UBIC[ubicDe({ type: tipo, ruta: vals.ruta })]
+  const guardar = () => {
+    try {
+      if (!nombre.trim()) throw new Error('Escribe un nombre para el paso.')
+      const action = { type: tipo }
+      def.fields.forEach(f => {
+        const v = textoACampo(f, vals[f.k])
+        if (v === undefined && f.req) throw new Error(`Falta: ${f.label}`)
+        if (v !== undefined) action[f.k] = v
+      })
+      onGuardar({ name: nombre.trim(), action, depends_on: deps })
+    } catch (e) { onError(e.message) }
+  }
+  return (
+    <div style={{ fontSize: 12, display: 'flex', flexDirection: 'column', gap: 6, color: t.text }}>
+      <div style={{ fontWeight: 700, fontSize: 14 }}>{inicial ? `Editar paso ${inicial.id}` : 'Agregar paso'}</div>
+      <label>Tipo
+        <select value={tipo} disabled={!!inicial} onChange={e => { setTipo(e.target.value); setVals({}) }} style={input}>
+          {Object.entries(UBIC).map(([k, ub]) => (
+            <optgroup key={k} label={`${ub.icon} ${ub.label}`}>
+              {Object.entries(TIPOS_UI).filter(([, d]) => d.ubic === k)
+                .map(([tk, d]) => <option key={tk} value={tk}>{d.label}</option>)}
+            </optgroup>))}
+        </select></label>
+      <div style={{ color: u.color, fontWeight: 700 }}>{u.icon} Se ejecuta: {u.label}</div>
+      <label>Nombre del paso
+        <input value={nombre} onChange={e => setNombre(e.target.value)} style={input} /></label>
+      {def.fields.map(f => (
+        <label key={f.k}>{f.label}{f.req ? ' *' : ''}
+          {f.kind === 'bool' ? (
+            <input type="checkbox" checked={!!vals[f.k]} style={{ marginLeft: 6 }}
+              onChange={e => setVals({ ...vals, [f.k]: e.target.checked })} />
+          ) : f.kind === 'select' ? (
+            <select value={vals[f.k] || f.opts[0]} onChange={e => setVals({ ...vals, [f.k]: e.target.value })} style={input}>
+              {f.opts.map(o => <option key={o} value={o}>{o}</option>)}</select>
+          ) : f.kind === 'job' ? (<>
+            <input list="paso-jobs" value={vals[f.k] || ''} onChange={e => setVals({ ...vals, [f.k]: e.target.value })}
+              placeholder={jobs.length ? 'Elige un *_spark.py' : 'output/<proyecto>/<grafo>_spark.py'} style={input} />
+            <datalist id="paso-jobs">{jobs.map(j => <option key={j} value={j} />)}</datalist>
+            {!jobs.length && <div style={{ fontSize: 10, color: '#f59e0b' }}>
+              No hay *_spark.py en output/{proyecto || '<proyecto>'}. Procesa el .mp en "Importar" primero.</div>}
+          </>) : (f.kind === 'list' || f.kind === 'kv' || f.kind === 'json') ? (
+            <textarea value={vals[f.k] || ''} rows={3} onChange={e => setVals({ ...vals, [f.k]: e.target.value })}
+              placeholder={f.ph} style={{ ...input, resize: 'vertical' }} />
+          ) : (
+            <input value={vals[f.k] ?? ''} onChange={e => setVals({ ...vals, [f.k]: e.target.value })}
+              placeholder={f.ph} style={input} />)}
+        </label>))}
+      {tipo === 'ssh' && <div style={{ fontSize: 10, color: t.muted }}>Usa tu clave / ssh-agent (BatchMode). No se guardan contraseñas.</div>}
+      {tipo === 'http' && <div style={{ fontSize: 10, color: t.muted }}>El token se lee de la variable de entorno al ejecutar; no se guarda en el JSON.</div>}
+      {def.ubic === 'nube' && <div style={{ fontSize: 10, color: t.muted }}>Usa la CLI <code>aws</code> con tus credenciales; profile/region vacíos toman los de Ejecución.</div>}
+      <div style={{ fontWeight: 600 }}>Corre después de:</div>
+      {otros.length === 0 && <div style={{ color: t.muted }}>(no hay otros pasos)</div>}
+      {otros.map(s => {
+        const ciclo = inicial && createsCycle(plan.steps, inicial.id, s.id)
+        return (
+          <label key={s.id} style={{ opacity: ciclo ? 0.4 : 1 }}>
+            <input type="checkbox" disabled={ciclo} checked={deps.includes(s.id)}
+              onChange={e => setDeps(e.target.checked ? [...deps, s.id] : deps.filter(x => x !== s.id))} /> {s.name} <span style={{ color: t.muted }}>({s.id})</span>
+          </label>)
+      })}
+      <div style={{ display: 'flex', gap: 6 }}>
+        <button style={btn(true)} onClick={guardar}>{inicial ? 'Aplicar' : 'Agregar'}</button>
+        <button style={btn(false)} onClick={onCancelar}>Cancelar</button>
+      </div>
+      <div style={{ fontSize: 10, color: t.muted }}>Aplica al diagrama; pulsa “Guardar” arriba para escribirlo al archivo.</div>
+    </div>
+  )
+}
+
 function GuiaUso({ t, btn, irA, cerrar }) {
   return (
     <section id="orq-ayuda" aria-label="Cómo se usa el Orquestador"
@@ -322,6 +567,8 @@ export default function OrquestadorPage({ theme }) {
   const [processing, setProcessing] = useState(false)
   const [code, setCode] = useState(null)      // {name,size,truncated,code}
   const [componiendo, setComponiendo] = useState(false)   // panel "Plan de planes"
+  const [creando, setCreando] = useState(false)           // panel "Nueva orquestación"
+  const [form, setForm] = useState(null)                  // formulario de paso: {id?} (manual)
   const [nodes, setNodes, onNodesChange] = useNodesState([])
   const [edges, setEdges, onEdgesChange] = useEdgesState([])
 
@@ -533,6 +780,7 @@ export default function OrquestadorPage({ theme }) {
     try {
       await post('save', { file, plan })
       setDirty(false); flash('ok', 'Guardado.')
+      if (plan.origen === 'manual') await loadPlan(file)   // el servidor normaliza las acciones
     } catch (e) { flash('err', `No se guardo: ${e.message}`) }
     setBusy(false)
   }
@@ -611,6 +859,37 @@ export default function OrquestadorPage({ theme }) {
     catch (e) { flash('err', `No se pudo leer el código: ${e.message}`) }
   }
 
+  // ---- pasos de una orquestacion manual ----
+  const proyectoDe = (f) => (plan?.proyecto || f.split('/').slice(-2, -1)[0] || '')
+  const aplicarPaso = (datos, id) => {
+    const next = JSON.parse(JSON.stringify(plan))
+    let nid = id
+    if (id) {
+      const st = next.steps.find(x => x.id === id)
+      Object.assign(st, { name: datos.name, action: datos.action, depends_on: datos.depends_on })
+      st.dep_flags = Object.fromEntries(Object.entries(st.dep_flags || {}).filter(([k]) => datos.depends_on.includes(k)))
+      limpiarEnlaces(next)
+    } else {
+      const n = Math.max(0, ...next.steps.map(x => Number(String(x.id).replace(/\D/g, '')) || 0)) + 1
+      nid = `t${n}`
+      next.steps.push({ id: nid, name: datos.name, action: datos.action, depends_on: datos.depends_on,
+        dep_flags: {}, solo_en_fallo: false, enabled: true, continue_on_error: false })
+    }
+    setForm(null); setPlan(next); setDirty(true); setSelId(nid); relayout(next)
+  }
+  const borrarPaso = (id) => {
+    if (!window.confirm('¿Borrar este paso y sus dependencias/enlaces?')) return
+    const next = JSON.parse(JSON.stringify(plan))
+    next.steps = next.steps.filter(x => x.id !== id)
+    next.steps.forEach(x => {
+      x.depends_on = x.depends_on.filter(d => d !== id)
+      if (x.dep_flags) delete x.dep_flags[id]
+    })
+    next.enlaces = (next.enlaces || []).filter(e => e.desde !== id && e.hacia !== id)
+    setPlan(next); setDirty(true); setSelId(null); setForm(null); relayout(next)
+  }
+  useEffect(() => { setForm(null) }, [file])
+
   const sel = useMemo(() => plan?.steps.find(s => s.id === selId), [plan, selId])
   const nameOf = (id) => plan?.steps.find(s => s.id === id)?.name || id
 
@@ -659,9 +938,22 @@ export default function OrquestadorPage({ theme }) {
               <button style={btn(false)} onClick={datosSinteticos} disabled={!plan || busy}
                 title="Genera parquet de entrada en <carpeta del plan>/datos_sinteticos/raw y deja el base_path apuntando ahí">🧪 Datos sintéticos</button>
               <button style={btn(false)} onClick={descargar} disabled={!plan}>📥 JSON</button>
+              <button style={btn(creando)} onClick={() => setCreando(v => !v)}
+                title="Crea una orquestación vacía sin .plan y arma los pasos a mano">✨ Nueva orquestación</button>
               <button style={btn(componiendo)} onClick={() => setComponiendo(v => !v)} disabled={!file}
                 title="Une 2 o más planes de este proyecto en un plan de planes">🧩 Plan de planes</button>
             </div>
+            {creando && (
+              <NuevaPanel t={t} btn={btn} card={card}
+                proyectos={[...new Set([...projects.map(p => p.name), ...files.map(f => f.split('/')[1]).filter(Boolean)])]}
+                proyectoInicial={file ? proyectoDe(file) : ''}
+                onCreada={async (nuevo) => {
+                  setCreando(false)
+                  const d = await post('list'); setFiles(d.plans || []); setMaps(d.maps || [])
+                  setFile(nuevo); flash('ok', 'Orquestación creada. Agrega pasos en el panel derecho.')
+                }}
+                onError={(m) => flash('err', m)} />
+            )}
             {componiendo && (
               <ComponerPanel t={t} btn={btn} card={card} actual={file}
                 planes={files.filter(f => f.split('/').slice(0, -1).join('/') === file.split('/').slice(0, -1).join('/')
@@ -672,6 +964,12 @@ export default function OrquestadorPage({ theme }) {
                   setFile(nuevo); flash('ok', 'Plan de planes creado.')
                 }}
                 onError={(m) => flash('err', m)} />
+            )}
+            {plan?.origen === 'manual' && (
+              <div style={{ margin: '0 12px 6px', fontSize: 12, color: '#38bdf8' }}>
+                ✨ <b>Orquestación manual</b> (sin .plan): agrega, edita y borra pasos en el panel derecho.
+                {Object.values(UBIC).map(ub => <span key={ub.label} style={{ marginLeft: 10, color: ub.color }}>{ub.icon} {ub.label}</span>)}
+              </div>
             )}
             {plan?.tipo === 'plan_de_planes' && (
               <div style={{ margin: '0 12px 6px', fontSize: 12, color: '#a78bfa' }}>
@@ -712,7 +1010,9 @@ export default function OrquestadorPage({ theme }) {
                 <MiniMap pannable zoomable
                   style={{ background: t.card || '#152a52', border: `1px solid ${t.border || '#1e3a6e'}`, width: 160, height: 100 }}
                   maskColor={(t.bg || '#0a1628') + 'aa'}
-                  nodeColor={n => STATUS_COLOR[n.data?.step?.action?.status] || '#64748b'}
+                  nodeColor={n => (plan?.origen === 'manual' && n.data?.step
+                    ? UBIC[ubicDe(n.data.step.action)].color
+                    : STATUS_COLOR[n.data?.step?.action?.status] || '#64748b')}
                   nodeStrokeWidth={2} />
               </ReactFlow>
             </div>
@@ -743,22 +1043,42 @@ export default function OrquestadorPage({ theme }) {
           </div>
 
           <div style={{ width: 290, borderLeft: `1px solid ${t.border}`, padding: 12, overflowY: 'auto' }}>
-            {!sel && <div style={{ fontSize: 12, color: t.muted }}>
+            {form && plan && (
+              <PasoForm key={form.id || 'nuevo'} t={t} btn={btn} plan={plan}
+                inicial={form.id ? plan.steps.find(x => x.id === form.id) : null}
+                proyecto={proyectoDe(file)}
+                onGuardar={(datos) => aplicarPaso(datos, form.id)} onCancelar={() => setForm(null)}
+                onError={(m) => flash('err', m)} />)}
+            {!form && !sel && <div style={{ fontSize: 12, color: t.muted }}>
               Selecciona un paso para ver y editar sus datos.
+              {plan?.origen === 'manual' && <div style={{ marginTop: 8 }}>
+                <button style={btn(true)} onClick={() => setForm({})}>+ Agregar paso</button></div>}
               <div style={{ marginTop: 12 }}>
                 {Object.entries(STATUS_COLOR).map(([k, c]) =>
                   <div key={k} style={{ fontSize: 11 }}><span style={{ color: c }}>●</span> {k}</div>)}
                 <div style={{ fontSize: 11 }}>┄ borde punteado: solo en fallo</div>
+                {Object.values(UBIC).map(ub => <div key={ub.label} style={{ fontSize: 11 }}>
+                  <span style={{ color: ub.color }}>▌</span> {ub.icon} {ub.label}</div>)}
               </div>
               {plan && <EjecucionPanel t={t} btn={btn} ej={ej} setEj={setEj} plan={plan}
                 nameOf={nameOf} sugerir={sugerir} addEnlace={addEnlace}
                 toggleEnlace={(id) => mutate(p => { const e = p.enlaces.find(x => x.id === id); e.habilitado = !e.habilitado })}
                 delEnlace={(id) => mutate(p => { p.enlaces = p.enlaces.filter(x => x.id !== id) })} />}
             </div>}
-            {sel && (
+            {!form && sel && (
               <div style={{ fontSize: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <div style={{ fontWeight: 700, fontSize: 14 }}>{sel.name}</div>
-                <div style={{ color: t.muted }}>{sel.id} · {sel.action?.type} · {sel.action?.status}</div>
+                <div style={{ color: t.muted }}>{sel.id} · {sel.action?.type} · {sel.action?.status}
+                  {sel.action?.type !== 'plan' && <span style={{ color: UBIC[ubicDe(sel.action)].color }}>
+                    {' '}· {UBIC[ubicDe(sel.action)].icon} {UBIC[ubicDe(sel.action)].label}</span>}</div>
+                {sel.action?.type in TIPOS_UI && sel.action.type !== 'graph' &&
+                  <div style={{ wordBreak: 'break-all', color: t.muted }}>{resumenAccion(sel.action)}</div>}
+                {plan?.origen === 'manual' && (
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button style={btn(false)} onClick={() => setForm({ id: sel.id })}>✏️ Editar paso</button>
+                    <button style={btn(false)} onClick={() => borrarPaso(sel.id)}>🗑 Borrar</button>
+                    <button style={btn(false)} onClick={() => setForm({})}>+ Paso</button>
+                  </div>)}
                 {sel.action?.target && <div style={{ wordBreak: 'break-all', color: t.muted }}>{sel.action.target}</div>}
                 {sel.action?.type === 'graph' && sel.action?.target &&
                   <button style={btn(true)} onClick={() => verCodigo(sel.action.target)}>👁 Ver código PySpark</button>}

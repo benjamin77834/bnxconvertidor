@@ -1,0 +1,25 @@
+@
+{18|Type|XXGrepository|Primary_Name|XXGplan|_ab_object_schema|0|_ab_semantic_schema|21|eme_flatten_format|1|schema_version|34|root_id|0|ent_count|4|rel_count|5|}
+{2010001002|XXGdirectory|0|1|1|0|{@{}@}}
+{2031503001|XXGplan|1|0|1|0|{@{30100001|XXparameter_set|@@@@{{30001002|XXparameter|AB_PLAN_TASK_HAS_FAILURE_CONNECTION|False|13|9|FHK|@{0|}}
+{30001002|XXparameter|AB_PLAN_RUNNING_AUTOROLLBACK|False|13|9|FHK|@{0|}}
+{30001002|XXparameter|_ab_ui_properties.pretty_name|Plan|3|9|P|@{0|}}
+{30001002|XXparameter|_ab_ui_properties.author|ejercicio_bnx|3|9|P|@{0|}}
+}}@{0|}{0|}}}
+{2031500001|XXGtask|2|0|214|0|{@{30100001|XXparameter_set|@@@@{{30001002|XXparameter|!prototype_path|$AB_HOME/lib/components/dtm/tasks/Graph_Task.task|3|9|Pw|@{0|}}
+{30001002|XXparameter|ab_task_graph|$AI_PSET/filtra_transacciones.pset|3|9||@{0|}}
+{30001002|XXparameter|ab_task_workdir|$\{AI_RUN\}|3|9||@{0|}}
+}}@Run_filtra_transacciones|@@{0|}639000|159000|0|15000|15000|0|0|0.0|0.0|{}{0|}0|}}
+{2031500001|XXGtask|3|0|215|0|{@{30100001|XXparameter_set|@@@@{{30001002|XXparameter|!prototype_path|$AB_HOME/lib/components/dtm/tasks/Graph_Task.task|3|9|Pw|@{0|}}
+{30001002|XXparameter|ab_task_graph|$AI_PSET/resumen_transacciones.pset|3|9||@{0|}}
+{30001002|XXparameter|ab_task_workdir|$\{AI_RUN\}|3|9||@{0|}}
+}}@Run_resumen_transacciones|@@{0|}639000|159000|0|15000|15000|0|0|0.0|0.0|{}{0|}0|}}
+{2031500001|XXGtask|4|0|216|0|{@{30100001|XXparameter_set|@@@@{{30001002|XXparameter|!prototype_path|$AB_HOME/lib/components/dtm/tasks/Program_Task.task|3|9|Pw|@{0|}}
+{30001002|XXparameter|ab_task_script|print "Plan_transacciones_diarias terminado"|3|9||@{0|}}
+}}@Log_estado_ok|@@{0|}519000|162000|0|15000|15000|0|0|0.0|0.0|{}{0|}0|}}
+{2010002001|XXGdirectory_object_object|0|1|2|0|{XXGplan|}0|1|}
+{2031504001|XXGplan_task_task|217|0|218|0|{Run_filtra_transacciones|}1|2|}
+{2031504001|XXGplan_task_task|219|0|220|0|{Run_resumen_transacciones|}1|3|}
+{2031504001|XXGplan_task_task|221|0|222|0|{Log_estado_ok|}1|4|}
+{2031513001|XXGtask_prior_task|223|0|224|0|{0|Run_filtra_transacciones|.5|.5|{0|}0|0|0|4|}3|2|}
+{2031513001|XXGtask_prior_task|225|0|226|0|{0|Run_resumen_transacciones|.5|.5|{0|}0|0|0|4|}4|3|}

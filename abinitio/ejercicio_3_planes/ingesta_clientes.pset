@@ -1,0 +1,4 @@
+!prototype|P|||$AI_MP/ingesta_clientes.mp
+FECHA_PROCESO||||20250115
+INPUT_FILE||||/banca/clientes_raw.dat
+OUTPUT_FILE||||/banca/clientes_limpios.dat

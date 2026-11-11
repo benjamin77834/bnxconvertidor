@@ -1,0 +1,8 @@
+record
+  string(10) id_cliente;
+  string(40) nombre;
+  decimal(14,2) total_monto;
+  integer(4) num_tx;
+  integer(4) score_riesgo;
+  string(8) nivel_riesgo;
+end;

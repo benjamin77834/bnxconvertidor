@@ -1,0 +1,8 @@
+record
+  string(10) id_cliente;
+  string(40) nombre;
+  string(12) segmento;
+  string(1) estatus;
+  string(10) fecha_alta;
+  decimal(12,2) limite_credito;
+end;

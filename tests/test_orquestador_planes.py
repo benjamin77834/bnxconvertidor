@@ -80,3 +80,14 @@ def test_airflow_plan_de_planes(tmp_path):
     # el DAG del sub-plan lleva los parametros del pset en ENV
     with open(a) as fh:
         assert "ENV = {'X': '1'}" in o.generar_airflow(json.load(fh))
+
+
+EJERCICIO = os.path.join(os.path.dirname(__file__), "..", "abinitio", "ejercicio_3_planes")
+
+
+@pytest.mark.skipif(not os.path.isdir(EJERCICIO), reason="sin el ejercicio de 3 planes")
+def test_paso_script_apunta_al_ksh_de_la_carpeta(tmp_path):
+    orchs = o.build(EJERCICIO, str(tmp_path))
+    a = next(s["action"] for s in orchs["Plan_ingesta_clientes"]["steps"] if s["action"]["type"] == "script")
+    assert a["status"] == "ok" and a["target"].endswith("prepara_directorios.ksh")
+    assert os.path.isfile(o._ruta_plan(a["target"]))

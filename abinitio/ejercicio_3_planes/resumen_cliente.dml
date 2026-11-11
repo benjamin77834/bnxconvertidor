@@ -1,0 +1,8 @@
+record
+  string(10) id_cliente;
+  string(40) nombre;
+  string(8) nivel_cliente;
+  decimal(12,2) limite_credito;
+  decimal(14,2) total_monto;
+  integer(4) num_tx;
+end;

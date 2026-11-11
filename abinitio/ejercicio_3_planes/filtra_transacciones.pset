@@ -1,0 +1,5 @@
+!prototype|P|||$AI_MP/filtra_transacciones.mp
+FECHA_PROCESO||||20250115
+MONTO_MINIMO||||0
+INPUT_FILE||||/banca/transacciones_raw.dat
+OUTPUT_FILE||||/banca/transacciones_validas.dat

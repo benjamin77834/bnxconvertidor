@@ -152,7 +152,7 @@ def scan(folder):
     nodes = {}  # clave = nombre normalizado
     for fname in sorted(os.listdir(folder)):
         kind = _kind_of(fname)
-        if kind not in ("pset", "graph", "plan", "xfr", "dml"):
+        if kind not in ("pset", "graph", "plan", "xfr", "dml", "ksh"):
             continue
         key = _norm_name(fname)
         path = os.path.join(folder, fname)

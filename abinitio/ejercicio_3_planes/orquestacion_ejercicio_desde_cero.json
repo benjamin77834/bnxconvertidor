@@ -1,0 +1,155 @@
+{
+  "plan": "ejercicio_desde_cero.manual",
+  "nombre": "ejercicio_desde_cero",
+  "origen": "manual",
+  "proyecto": "ejercicio_3_planes",
+  "direccion": "prior",
+  "ejecucion": {
+    "modo": "python",
+    "spark_submit": "spark-submit",
+    "spark_args": [
+      "--master",
+      "local[*]"
+    ],
+    "base_path": "",
+    "env": {}
+  },
+  "steps": [
+    {
+      "id": "t1",
+      "name": "Espera_archivo_clientes",
+      "action": {
+        "type": "esperar_archivo",
+        "status": "ok",
+        "ruta": "/tmp/bnx/entrada/clientes_listo.ok",
+        "timeout_s": 600,
+        "intervalo_s": 15,
+        "ubicacion": "local"
+      },
+      "depends_on": [],
+      "dep_flags": {},
+      "solo_en_fallo": false,
+      "enabled": true,
+      "continue_on_error": false
+    },
+    {
+      "id": "t2",
+      "name": "Ingesta_clientes",
+      "action": {
+        "type": "graph",
+        "status": "ok",
+        "target": "output/ejercicio_3_planes/ingesta_clientes_spark.py",
+        "source": "ingesta_clientes_spark.py",
+        "io": {
+          "lee": [
+            {
+              "ruta": "raw/banca/clientes_raw.dat",
+              "resuelto": true
+            }
+          ],
+          "escribe": [
+            {
+              "ruta": "output/banca/clientes_limpios.dat",
+              "resuelto": true
+            }
+          ]
+        },
+        "ubicacion": "local"
+      },
+      "depends_on": [
+        "t1"
+      ],
+      "dep_flags": {},
+      "solo_en_fallo": false,
+      "enabled": true,
+      "continue_on_error": false
+    },
+    {
+      "id": "t3",
+      "name": "Sube_resultado_a_S3",
+      "action": {
+        "type": "s3_copy",
+        "status": "ok",
+        "origen": "output/ejercicio_3_planes/datos/output/",
+        "destino": "s3://mi-bucket-bnx/ejercicio_3_planes/output/",
+        "recursivo": true,
+        "profile": "bnx-dev",
+        "region": "us-east-1",
+        "ubicacion": "nube"
+      },
+      "depends_on": [
+        "t2"
+      ],
+      "dep_flags": {},
+      "solo_en_fallo": false,
+      "enabled": true,
+      "continue_on_error": false
+    },
+    {
+      "id": "t4",
+      "name": "Glue_enriquecer",
+      "action": {
+        "type": "glue_job",
+        "status": "ok",
+        "job_name": "bnx-enriquecer-clientes",
+        "args": {
+          "--fecha": "2024-01-31",
+          "--entrada": "s3://mi-bucket-bnx/ejercicio_3_planes/output/"
+        },
+        "ubicacion": "nube"
+      },
+      "depends_on": [
+        "t3"
+      ],
+      "dep_flags": {},
+      "solo_en_fallo": false,
+      "enabled": true,
+      "continue_on_error": false
+    },
+    {
+      "id": "t5",
+      "name": "Notifica_webhook",
+      "action": {
+        "type": "http",
+        "status": "ok",
+        "metodo": "POST",
+        "url": "https://hooks.example.com/bnx/ingesta",
+        "body": {
+          "evento": "ingesta_ok",
+          "proyecto": "ejercicio_3_planes"
+        },
+        "headers": {},
+        "token_env": "BNX_WEBHOOK_TOKEN",
+        "timeout_s": 30,
+        "ubicacion": "remoto"
+      },
+      "depends_on": [
+        "t4"
+      ],
+      "dep_flags": {},
+      "solo_en_fallo": false,
+      "enabled": true,
+      "continue_on_error": false
+    },
+    {
+      "id": "t6",
+      "name": "Reporte_en_servidor",
+      "action": {
+        "type": "ssh",
+        "status": "ok",
+        "host": "servidor-reportes.example.com",
+        "usuario": "etl",
+        "comando": "/opt/reportes/generar.sh clientes",
+        "ubicacion": "remoto"
+      },
+      "depends_on": [
+        "t5"
+      ],
+      "dep_flags": {},
+      "solo_en_fallo": false,
+      "enabled": true,
+      "continue_on_error": false
+    }
+  ],
+  "enlaces": []
+}

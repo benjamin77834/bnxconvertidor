@@ -1,0 +1,546 @@
+{
+  "folder": "/Users/benjamingarcia/sam/bnxconvertidor/abinitio/ejercicio_3_planes",
+  "nodes": {
+    "Plan_ingesta_clientes.plan": {
+      "name": "Plan_ingesta_clientes.plan",
+      "file": "Plan_ingesta_clientes.plan",
+      "kind": "plan",
+      "present": true,
+      "eme_type": "XXGplan",
+      "refs": [
+        "$AI_KSH/prepara_directorios.ksh",
+        "$AI_PSET/ingesta_clientes.pset",
+        "$AI_PSET/segmenta_clientes.pset"
+      ],
+      "plan_info": {
+        "tasks": {
+          "2": {
+            "id": 2,
+            "name": "Prepara_directorios",
+            "parent": 1,
+            "type": "XXGtask",
+            "refs": [
+              "prepara_directorios.ksh"
+            ]
+          },
+          "3": {
+            "id": 3,
+            "name": "Run_ingesta_clientes",
+            "parent": 1,
+            "type": "XXGtask",
+            "refs": [
+              "ingesta_clientes.pset"
+            ]
+          },
+          "4": {
+            "id": 4,
+            "name": "Run_segmenta_clientes",
+            "parent": 1,
+            "type": "XXGtask",
+            "refs": [
+              "segmenta_clientes.pset"
+            ]
+          }
+        },
+        "order": [
+          {
+            "from": 3,
+            "to": 2,
+            "flag": "0"
+          },
+          {
+            "from": 4,
+            "to": 3,
+            "flag": "0"
+          }
+        ]
+      }
+    },
+    "Plan_reporte_riesgo.plan": {
+      "name": "Plan_reporte_riesgo.plan",
+      "file": "Plan_reporte_riesgo.plan",
+      "kind": "plan",
+      "present": true,
+      "eme_type": "XXGplan",
+      "refs": [
+        "$AI_KSH/notifica_reporte.ksh",
+        "$AI_PSET/score_riesgo.pset"
+      ],
+      "plan_info": {
+        "tasks": {
+          "2": {
+            "id": 2,
+            "name": "Run_score_riesgo",
+            "parent": 1,
+            "type": "XXGtask",
+            "refs": [
+              "score_riesgo.pset"
+            ]
+          },
+          "3": {
+            "id": 3,
+            "name": "Notifica_reporte",
+            "parent": 1,
+            "type": "XXGtask",
+            "refs": [
+              "notifica_reporte.ksh"
+            ]
+          }
+        },
+        "order": [
+          {
+            "from": 3,
+            "to": 2,
+            "flag": "0"
+          }
+        ]
+      }
+    },
+    "Plan_transacciones_diarias.plan": {
+      "name": "Plan_transacciones_diarias.plan",
+      "file": "Plan_transacciones_diarias.plan",
+      "kind": "plan",
+      "present": true,
+      "eme_type": "XXGplan",
+      "refs": [
+        "$AI_PSET/filtra_transacciones.pset",
+        "$AI_PSET/resumen_transacciones.pset"
+      ],
+      "plan_info": {
+        "tasks": {
+          "2": {
+            "id": 2,
+            "name": "Run_filtra_transacciones",
+            "parent": 1,
+            "type": "XXGtask",
+            "refs": [
+              "filtra_transacciones.pset"
+            ]
+          },
+          "3": {
+            "id": 3,
+            "name": "Run_resumen_transacciones",
+            "parent": 1,
+            "type": "XXGtask",
+            "refs": [
+              "resumen_transacciones.pset"
+            ]
+          },
+          "4": {
+            "id": 4,
+            "name": "Log_estado_ok",
+            "parent": 1,
+            "type": "XXGtask",
+            "refs": []
+          }
+        },
+        "order": [
+          {
+            "from": 3,
+            "to": 2,
+            "flag": "0"
+          },
+          {
+            "from": 4,
+            "to": 3,
+            "flag": "0"
+          }
+        ]
+      }
+    },
+    "asigna_nivel.xfr": {
+      "name": "asigna_nivel.xfr",
+      "file": "asigna_nivel.xfr",
+      "kind": "xfr",
+      "present": true
+    },
+    "calcula_score.xfr": {
+      "name": "calcula_score.xfr",
+      "file": "calcula_score.xfr",
+      "kind": "xfr",
+      "present": true
+    },
+    "clientes_limpios.dml": {
+      "name": "clientes_limpios.dml",
+      "file": "clientes_limpios.dml",
+      "kind": "dml",
+      "present": true
+    },
+    "clientes_raw.dml": {
+      "name": "clientes_raw.dml",
+      "file": "clientes_raw.dml",
+      "kind": "dml",
+      "present": true
+    },
+    "clientes_segmentados.dml": {
+      "name": "clientes_segmentados.dml",
+      "file": "clientes_segmentados.dml",
+      "kind": "dml",
+      "present": true
+    },
+    "cruza_clientes.xfr": {
+      "name": "cruza_clientes.xfr",
+      "file": "cruza_clientes.xfr",
+      "kind": "xfr",
+      "present": true
+    },
+    "filtra_transacciones.mp": {
+      "name": "filtra_transacciones.mp",
+      "file": "filtra_transacciones.mp",
+      "kind": "graph",
+      "present": true,
+      "eme_type": "XXGgraph",
+      "refs": [
+        "$AI_DML/transacciones.dml",
+        "$AI_XFR/normaliza_tx.xfr"
+      ]
+    },
+    "filtra_transacciones.pset": {
+      "name": "filtra_transacciones.pset",
+      "file": "filtra_transacciones.pset",
+      "kind": "pset",
+      "present": true,
+      "prototype": "$AI_MP/filtra_transacciones.mp",
+      "params": {
+        "FECHA_PROCESO": "20250115",
+        "MONTO_MINIMO": "0",
+        "INPUT_FILE": "/banca/transacciones_raw.dat",
+        "OUTPUT_FILE": "/banca/transacciones_validas.dat"
+      }
+    },
+    "ingesta_clientes.mp": {
+      "name": "ingesta_clientes.mp",
+      "file": "ingesta_clientes.mp",
+      "kind": "graph",
+      "present": true,
+      "eme_type": "XXGgraph",
+      "refs": [
+        "$AI_DML/clientes_limpios.dml",
+        "$AI_DML/clientes_raw.dml",
+        "$AI_XFR/limpia_clientes.xfr"
+      ]
+    },
+    "ingesta_clientes.pset": {
+      "name": "ingesta_clientes.pset",
+      "file": "ingesta_clientes.pset",
+      "kind": "pset",
+      "present": true,
+      "prototype": "$AI_MP/ingesta_clientes.mp",
+      "params": {
+        "FECHA_PROCESO": "20250115",
+        "INPUT_FILE": "/banca/clientes_raw.dat",
+        "OUTPUT_FILE": "/banca/clientes_limpios.dat"
+      }
+    },
+    "limpia_clientes.xfr": {
+      "name": "limpia_clientes.xfr",
+      "file": "limpia_clientes.xfr",
+      "kind": "xfr",
+      "present": true
+    },
+    "normaliza_tx.xfr": {
+      "name": "normaliza_tx.xfr",
+      "file": "normaliza_tx.xfr",
+      "kind": "xfr",
+      "present": true
+    },
+    "notifica_reporte.ksh": {
+      "name": "notifica_reporte.ksh",
+      "file": "notifica_reporte.ksh",
+      "kind": "ksh",
+      "present": true
+    },
+    "prepara_directorios.ksh": {
+      "name": "prepara_directorios.ksh",
+      "file": "prepara_directorios.ksh",
+      "kind": "ksh",
+      "present": true
+    },
+    "reporte_riesgo.dml": {
+      "name": "reporte_riesgo.dml",
+      "file": "reporte_riesgo.dml",
+      "kind": "dml",
+      "present": true
+    },
+    "resumen_cliente.dml": {
+      "name": "resumen_cliente.dml",
+      "file": "resumen_cliente.dml",
+      "kind": "dml",
+      "present": true
+    },
+    "resumen_transacciones.mp": {
+      "name": "resumen_transacciones.mp",
+      "file": "resumen_transacciones.mp",
+      "kind": "graph",
+      "present": true,
+      "eme_type": "XXGgraph",
+      "refs": [
+        "$AI_DML/clientes_segmentados.dml",
+        "$AI_DML/resumen_cliente.dml",
+        "$AI_DML/transacciones.dml",
+        "$AI_XFR/cruza_clientes.xfr",
+        "$AI_XFR/suma_por_cliente.xfr"
+      ]
+    },
+    "resumen_transacciones.pset": {
+      "name": "resumen_transacciones.pset",
+      "file": "resumen_transacciones.pset",
+      "kind": "pset",
+      "present": true,
+      "prototype": "$AI_MP/resumen_transacciones.mp",
+      "params": {
+        "FECHA_PROCESO": "20250115",
+        "INPUT_FILE": "/banca/transacciones_validas.dat",
+        "INPUT_INTERFACE_FILE": "/banca/clientes_segmentados.dat",
+        "OUTPUT_FILE": "/banca/resumen_cliente_diario.dat"
+      }
+    },
+    "score_riesgo.mp": {
+      "name": "score_riesgo.mp",
+      "file": "score_riesgo.mp",
+      "kind": "graph",
+      "present": true,
+      "eme_type": "XXGgraph",
+      "refs": [
+        "$AI_DML/reporte_riesgo.dml",
+        "$AI_DML/resumen_cliente.dml",
+        "$AI_XFR/calcula_score.xfr"
+      ]
+    },
+    "score_riesgo.pset": {
+      "name": "score_riesgo.pset",
+      "file": "score_riesgo.pset",
+      "kind": "pset",
+      "present": true,
+      "prototype": "$AI_MP/score_riesgo.mp",
+      "params": {
+        "FECHA_PROCESO": "20250115",
+        "UMBRAL_ALERTA": "60",
+        "INPUT_FILE": "/banca/resumen_cliente_diario.dat",
+        "OUTPUT_FILE": "/banca/reporte_riesgo.dat"
+      }
+    },
+    "segmenta_clientes.mp": {
+      "name": "segmenta_clientes.mp",
+      "file": "segmenta_clientes.mp",
+      "kind": "graph",
+      "present": true,
+      "eme_type": "XXGgraph",
+      "refs": [
+        "$AI_DML/clientes_limpios.dml",
+        "$AI_DML/clientes_segmentados.dml",
+        "$AI_XFR/asigna_nivel.xfr"
+      ]
+    },
+    "segmenta_clientes.pset": {
+      "name": "segmenta_clientes.pset",
+      "file": "segmenta_clientes.pset",
+      "kind": "pset",
+      "present": true,
+      "prototype": "$AI_MP/segmenta_clientes.mp",
+      "params": {
+        "FECHA_PROCESO": "20250115",
+        "LIMITE_PREMIUM": "50000",
+        "INPUT_FILE": "/banca/clientes_limpios.dat",
+        "OUTPUT_FILE": "/banca/clientes_segmentados.dat"
+      }
+    },
+    "suma_por_cliente.xfr": {
+      "name": "suma_por_cliente.xfr",
+      "file": "suma_por_cliente.xfr",
+      "kind": "xfr",
+      "present": true
+    },
+    "transacciones.dml": {
+      "name": "transacciones.dml",
+      "file": "transacciones.dml",
+      "kind": "dml",
+      "present": true
+    }
+  },
+  "edges": [
+    {
+      "from": "Plan_ingesta_clientes.plan",
+      "to": "prepara_directorios.ksh",
+      "type": "usa"
+    },
+    {
+      "from": "Plan_ingesta_clientes.plan",
+      "to": "ingesta_clientes.pset",
+      "type": "usa"
+    },
+    {
+      "from": "Plan_ingesta_clientes.plan",
+      "to": "segmenta_clientes.pset",
+      "type": "usa"
+    },
+    {
+      "from": "Plan_reporte_riesgo.plan",
+      "to": "notifica_reporte.ksh",
+      "type": "usa"
+    },
+    {
+      "from": "Plan_reporte_riesgo.plan",
+      "to": "score_riesgo.pset",
+      "type": "usa"
+    },
+    {
+      "from": "Plan_transacciones_diarias.plan",
+      "to": "filtra_transacciones.pset",
+      "type": "usa"
+    },
+    {
+      "from": "Plan_transacciones_diarias.plan",
+      "to": "resumen_transacciones.pset",
+      "type": "usa"
+    },
+    {
+      "from": "filtra_transacciones.mp",
+      "to": "transacciones.dml",
+      "type": "usa"
+    },
+    {
+      "from": "filtra_transacciones.mp",
+      "to": "normaliza_tx.xfr",
+      "type": "usa"
+    },
+    {
+      "from": "filtra_transacciones.pset",
+      "to": "filtra_transacciones.mp",
+      "type": "instancia"
+    },
+    {
+      "from": "ingesta_clientes.mp",
+      "to": "clientes_limpios.dml",
+      "type": "usa"
+    },
+    {
+      "from": "ingesta_clientes.mp",
+      "to": "clientes_raw.dml",
+      "type": "usa"
+    },
+    {
+      "from": "ingesta_clientes.mp",
+      "to": "limpia_clientes.xfr",
+      "type": "usa"
+    },
+    {
+      "from": "ingesta_clientes.pset",
+      "to": "ingesta_clientes.mp",
+      "type": "instancia"
+    },
+    {
+      "from": "resumen_transacciones.mp",
+      "to": "clientes_segmentados.dml",
+      "type": "usa"
+    },
+    {
+      "from": "resumen_transacciones.mp",
+      "to": "resumen_cliente.dml",
+      "type": "usa"
+    },
+    {
+      "from": "resumen_transacciones.mp",
+      "to": "transacciones.dml",
+      "type": "usa"
+    },
+    {
+      "from": "resumen_transacciones.mp",
+      "to": "cruza_clientes.xfr",
+      "type": "usa"
+    },
+    {
+      "from": "resumen_transacciones.mp",
+      "to": "suma_por_cliente.xfr",
+      "type": "usa"
+    },
+    {
+      "from": "resumen_transacciones.pset",
+      "to": "resumen_transacciones.mp",
+      "type": "instancia"
+    },
+    {
+      "from": "score_riesgo.mp",
+      "to": "reporte_riesgo.dml",
+      "type": "usa"
+    },
+    {
+      "from": "score_riesgo.mp",
+      "to": "resumen_cliente.dml",
+      "type": "usa"
+    },
+    {
+      "from": "score_riesgo.mp",
+      "to": "calcula_score.xfr",
+      "type": "usa"
+    },
+    {
+      "from": "score_riesgo.pset",
+      "to": "score_riesgo.mp",
+      "type": "instancia"
+    },
+    {
+      "from": "segmenta_clientes.mp",
+      "to": "clientes_limpios.dml",
+      "type": "usa"
+    },
+    {
+      "from": "segmenta_clientes.mp",
+      "to": "clientes_segmentados.dml",
+      "type": "usa"
+    },
+    {
+      "from": "segmenta_clientes.mp",
+      "to": "asigna_nivel.xfr",
+      "type": "usa"
+    },
+    {
+      "from": "segmenta_clientes.pset",
+      "to": "segmenta_clientes.mp",
+      "type": "instancia"
+    },
+    {
+      "from": "filtra_transacciones.pset",
+      "to": "resumen_transacciones.pset",
+      "type": "datos:transacciones_validas.dat"
+    },
+    {
+      "from": "ingesta_clientes.pset",
+      "to": "segmenta_clientes.pset",
+      "type": "datos:clientes_limpios.dat"
+    },
+    {
+      "from": "resumen_transacciones.pset",
+      "to": "score_riesgo.pset",
+      "type": "datos:resumen_cliente_diario.dat"
+    },
+    {
+      "from": "segmenta_clientes.pset",
+      "to": "resumen_transacciones.pset",
+      "type": "datos:clientes_segmentados.dat"
+    }
+  ],
+  "instances": {
+    "filtra_transacciones.mp": [
+      "filtra_transacciones.pset"
+    ],
+    "ingesta_clientes.mp": [
+      "ingesta_clientes.pset"
+    ],
+    "resumen_transacciones.mp": [
+      "resumen_transacciones.pset"
+    ],
+    "score_riesgo.mp": [
+      "score_riesgo.pset"
+    ],
+    "segmenta_clientes.mp": [
+      "segmenta_clientes.pset"
+    ]
+  },
+  "missing": [],
+  "graphs_without_pset": [
+    "Plan_ingesta_clientes.plan",
+    "Plan_reporte_riesgo.plan",
+    "Plan_transacciones_diarias.plan"
+  ]
+}

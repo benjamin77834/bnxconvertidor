@@ -40,7 +40,20 @@ Uso:
     python -m src.orquestador airflow   orquestacion_X.json [--out dag.py]
     python -m src.orquestador datos     orquestacion_X.json [--base-path DIR] [--filas 20]
                                         [--seed 42] [--sobrescribir]
+    python -m src.orquestador nueva     NOMBRE --proyecto P [--out DIR]
+                                        (orquestacion desde cero, sin .plan: origen "manual")
+    python -m src.orquestador paso-add  orquestacion_X.json --tipo T --nombre N
+                                        [--despues-de OTRO ...] [--campo clave=valor ...]
+    python -m src.orquestador paso-rm   orquestacion_X.json PASO
+    python -m src.orquestador esperar   RUTA [--timeout S] [--intervalo S]   (sensor)
 PASO se indica por id (t17) o por nombre exacto si es unico.
+
+Tipos de paso (ubicacion): graph/script (local, desde planes) y, para orquestaciones
+manuales o editadas a mano: python, shell, spark_submit, esperar_archivo (local);
+ssh, http (remoto); glue_job, emr_step, lambda, s3_copy (nube AWS, via `aws` CLI).
+Todos se ejecutan SIN shell (lista argv); nunca se guardan credenciales: ssh usa
+clave/agent (BatchMode), http toma el token de una variable de entorno (token_env),
+aws usa su cadena de credenciales (--profile/--region opcionales).
 
 Ejecucion (bloque "ejecucion" del JSON):
   modo "python"       -> python <job>.py
@@ -217,6 +230,11 @@ def build(ab_folder, converted_dir):
         for st in steps:
             if st["action"].get("target") and st["action"]["type"] == "graph":
                 st["action"]["io"] = parse_job_io(st["action"]["target"])
+            elif st["action"]["type"] == "script" and st["action"]["status"] == "ok":
+                # El .ksh se ejecuta/regenera por ruta: la del archivo en la carpeta Ab Initio
+                # (relativa a la raiz del proyecto si esta dentro), no el nombre suelto.
+                fp = os.path.abspath(os.path.join(ab_folder, m["nodes"][st["action"]["target"]]["file"]))
+                st["action"]["target"] = fp if os.path.relpath(fp, _ROOT).startswith("..") else os.path.relpath(fp, _ROOT)
         topo_order(steps)  # valida que no haya ciclos
         stem = os.path.splitext(name)[0]
         base = {"plan": name, "nombre": stem, "direccion": "prior",
@@ -431,7 +449,7 @@ def _ruta_segura(r):
 def validar_plan(o):
     """Lanza ValueError si el plan es inconsistente (ids, dependencias, ciclos, enlaces, ejecucion)."""
     steps = o.get("steps")
-    if not isinstance(steps, list) or not steps:
+    if not isinstance(steps, list) or (not steps and o.get("origen") != "manual"):
         raise ValueError("plan sin pasos")
     ids = [s.get("id") for s in steps]
     if not all(isinstance(i, str) for i in ids) or len(set(ids)) != len(ids):
@@ -439,6 +457,12 @@ def validar_plan(o):
     for s in steps:
         if not isinstance(s.get("depends_on"), list) or any(d not in ids for d in s["depends_on"]):
             raise ValueError(f"dependencias invalidas en {s.get('id')}")
+        act = s.get("action")
+        if isinstance(act, dict) and act.get("type") in TIPOS_NUEVOS:
+            try:
+                normalizar_accion(act)
+            except ValueError as e:
+                raise ValueError(f"{s['id']}: {e}")
     topo_order(steps)
     anc = _ancestros(steps)
     seen_ids = set()
@@ -465,19 +489,14 @@ def validar_plan(o):
             raise ValueError("ejecucion: caracteres de control no permitidos")
         if not isinstance(ej.get("env", {}), dict):
             raise ValueError("ejecucion.env debe ser objeto")
+        if ej.get("aws") is not None:
+            aws = ej["aws"]
+            if not isinstance(aws, dict) or set(aws) - {"profile", "region"}:
+                raise ValueError("ejecucion.aws solo admite profile y region")
+            _perfil_region(aws)
 
 
-def fusionar_edicion(almacenado, entrante):
-    """Aplica a una copia del plan guardado SOLO lo editable desde la GUI.
-
-    Editable: enabled / solo_en_fallo / continue_on_error / depends_on / dep_flags por paso,
-    direccion, ejecucion.{modo,base_path,spark_args} y enlaces. NO se aceptan cambios en
-    action (que decide que se ejecuta), ni pasos nuevos o eliminados, ni ejecucion.env /
-    ejecucion.spark_submit: quien edite el JSON a mano si necesita eso. Devuelve el plan
-    validado o lanza ValueError.
-    """
-    if not isinstance(entrante, dict):
-        raise ValueError("plan invalido")
+def _fusionar_pasos_planes(almacenado, entrante):
     stored_ids = {s["id"] for s in almacenado["steps"]}
     inc = entrante.get("steps")
     if (not isinstance(inc, list) or not all(isinstance(s, dict) for s in inc)
@@ -497,6 +516,30 @@ def fusionar_edicion(almacenado, entrante):
         if isinstance(s.get("dep_flags"), dict):
             t["dep_flags"] = {str(k): str(v) for k, v in s["dep_flags"].items()
                               if k in (t["depends_on"] or [])}
+    return nuevo
+
+
+def fusionar_edicion(almacenado, entrante):
+    """Aplica a una copia del plan guardado SOLO lo editable desde la GUI.
+
+    Editable: enabled / solo_en_fallo / continue_on_error / depends_on / dep_flags por paso,
+    direccion, ejecucion.{modo,base_path,spark_args} y enlaces. NO se aceptan cambios en
+    action (que decide que se ejecuta), ni pasos nuevos o eliminados, ni ejecucion.env /
+    ejecucion.spark_submit: quien edite el JSON a mano si necesita eso. Devuelve el plan
+    validado o lanza ValueError.
+    """
+    if not isinstance(entrante, dict):
+        raise ValueError("plan invalido")
+    if almacenado.get("origen") == "manual":
+        # Orquestacion creada desde cero: ademas se pueden agregar, editar y borrar pasos
+        # (cada accion se normaliza con la lista blanca de campos de su tipo).
+        nuevo = json.loads(json.dumps(almacenado))
+        nuevo["steps"] = _pasos_manuales(almacenado, entrante.get("steps"))
+        vivos = {s["id"] for s in nuevo["steps"]}
+        nuevo["enlaces"] = [e for e in (nuevo.get("enlaces") or [])
+                            if e.get("desde") in vivos and e.get("hacia") in vivos]
+    else:
+        nuevo = _fusionar_pasos_planes(almacenado, entrante)
     if entrante.get("direccion") in ("prior", "inversa"):
         nuevo["direccion"] = entrante["direccion"]
     ej_in = entrante.get("ejecucion")
@@ -505,6 +548,8 @@ def fusionar_edicion(almacenado, entrante):
         for k in ("modo", "base_path", "spark_args"):
             if k in ej_in:
                 ej[k] = ej_in[k]
+        if isinstance(ej_in.get("aws"), dict):
+            ej["aws"] = {k: v for k, v in ej_in["aws"].items() if k in ("profile", "region") and v}
     if "enlaces" in entrante:
         if not isinstance(entrante["enlaces"], list):
             raise ValueError("enlaces debe ser una lista")
@@ -536,8 +581,515 @@ def _spark_submit_bin(ej):
     return cand if os.path.exists(cand) else exe
 
 
-def build_command(step, ej):
+# ---------------------------------------------------------------------------
+# Pasos por ubicacion: local / remoto / nube (orquestaciones manuales o editadas)
+# ---------------------------------------------------------------------------
+
+# tipo -> ubicacion y campos. Todo se ejecuta como lista argv (sin shell); nada de
+# credenciales en el JSON: ssh usa clave/agent, http toma el token de una variable de
+# entorno (token_env) y aws usa su cadena de credenciales (profile/region opcionales).
+TIPOS_NUEVOS = {
+    "python": {"ubic": "local", "req": ["target"], "opt": ["args"]},
+    "shell": {"ubic": "local", "req": ["comando"], "opt": []},
+    "spark_submit": {"ubic": "local", "req": ["target"], "opt": ["master", "spark_args", "args"]},
+    "esperar_archivo": {"ubic": "local", "req": ["ruta"],       # nube si la ruta es s3://
+                        "opt": ["timeout_s", "intervalo_s", "profile", "region"]},
+    "ssh": {"ubic": "remoto", "req": ["host", "comando"], "opt": ["usuario", "puerto", "identidad"]},
+    "http": {"ubic": "remoto", "req": ["url"],
+             "opt": ["metodo", "body", "headers", "token_env", "timeout_s"]},
+    "glue_job": {"ubic": "nube", "req": ["job_name"], "opt": ["args", "profile", "region"]},
+    "emr_step": {"ubic": "nube", "req": ["cluster_id", "script"],
+                 "opt": ["args", "nombre", "action_on_failure", "profile", "region"]},
+    "lambda": {"ubic": "nube", "req": ["function_name"], "opt": ["payload", "profile", "region"]},
+    "s3_copy": {"ubic": "nube", "req": ["origen", "destino"], "opt": ["recursivo", "profile", "region"]},
+}
+_CTRL = re.compile(r"[\x00-\x1f\x7f]")
+_S3_URL = re.compile(r"^s3://[A-Za-z0-9][\w.\-]*(/[^\x00-\x20\x7f]*)?$")
+_HTTP_URL = re.compile(r"^https?://[^\s\x00-\x1f\x7f]+$")
+_HOST = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.\-]{0,252}$")
+_USER = re.compile(r"^[A-Za-z_][\w.\-]{0,63}$")
+_HDR_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9\-]{0,63}$")
+_HDR_SECRETO = re.compile(r"auth|token|secret|key|passw|cookie|credential", re.I)
+_REGION = re.compile(r"^[a-z]{2}(-[a-z0-9]+)+-\d$")
+_PERFIL = re.compile(r"^[\w.\-@]{1,128}$")
+_METODOS = ("GET", "POST", "PUT", "PATCH", "DELETE")
+
+
+def ubicacion_de(a):
+    """'local' | 'remoto' | 'nube' de una accion."""
+    if a.get("type") == "esperar_archivo" and str(a.get("ruta", "")).startswith("s3://"):
+        return "nube"
+    return TIPOS_NUEVOS.get(a.get("type"), {}).get("ubic", "local")
+
+
+def _txt(v, campo, maxlen=4000):
+    if not isinstance(v, str) or not v.strip():
+        raise ValueError(f"{campo} es requerido (texto)")
+    if len(v) > maxlen or _CTRL.search(v):
+        raise ValueError(f"{campo}: demasiado largo o con caracteres de control")
+    return v
+
+
+def _ruta_txt(v, campo):
+    v = _txt(v, campo)
+    if v.startswith("-"):
+        raise ValueError(f"{campo}: no puede empezar con '-'")
+    return v
+
+
+def _lista_txt(v, campo):
+    if v is None:
+        return []
+    if not isinstance(v, list) or len(v) > 200:
+        raise ValueError(f"{campo} debe ser una lista de textos")
+    out = []
+    for x in v:
+        if isinstance(x, (int, float)) and not isinstance(x, bool):
+            x = str(x)
+        if not isinstance(x, str) or len(x) > 4000 or _CTRL.search(x):
+            raise ValueError(f"{campo}: elemento invalido")
+        out.append(x)
+    return out
+
+
+def _entero(v, campo, lo, hi, defecto):
+    if v is None or v == "":
+        return defecto
+    if isinstance(v, bool) or not isinstance(v, (int, str)) or not re.fullmatch(r"\d+", str(v)):
+        raise ValueError(f"{campo} debe ser un entero")
+    n = int(v)
+    if not lo <= n <= hi:
+        raise ValueError(f"{campo} debe estar entre {lo} y {hi}")
+    return n
+
+
+def _perfil_region(src, out=None):
+    """Valida profile/region (del paso o de ejecucion.aws); si out, los copia."""
+    for k, rx in (("profile", _PERFIL), ("region", _REGION)):
+        v = src.get(k)
+        if v in (None, ""):
+            continue
+        if not isinstance(v, str) or not rx.match(v):
+            raise ValueError(f"{k} invalido")
+        if out is not None:
+            out[k] = v
+
+
+def _rel_proyecto(p):
+    if os.path.isabs(p):
+        rel = os.path.relpath(p, _ROOT)
+        return p if rel.startswith("..") else rel
+    return p
+
+
+def normalizar_accion(a, estricto=False):
+    """Valida la accion de un paso y devuelve una copia limpia (solo campos de su tipo).
+
+    Lanza ValueError con el motivo. estricto=True (ediciones desde la GUI): un paso
+    "graph" solo puede apuntar a un <grafo>_<target>.py dentro de output/.
+    """
+    if not isinstance(a, dict):
+        raise ValueError("accion invalida")
+    t = a.get("type")
+    if t not in TIPOS_NUEVOS and t != "graph":
+        raise ValueError(f"tipo de paso no soportado: {t!r}")
+    out = {"type": t, "status": "ok"}
+    if t == "graph":
+        tg = _ruta_txt(a.get("target"), "target")
+        if not tg.endswith(".py"):
+            raise ValueError("target debe ser un .py convertido")
+        if estricto:
+            base = os.path.realpath(os.path.join(_ROOT, "output"))
+            real = os.path.realpath(_ruta_plan(tg))
+            if not real.startswith(base + os.sep) or not re.fullmatch(
+                    r"[\w.\-]+_(?:spark|glue|flink|python)\.py", os.path.basename(real)):
+                raise ValueError("target debe ser un <grafo>_spark.py dentro de output/")
+        out["target"] = _rel_proyecto(tg)
+        out["source"] = os.path.basename(tg)
+        if os.path.isfile(_ruta_plan(out["target"])):
+            out["io"] = parse_job_io(_ruta_plan(out["target"]))
+        else:
+            out["status"] = "faltante"
+        out["ubicacion"] = "local"
+        return out
+    if t in ("python", "spark_submit"):
+        out["target"] = _ruta_txt(a.get("target"), "target")
+        out["args"] = _lista_txt(a.get("args"), "args")
+        if t == "spark_submit":
+            if a.get("master"):
+                out["master"] = _ruta_txt(a["master"], "master")
+            out["spark_args"] = _lista_txt(a.get("spark_args"), "spark_args")
+    elif t == "shell":
+        out["comando"] = _txt(a.get("comando"), "comando")
+        try:
+            if not shlex.split(out["comando"]):
+                raise ValueError
+        except ValueError:
+            raise ValueError("comando: texto vacio o con comillas sin cerrar")
+    elif t == "esperar_archivo":
+        r = _txt(a.get("ruta"), "ruta")
+        if r.startswith("-") or ("://" in r and not _S3_URL.match(r)):
+            raise ValueError("ruta: use una ruta local o s3://bucket/clave")
+        out["ruta"] = r
+        out["timeout_s"] = _entero(a.get("timeout_s"), "timeout_s", 1, 86400, 300)
+        out["intervalo_s"] = _entero(a.get("intervalo_s"), "intervalo_s", 1, 3600, 10)
+    elif t == "ssh":
+        h = _txt(a.get("host"), "host", 253)
+        if not _HOST.match(h):
+            raise ValueError("host invalido")
+        out["host"] = h
+        if a.get("usuario"):
+            if not isinstance(a["usuario"], str) or not _USER.match(a["usuario"]):
+                raise ValueError("usuario invalido")
+            out["usuario"] = a["usuario"]
+        if a.get("puerto") not in (None, ""):
+            out["puerto"] = _entero(a["puerto"], "puerto", 1, 65535, None)
+        if a.get("identidad"):
+            idt = _ruta_txt(a["identidad"], "identidad")
+            if "PRIVATE KEY" in idt:
+                raise ValueError("identidad: es la RUTA de la clave, nunca su contenido")
+            out["identidad"] = idt
+        out["comando"] = _txt(a.get("comando"), "comando")
+    elif t == "http":
+        m = str(a.get("metodo") or "GET").upper()
+        if m not in _METODOS:
+            raise ValueError("metodo debe ser " + "/".join(_METODOS))
+        out["metodo"] = m
+        u = _txt(a.get("url"), "url", 2000)
+        if not _HTTP_URL.match(u):
+            raise ValueError("url debe empezar con http:// o https://")
+        out["url"] = u
+        body = a.get("body")
+        if body not in (None, ""):
+            if isinstance(body, str) and body.lstrip().startswith("@"):
+                raise ValueError("body no puede empezar con '@' (curl lo leeria como archivo)")
+            try:
+                json.dumps(body)
+            except (TypeError, ValueError):
+                raise ValueError("body debe ser JSON")
+            out["body"] = body
+        hd = a.get("headers") or {}
+        if not isinstance(hd, dict):
+            raise ValueError("headers debe ser objeto")
+        out["headers"] = {}
+        for k, v in hd.items():
+            if not isinstance(k, str) or not _HDR_NAME.match(k):
+                raise ValueError(f"header invalido: {k!r}")
+            if _HDR_SECRETO.search(k):
+                raise ValueError(f"header {k!r} parece un secreto: use token_env (variable de entorno)")
+            out["headers"][k] = _txt(str(v), f"header {k}", 1000)
+        if a.get("token_env"):
+            if not isinstance(a["token_env"], str) or not _ENV_NAME.match(a["token_env"]):
+                raise ValueError("token_env debe ser el NOMBRE de una variable de entorno")
+            out["token_env"] = a["token_env"]
+        out["timeout_s"] = _entero(a.get("timeout_s"), "timeout_s", 1, 3600, 30)
+    elif t == "glue_job":
+        n = _txt(a.get("job_name"), "job_name", 255)
+        if not re.fullmatch(r"[\w.\-]{1,255}", n):
+            raise ValueError("job_name invalido")
+        out["job_name"] = n
+        ar = a.get("args") or {}
+        if not isinstance(ar, dict):
+            raise ValueError("args de glue debe ser objeto {\"--clave\": \"valor\"}")
+        out["args"] = {}
+        for k, v in ar.items():
+            if not isinstance(k, str) or not re.fullmatch(r"--[\w.\-]{1,100}", k):
+                raise ValueError(f"argumento de glue invalido: {k!r} (debe empezar con --)")
+            out["args"][k] = _txt(str(v), f"args[{k}]", 2000)
+    elif t == "emr_step":
+        c = a.get("cluster_id")
+        if not isinstance(c, str) or not re.fullmatch(r"j-[A-Z0-9]{1,30}", c):
+            raise ValueError("cluster_id invalido (ej. j-ABC123XYZ)")
+        out["cluster_id"] = c
+        sc = _txt(a.get("script"), "script", 1000)
+        if not _S3_URL.match(sc):
+            raise ValueError("script debe ser s3://bucket/clave")
+        out["script"] = sc
+        out["args"] = _lista_txt(a.get("args"), "args")
+        nm = a.get("nombre") or "bnx-step"
+        if not isinstance(nm, str) or not re.fullmatch(r"[\w .\-]{1,256}", nm):
+            raise ValueError("nombre invalido")
+        out["nombre"] = nm
+        af = a.get("action_on_failure") or "CONTINUE"
+        if af not in ("CONTINUE", "CANCEL_AND_WAIT", "TERMINATE_CLUSTER"):
+            raise ValueError("action_on_failure debe ser CONTINUE, CANCEL_AND_WAIT o TERMINATE_CLUSTER")
+        out["action_on_failure"] = af
+    elif t == "lambda":
+        fn = a.get("function_name")
+        if not isinstance(fn, str) or not re.fullmatch(r"[A-Za-z0-9][\w:.\-]{0,139}", fn):
+            raise ValueError("function_name invalido (nombre o ARN)")
+        out["function_name"] = fn
+        pl = a.get("payload")
+        if pl not in (None, ""):
+            try:
+                json.dumps(pl)
+            except (TypeError, ValueError):
+                raise ValueError("payload debe ser JSON")
+            out["payload"] = pl
+    elif t == "s3_copy":
+        o_, d_ = _ruta_txt(a.get("origen"), "origen"), _ruta_txt(a.get("destino"), "destino")
+        for nom, v in (("origen", o_), ("destino", d_)):
+            if "://" in v and not _S3_URL.match(v):
+                raise ValueError(f"{nom}: use una ruta local o s3://bucket/clave")
+        if not (o_.startswith("s3://") or d_.startswith("s3://")):
+            raise ValueError("s3_copy necesita que origen o destino sea s3://")
+        out["origen"], out["destino"] = o_, d_
+        if a.get("recursivo") is not None and not isinstance(a["recursivo"], bool):
+            raise ValueError("recursivo debe ser booleano")
+        out["recursivo"] = bool(a.get("recursivo"))
+    if t in ("esperar_archivo", "glue_job", "emr_step", "lambda", "s3_copy"):
+        _perfil_region(a, out)
+    out["ubicacion"] = ubicacion_de(out)
+    return out
+
+
+def resumen_accion(a):
+    """Texto corto de lo que hace un paso (para mostrar/GUI)."""
+    t = a.get("type")
+    if t in ("python", "spark_submit"):
+        return a.get("target", "")
+    if t in ("shell", "ssh"):
+        pre = f"{a.get('usuario') + '@' if a.get('usuario') else ''}{a['host']}: " if t == "ssh" else ""
+        return pre + a.get("comando", "")
+    if t == "http":
+        return f"{a.get('metodo', 'GET')} {a.get('url', '')}"
+    if t == "esperar_archivo":
+        return a.get("ruta", "")
+    if t == "glue_job":
+        return a.get("job_name", "")
+    if t == "emr_step":
+        return f"{a.get('cluster_id', '')} {a.get('script', '')}"
+    if t == "lambda":
+        return a.get("function_name", "")
+    if t == "s3_copy":
+        return f"{a.get('origen', '')} -> {a.get('destino', '')}"
+    return ""
+
+
+def _aws_argv(a, ej, *resto):
+    aws = ej.get("aws") or {}
+    pre = ["aws"]
+    prof, reg = a.get("profile") or aws.get("profile"), a.get("region") or aws.get("region")
+    if prof:
+        pre += ["--profile", prof]
+    if reg:
+        pre += ["--region", reg]
+    return pre + list(resto)
+
+
+def _cmd_nuevo(a, ej, portable):
+    """argv del paso. portable=True: nombres de binario (python3/spark-submit) para Airflow."""
+    t = a["type"]
+    py = "python3" if portable else sys.executable
+    if t == "python":
+        return [py, a["target"], *a.get("args", [])]
+    if t == "spark_submit":
+        sb = os.path.basename(ej.get("spark_submit") or "spark-submit") if portable else _spark_submit_bin(ej)
+        m = ["--master", a["master"]] if a.get("master") else []
+        return [sb, *m, *a.get("spark_args", []), a["target"], *a.get("args", [])]
+    if t == "shell":
+        argv = shlex.split(a["comando"])
+        ext = os.path.splitext(argv[0])[1].lower()
+        if ext == ".ksh":
+            return ["ksh", *argv]
+        if ext == ".sh":
+            return ["bash", *argv]
+        return argv
+    if t == "esperar_archivo":
+        c = [py, "-m", "src.orquestador", "esperar", a["ruta"], "--timeout", str(a.get("timeout_s", 300)),
+             "--intervalo", str(a.get("intervalo_s", 10))]
+        aws = ej.get("aws") or {}
+        for k in ("profile", "region"):
+            v = a.get(k) or aws.get(k)
+            if v and a["ruta"].startswith("s3://"):
+                c += [f"--{k}", v]
+        return c
+    if t == "ssh":
+        dest = f"{a['usuario']}@{a['host']}" if a.get("usuario") else a["host"]
+        c = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15"]
+        if a.get("puerto"):
+            c += ["-p", str(a["puerto"])]
+        if a.get("identidad"):
+            c += ["-i", a["identidad"]]
+        return c + [dest, a["comando"]]
+    if t == "http":
+        c = ["curl", "-sS", "--fail", "--max-time", str(a.get("timeout_s", 30)), "-X", a.get("metodo", "GET")]
+        hd = dict(a.get("headers") or {})
+        body = a.get("body")
+        if body not in (None, ""):
+            body = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False)
+            if not any(k.lower() == "content-type" for k in hd):
+                hd["Content-Type"] = "application/json"
+        for k, v in hd.items():
+            c += ["-H", f"{k}: {v}"]
+        if a.get("token_env"):
+            c += ["-H", "@-"]            # el header Authorization llega por stdin, no en argv
+        if body not in (None, ""):
+            c += ["--data-binary", body]
+        return c + [a["url"]]
+    if t == "glue_job":
+        c = _aws_argv(a, ej, "glue", "start-job-run", "--job-name", a["job_name"])
+        return c + (["--arguments", json.dumps(a["args"], ensure_ascii=False)] if a.get("args") else [])
+    if t == "emr_step":
+        paso = {"Type": "Spark", "Name": a.get("nombre", "bnx-step"),
+                "ActionOnFailure": a.get("action_on_failure", "CONTINUE"),
+                "Args": ["--deploy-mode", "cluster", a["script"], *a.get("args", [])]}
+        return _aws_argv(a, ej, "emr", "add-steps", "--cluster-id", a["cluster_id"],
+                         "--steps", json.dumps([paso], ensure_ascii=False))
+    if t == "lambda":
+        return _aws_argv(a, ej, "lambda", "invoke", "--function-name", a["function_name"],
+                         "--cli-binary-format", "raw-in-base64-out",
+                         "--payload", json.dumps(a.get("payload") if a.get("payload") not in (None, "") else {},
+                                                 ensure_ascii=False), os.devnull)
+    if t == "s3_copy":
+        return _aws_argv(a, ej, "s3", "cp", *(["--recursive"] if a.get("recursivo") else []),
+                         a["origen"], a["destino"])
+    raise ValueError(f"tipo de paso no soportado: {t!r}")
+
+
+def stdin_de(step):
+    """Texto que el paso necesita por stdin (hoy: header Authorization de http con token_env),
+    leido de la variable de entorno al ejecutar. None si no aplica."""
     a = step["action"]
+    if a.get("type") == "http" and a.get("token_env"):
+        v = os.environ.get(a["token_env"])
+        if not v:
+            raise ValueError(f"falta la variable de entorno {a['token_env']} (token del paso)")
+        if _CTRL.search(v):
+            raise ValueError(f"{a['token_env']} tiene caracteres de control")
+        return f"Authorization: Bearer {v}\n"
+    return None
+
+
+def comando_airflow(step, ej, root):
+    """Linea de bash equivalente para un BashOperator de Airflow (tipos nuevos)."""
+    a = step["action"]
+    c = shlex.join(_cmd_nuevo(a, ej, portable=True))
+    if a["type"] == "http" and a.get("token_env"):
+        c = f"printf 'Authorization: Bearer %s\\n' \"${{{a['token_env']}:?defina {a['token_env']}}}\" | " + c
+    if a["type"] == "esperar_archivo":
+        c = f"cd {shlex.quote(root)} && " + c
+    # Airflow trata un bash_command que termina en .sh/.bash como plantilla de archivo
+    return c + " " if c.endswith((".sh", ".bash", ".ksh")) else c
+
+
+def esperar_archivo(ruta, timeout=300, intervalo=10, profile=None, region=None,
+                    sleep=None, run=None):
+    """Sensor: espera a que exista la ruta local (admite comodines) o el objeto/prefijo s3://.
+    True si aparece antes de `timeout` segundos."""
+    import glob as _glob
+    import time as _time
+    sleep = sleep or _time.sleep
+    run = run or subprocess.run
+    limite = _time.monotonic() + timeout
+
+    def existe():
+        if not ruta.startswith("s3://"):
+            return bool(_glob.glob(ruta))
+        pre = ["aws"] + (["--profile", profile] if profile else []) + (["--region", region] if region else [])
+        bucket, _, key = ruta[5:].partition("/")
+        if key and not key.endswith("/"):
+            r = run(pre + ["s3api", "head-object", "--bucket", bucket, "--key", key],
+                    capture_output=True, text=True)
+            return r.returncode == 0
+        r = run(pre + ["s3", "ls", ruta], capture_output=True, text=True)
+        return r.returncode == 0 and bool((r.stdout or "").strip())
+
+    while True:
+        if existe():
+            print(f"[ok] existe: {ruta}")
+            return True
+        if _time.monotonic() >= limite:
+            print(f"[x] tiempo agotado esperando {ruta} ({timeout}s)")
+            return False
+        sleep(intervalo)
+
+
+def _siguiente_id(o):
+    return "t" + str(max([_num(s["id"]) for s in o["steps"]] + [0]) + 1)
+
+
+def agregar_paso(o, tipo, nombre, depends_on=None, **campos):
+    """Agrega un paso a una orquestacion (valida accion, dependencias y ciclos antes de devolver).
+    Los campos son los del tipo (ver TIPOS_NUEVOS; "graph" usa target=<*_spark.py>)."""
+    nombre = _txt(nombre, "nombre", 120)
+    accion = normalizar_accion({"type": tipo, **campos})
+    paso = {"id": _siguiente_id(o), "name": nombre, "action": accion,
+            "depends_on": sorted(depends_on or [], key=_num), "dep_flags": {},
+            "solo_en_fallo": False, "enabled": True, "continue_on_error": False}
+    o["steps"].append(paso)
+    try:
+        validar_plan(o)
+    except ValueError:
+        o["steps"].pop()
+        raise
+    return paso
+
+
+def quitar_paso(o, ref):
+    s = _find(o, ref)
+    o["steps"] = [x for x in o["steps"] if x["id"] != s["id"]]
+    for x in o["steps"]:
+        x["depends_on"] = [d for d in x["depends_on"] if d != s["id"]]
+        x["dep_flags"] = {k: v for k, v in (x.get("dep_flags") or {}).items() if k != s["id"]}
+    o["enlaces"] = [e for e in (o.get("enlaces") or []) if s["id"] not in (e["desde"], e["hacia"])]
+    return s
+
+
+def _pasos_manuales(almacenado, inc):
+    """Pasos entrantes de una orquestacion manual -> lista normalizada (lista blanca de campos)."""
+    if not isinstance(inc, list) or not all(isinstance(s, dict) for s in inc) or len(inc) > 300:
+        raise ValueError("pasos invalidos")
+    previos = {s["id"]: s for s in almacenado.get("steps", [])}
+    out = []
+    for s in inc:
+        sid = s.get("id")
+        if not isinstance(sid, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,30}", sid):
+            raise ValueError("id de paso invalido")
+        deps = s.get("depends_on", [])
+        if not isinstance(deps, list) or not all(isinstance(d, str) for d in deps):
+            raise ValueError(f"dependencias invalidas en {sid}")
+        paso = {"id": sid, "name": _txt(s.get("name"), f"{sid}.name", 120),
+                "action": normalizar_accion(s.get("action"), estricto=True),
+                "depends_on": sorted(set(deps), key=_num),
+                "dep_flags": {k: v for k, v in (previos.get(sid, {}).get("dep_flags") or {}).items()
+                              if k in deps},
+                "solo_en_fallo": False, "enabled": True, "continue_on_error": False}
+        for k in ("enabled", "solo_en_fallo", "continue_on_error"):
+            if k in s:
+                if not isinstance(s[k], bool):
+                    raise ValueError(f"{sid}.{k} debe ser booleano")
+                paso[k] = s[k]
+        out.append(paso)
+    return out
+
+
+def nueva(nombre, proyecto, base=None):
+    """Crea una orquestacion VACIA desde cero (sin .plan), con el mismo esquema que las
+    generadas desde planes, marcada origen="manual". Se guarda en
+    <base>/<proyecto>/orquestacion_<nombre>.json (base por defecto: output/ del proyecto)
+    y devuelve la ruta. No pisa una existente (ValueError)."""
+    if not re.fullmatch(r"[A-Za-z0-9][\w.\-]{0,80}", nombre or ""):
+        raise ValueError("nombre invalido (letras, numeros, . _ -)")
+    if not re.fullmatch(r"[A-Za-z0-9][\w.\-]{0,63}", proyecto or ""):
+        raise ValueError("proyecto invalido (letras, numeros, . _ -)")
+    base = base or os.path.join(_ROOT, "output")
+    destino = os.path.join(base, proyecto, f"orquestacion_{nombre}.json")
+    if os.path.exists(destino):
+        raise ValueError(f"ya existe {os.path.relpath(destino, _ROOT) if destino.startswith(_ROOT) else destino}")
+    o = {"plan": nombre + ".manual", "nombre": nombre, "origen": "manual", "proyecto": proyecto,
+         "direccion": "prior", "ejecucion": json.loads(json.dumps(EJECUCION_DEFECTO)),
+         "steps": [], "enlaces": []}
+    validar_plan(o)
+    os.makedirs(os.path.dirname(destino), exist_ok=True)
+    _write(destino, o)
+    return destino
+
+
+def build_command(step, ej, portable=False):
+    a = step["action"]
+    if a["type"] in TIPOS_NUEVOS:
+        return _cmd_nuevo(a, ej, portable)
     if a["type"] == "graph":
         if ej.get("modo") == "spark-submit":
             return [_spark_submit_bin(ej), *ej.get("spark_args", []), a["target"]]
@@ -618,7 +1170,11 @@ def mostrar(o):
         flag = ("" if s["enabled"] else "  [DESHABILITADO]") + ("  [solo en fallo]" if s.get("solo_en_fallo") else "")
         a = s["action"]
         tgt = os.path.basename(a["target"]) if a.get("target") else (a.get("source") or "-")
-        print(f"{i:2}. {sid:<5} {s['name']:<32} <- {deps:<12} {a['type']}:{tgt} ({a['status']}){flag}")
+        if a["type"] in TIPOS_NUEVOS:
+            tgt = resumen_accion(a)
+            print(f"{i:2}. {sid:<5} {s['name']:<32} <- {deps:<12} [{ubicacion_de(a)}] {a['type']}: {tgt}{flag}")
+        else:
+            print(f"{i:2}. {sid:<5} {s['name']:<32} <- {deps:<12} {a['type']}:{tgt} ({a['status']}){flag}")
         if s.get("dep_flags"):
             print(f"      flags de dependencia: {s['dep_flags']}")
     ej = _ej(o)
@@ -664,7 +1220,9 @@ def ejecutar(o, real=False, modo=None, base_path=None, _nivel=0, _pila=()):
           + (f" (pset {o['pset']})" if o.get("pset") else "")
           + f" - {'EJECUCION REAL' if real else 'DRY-RUN'} - modo {ej['modo']}")
     # En un plan de planes cada sub-plan valida su propio base_path (si no se comparte uno)
-    if real and not es_planes and not _base_efectiva(ej):
+    usa_jobs = o.get("origen") != "manual" or any(
+        s["enabled"] and s["action"]["type"] == "graph" for s in o["steps"])
+    if real and not es_planes and usa_jobs and not _base_efectiva(ej):
         print("[x] La ejecucion real exige base_path (ejecucion.base_path o --base-path): "
               "sin el, los jobs usarian el bucket S3 por defecto.")
         return False
@@ -685,7 +1243,7 @@ def ejecutar(o, real=False, modo=None, base_path=None, _nivel=0, _pila=()):
             print(f"[x] {sid} {s['name']}: omitido, fallo previo {fallo_previo}")
             failed.add(sid)
             continue
-        if a["type"] == "noop" or not a.get("target"):
+        if a["type"] == "noop" or (not a.get("target") and a["type"] not in TIPOS_NUEVOS):
             motivo = a.get("nota") or a["status"]
             print(f"[~] {sid} {s['name']}: sin accion ({motivo})")
             if a["status"] in ("faltante", "sin_convertir"):
@@ -746,6 +1304,34 @@ def ejecutar(o, real=False, modo=None, base_path=None, _nivel=0, _pila=()):
                     failed.add(sid)
                 else:
                     done.add(sid)
+            continue
+        if a["type"] in TIPOS_NUEVOS:
+            # local / remoto / nube: argv exacto; dry-run solo lo muestra
+            try:
+                cmd = build_command(s, ej)
+                entrada = stdin_de(s) if real else None
+            except ValueError as e:
+                print(f"[x] {sid} {s['name']}: {e}")
+                failed.add(sid)
+                continue
+            print(f"[>] {sid} {s['name']} [{ubicacion_de(a)}/{a['type']}]: {shlex.join(cmd)}")
+            if a["type"] == "http" and a.get("token_env"):
+                print(f"    (header Authorization desde ${a['token_env']}, por stdin)")
+            if not real:
+                done.add(sid)
+                continue
+            try:
+                rc = subprocess.run(cmd, env=_job_env(ej), input=entrada, text=entrada is not None,
+                                    cwd=_ROOT if a["type"] == "esperar_archivo" else None).returncode
+            except OSError as e:
+                print(f"[x] {sid}: no se pudo lanzar {cmd[0]}: {e}")
+                rc = 127
+            if rc == 0:
+                done.add(sid)
+            else:
+                print(f"[x] {sid} termino con codigo {rc}")
+                if not s["continue_on_error"]:
+                    failed.add(sid)
             continue
         cmd = build_command(s, ej)
         print(f"[>] {sid} {s['name']}: {' '.join(cmd)}")
@@ -1054,6 +1640,9 @@ def generar_airflow(o, root=None):
 
     - graph  -> BashOperator con `python3 job.py` o `spark-submit ... job.py` (segun modo)
     - script -> BashOperator `ksh <script>`
+    - python/shell/spark_submit/ssh/http/esperar_archivo/glue_job/emr_step/lambda/s3_copy ->
+      BashOperator con el mismo comando que muestra el dry-run (curl, ssh, aws ...); el worker
+      debe tener esos binarios y credenciales (token_env como variable de entorno)
     - noop   -> EmptyOperator (tarea Ab Initio sin traduccion)
     - faltante/sin_convertir -> BashOperator que FALLA con mensaje (no se omite en silencio)
     - enlaces -> BashOperator extra entre origen y destino (cp local o aws s3 sync)
@@ -1078,6 +1667,8 @@ def generar_airflow(o, root=None):
 
     def cmd_for(s):
         a = s["action"]
+        if a["type"] in TIPOS_NUEVOS:
+            return comando_airflow(s, ej, root)
         if a["type"] == "noop" or not a.get("target"):
             return None
         tgt = a["target"] if os.path.isabs(a["target"]) else os.path.join(root, a["target"])
@@ -1107,6 +1698,8 @@ def generar_airflow(o, root=None):
     L += [f"ENV = {env!r}", "",
          f"with DAG(dag_id={dag_id!r}, schedule=None, start_date=datetime(2024, 1, 1),",
          "         catchup=False, tags=['bnx', 'abinitio']) as dag:"]
+    if not steps:
+        L.append("    pass  # orquestacion sin pasos")
 
     for s in steps:
         a = s["action"]
@@ -1220,6 +1813,26 @@ def main(argv=None):
     cp.add_argument("--out", default=None, help="carpeta de salida (default: la del primer plan)")
     cp.add_argument("--sin-cadena", action="store_true",
                     help="sin dependencias entre planes (se acomodan despues)")
+    nv = sub.add_parser("nueva", help="orquestacion vacia desde cero (sin .plan)")
+    nv.add_argument("nombre")
+    nv.add_argument("--proyecto", required=True)
+    nv.add_argument("--out", default=None, help="carpeta base (default: output/)")
+    pa = sub.add_parser("paso-add", help="agrega un paso (python, shell, ssh, http, glue_job ...)")
+    pa.add_argument("json")
+    pa.add_argument("--tipo", required=True, choices=["graph", *TIPOS_NUEVOS])
+    pa.add_argument("--nombre", required=True)
+    pa.add_argument("--despues-de", action="append", default=[], help="paso previo (repetible)")
+    pa.add_argument("--campo", action="append", default=[], metavar="CLAVE=VALOR",
+                    help="campo del tipo; el valor se lee como JSON si es valido (repetible)")
+    pr = sub.add_parser("paso-rm", help="quita un paso y sus dependencias/enlaces")
+    pr.add_argument("json")
+    pr.add_argument("paso")
+    es = sub.add_parser("esperar", help="sensor: espera a que exista un archivo local o s3://")
+    es.add_argument("ruta")
+    es.add_argument("--timeout", type=int, default=300)
+    es.add_argument("--intervalo", type=int, default=10)
+    es.add_argument("--profile", default=None)
+    es.add_argument("--region", default=None)
     af = sub.add_parser("airflow")
     af.add_argument("json")
     af.add_argument("--out", default=None)
@@ -1232,6 +1845,12 @@ def main(argv=None):
 
 
 def _run(a):
+    if a.cmd == "nueva":
+        ruta = nueva(a.nombre, a.proyecto, base=a.out)
+        print("[ok]", ruta)
+        return 0
+    if a.cmd == "esperar":
+        return 0 if esperar_archivo(a.ruta, a.timeout, a.intervalo, a.profile, a.region) else 1
     if a.cmd == "componer":
         o = componer(a.nombre, a.planes, en_cadena=not a.sin_cadena)
         out = a.out or os.path.dirname(os.path.abspath(a.planes[0]))
@@ -1293,6 +1912,21 @@ def _run(a):
         o["enlaces"] = [e for e in o.get("enlaces", []) if e["id"] != a.id]
         if len(o["enlaces"]) == n:
             raise SystemExit(f"[x] enlace no encontrado: {a.id}")
+    elif a.cmd == "paso-add":
+        campos = {}
+        for kv in a.campo:
+            k, sep, v = kv.partition("=")
+            if not sep or not k:
+                raise SystemExit(f"[x] --campo espera CLAVE=VALOR: {kv!r}")
+            try:
+                campos[k] = json.loads(v)
+            except ValueError:
+                campos[k] = v
+        deps = [_find(o, d)["id"] for d in a.despues_de]
+        agregar_paso(o, a.tipo, a.nombre, deps, **campos)
+    elif a.cmd == "paso-rm":
+        quitar_paso(o, a.paso)
+        validar_plan(o)
     elif a.cmd == "invertir":
         invertir(o)
     elif a.cmd in ("deshabilitar", "habilitar"):

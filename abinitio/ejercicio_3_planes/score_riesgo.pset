@@ -1,0 +1,5 @@
+!prototype|P|||$AI_MP/score_riesgo.mp
+FECHA_PROCESO||||20250115
+UMBRAL_ALERTA||||60
+INPUT_FILE||||/banca/resumen_cliente_diario.dat
+OUTPUT_FILE||||/banca/reporte_riesgo.dat
