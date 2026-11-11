@@ -146,7 +146,11 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path
 
-        if "/library" in path:
+        if path.startswith("/orquestador/") or path.startswith("/api/orquestador/"):
+            self._handle_orquestador(path)
+        elif path in ("/mlops/package/orden", "/api/mlops/package/orden"):
+            self._handle_mlops_package_orden()
+        elif "/library" in path:
             # Biblioteca de grafos LOCAL (no depende del bucket S3 de DataLab,
             # que esta bloqueado por una SCP). Se guarda en ./bnx_library/.
             self._handle_library()
@@ -914,6 +918,13 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             py_target = data.get("py_target") or "all"
             if py_target not in ("all", "py38-311", "py312plus"):
                 py_target = "all"
+            # Jobs a registrar en el REGISTRY (el resto = modulos de apoyo copiados
+            # exactos a bank_src/). Ausente o null = todos registrados (como antes).
+            registry = data.get("registry")
+            if registry is not None:
+                if not isinstance(registry, list) or not all(isinstance(x, str) for x in registry):
+                    self._json_response(400, {"error": "'registry' debe ser una lista de nombres"})
+                    return
             # El ZIP se escribe DIRECTO a disco (out_path) para no cargar ~700 MB
             # en memoria: en Windows/Python 3.8 de 32 bits eso rompe con
             # 'I/O operation on closed file'. 'zip_out' es la ruta del archivo.
@@ -927,7 +938,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 include_bank_libs=include_bank, optimize=optimize,
                 extra_steps=extra_steps, include_monitoring=include_monitoring,
                 separate_monitoring=separate_monitoring, full_env=full_env,
-                py_target=py_target, out_path=zip_path)
+                py_target=py_target, out_path=zip_path, registry=registry)
             # Separar el meta (trae los archivos de codigo editables, grandes).
             meta = next((r for r in report if r.get("_meta")), {})
             code_files = meta.pop("_code_files", {}) if meta else {}
@@ -1023,6 +1034,101 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         with open(fp, "w", encoding="utf-8") as fh:
             json.dump(state, fh)
         self._json_response(200, {"ok": True, "path": path})
+
+    def _handle_mlops_package_orden(self):
+        """Orden de las fuentes del paquete (orden.json). Body JSON:
+          {token, action: "get"}                      -> fuentes del REGISTRY + orden actual
+          {token, action: "save", sources: {...}}     -> valida y guarda orden.json
+        sources: {"<fuente>": {"pivot": bool, "depends_on": [..]}}. Solo se aceptan
+        fuentes del REGISTRY del paquete, sin ciclos. Para que entre al ZIP hay que
+        rehacerlo (/mlops/package/rebuild)."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length) if content_length else b""
+        try:
+            data = json.loads(body.decode("utf-8", errors="replace")) if body else {}
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._json_response(400, {"error": "Invalid JSON body"})
+            return
+        if not isinstance(data, dict):
+            self._json_response(400, {"error": "Invalid JSON body"})
+            return
+        token = str(data.get("token") or "").strip()
+        fp = self._mlops_edit_path(token)
+        if not fp or not os.path.isfile(fp):
+            self._json_response(404, {"error": "token no encontrado o expirado"})
+            return
+        with open(fp, "r", encoding="utf-8") as fh:
+            state = json.load(fh)
+        code_files = state.get("code_files") or {}
+        router = next((v for k, v in code_files.items()
+                       if k.endswith("aggregates/router.py")), "")
+        m = re.search(r"REGISTRY\s*=\s*\{(.*?)\}", router, re.S)
+        fuentes = re.findall(r'["\'](\w+)["\']\s*:', m.group(1)) if m else []
+        actual = {}
+        try:
+            actual = (json.loads(code_files.get("orden.json") or "{}") or {}).get("sources") or {}
+        except (json.JSONDecodeError, AttributeError):
+            actual = {}
+        action = data.get("action", "get")
+        if action == "get":
+            self._json_response(200, {"ok": True, "fuentes": fuentes, "orden": actual,
+                                      "tiene_orden": "orden.json" in code_files})
+            return
+        if action != "save":
+            self._json_response(400, {"error": "accion desconocida"})
+            return
+        src = data.get("sources")
+        if not isinstance(src, dict):
+            self._json_response(400, {"error": "'sources' debe ser un objeto"})
+            return
+        limpio = {}
+        for nombre, conf in src.items():
+            if nombre not in fuentes:
+                self._json_response(400, {"error": f"fuente desconocida: {nombre!r}"})
+                return
+            if not isinstance(conf, dict):
+                self._json_response(400, {"error": f"config invalida en {nombre}"})
+                return
+            item = {}
+            if conf.get("pivot") is True:
+                item["pivot"] = True
+            if "depends_on" in conf:
+                deps = conf["depends_on"]
+                if (not isinstance(deps, list) or any(d not in fuentes for d in deps)
+                        or nombre in deps or len(set(deps)) != len(deps)):
+                    self._json_response(400, {"error": f"depends_on invalido en {nombre}"})
+                    return
+                item["depends_on"] = list(deps)
+            if item:
+                limpio[nombre] = item
+        # Ciclos (mismo criterio que main.py: solo dependencias explicitas)
+        estado = {}
+
+        def _ciclo(n, pila):
+            if estado.get(n) == 1:
+                return pila[pila.index(n):] + [n]
+            if estado.get(n) == 2:
+                return None
+            estado[n] = 1
+            for d in (limpio.get(n) or {}).get("depends_on", []):
+                c = _ciclo(d, pila + [n])
+                if c:
+                    return c
+            estado[n] = 2
+            return None
+        for n in limpio:
+            c = _ciclo(n, [])
+            if c:
+                self._json_response(400, {"error": "ciclo de dependencias: " + " -> ".join(c)})
+                return
+        if limpio:
+            code_files["orden.json"] = json.dumps({"sources": limpio}, indent=2, ensure_ascii=False) + "\n"
+        else:
+            code_files.pop("orden.json", None)   # sin reglas: el orden de siempre
+        state["code_files"] = code_files
+        with open(fp, "w", encoding="utf-8") as fh:
+            json.dump(state, fh)
+        self._json_response(200, {"ok": True, "orden": limpio, "tiene_orden": bool(limpio)})
 
     def _handle_mlops_package_sign(self):
         """Firma el paquete PySpark generado (SHA-256 + Ed25519), produce un
@@ -3409,6 +3515,267 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             except Exception:
                 continue
         self._json_response(200, {"reports": items})
+
+    # ------------------------------------------------------------------
+    # Orquestador de planes Ab Initio (GUI). Solo DRY-RUN desde aqui: el server
+    # tiene CORS abierto, asi que no se expone ejecucion real de procesos.
+    # Rutas restringidas a output/ (orquestacion_*.json, *_spark.py) y abinitio/.
+    # ------------------------------------------------------------------
+    def _orq_safe(self, rel, base_dir, name_re):
+        """Ruta absoluta segura bajo <proyecto>/<base_dir> o None."""
+        if not isinstance(rel, str) or not rel:
+            return None
+        root = os.path.dirname(os.path.abspath(__file__))
+        base = os.path.realpath(os.path.join(root, base_dir))
+        p = os.path.realpath(os.path.join(root, rel))
+        if not (p == base or p.startswith(base + os.sep)):
+            return None
+        if not re.fullmatch(name_re, os.path.basename(p)):
+            return None
+        return p
+
+    def _handle_orquestador(self, path):
+        import glob as _glob
+        import io as _io
+        import contextlib as _ctx
+        import threading as _th
+        from src import orquestador as _orq
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length) if content_length else b""
+        try:
+            data = json.loads(body.decode("utf-8", errors="replace")) if body else {}
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        root = os.path.dirname(os.path.abspath(__file__))
+        action = path.rstrip("/").rsplit("/", 1)[-1]
+        orq_re = r"orquestacion_[\w.\-]+\.json"
+
+        if action == "list":
+            plans = [os.path.relpath(f, root) for f in sorted(
+                _glob.glob(os.path.join(root, "output", "**", "orquestacion_*.json"), recursive=True))]
+            maps = [os.path.relpath(f, root) for f in sorted(
+                _glob.glob(os.path.join(root, "abinitio", "**", "pset_map.json"), recursive=True))]
+            self._json_response(200, {"plans": plans, "maps": maps})
+            return
+
+        if action == "map":
+            fp = self._orq_safe(data.get("file"), "abinitio", r"pset_map\.json")
+            if not fp or not os.path.isfile(fp):
+                self._json_response(404, {"error": "mapa no encontrado"})
+                return
+            with open(fp, "r", encoding="utf-8") as f:
+                self._json_response(200, json.load(f))
+            return
+
+        # ---- Importar psets/planes/grafos desde la GUI y procesarlos ----
+        allowed_ext = (".pset", ".plan", ".mp", ".xfr", ".dml", ".ksh", ".dbc")
+        proj_re = r"[A-Za-z0-9][\w.\-]{0,63}"
+
+        if action == "projects":
+            base = os.path.join(root, "abinitio")
+            out = []
+            for d in sorted(os.listdir(base)) if os.path.isdir(base) else []:
+                dp = os.path.join(base, d)
+                if not os.path.isdir(dp) or not re.fullmatch(proj_re, d):
+                    continue
+                files = sorted(f for f in os.listdir(dp) if f.lower().endswith(allowed_ext))
+                counts = {}
+                for f in files:
+                    e = os.path.splitext(f)[1].lower().lstrip(".")
+                    counts[e] = counts.get(e, 0) + 1
+                odir = os.path.join(root, "output", d)
+                out.append({
+                    "name": d, "counts": counts, "files": files,
+                    "tiene_mapa": os.path.isfile(os.path.join(dp, "pset_map.json")),
+                    "orquestaciones": sorted(f for f in (os.listdir(odir) if os.path.isdir(odir) else [])
+                                             if re.fullmatch(orq_re, f)),
+                })
+            self._json_response(200, {"projects": out})
+            return
+
+        if action == "upload":
+            # Un archivo por peticion (base64) para no armar cuerpos gigantes.
+            import base64 as _b64
+            proj = str(data.get("project") or "")
+            name = os.path.basename(str(data.get("name") or ""))
+            if not re.fullmatch(proj_re, proj):
+                self._json_response(400, {"error": "nombre de proyecto invalido (letras, numeros, . _ -)"})
+                return
+            if not name or not name.lower().endswith(allowed_ext) or name.startswith("."):
+                self._json_response(400, {"error": f"extension no permitida: {name!r} (permitidas: {', '.join(allowed_ext)})"})
+                return
+            try:
+                raw = _b64.b64decode(data.get("data") or "", validate=True)
+            except Exception:
+                self._json_response(400, {"error": "contenido base64 invalido"})
+                return
+            if len(raw) > 200 * 1024 * 1024:
+                self._json_response(400, {"error": "archivo mayor a 200 MB"})
+                return
+            dp = os.path.join(root, "abinitio", proj)
+            os.makedirs(dp, exist_ok=True)
+            target = os.path.join(dp, name)
+            existed = os.path.exists(target)
+            with open(target, "wb") as f:
+                f.write(raw)
+            self._json_response(200, {"ok": True, "file": name, "bytes": len(raw), "replaced": existed})
+            return
+
+        if action == "process":
+            # Mapa de relaciones + conversion de grafos + orquestaciones de los planes.
+            import subprocess as _sp
+            proj = str(data.get("project") or "")
+            if not re.fullmatch(proj_re, proj) or not os.path.isdir(os.path.join(root, "abinitio", proj)):
+                self._json_response(400, {"error": "proyecto no encontrado"})
+                return
+            lock = BNXHandler.__dict__.get("_orq_lock")
+            if lock is None:
+                BNXHandler._orq_lock = lock = _th.Lock()
+            if not lock.acquire(blocking=False):
+                self._json_response(409, {"error": "ya hay un proceso en curso; espera a que termine"})
+                return
+            try:
+                ab = os.path.join("abinitio", proj)
+                out_dir = os.path.join("output", proj)
+                log = []
+                r1 = _sp.run([sys.executable, "-m", "src.pset_map", ab], cwd=root,
+                             capture_output=True, text=True, timeout=300)
+                log.append((r1.stdout or "") + (r1.stderr or ""))
+                r2 = _sp.run([sys.executable, os.path.join("scripts", "convertir_lote.py"), ab,
+                              "--out", out_dir, "--target", "spark", "--timeout", "900"],
+                             cwd=root, capture_output=True, text=True, timeout=3600)
+                log.append((r2.stdout or "") + (r2.stderr or ""))
+                odir = os.path.join(root, "output", proj)
+                plans = sorted(os.path.join("output", proj, f) for f in
+                               (os.listdir(odir) if os.path.isdir(odir) else []) if re.fullmatch(orq_re, f))
+                ok = r1.returncode == 0 and r2.returncode == 0
+                self._json_response(200 if ok else 500, {
+                    "ok": ok, "plans": plans, "log": "\n".join(log)[-6000:],
+                    "map": os.path.join("abinitio", proj, "pset_map.json")})
+            except _sp.TimeoutExpired:
+                self._json_response(500, {"error": "tiempo agotado procesando el proyecto"})
+            finally:
+                lock.release()
+            return
+
+        if action == "code":
+            # Codigo generado de un paso (solo lectura, solo <grafo>_<target>.py bajo output/).
+            cp = self._orq_safe(data.get("file"), "output", r"[\w.\-]+_(?:spark|glue|flink|python)\.py")
+            if not cp or not os.path.isfile(cp):
+                self._json_response(404, {"error": "codigo no encontrado"})
+                return
+            limit = 400 * 1024
+            size = os.path.getsize(cp)
+            with open(cp, "r", encoding="utf-8", errors="replace") as f:
+                text = f.read(limit)
+            self._json_response(200, {"name": os.path.basename(cp), "size": size,
+                                      "truncated": size > limit, "code": text})
+            return
+
+        fp = self._orq_safe(data.get("file"), "output", orq_re)
+        if not fp:
+            self._json_response(400, {"error": "archivo invalido (debe ser output/**/orquestacion_*.json)"})
+            return
+
+        if action == "get":
+            if not os.path.isfile(fp):
+                self._json_response(404, {"error": "no existe"})
+                return
+            with open(fp, "r", encoding="utf-8") as f:
+                plan = json.load(f)
+            try:
+                order = _orq.topo_order(plan.get("steps", []))
+            except ValueError as e:
+                order = []
+                plan["_warning"] = str(e)
+            self._json_response(200, {"plan": plan, "order": order})
+            return
+
+        if action in ("save", "sugerir"):
+            # Solo se aplica lo editable (ver orquestador.fusionar_edicion): la accion de
+            # cada paso (que se ejecuta) y los pasos no se aceptan desde la GUI.
+            if not os.path.isfile(fp):
+                self._json_response(404, {"error": "no existe"})
+                return
+            with open(fp, "r", encoding="utf-8") as f:
+                stored = json.load(f)
+            try:
+                nuevo = _orq.fusionar_edicion(stored, data.get("plan"))
+                if action == "sugerir":
+                    links = _orq.sugerir_enlaces(nuevo["steps"], nuevo.get("enlaces"))
+                    self._json_response(200, {"enlaces": links})
+                    return
+                order = _orq.topo_order(nuevo["steps"])
+            except (ValueError, KeyError, TypeError) as e:
+                self._json_response(400, {"error": str(e)})
+                return
+            with open(fp, "w", encoding="utf-8") as f:
+                json.dump(nuevo, f, indent=2, ensure_ascii=False)
+            self._json_response(200, {"ok": True, "order": order})
+            return
+
+        if action == "datos":
+            # Datos sinteticos de entrada. Desde la GUI el destino es FIJO
+            # (<carpeta del plan>/datos_sinteticos), no una ruta libre: el server
+            # tiene CORS abierto y no debe escribir donde diga el cliente.
+            if not os.path.isfile(fp):
+                self._json_response(404, {"error": "no existe"})
+                return
+            with open(fp, "r", encoding="utf-8") as f:
+                plan = json.load(f)
+            base = os.path.join(os.path.dirname(fp), "datos_sinteticos")
+            try:
+                n_rows = max(1, min(int(data.get("filas", 20)), 10000))
+                rep = _orq.generar_datos(plan, base, n_rows=n_rows, seed=42,
+                                         sobrescribir=bool(data.get("sobrescribir")))
+            except (ValueError, KeyError, TypeError) as e:
+                self._json_response(400, {"error": str(e)})
+                return
+            except ImportError as e:
+                self._json_response(500, {"error": f"falta dependencia: {e}"})
+                return
+            # Deja el plan apuntando a esos datos para la ejecucion real / Airflow
+            plan.setdefault("ejecucion", {})["base_path"] = base
+            with open(fp, "w", encoding="utf-8") as f:
+                json.dump(plan, f, indent=2, ensure_ascii=False)
+            self._json_response(200, {"base_path": base, "reporte": rep})
+            return
+
+        if action == "airflow":
+            if not os.path.isfile(fp):
+                self._json_response(404, {"error": "no existe"})
+                return
+            with open(fp, "r", encoding="utf-8") as f:
+                plan = json.load(f)
+            try:
+                code = _orq.generar_airflow(plan)
+            except (ValueError, KeyError, TypeError) as e:
+                self._json_response(400, {"error": str(e)})
+                return
+            name = "dag_" + os.path.splitext(str(plan.get("plan", "plan")))[0] + ".py"
+            self._json_response(200, {"name": re.sub(r"[^\w.\-]", "_", name), "code": code})
+            return
+
+        if action == "run":
+            # DRY-RUN siempre: no se ejecuta ningun proceso desde la GUI.
+            if not os.path.isfile(fp):
+                self._json_response(404, {"error": "no existe"})
+                return
+            with open(fp, "r", encoding="utf-8") as f:
+                plan = json.load(f)
+            buf = _io.StringIO()
+            try:
+                with _ctx.redirect_stdout(buf):
+                    ok = _orq.ejecutar(plan, real=False)
+            except (ValueError, KeyError, TypeError) as e:
+                self._json_response(400, {"error": str(e)})
+                return
+            self._json_response(200, {"ok": bool(ok), "output": buf.getvalue()})
+            return
+
+        self._json_response(404, {"error": "accion desconocida"})
 
     def _handle_quality_get(self):
         """Devuelve el reporte COMPLETO de un id (para reimprimir en la GUI)."""

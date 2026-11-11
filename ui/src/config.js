@@ -11,3 +11,6 @@ export const PIPELINE_LOGS_URL = `${DATALAB_API}/pipeline/logs`
 // Library LOCAL: el bucket S3 de DataLab esta bloqueado por una SCP de la org,
 // asi que la biblioteca de grafos se guarda/sirve desde el server local.
 export const LIBRARY_URL = `${API_URL}/library`
+
+// Orquestador de planes Ab Initio (solo dry-run desde la GUI)
+export const ORQUESTADOR_URL = `${API_URL}/orquestador`

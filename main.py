@@ -1,5 +1,6 @@
 # main.py
 import argparse
+import os
 import re
 from src.mp_parser import parse_mp_ast
 from src.dag.builder import build_dag
@@ -2408,6 +2409,21 @@ def main(project_path, output_path, xfr_path=None, dml_path=None, pset_path=None
     # Parse KSH metadata if provided via --ksh
     ksh_metadata = {}
 
+    # Sin --pset: buscar en la carpeta del grafo el pset cuyo !prototype lo instancia
+    if not pset_path and str(project_path).lower().endswith(".mp") and os.path.isfile(project_path):
+        try:
+            from src.pset_map import find_psets_for_graph
+            candidatos = find_psets_for_graph(project_path)
+        except Exception as e:
+            candidatos = []
+            print(f"[!] No se pudo buscar pset automatico: {e}")
+        if candidatos:
+            pset_path = candidatos[0]
+            print(f"[i] PSET detectado por !prototype: {os.path.basename(pset_path)}")
+            if len(candidatos) > 1:
+                print(f"[!] Hay {len(candidatos)} psets para este grafo; se usa el primero. "
+                      f"Otros: {[os.path.basename(c) for c in candidatos[1:]]}. Usa --pset para elegir.")
+
     # Parse PSET parameters
     pset_params = {}
     if pset_path:
@@ -2524,8 +2540,11 @@ def main(project_path, output_path, xfr_path=None, dml_path=None, pset_path=None
     for i, node in enumerate(dag.execution_order, start=1):
         print(f"  {i}. {node.name} ({node.type})")
 
+    # Parametros para la clase PARAMS del job (igual que hace serve_ui): los del grafo
+    # (.mp) con los del .pset por encima. Sin esto el job usa PARAMS.X sin definirlo.
+    params_codegen = {**ast.get("abinitio_params", {}), **pset_params}
     if target == "spark":
-        generate_spark(dag, output_path, xfr_rules)
+        generate_spark(dag, output_path, xfr_rules, pset_params=params_codegen)
         print(f"\n[>] Target: PySpark")
     elif target == "flink":
         generate_flink(dag, output_path, xfr_rules)
@@ -2534,7 +2553,7 @@ def main(project_path, output_path, xfr_path=None, dml_path=None, pset_path=None
         _generate_pandas(dag, output_path, xfr_rules)
         print(f"\n[>] Target: Python Puro (pandas)")
     else:
-        generate_glue(dag, output_path, xfr_rules)
+        generate_glue(dag, output_path, xfr_rules, pset_params=params_codegen)
 
     # Inject Ab Initio parameters as configuration block at top of generated file
     abi_params = ast.get("abinitio_params", {})

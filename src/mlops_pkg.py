@@ -1001,6 +1001,13 @@ if [ -n "$CLUSTER_SUBMIT" ]; then
     export SPARK_CONF_DIR="$BNX_CLUSTER_SPARK_CONF"
     echo "[run.sh] SPARK_CONF_DIR del cluster: $SPARK_CONF_DIR"
   fi
+  # YARN: spark-submit --master yarn necesita yarn-site.xml (HADOOP_CONF_DIR o
+  # YARN_CONF_DIR) para encontrar el ResourceManager.
+  if [ -z "${YARN_CONF_DIR:-}" ] && [ -n "${HADOOP_CONF_DIR:-}" ]; then export YARN_CONF_DIR="$HADOOP_CONF_DIR"; fi
+  echo "[run.sh] master=${BNX_MASTER:-yarn} HADOOP_CONF_DIR=${HADOOP_CONF_DIR:-(vacio)} YARN_CONF_DIR=${YARN_CONF_DIR:-(vacio)}"
+  if [ -z "${HADOOP_CONF_DIR:-}${YARN_CONF_DIR:-}" ]; then
+    echo "[run.sh] AVISO: sin HADOOP_CONF_DIR/YARN_CONF_DIR spark-submit no encuentra YARN." >&2
+  fi
   exec "$CLUSTER_SUBMIT" --master "${BNX_MASTER:-yarn}" --deploy-mode client \\
     --driver-java-options "$JOPTS" \\
     --conf spark.io.compression.codec="${BNX_IO_CODEC:-lz4}" \\
@@ -1202,10 +1209,13 @@ llenan con las fechas del cohort/lag, igual que el job original) y se baja a
 parquet en <general_root>/<working_path>/<tabla>. --env: prod|uat|sbx;
 general_root sale de settings/jobs.json (junto al config) o de --root.
 
-Cada fuente es un JOB INDEPENDIENTE, no una secuencia: si una falla, las demas
-siguen. Todas comparten la misma SparkSession. El proceso PIVOTE corre SIEMPRE
-primero (las demas dependen de su salida); se marca con "pivot": true en el
-cfg.json, o nombrando la fuente 'pivote'/'pivot'. Para lanzar una sola como job
+Cada fuente es un JOB: si una falla, las demas siguen. Todas comparten la misma
+SparkSession. El proceso PIVOTE corre SIEMPRE primero; se marca con "pivot": true
+en el cfg.json, o nombrando la fuente 'pivote'/'pivot'.
+ORDEN POR DEPENDENCIAS (opcional): "depends_on": ["a", "b"] en la fuente del
+cfg.json, o en orden.json (lo genera la pantalla 'Orden de las fuentes'; --orden
+para otra ruta). Una fuente con depends_on corre despues de esas y SE SALTA si
+alguna fallo. Sin depends_on el orden es el de siempre. Para lanzar una sola como job
 aislado (p.ej. una tarea por fuente en Airflow/cron):
     python main.py --config cfg.json --source <nombre>
 En DEMO genera datos sinteticos, neutraliza las lecturas externas de los
@@ -1224,6 +1234,11 @@ import tempfile
 # monto con ambiente completo, setup.sh/run.sh los dejan en ./bank_pkg. Los
 # agregamos al path aqui para que 'import toolbox' funcione sin exportar nada.
 _here = os.path.dirname(os.path.abspath(__file__))
+# bank_src/: modulos de APOYO subidos al portal (utils, settings, ...) copiados
+# exactos. Va AL FINAL del path: un 'email.py' del banco no debe tapar al stdlib.
+_bank_src = os.path.join(_here, "bank_src")
+if os.path.isdir(_bank_src) and _bank_src not in sys.path:
+    sys.path.append(_bank_src)
 for _cand in (os.path.join(_here, "bank_pkg"),
               os.path.join(_here, "vendor", "bank", "pkgcode")):
     if os.path.isdir(_cand) and _cand not in sys.path:
@@ -1463,6 +1478,141 @@ def _orden_pivote_primero(fuentes, src_cfg):
     if pivotes:
         print("[orden] pivote primero:", ", ".join(pivotes))
     return pivotes + resto
+
+
+def _resolver_source(nombre, src_cfg, bank_fmt, registry=None):
+    """Valida --source contra las tablas del config y los jobs del REGISTRY.
+    Acepta 'job_3', 'job_3.py', 'JOB_3' o una ruta (se usa el nombre base).
+    Imprime que se va a hacer y devuelve el nombre canonico; si no existe, se
+    detiene con la lista de opciones (antes se ignoraba en silencio)."""
+    registry = REGISTRY if registry is None else registry
+    crudo = str(nombre).strip()
+    norm = os.path.splitext(os.path.basename(crudo.rstrip("/")))[0].strip().lower()
+    tablas = {str(k).lower(): k for k in (src_cfg or {})}
+    jobs = {str(k).lower(): k for k in (registry or {})}
+    if norm in tablas and (bank_fmt or tablas[norm] in (registry or {})):
+        canon = tablas[norm]
+        if bank_fmt and canon not in (registry or {}):
+            print("[source] '%s' = TABLA de tables_info: solo se baja esa tabla "
+                  "(no tiene aggregate)." % canon)
+        else:
+            print("[source] '%s': se corre solo esa fuente." % canon)
+        return canon
+    if norm in jobs:
+        canon = jobs[norm]
+        if bank_fmt:
+            print("[source] '%s' = JOB del REGISTRY: se bajan las %d tabla(s) del config "
+                  "y despues corre su aggregate (si alguna tabla falla, el job no corre)."
+                  % (canon, len(src_cfg or {})))
+        else:
+            print("[source] '%s': se corre solo esa fuente." % canon)
+        return canon
+    raise SystemExit(
+        "[source] ERROR: '%s' no es una tabla del config ni un job del REGISTRY.\\n"
+        "  Tablas del config: %s\\n"
+        "  Jobs del REGISTRY: %s"
+        % (crudo, ", ".join(map(str, src_cfg or {})) or "(ninguna)",
+           ", ".join(map(str, registry or {})) or "(ninguno)"))
+
+
+def _cargar_orden(path=None):
+    """Lee orden.json (opcional, lo genera la pantalla 'Orden de las fuentes').
+    Formato: {"sources": {"<fuente>": {"pivot": true, "depends_on": ["a", "b"]}}}
+    Busca en: path explicito > BNX_ORDEN > orden.json junto a main.py.
+    Si no existe devuelve {} y el orden queda como siempre (pivote primero)."""
+    cand = path or os.environ.get("BNX_ORDEN") or os.path.join(_here, "orden.json")
+    if not cand or not os.path.isfile(cand):
+        if path:
+            raise SystemExit("[orden] no existe el archivo de orden: %s" % path)
+        return {}
+    with open(cand, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+    src = data.get("sources") if isinstance(data, dict) else None
+    if not isinstance(src, dict):
+        raise SystemExit("[orden] %s no tiene la clave 'sources' (objeto)" % cand)
+    print("[orden] usando", cand)
+    return src
+
+
+def _orden_dependencias(fuentes, src_cfg, orden=None):
+    """Orden de ejecucion por DEPENDENCIAS. Devuelve (fuentes_ordenadas, deps_explicitas).
+
+    - depends_on de cada fuente: el del cfg.json si lo trae; si no, el de orden.json.
+    - pivote (cfg "pivot": true, orden.json "pivot": true o nombre pivote/pivot):
+      las fuentes SIN depends_on explicito van despues de los pivotes (como siempre).
+      Esa dependencia implicita solo ORDENA: si el pivote falla, las demas siguen
+      (comportamiento historico).
+    - Solo las dependencias EXPLICITAS hacen que una fuente se salte si su
+      dependencia fallo.
+    - Sin depends_on en ningun lado el resultado es identico a _orden_pivote_primero.
+    - Un ciclo detiene la ejecucion con un error (es un error de configuracion)."""
+    orden = orden or {}
+    presentes = set(fuentes)
+    idx = {s: i for i, s in enumerate(fuentes)}
+
+    def _cfg_de(s):
+        c = src_cfg.get(s) or {}
+        return c if isinstance(c, dict) else {}
+
+    def _es_pivote(s):
+        if _cfg_de(s).get("pivot") or (orden.get(s) or {}).get("pivot"):
+            return True
+        norm = str(s).strip().lower().replace("-", "_")
+        return norm in ("pivote", "pivot") or norm.endswith("_pivote") or norm.endswith("_pivot")
+
+    pivotes = [s for s in fuentes if _es_pivote(s)]
+    explicitas = {}
+    for s in fuentes:
+        if "depends_on" in _cfg_de(s):
+            deps = _cfg_de(s).get("depends_on")
+        elif "depends_on" in (orden.get(s) or {}):
+            deps = (orden.get(s) or {}).get("depends_on")
+        else:
+            continue
+        if not isinstance(deps, list):
+            raise SystemExit("[orden] depends_on de '%s' debe ser una lista" % s)
+        validas = []
+        for d in deps:
+            if d == s:
+                raise SystemExit("[orden] '%s' no puede depender de si misma" % s)
+            if d in presentes:
+                validas.append(d)
+            else:
+                print("[orden] aviso: '%s' depende de '%s', que no esta en esta corrida; se ignora" % (s, d))
+        explicitas[s] = validas
+    deps_todas = {}
+    for s in fuentes:
+        if s in explicitas:
+            deps_todas[s] = list(explicitas[s])
+        elif s in pivotes:
+            deps_todas[s] = []
+        else:
+            deps_todas[s] = list(pivotes)   # implicita: solo ordena
+    # Kahn estable: entre las listas para correr, primero pivotes y luego orden original
+    pendientes = {s: len(set(deps_todas[s])) for s in fuentes}
+    hijos = {s: [] for s in fuentes}
+    for s in fuentes:
+        for d in set(deps_todas[s]):
+            hijos[d].append(s)
+    clave = lambda s: (0 if s in pivotes else 1, idx[s])
+    listas = sorted([s for s in fuentes if pendientes[s] == 0], key=clave)
+    salida = []
+    while listas:
+        s = listas.pop(0)
+        salida.append(s)
+        for h in hijos[s]:
+            pendientes[h] -= 1
+            if pendientes[h] == 0:
+                listas.append(h)
+        listas.sort(key=clave)
+    if len(salida) != len(fuentes):
+        ciclo = sorted(set(fuentes) - set(salida), key=lambda s: idx[s])
+        raise SystemExit("[orden] ciclo de dependencias entre: %s" % ", ".join(ciclo))
+    if explicitas:
+        print("[orden] por dependencias:", " -> ".join(salida))
+    elif pivotes:
+        print("[orden] pivote primero:", ", ".join(pivotes))
+    return salida, explicitas
 
 
 def _report_optimizations():
@@ -1751,6 +1901,7 @@ def main():
     ap.add_argument("--base-path", dest="base_path",
                     help="ruta base de SALIDA (HDFS en el cluster); se le agrega working_path")
     ap.add_argument("--root", help="general_root (default: settings/jobs.json o ./data)")
+    ap.add_argument("--orden", help="JSON con el orden de las fuentes (default: orden.json junto a main.py)")
     args = ap.parse_args()
     demo = not args.config
     cfg = {} if demo else _load_config(args.config)
@@ -1765,9 +1916,14 @@ def main():
     builder = SparkSession.builder.appName(scfg_spark.get("app_name", "framework_mlops_v2"))
     if cluster:
         # Lanzado con el spark-submit del cluster: master/conf/metastore vienen de
-        # alli (--master yarn, spark-defaults, hive-site.xml). No los pisamos.
+        # alli (--master yarn, spark-defaults, hive-site.xml). NO se pisa el master:
+        # un "spark.master": "local[2]" en el JSON (como trae cfg.example.json) hacia
+        # que corriera LOCAL aunque se lanzara con --master yarn. Para otro master
+        # en el cluster: BNX_MASTER=... bash run.sh
         if scfg_spark.get("master"):
-            builder = builder.master(scfg_spark["master"])
+            print("[spark] modo CLUSTER: se IGNORA 'spark.master'=%s del JSON "
+                  "(manda el --master de spark-submit; usa BNX_MASTER para cambiarlo)"
+                  % scfg_spark["master"])
         print("[spark] modo CLUSTER (spark-submit del nodo)")
     else:
         builder = (builder.master(scfg_spark.get("master", "local[1]"))
@@ -1796,6 +1952,13 @@ def main():
             print("[aviso] no se pudo habilitar Hive:", str(e)[:120])
     spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
+    # Donde quedo REALMENTE la sesion (para verificar que se registro en YARN).
+    _sc = spark.sparkContext
+    print("[spark] master=%s | applicationId=%s" % (_sc.master, _sc.applicationId))
+    if cluster and not str(_sc.master).startswith("yarn") and not os.environ.get("BNX_MASTER"):
+        print("[spark] AVISO: modo CLUSTER pero la sesion NO esta en YARN (master=%s). "
+              "Revisa HADOOP_CONF_DIR/YARN_CONF_DIR (yarn-site.xml) y spark-defaults.conf "
+              "(spark.master) del cluster." % _sc.master)
 
     print("=" * 64)
     print("FRAMEWORK MLOPS v2 — %s" % ("DEMO (datos sinteticos)" if demo else "DATOS REALES"))
@@ -1830,6 +1993,11 @@ def main():
         src_cfg = cfg.get("sources") or {s: {"table_name": s} for s in REGISTRY}
     if not args.dry_run:
         _ensure_parquet_codec(spark, prev)
+    if args.source:
+        # Validar y normalizar --source ANTES de tocar datos: antes un nombre que no
+        # coincidia exacto (job_3.py, mayusculas, errata) se ignoraba en silencio y se
+        # bajaban TODAS las tablas.
+        args.source = _resolver_source(args.source, src_cfg, bank_fmt)
     if bank_fmt and args.source and args.source not in src_cfg:
         # --source es el JOB (p.ej. job_3), no una tabla: se bajan TODAS las
         # tablas del config y luego corre el aggregate del job si esta registrado.
@@ -1843,15 +2011,33 @@ def main():
     # PIVOTE primero: las demas fuentes dependen de su salida, asi que el proceso
     # pivote SIEMPRE corre antes. Se identifica por nombre ('pivote'/'pivot') o
     # marcando la fuente con "pivot": true en el cfg.json.
-    fuentes = _orden_pivote_primero(fuentes, src_cfg)
+    # Orden por DEPENDENCIAS (depends_on en cfg.json u orden.json). Sin depends_on
+    # es identico a 'pivote primero'. Con --source se corre solo esa fuente: el
+    # orden lo da tu orquestador externo (Airflow/cron).
+    if args.source:
+        fuentes, deps_explicitas = _orden_pivote_primero(fuentes, src_cfg), {}
+    else:
+        fuentes, deps_explicitas = _orden_dependencias(fuentes, src_cfg, _cargar_orden(args.orden))
     ok = fail = 0
+    fallidas = set()          # fuentes que fallaron o se saltaron
+    _prev_s, _prev_fail = None, 0
     # Cada fuente es un JOB (comparte la misma SparkSession, que se pasa a cada
     # aggregate). Extrae su query y corre su aggregate en su propio bloque aislado;
     # una que falla NO tumba a las demas. Para correr una sola como job separado
     # desde tu orquestador (respetando que pivote fue primero):  run.sh --source X
     for s in fuentes:
+        # Registrar si la fuente anterior fallo (se hace aqui para no tocar cada 'continue')
+        if _prev_s is not None and fail > _prev_fail:
+            fallidas.add(_prev_s)
+        _prev_s, _prev_fail = s, fail
         if s not in REGISTRY and not bank_fmt:
             print("\\n[skip] fuente no registrada:", s); continue
+        _bloquean = [d for d in deps_explicitas.get(s, []) if d in fallidas]
+        if _bloquean:
+            print("\\n" + "-" * 64); print("FUENTE:", s)
+            print("  [skip] no corre: depende de %s, que fallo o se salto" % ", ".join(_bloquean))
+            fail += 1
+            continue
         print("\\n" + "-" * 64); print("FUENTE:", s)
         scfg = src_cfg.get(s, {"table_name": s})
         try:
@@ -2028,7 +2214,10 @@ La linea `[run.sh] tmp de la JVM: ...` confirma la ruta usada.
 ## 6) Orden de los procesos
 - Todos comparten la misma SparkSession.
 - El proceso **pivote** corre siempre primero (marcar `"pivot": true` o nombrarlo `pivote`).
-- Cada fuente es un job independiente: si una falla, las demas siguen.
+- Cada fuente es un job: si una falla, las demas siguen.
+- **Orden por dependencias (opcional):** `"depends_on": ["a"]` en la fuente del `cfg.json`
+  o en `orden.json` (lo genera la pantalla "Orden de las fuentes" del portal). Esa fuente
+  corre despues de `a` y se salta si `a` fallo. Sin `depends_on`, el orden es el de siempre.
 '''
 
 _CFG_EXAMPLE = '''{
@@ -2149,6 +2338,8 @@ import sys
 # Modulos de PYTHONPATH del banco (toolbox, bnmxverse, utils): main.py los agrega
 # al path desde ./bank_pkg; aqui igual, para no reportarlos como faltantes.
 _HERE = os.path.dirname(os.path.abspath(__file__))
+if os.path.isdir(os.path.join(_HERE, "bank_src")) and os.path.join(_HERE, "bank_src") not in sys.path:
+    sys.path.append(os.path.join(_HERE, "bank_src"))   # al final: no tapa al stdlib
 for _cand in (os.path.join(_HERE, "bank_pkg"), os.path.join(_HERE, "vendor", "bank", "pkgcode"), _HERE):
     if os.path.isdir(_cand) and _cand not in sys.path:
         sys.path.insert(0, _cand)
@@ -2179,7 +2370,8 @@ def _project_root():
 def _iter_py_files():
     root = _project_root()
     targets = [os.path.join(root, "main.py"),
-               os.path.join(root, "framework_mlops_v2")]
+               os.path.join(root, "framework_mlops_v2"),
+               os.path.join(root, "bank_src")]   # modulos de apoyo subidos al portal
     for t in targets:
         if os.path.isfile(t) and t.endswith(".py"):
             yield t
@@ -2254,6 +2446,29 @@ def _classify(mod):
     return "otro"
 
 
+def _probar_jobs():
+    """Importa cada aggregate del paquete. Devuelve [(job, error)] de los que fallan."""
+    import importlib
+    import traceback
+    base = os.path.join(_project_root(), "framework_mlops_v2", "aggregates")
+    if not os.path.isdir(base):
+        return []
+    if _project_root() not in sys.path:
+        sys.path.insert(0, _project_root())
+    errores = []
+    for fn in sorted(os.listdir(base)):
+        if not fn.endswith(".py") or fn in ("__init__.py", "router.py"):
+            continue
+        mod = "framework_mlops_v2.aggregates." + fn[:-3]
+        try:
+            importlib.import_module(mod)
+        except Exception as e:   # ImportError o error al cargar el modulo
+            ultimo = traceback.extract_tb(e.__traceback__)[-1]
+            errores.append((fn[:-3], "%s: %s (en %s:%s)" % (
+                type(e).__name__, e, os.path.basename(ultimo.filename), ultimo.lineno)))
+    return errores
+
+
 def main():
     quiet = "--quiet" in sys.argv
     mods = sorted(_top_level_imports())
@@ -2268,9 +2483,20 @@ def main():
         print("Python:", sys.version.split()[0], "| venv:", sys.prefix)
         print("Instaladas OK (%d): %s" % (len(ok), ", ".join(ok) or "-"))
 
-    if not faltan:
+    # Import REAL de los jobs: detecta faltantes INDIRECTOS (un modulo del banco que
+    # a su vez importa otro que no esta, p.ej. bnmxverse -> mex_lib_cs, o
+    # 'utils.emails_full' tapado por otro 'utils'). El chequeo de arriba solo ve
+    # los imports de primer nivel.
+    errores_jobs = _probar_jobs()
+    if not faltan and not errores_jobs:
         print("\\n[OK] No falta ninguna libreria. El entorno esta completo.")
         return 0
+    if errores_jobs:
+        print("\\n[FALLA al importar %d job(s) del REGISTRY]:" % len(errores_jobs))
+        for nombre, err in errores_jobs:
+            print("  - %s: %s" % (nombre, err))
+    if not faltan:
+        return 1
 
     # Agrupar lo que falta por categoria para un mensaje accionable.
     por_cat = {"stack": [], "banco": [], "otro": []}
@@ -2415,6 +2641,40 @@ def _is_pyspark_source(code):
                       code or "", _re.M) is not None
 
 
+def _usa_pandas(code):
+    """True si el archivo importa pandas (es codigo a convertir pandas->PySpark)."""
+    return _re.search(r"^\s*(import\s+pandas\b|from\s+pandas[\w.]*\s+import)",
+                      code or "", _re.M) is not None
+
+
+def _es_job_kernel(code):
+    """True si el archivo es un job del framework del banco: def run(kernel...)."""
+    return _re.search(r"^def\s+run\s*\(\s*kernel\b", code or "", _re.M) is not None
+
+
+def _norm_fuente(n):
+    return _re.sub(r"\.(py|txt)$", "", os.path.basename(str(n or "")).strip(), flags=_re.I).lower()
+
+
+def _en_registry(raw_name, src, registry):
+    """El archivo esta en la lista de jobs a registrar (por nombre de archivo o modulo)."""
+    sel = {_norm_fuente(r) for r in registry or []}
+    return _norm_fuente(raw_name) in sel or str(src).lower() in sel
+
+
+def _apoyo_name(raw_name):
+    """Nombre de archivo para bank_src/: el original si es un modulo Python valido."""
+    base = os.path.basename(str(raw_name or "modulo.py")).strip()
+    if base.lower().endswith(".txt"):
+        base = base[:-4]
+    if not base.lower().endswith(".py"):
+        base += ".py"
+    stem = base[:-3]
+    if not _re.fullmatch(r"[A-Za-z_]\w*", stem):
+        stem = _safe_name(base)
+    return stem + ".py"
+
+
 def _hoist_imports_ast(code):
     """Como _hoist_module_imports pero con el AST: sube los imports de NIVEL
     SUPERIOR completos (incluye imports de varias lineas con parentesis o '\\')
@@ -2463,9 +2723,11 @@ def _aggregate_from_pyspark(source, pyspark_code, original_pandas, verbatim=Fals
     tail = "" if has_out else "\n# BNX: no se detecto 'df_out'; se devuelve el df de entrada.\ndf_out = df"
     extra_imports = ("\n" + hoisted + "\n") if hoisted.strip() else "\n"
     if verbatim:
-        footer = ("# --- BNX: el archivo original YA era PySpark; arriba va COMPLETO y sin\n"
-                  "# conversion (comentarios, formato y logica intactos). Solo se subieron\n"
-                  "# los imports al nivel de modulo y se indento dentro de _aggregate_df.")
+        footer = ("# --- BNX: el archivo original (PySpark o Python sin pandas) va arriba COMPLETO\n"
+                  "# y sin conversion (comentarios, formato y logica intactos). Solo se subieron\n"
+                  "# los imports al nivel de modulo y se indento dentro de _aggregate_df.\n"
+                  "# Si es un MODULO DE APOYO (no un job), desmarcalo de 'Registrar como job'\n"
+                  "# en el portal: se copia exacto a bank_src/ sin esta envoltura.")
     else:
         footer = ("# --- Codigo de negocio ORIGINAL (pandas), como referencia ---\n"
                   "# Se guarda COMENTADO (no como string literal) para que un docstring con triple\n"
@@ -2706,6 +2968,10 @@ def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all",
     # aparte. Van en vendor/bank/ (sdist pip-instalables) y vendor/bank/pkgcode/
     # (toolbox/bnmxverse/utils, que se agregan al PYTHONPATH).
     uses_bank = any(p.endswith("requirements-bank.txt") for p in (code_files or {}))
+    # requirements-extra.txt (cytoolz/unidecode/...): sus wheels viven en el MISMO
+    # cache (bank_libs/wheels). Antes solo se empaquetaban si ademas habia libs del
+    # banco, y setup.sh no las encontraba offline ("faltan cytoolz, unidecode").
+    uses_extra = any(p.endswith("requirements-extra.txt") for p in (code_files or {}))
     bank_sdists, bank_pkgcode = ([], {})
     bank_extracted = {}
     if uses_bank:
@@ -2714,6 +2980,10 @@ def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all",
         # como CODIGO en pkgcode/ para que funcionen por PYTHONPATH sin pip/build
         # (fallback a prueba de fallos en Windows/Python 3.8).
         bank_extracted = _bank_extracted_pkgs()
+    elif uses_extra:
+        # Solo las wheels open source del stack (sin mex-lib* ni codigo de path).
+        bank_sdists = [p for p in _bank_vendor_files()[0]
+                       if not os.path.basename(p).lower().startswith("mex")]
     # Evitar escribir la MISMA ruta dos veces (en Python 3.8/Windows un ZipInfo
     # duplicado o un estado inconsistente puede dejar el stream en mal estado y
     # romper el cierre con 'I/O operation on closed file'). Deduplicamos por ruta.
@@ -2767,6 +3037,20 @@ def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all",
         for rel, full in sorted(bank_pkgcode.items()):
             _put_bin(z, "framework_mlops_v2_pkg/vendor/bank/pkgcode/"
                      + rel.replace(os.sep, "/"), full, stored=False)
+        # Paquetes de path SIN __init__.py (utils/, bnmxverse/ del banco) son
+        # 'namespace packages': CUALQUIER modulo o paquete 'utils' en otro lugar del
+        # sys.path les gana aunque este despues, y 'from utils.emails_full import
+        # Email' falla. Con un __init__.py vacio son paquetes normales y, como van
+        # al inicio del path, ganan.
+        _tops = {rel.replace(os.sep, "/").split("/")[0] for rel in bank_pkgcode
+                 if "/" in rel.replace(os.sep, "/")}
+        _con_init = {rel.replace(os.sep, "/").split("/")[0] for rel in bank_pkgcode
+                     if rel.replace(os.sep, "/").endswith("/__init__.py")
+                     and rel.replace(os.sep, "/").count("/") == 1}
+        for top in sorted(_tops - _con_init):
+            _put_str(z, "framework_mlops_v2_pkg/vendor/bank/pkgcode/%s/__init__.py" % top,
+                     "# BNX: hace de '%s' un paquete normal (no namespace) para que no lo\n"
+                     "# tape otro modulo '%s' del sys.path.\n" % (top, top))
         # mex-lib VERIFICADAS extraidas como codigo -> vendor/bank/pkgcode/ tambien.
         # Asi quedan en el PYTHONPATH listas para importar sin pip (fallback).
         for rel, data in sorted(bank_extracted.items()):
@@ -2997,8 +3281,12 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
                                include_bank_libs=True, optimize=True,
                                extra_steps=False, include_monitoring=False,
                                separate_monitoring=False, full_env=False,
-                               py_target="all", out_path=None):
+                               py_target="all", out_path=None, registry=None):
     """Arma el Framework v2 EMPAQUETADO con la logica del usuario dentro.
+    registry: lista de fuentes (nombre de archivo o de modulo, sin importar .py ni
+        mayusculas) que se REGISTRAN como jobs en router.py. Las demas son MODULOS
+        DE APOYO: se copian EXACTOS a bank_src/<archivo> (sin conversion ni
+        envoltura) y no entran al REGISTRY. None = todas registradas (como antes).
 
     include_monitoring: anade el modulo de monitoreo (PSI/CSI/DQC).
     separate_monitoring: si True, el monitoreo va como PAQUETE APARTE
@@ -3032,6 +3320,31 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
             report.append({"name": raw_name, "ok": False, "reason": "vacio"})
             continue
         src = _safe_name(raw_name)
+        if registry is not None and not _en_registry(raw_name, src, registry):
+            # MODULO DE APOYO (toolbox/utils/settings/main del banco...): copia EXACTA,
+            # importable via bank_src/ en el sys.path. Antes se convertia y se metia
+            # dentro de _aggregate_df ("salian cortados") y quedaba en el REGISTRY.
+            rel = "bank_src/" + _apoyo_name(raw_name)
+            if rel in files:
+                report.append({"name": raw_name, "ok": False, "role": "apoyo",
+                               "reason": f"nombre repetido en bank_src/: {rel}"})
+                continue
+            files[rel] = pandas_code
+            item = {"name": raw_name, "source": None, "ok": True, "role": "apoyo",
+                    "verbatim": True, "file": rel, "todos": [], "warnings": 0,
+                    "unsupported": 0}
+            stem = rel[len("bank_src/"):-3]
+            if stem in _BANK_PATH_MODULES:
+                item["aviso"] = (f"'{stem}' ya viene como PAQUETE del banco (bank_pkg/{stem}/), "
+                                 f"que tiene prioridad: 'import {stem}' usara ese paquete, no esta "
+                                 "copia. Si tu archivo es distinto, renombralo.")
+            elif _is_stdlib_module(stem):
+                # p.ej. email.py de toolbox: como modulo suelto chocaria con el stdlib.
+                item["aviso"] = (f"'{stem}' es un modulo de la libreria estandar: desde "
+                                 "bank_src/ no se podra importar como '" + stem + "'. "
+                                 "Si es parte de toolbox ya viene en bank_pkg/toolbox/.")
+            report.append(item)
+            continue
         base = src
         n = 1
         while src in seen:
@@ -3039,7 +3352,9 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
             src = f"{base}_{n}"
         seen.add(src)
 
-        verbatim = _is_pyspark_source(pandas_code)
+        # Sin pandas no hay nada que convertir pandas->PySpark: el conversor solo
+        # reescribiria el archivo (perdia comentarios/formato). Se copia tal cual.
+        verbatim = _is_pyspark_source(pandas_code) or not _usa_pandas(pandas_code)
         if verbatim:
             # Ya es PySpark: se copia TAL CUAL (comentarios, formato y logica
             # completos). Sin conversor ni optimizador, que lo reescribirian.
@@ -3066,7 +3381,10 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
                     pass
             report.append({"name": raw_name, "source": src, "ok": True,
                            "warnings": len(warnings), "unsupported": len(unsupported),
-                           "verbatim": verbatim})
+                           "verbatim": verbatim, "role": "job",
+                           # Job del framework del banco (def run(kernel)): el contrato
+                           # aggregate del framework v2 NO llama a su run(kernel).
+                           "job_kernel": _es_job_kernel(pandas_code)})
 
         gen_sources.append(src)
         rel_path = f"framework_mlops_v2/aggregates/{src}.py"
@@ -3079,7 +3397,7 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
         report[-1]["todos"] = todos
         report[-1]["unsupported"] = len(todos) if todos else report[-1].get("unsupported", 0)
 
-    if not gen_sources:
+    if not gen_sources and not any(r.get("role") == "apoyo" and r.get("ok") for r in report):
         # Nada convertible: devolvemos el paquete base de ejemplo.
         data, filename = build_mlops_package(include_bank_libs)
         return data, filename, report
@@ -3116,7 +3434,10 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
         files["requirements-extra.txt"] = _requirements_extra(extra_pkgs)
     # 'mex_lib_cs' es una fachada que escribimos nosotros: va EMBEBIDA en la raiz
     # del paquete (ligero, completo y rebuild), sin depender del cache del server.
-    if "mex_lib_cs" in (bank_libs or []):
+    # Tambien cuando el codigo usa OTRA lib del banco: el codigo de path que viaja en
+    # vendor/bank/pkgcode (p.ej. bnmxverse/data_pull.py, que usa job_4/datapull)
+    # importa mex_lib_cs, y antes faltaba ("No module named 'mex_lib_cs'").
+    if bank_libs:
         files["mex_lib_cs/__init__.py"] = _MEX_LIB_CS
     files["setup.sh"] = _SETUP_SH
     files["run.sh"] = _RUN_SH
@@ -3169,10 +3490,14 @@ def _readme_custom(include_bank_libs, sources, report, extra_steps=False,
                    include_monitoring=False, separate_monitoring=False,
                    full_env=False, bank_libs=None):
     rows = "\n".join(
-        f"- `{r.get('source', '?')}` ← {r['name']}"
-        + (" ✅" if r.get("ok") else f" ⚠️ {r.get('reason', '')}")
-        + (f" ({r['unsupported']} revisión manual)" if r.get("unsupported") else "")
+        (f"- `{r.get('file')}` ← {r['name']} (módulo de apoyo, copia exacta; no está en el REGISTRY)"
+         if r.get("role") == "apoyo" else
+         f"- `{r.get('source', '?')}` ← {r['name']}"
+         + (" ✅" if r.get("ok") else f" ⚠️ {r.get('reason', '')}")
+         + (f" ({r['unsupported']} revisión manual)" if r.get("unsupported") else ""))
         for r in report if not r.get("_meta"))
+    # Puede no haber ningun job (solo modulos de apoyo): el ejemplo usa un nombre generico.
+    sources = list(sources) or ["<tu_job>"]
     base = _readme(include_bank_libs)
     env = ""
     if full_env:

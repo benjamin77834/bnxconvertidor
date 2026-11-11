@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { COMPILE_URL } from '../config'
+import OrdenFuentesPanel from './OrdenFuentesPanel'
 
 // Seccion "Framework MLOps v2": genera un PAQUETE NUEVO y mejorado del framework
 // (sin tocar el del banco) y lo empaqueta en un ZIP con entorno virtual (run.sh
@@ -73,9 +74,29 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
     return out
   }
 
+  // ¿Este archivo es un JOB (va al REGISTRY) o un MÓDULO DE APOYO (bank_src/, copia exacta)?
+  // Lo que el usuario marcó se recuerda (localStorage) para que no tenga que volver a
+  // editar el router en cada paquete. Por defecto: job si usa pandas o define run().
+  const [jobSel, setJobSel] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('bnx_mlops_registry') || '{}') } catch { return {} }
+  })
+  const esJob = (f) => {
+    if (f.name in jobSel) return !!jobSel[f.name]
+    const c = f.code || ''
+    return /^\s*(import\s+pandas\b|from\s+pandas[\w.]*\s+import)/m.test(c) || /^def\s+run\s*\(/m.test(c)
+  }
+  const marcarJob = (name, v) => setJobSel(prev => {
+    const n = { ...prev, [name]: v }
+    try { localStorage.setItem('bnx_mlops_registry', JSON.stringify(n)) } catch { /* sin storage */ }
+    return n
+  })
+
   const buildMine = async () => {
     const sources = sourcesToSend()
     if (!sources.length) { setBuildError('Pega código o sube al menos un archivo .py.'); return }
+    // Solo se manda 'registry' si hay algún módulo de apoyo (si no, todos son jobs: como antes).
+    const jobs = sources.filter(s => esJob(s)).map(s => s.name)
+    const registry = jobs.length === sources.length ? null : jobs
     setBuilding(true); setBuildError(''); setBuildResult(null); setSignResult(null)
     try {
       const res = await fetch(BUILD_URL, {
@@ -83,7 +104,7 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
         body: JSON.stringify({
           sources, include_bank_libs: bankLibs, optimize: true, extra_steps: extraSteps,
           include_monitoring: monitoring, separate_monitoring: monitoring && separateMon,
-          full_env: fullEnv, py_target: pyTarget,
+          full_env: fullEnv, py_target: pyTarget, registry,
         }),
       })
       const data = await res.json()
@@ -292,7 +313,12 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                     <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11.5 }}>
                       <span style={{ color: '#22c55e' }}>•</span>
                       <span style={{ color: t.text || '#e2e8f0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
-                      <span style={{ color: t.dim || '#64748b', marginLeft: 'auto' }}>{(f.code.length / 1024).toFixed(1)} KB</span>
+                      <label title="Marcado = job (entra al REGISTRY del router). Desmarcado = módulo de apoyo (utils, settings, toolbox…): se copia EXACTO a bank_src/ sin convertir. Se recuerda para la próxima vez."
+                        style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 4, color: esJob(f) ? '#22c55e' : (t.muted || '#94a3b8'), whiteSpace: 'nowrap', cursor: 'pointer' }}>
+                        <input type="checkbox" checked={esJob(f)} onChange={e => marcarJob(f.name, e.target.checked)} />
+                        {esJob(f) ? 'job' : 'apoyo'}
+                      </label>
+                      <span style={{ color: t.dim || '#64748b' }}>{(f.code.length / 1024).toFixed(1)} KB</span>
                       <button onClick={() => setFiles(prev => prev.filter((_, k) => k !== i))}
                         style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', fontSize: 12 }}>✕</button>
                     </div>
@@ -434,13 +460,19 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                       {r.ok ? '✅' : '⚠️'} <b>{r.source || r.name}</b>
                       <span style={{ color: t.muted || '#94a3b8' }}> ← {r.name}</span>
                       {r.file && <span style={{ color: t.dim || '#64748b' }}> · {r.file}</span>}
-                      {r.ok && r.verbatim
-                        ? <span style={{ color: '#38bdf8' }}> · ya era PySpark: copiado completo, sin conversión</span>
+                      {r.ok && r.role === 'apoyo'
+                        ? <span style={{ color: '#a78bfa' }}> · módulo de apoyo: copia exacta (no está en el REGISTRY)</span>
+                        : r.ok && r.verbatim
+                        ? <span style={{ color: '#38bdf8' }}> · PySpark / Python sin pandas: copiado completo, sin conversión</span>
                         : r.ok
                         ? ((r.todos || []).length
                           ? <span style={{ color: '#f59e0b' }}> · {r.todos.length} línea(s) a revisar</span>
                           : <span style={{ color: '#22c55e' }}> · conversión limpia</span>)
                         : <span style={{ color: '#f87171' }}> · {r.reason}</span>}
+                      {r.aviso && <div style={{ marginLeft: 16, color: '#f59e0b' }}>⚠ {r.aviso}</div>}
+                      {r.job_kernel && <div style={{ marginLeft: 16, color: '#f59e0b' }}>
+                        ⚠ Es un job del framework del banco (<code>def run(kernel)</code>): el paquete lo envuelve como aggregate y
+                        <b> no llama a su run(kernel)</b>. Para ejecutarlo hace falta el runner con el Kernel de toolbox.</div>}
                     </div>
                     {/* Detalle: lineas no traducibles de esta fuente */}
                     {(r.todos || []).length > 0 && (
@@ -591,6 +623,12 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                 }}>{verifyLog}</pre>
               )}
             </div>
+
+            {/* ORDEN: quien va primero entre las fuentes (orden.json del paquete) */}
+            {buildResult?.edit_token && (
+              <OrdenFuentesPanel token={buildResult.edit_token} theme={t} apiBase={API_BASE}
+                onSaved={() => loadEditFiles(buildResult.edit_token)} />
+            )}
 
             {/* EDITOR: editar archivos generados y rehacer el paquete */}
             {editFiles.length > 0 && (
@@ -796,7 +834,8 @@ bash setup.sh       # con vendor/: PySpark OFFLINE; sin vendor/: por internet`}<
 bash run.sh --config cfg.json              # todas las fuentes (cada una job independiente; PIVOTE corre 1º)
 bash run.sh --config cfg.json --source X   # UNA sola fuente (job aislado p/ Airflow/cron)`}</pre>
           <p style={{ margin: '6px 0 0', fontSize: 11.5, color: t.muted || '#94a3b8' }}>
-            Todas comparten la <b>SparkSession</b>. El proceso <b>pivote</b> corre primero (márcalo con
+            Si definiste el <b>orden de las fuentes</b>, va en <code>orden.json</code>: cada fuente con dependencias corre
+            después de ellas y se salta si alguna falla. Todas comparten la <b>SparkSession</b>. El proceso <b>pivote</b> corre primero (márcalo con
             <code>{' "pivot": true'}</code> en el <code>cfg.json</code> o nómbralo <code>pivote</code>).
           </p>
 

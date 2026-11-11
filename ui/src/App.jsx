@@ -13,6 +13,7 @@ import HistoryPage from './components/HistoryPage'
 import PipelinePage from './components/PipelinePage'
 import GraphLibrary from './components/GraphLibrary'
 import GrafosPage from './components/GrafosPage'
+import OrquestadorPage from './components/OrquestadorPage'
 import BankLibsPage from './components/BankLibsPage'
 import EmulatorPage from './components/EmulatorPage'
 import ModelFrameworkPage from './components/ModelFrameworkPage'
@@ -770,6 +771,7 @@ export default function App() {
         { id: 'compiler', label: '🔧 Compiler' },
         { id: 'designer', label: '🎨 Designer' },
         { id: 'grafos', label: '📁 Grafos' },
+        { id: 'orquestador', label: '🧭 Orquestador' },
       ],
     },
     {
@@ -1137,6 +1139,8 @@ export default function App() {
           <PipelinePage theme={t} compiledCode={result?.code || ''} compiledTarget={target} extractorCode={result?.extractor_code || ''} hasDbSources={result?.has_db_sources || false} />
         ) : page === 'banklibs' ? (
           <BankLibsPage theme={t} />
+        ) : page === 'orquestador' ? (
+          <OrquestadorPage theme={t} />
         ) : page === 'grafos' ? (
           <GrafosPage theme={t} onLoadToCompiler={(g) => {
             setEditorMp(g.mp || '')
