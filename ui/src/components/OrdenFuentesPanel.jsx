@@ -80,7 +80,7 @@ function FuenteNode({ data }) {
 }
 const nodeTypes = { fuente: FuenteNode }
 
-export default function OrdenFuentesPanel({ token, theme, apiBase, onSaved }) {
+export default function OrdenFuentesPanel({ token, theme, apiBase, onSaved, onDescargar, descargando, completo }) {
   const t = theme || {}
   const [fuentes, setFuentes] = useState([])
   const [conf, setConf] = useState({})
@@ -168,17 +168,29 @@ export default function OrdenFuentesPanel({ token, theme, apiBase, onSaved }) {
     }))
   }, [])  // eslint-disable-line
 
-  const guardar = async () => {
-    if (!orden) { setMsg('⚠ Hay un ciclo: no se puede guardar.'); return }
+  const guardar = async (silencioso = false) => {
+    if (!orden) { setMsg('⚠ Hay un ciclo: no se puede guardar.'); return false }
     setBusy(true)
     try {
       const d = await call({ action: 'save', sources: conf })
       setConf(d.orden || {}); setDirty(false)
-      setMsg(d.tiene_orden ? '✅ Guardado en orden.json. Pulsa “Rehacer paquete” para incluirlo en el ZIP.'
-                           : '✅ Sin reglas: se usa el orden de siempre (orden.json eliminado). Rehaz el paquete.')
+      if (!silencioso) {
+        setMsg(d.tiene_orden ? '✅ Guardado en orden.json. Pulsa “Guardar y descargar” para bajar el paquete con este orden.'
+                             : '✅ Sin reglas: se usa el orden de siempre (orden.json eliminado).')
+      }
       onSaved && onSaved()
-    } catch (e) { setMsg('⚠ No se guardó: ' + e.message) }
-    setBusy(false)
+      setBusy(false)
+      return true
+    } catch (e) { setMsg('⚠ No se guardó: ' + e.message); setBusy(false); return false }
+  }
+
+  // Guardar el orden + rehacer el ZIP + descargarlo, en un solo paso.
+  const guardarYDescargar = async () => {
+    if (!onDescargar) return
+    if (dirty && !(await guardar(true))) return
+    setMsg('⏳ Rehaciendo el paquete' + (completo ? ' completo (puede tardar: incluye el ambiente offline)…' : '…'))
+    const ok = await onDescargar()
+    setMsg(ok ? '✅ Paquete rehecho con este orden y descargado.' : '⚠ No se pudo rehacer el paquete (ver mensaje abajo).')
   }
 
   if (!token || !fuentes.length) return null
@@ -234,7 +246,12 @@ export default function OrdenFuentesPanel({ token, theme, apiBase, onSaved }) {
         <b>Orden de ejecución:</b> {orden ? orden.join(' → ') : 'hay un ciclo de dependencias'}
       </div>
       <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-        <button style={btn(true)} onClick={guardar} disabled={!dirty || busy || !orden}>💾 Guardar orden{dirty ? ' *' : ''}</button>
+        <button style={btn(false)} onClick={() => guardar()} disabled={!dirty || busy || !orden}>💾 Guardar orden{dirty ? ' *' : ''}</button>
+        {onDescargar && (
+          <button style={btn(true)} onClick={guardarYDescargar} disabled={busy || descargando || !orden}
+            title="Guarda el orden, rehace el ZIP con orden.json y lo descarga">
+            {descargando ? '⏳ Rehaciendo…' : `📦 Guardar y descargar el paquete${completo ? ' completo' : ''}`}
+          </button>)}
         <button style={btn(false)} onClick={cargar} disabled={busy}>↺ Descartar</button>
         <button style={btn(false)} onClick={() => { setConf({}); setDirty(true) }} disabled={busy}>Orden de siempre</button>
         {msg && <span style={{ fontSize: 12, color: msg.startsWith('✅') ? '#22c55e' : '#f87171' }}>{msg}</span>}

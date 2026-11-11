@@ -22,6 +22,8 @@ nombre): en la ejecucion solo corren si algun paso previo fallo.
 
 Uso:
     python -m src.orquestador generar <carpeta_ab> <carpeta_convertida> [--out DIR]
+    python -m src.orquestador componer  A.json B.json [C.json ...] --nombre X [--sin-cadena]
+                                        (plan de planes: cada paso es otra orquestacion)
     python -m src.orquestador mostrar   orquestacion_X.json
     python -m src.orquestador dep-add   orquestacion_X.json PASO --despues-de OTRO
     python -m src.orquestador dep-rm    orquestacion_X.json PASO --despues-de OTRO
@@ -215,18 +217,99 @@ def build(ab_folder, converted_dir):
         for st in steps:
             if st["action"].get("target") and st["action"]["type"] == "graph":
                 st["action"]["io"] = parse_job_io(st["action"]["target"])
-        result[name] = {"plan": name, "direccion": "prior",
-                        "ejecucion": json.loads(json.dumps(EJECUCION_DEFECTO)),
-                        "steps": steps, "enlaces": sugerir_enlaces(steps)}
         topo_order(steps)  # valida que no haya ciclos
+        stem = os.path.splitext(name)[0]
+        base = {"plan": name, "nombre": stem, "direccion": "prior",
+                "ejecucion": json.loads(json.dumps(EJECUCION_DEFECTO)),
+                "steps": steps, "enlaces": sugerir_enlaces(steps)}
+        result[stem] = base
+        # Una orquestacion POR CADA pset que instancia este plan, con sus parametros
+        # aplicados como variables de entorno de los jobs (los jobs leen PARAMS.X de
+        # os.environ, asi el valor del pset gana sobre el default del grafo).
+        for pset in sorted(m["instances"].get(name, [])):
+            pn = m["nodes"].get(pset) or {}
+            if not pn.get("present"):
+                continue
+            aplicados, pendientes = params_a_env(pn.get("params") or {})
+            pstem = os.path.splitext(pset)[0]
+            # Si el pset repite el nombre del plan (plan_x_2.pset), solo el sufijo: plan_x__2
+            sufijo = pstem[len(stem):].strip("_-.") if pstem.lower().startswith(stem.lower()) else pstem
+            nombre = f"{stem}__{sufijo or 'pset'}"
+            v = json.loads(json.dumps(base))
+            v["nombre"] = nombre
+            v["pset"] = pset
+            v["ejecucion"]["env"] = aplicados
+            v["params_pendientes"] = pendientes
+            result[nombre] = v
     return result
+
+
+_ENV_NAME = re.compile(r"^[A-Za-z_]\w*$")
+
+
+def params_a_env(params):
+    """Parametros de un pset -> (env aplicable, {param: motivo} no aplicados).
+    Solo valores LITERALES: los que aun son expresiones de Ab Initio ($VAR, ${VAR},
+    $[...]) no se pueden resolver aqui y se reportan."""
+    env, pend = {}, {}
+    for k, v in (params or {}).items():
+        v = "" if v is None else str(v)
+        if not _ENV_NAME.match(k):
+            pend[k] = "nombre no valido como variable de entorno"
+        elif "$" in v:
+            pend[k] = "expresion de Ab Initio sin resolver: " + v[:80]
+        elif any(c in v for c in "\x00\r\n"):
+            pend[k] = "valor con caracteres de control"
+        else:
+            env[k] = v
+    return env, pend
+
+
+def _ruta_plan(target):
+    """Ruta absoluta de una sub-orquestacion (las rutas se guardan relativas al proyecto)."""
+    return target if os.path.isabs(target) else os.path.join(_ROOT, target)
+
+
+def componer(nombre, planes, en_cadena=True):
+    """Plan de PLANES: una orquestacion cuyos pasos son otras orquestaciones.
+    planes: rutas de orquestacion_*.json (relativas a la raiz del proyecto o absolutas).
+    en_cadena=True: cada plan depende del anterior (el orden dado); luego se acomoda
+    en el diagrama igual que cualquier plan."""
+    if not re.fullmatch(r"[A-Za-z0-9][\w.\-]{0,80}", nombre or ""):
+        raise ValueError("nombre invalido (letras, numeros, . _ -)")
+    if len(planes or []) < 2:
+        raise ValueError("un plan de planes necesita al menos 2 planes")
+    if len(set(planes)) != len(planes):
+        raise ValueError("hay planes repetidos")
+    steps = []
+    for i, ruta in enumerate(planes, 1):
+        fp = _ruta_plan(ruta)
+        with open(fp, "r", encoding="utf-8") as f:
+            sub = json.load(f)
+        if sub.get("tipo") == "plan_de_planes":
+            raise ValueError(f"{os.path.basename(fp)} ya es un plan de planes (no se anidan)")
+        validar_plan(sub)
+        rel = os.path.relpath(fp, _ROOT) if not os.path.relpath(fp, _ROOT).startswith("..") else fp
+        steps.append({
+            "id": f"p{i}", "name": sub.get("nombre") or os.path.splitext(sub.get("plan", "plan"))[0],
+            "action": {"type": "plan", "target": rel, "source": sub.get("plan"),
+                       "status": "ok", "pset": sub.get("pset"),
+                       "pasos": len(sub.get("steps") or [])},
+            "depends_on": [f"p{i-1}"] if (en_cadena and i > 1) else [],
+            "dep_flags": {}, "solo_en_fallo": False, "enabled": True, "continue_on_error": False,
+        })
+    o = {"tipo": "plan_de_planes", "plan": nombre + ".planes", "nombre": "PLANES_" + nombre,
+         "direccion": "prior", "ejecucion": json.loads(json.dumps(EJECUCION_DEFECTO)),
+         "steps": steps, "enlaces": []}
+    validar_plan(o)
+    return o
 
 
 def save_all(orchs, out_dir):
     os.makedirs(out_dir, exist_ok=True)
     paths = []
     for name, o in orchs.items():
-        p = os.path.join(out_dir, "orquestacion_" + os.path.splitext(name)[0] + ".json")
+        p = os.path.join(out_dir, "orquestacion_" + (o.get("nombre") or os.path.splitext(name)[0]) + ".json")
         with open(p, "w", encoding="utf-8") as f:
             json.dump(o, f, indent=2, ensure_ascii=False)
         paths.append(p)
@@ -568,15 +651,20 @@ def invertir(o):
 # Ejecucion
 # ---------------------------------------------------------------------------
 
-def ejecutar(o, real=False, modo=None, base_path=None):
+def ejecutar(o, real=False, modo=None, base_path=None, _nivel=0, _pila=()):
     validar_plan(o)
     ej = _ej(o, modo, base_path)
     order = topo_order(o["steps"])
     by_id = {s["id"]: s for s in o["steps"]}
     enlaces = [e for e in (o.get("enlaces") or []) if e.get("habilitado", True)]
     done, failed, faltantes = set(), set(), []
-    print(f"[*] Plan {o['plan']} - {'EJECUCION REAL' if real else 'DRY-RUN'} - modo {ej['modo']}")
-    if real and not _base_efectiva(ej):
+    es_planes = o.get("tipo") == "plan_de_planes"
+    sangria = ""   # el sangrado de los sub-planes lo hace quien los llama
+    print(f"{sangria}[*] {'Plan de planes' if es_planes else 'Plan'} {o['plan']}"
+          + (f" (pset {o['pset']})" if o.get("pset") else "")
+          + f" - {'EJECUCION REAL' if real else 'DRY-RUN'} - modo {ej['modo']}")
+    # En un plan de planes cada sub-plan valida su propio base_path (si no se comparte uno)
+    if real and not es_planes and not _base_efectiva(ej):
         print("[x] La ejecucion real exige base_path (ejecucion.base_path o --base-path): "
               "sin el, los jobs usarian el bucket S3 por defecto.")
         return False
@@ -615,6 +703,49 @@ def ejecutar(o, real=False, modo=None, base_path=None):
         if not enlace_ok and not s["continue_on_error"]:
             print(f"[x] {sid} {s['name']}: fallo el enlace de entrada, no se ejecuta")
             failed.add(sid)
+            continue
+        if a["type"] == "plan":
+            # Paso = otra orquestacion completa. Se ejecuta en este mismo proceso (el
+            # dry-run se ve anidado). base_path y --modo del plan de planes, si se dan,
+            # se comparten con todos los sub-planes; si no, cada uno usa el suyo.
+            fp = _ruta_plan(a["target"])
+            print(f"{sangria}[>] {sid} {s['name']}: plan {a['target']}")
+            if os.path.realpath(fp) in _pila or _nivel >= 3:
+                print(f"{sangria}[x] {sid}: plan anidado en ciclo o demasiado profundo")
+                failed.add(sid)
+                continue
+            try:
+                with open(fp, "r", encoding="utf-8") as f:
+                    sub = json.load(f)
+                kw = dict(real=real, modo=modo, base_path=(_base_efectiva(ej) or None),
+                          _nivel=_nivel + 1, _pila=_pila + (os.path.realpath(fp),))
+                if real:
+                    ok_sub = ejecutar(sub, **kw)          # logs en vivo
+                else:
+                    # dry-run: todo el detalle del sub-plan sangrado bajo su paso
+                    import io as _io
+                    import contextlib as _ctx
+                    buf = _io.StringIO()
+                    with _ctx.redirect_stdout(buf):
+                        ok_sub = ejecutar(sub, **kw)
+                    for ln in buf.getvalue().splitlines():
+                        print("    " + ln)
+            except (OSError, ValueError, KeyError) as e:
+                print(f"{sangria}[x] {sid}: no se pudo leer/validar el plan: {e}")
+                ok_sub = False
+            if ok_sub:
+                done.add(sid)
+            elif not real:
+                # dry-run: avisar y seguir, para ver tambien el detalle de los siguientes
+                print(f"{sangria}[!] {sid} {s['name']}: este plan tiene faltantes (ver arriba)")
+                faltantes.append(f"{sid} {s['name']} -> plan con faltantes")
+                done.add(sid)
+            else:
+                print(f"{sangria}[x] {sid} {s['name']}: el plan termino con fallos o faltantes")
+                if not s["continue_on_error"]:
+                    failed.add(sid)
+                else:
+                    done.add(sid)
             continue
         cmd = build_command(s, ej)
         print(f"[>] {sid} {s['name']}: {' '.join(cmd)}")
@@ -737,6 +868,68 @@ def _columnas_por_fuente(code, fuentes):
     return out
 
 
+_nivel_datos = [0]   # profundidad de recursion (plan de planes) en generar_datos
+_spark_datos = [None]  # SparkSession reutilizada si no hay pyarrow/fastparquet
+
+
+def escribir_parquet(dest, columnas, filas):
+    """Escribe un dataset parquet (carpeta con part-00000.parquet) con el primer motor
+    disponible: pyarrow -> fastparquet -> PySpark local. Antes solo pyarrow, y en
+    servidores sin pyarrow fallaba con "No module named 'pyarrow'".
+    Devuelve el nombre del motor usado; RuntimeError si no hay ninguno."""
+    datos = {c: [r.get(c) for r in filas] for c in columnas}
+    try:
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+        os.makedirs(dest, exist_ok=True)
+        pq.write_table(pa.table(datos), os.path.join(dest, "part-00000.parquet"))
+        return "pyarrow"
+    except ImportError:
+        pass
+    try:
+        import pandas as pd
+        import fastparquet  # noqa: F401  (solo para saber si esta)
+        os.makedirs(dest, exist_ok=True)
+        pd.DataFrame(datos, columns=columnas).to_parquet(
+            os.path.join(dest, "part-00000.parquet"), engine="fastparquet", index=False)
+        return "fastparquet"
+    except ImportError:
+        pass
+    try:
+        from pyspark.sql import SparkSession
+        from pyspark.sql.types import StructType, StructField, StringType, LongType, DoubleType
+    except ImportError:
+        raise RuntimeError("no hay como escribir parquet: instala pyarrow "
+                           "(pip install pyarrow) o pyspark en el servidor del portal")
+    if _spark_datos[0] is None:
+        _spark_datos[0] = (SparkSession.builder.master("local[1]").appName("bnx_datos_sinteticos")
+                           .config("spark.ui.enabled", "false").getOrCreate())
+    spark = _spark_datos[0]
+
+    def _tipo(vals):
+        vs = [v for v in vals if v is not None]
+        if vs and all(isinstance(v, bool) for v in vs):
+            return StringType()
+        if vs and all(isinstance(v, int) for v in vs):
+            return LongType()
+        if vs and all(isinstance(v, (int, float)) for v in vs):
+            return DoubleType()
+        return StringType()
+    esquema = StructType([StructField(c, _tipo(datos[c]), True) for c in columnas])
+    conv = []
+    for r in filas:
+        fila = []
+        for c, f in zip(columnas, esquema.fields):
+            v = r.get(c)
+            if v is not None:
+                v = (float(v) if isinstance(f.dataType, DoubleType) else
+                     int(v) if isinstance(f.dataType, LongType) else str(v))
+            fila.append(v)
+        conv.append(tuple(fila))
+    spark.createDataFrame(conv, esquema).coalesce(1).write.mode("overwrite").parquet(dest)
+    return "pyspark"
+
+
 def generar_datos(o, base_path, n_rows=20, seed=42, sobrescribir=False):
     """Escribe parquet sintetico en <base>/raw/<x> para cada lectura de los jobs del plan.
 
@@ -749,8 +942,6 @@ def generar_datos(o, base_path, n_rows=20, seed=42, sobrescribir=False):
     - Solo base_path local; las rutas resueltas deben quedar dentro de base_path.
     Devuelve una lista de dicts {paso, ruta, estado, filas?, columnas?, motivo?}.
     """
-    import pyarrow as pa
-    import pyarrow.parquet as pq
     from src.py2spark import infer_input_schema
     from src.datagen import build_synthetic_data
 
@@ -764,6 +955,20 @@ def generar_datos(o, base_path, n_rows=20, seed=42, sobrescribir=False):
     hechos, rep = set(), []
     for s in o["steps"]:
         a = s["action"]
+        if s["id"] in on and a["type"] == "plan" and _nivel_datos[0] < 3:
+            # Plan de planes: los datos de cada sub-plan van al MISMO base_path (es el
+            # que se comparte al ejecutar el plan de planes).
+            try:
+                with open(_ruta_plan(a["target"]), "r", encoding="utf-8") as f:
+                    sub = json.load(f)
+                _nivel_datos[0] += 1
+                for r in generar_datos(sub, base_path, n_rows=n_rows, seed=seed, sobrescribir=sobrescribir):
+                    rep.append({**r, "paso": f"{s['id']}/{r['paso']}"})
+            except (OSError, ValueError) as e:
+                rep.append({"paso": s["id"], "ruta": a["target"], "estado": "error", "motivo": str(e)})
+            finally:
+                _nivel_datos[0] = max(0, _nivel_datos[0] - 1)
+            continue
         if s["id"] not in on or a["type"] != "graph" or not a.get("target") or a["status"] != "ok":
             continue
         try:
@@ -816,15 +1021,17 @@ def generar_datos(o, base_path, n_rows=20, seed=42, sobrescribir=False):
                 cols, nota = [{"name": "id", "type": "string"}], "sin columnas detectadas: se uso 'id'"
             gen = build_synthetic_data(cols, n_rows=n_rows, fmt="json", seed=seed)
             nombres = [c["name"] for c in gen["columns"]]
-            tabla = pa.table({c: [r.get(c) for r in gen["rows"]] for c in nombres})
             if os.path.isdir(dest):
                 shutil.rmtree(dest)
             elif os.path.exists(dest):
                 os.remove(dest)
-            os.makedirs(dest, exist_ok=True)
-            pq.write_table(tabla, os.path.join(dest, "part-00000.parquet"))
+            try:
+                motor = escribir_parquet(dest, nombres, gen["rows"])
+            except RuntimeError as e:
+                rep.append({**item, "estado": "error", "motivo": str(e)})
+                continue
             hechos.add(ruta)
-            rep.append({**item, "estado": "generado", "filas": len(gen["rows"]),
+            rep.append({**item, "estado": "generado", "filas": len(gen["rows"]), "motor": motor,
                         "columnas": [f"{c['name']}:{c['type']}" for c in gen["columns"]],
                         **({"motivo": nota} if nota else {})})
     return rep
@@ -835,6 +1042,11 @@ def generar_datos(o, base_path, n_rows=20, seed=42, sobrescribir=False):
 # ---------------------------------------------------------------------------
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def dag_id_de(o):
+    """dag_id unico por orquestacion (las variantes por pset tienen su propio nombre)."""
+    return re.sub(r"\W", "_", "bnx_" + (o.get("nombre") or os.path.splitext(o.get("plan", "plan"))[0]))
 
 
 def generar_airflow(o, root=None):
@@ -860,7 +1072,8 @@ def generar_airflow(o, root=None):
     env = {str(k): str(v) for k, v in (ej.get("env") or {}).items()}
     if ej.get("base_path"):
         env["BNX_BASE_PATH"] = ej["base_path"]
-    dag_id = re.sub(r"\W", "_", "bnx_" + os.path.splitext(o["plan"])[0])
+    dag_id = dag_id_de(o)
+    es_planes = o.get("tipo") == "plan_de_planes"
     py = "python3"
 
     def cmd_for(s):
@@ -884,8 +1097,14 @@ def generar_airflow(o, root=None):
          "    from airflow.providers.standard.operators.empty import EmptyOperator",
          "except ImportError:  # Airflow 2.x",
          "    from airflow.operators.bash import BashOperator",
-         "    from airflow.operators.empty import EmptyOperator", "",
-         f"ENV = {env!r}", "",
+         "    from airflow.operators.empty import EmptyOperator", ""]
+    if es_planes:
+        L += ["try:  # Airflow 3.x",
+              "    from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator",
+              "except ImportError:  # Airflow 2.x",
+              "    from airflow.operators.trigger_dagrun import TriggerDagRunOperator",
+              "# Requiere en Airflow el DAG de cada plan (boton 'DAG Airflow' en cada uno).", ""]
+    L += [f"ENV = {env!r}", "",
          f"with DAG(dag_id={dag_id!r}, schedule=None, start_date=datetime(2024, 1, 1),",
          "         catchup=False, tags=['bnx', 'abinitio']) as dag:"]
 
@@ -902,6 +1121,17 @@ def generar_airflow(o, root=None):
             rule = "all_success"
         name = tid[s["id"]]
         L.append(f"    # {s['name']} ({s['id']}) - {a['type']}/{a['status']}")
+        if a["type"] == "plan":
+            # Sub-plan = su propio DAG (genera tambien el DAG de cada plan); se dispara y
+            # se espera a que termine para respetar el orden del plan de planes.
+            try:
+                with open(_ruta_plan(a["target"]), "r", encoding="utf-8") as f:
+                    sub_id = dag_id_de(json.load(f))
+            except (OSError, ValueError):
+                sub_id = dag_id_de({"plan": a.get("source") or s["name"]})
+            L.append(f"    {name} = TriggerDagRunOperator(task_id={name!r}, trigger_rule={rule!r},")
+            L.append(f"        trigger_dag_id={sub_id!r}, wait_for_completion=True, poke_interval=30)")
+            continue
         if a["status"] in ("faltante", "sin_convertir"):
             msg = f"FALTANTE: {a.get('source')} ({a['status']})"
             L.append(f"    {name} = BashOperator(task_id={name!r}, trigger_rule={rule!r},")
@@ -984,6 +1214,12 @@ def main(argv=None):
     dt.add_argument("--filas", type=int, default=20)
     dt.add_argument("--seed", type=int, default=42)
     dt.add_argument("--sobrescribir", action="store_true")
+    cp = sub.add_parser("componer", help="plan de planes con 2+ orquestaciones")
+    cp.add_argument("planes", nargs="+", help="orquestacion_*.json en el orden en que corren")
+    cp.add_argument("--nombre", required=True)
+    cp.add_argument("--out", default=None, help="carpeta de salida (default: la del primer plan)")
+    cp.add_argument("--sin-cadena", action="store_true",
+                    help="sin dependencias entre planes (se acomodan despues)")
     af = sub.add_parser("airflow")
     af.add_argument("json")
     af.add_argument("--out", default=None)
@@ -996,6 +1232,13 @@ def main(argv=None):
 
 
 def _run(a):
+    if a.cmd == "componer":
+        o = componer(a.nombre, a.planes, en_cadena=not a.sin_cadena)
+        out = a.out or os.path.dirname(os.path.abspath(a.planes[0]))
+        for p in save_all({o["nombre"]: o}, out):
+            print("[ok]", p)
+        mostrar(o)
+        return 0
     if a.cmd == "generar":
         orchs = build(a.ab_folder, a.converted_dir)
         paths = save_all(orchs, a.out or a.converted_dir)
@@ -1022,7 +1265,7 @@ def _run(a):
     if a.cmd == "airflow":
         txt = generar_airflow(o)
         out = a.out or os.path.join(os.path.dirname(os.path.abspath(a.json)),
-                                    "dag_" + os.path.splitext(o["plan"])[0] + ".py")
+                                    "dag_" + dag_id_de(o)[len("bnx_"):] + ".py")
         with open(out, "w", encoding="utf-8") as f:
             f.write(txt)
         print("[ok] DAG:", out)

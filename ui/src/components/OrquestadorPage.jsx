@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import ReactFlow, {
   Background, Controls, MiniMap, MarkerType,
   useNodesState, useEdgesState, Handle, Position,
@@ -89,8 +89,10 @@ function StepNode({ data }) {
       <div style={{ fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
         {s.name}
       </div>
-      <div style={{ fontSize: 10, color: data.theme.muted || '#94a3b8' }}>
-        {s.id} · {s.action?.type}{tgt ? `: ${tgt}` : ''}
+      <div style={{ fontSize: 10, color: data.theme.muted || '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+        {s.action?.type === 'plan'
+          ? `${s.id} · 🧩 plan · ${s.action.pasos ?? '?'} pasos${s.action.pset ? ` · pset ${s.action.pset}` : ''}`
+          : `${s.id} · ${s.action?.type}${tgt ? `: ${tgt}` : ''}`}
       </div>
       <div style={{ fontSize: 10, marginTop: 2 }}>
         <span style={{ color }}>● {s.action?.status}</span>
@@ -193,9 +195,9 @@ const PASOS = [
   { n: 2, titulo: 'Procesar', tab: 'imp', ir: 'Ir a Importar',
     texto: 'Junto a tu proyecto pulsa "Procesar": genera el mapa de relaciones, convierte cada .mp a PySpark y crea la orquestación del plan. Al terminar te lleva a "Orquestación".' },
   { n: 3, titulo: 'Revisar el resultado', tab: 'orq', ir: 'Ir a Orquestación',
-    texto: 'Cada cuadro es una tarea del plan en su orden. Borde verde = job PySpark listo, rojo = falta un archivo, gris = tarea de Ab Initio sin traducción, punteado = solo corre si algo falla. Clic en un paso con job → "Ver código PySpark". En "Mapa pset ↔ grafo" ves qué pset usa cada grafo y qué falta.' },
+    texto: 'Cada cuadro es una tarea del plan en su orden. Borde verde = job PySpark listo, rojo = falta un archivo, gris = tarea de Ab Initio sin traducción, punteado = solo corre si algo falla. Clic en un paso con job → "Ver código PySpark". En "Mapa pset ↔ grafo" ves qué pset usa cada grafo y qué falta. Si subiste varios planes, todos aparecen en el selector; si un plan tiene sus psets, además hay una variante por pset (plan__pset) con sus parámetros aplicados.' },
   { n: 4, titulo: 'Acomodar el orden (si hace falta)', tab: 'orq', ir: 'Ir a Orquestación',
-    texto: 'Arrastra del punto derecho de un paso al izquierdo de otro: el segundo corre después. Para quitar una dependencia, selecciona la flecha y pulsa Supr. En el panel derecho: deshabilitar, "solo si falla", "continuar si falla". "Invertir flechas" si el orden salió al revés. Pulsa "Guardar" (un ciclo se rechaza).' },
+    texto: 'Arrastra del punto derecho de un paso al izquierdo de otro: el segundo corre después. Para quitar una dependencia, selecciona la flecha y pulsa Supr. En el panel derecho: deshabilitar, "solo si falla", "continuar si falla". "Invertir flechas" si el orden salió al revés. Pulsa "Guardar" (un ciclo se rechaza). Para encadenar VARIOS planes (uno después de otro): "🧩 Plan de planes", marca los planes en orden y pulsa Crear; luego se acomoda igual.' },
   { n: 5, titulo: 'Preparar la ejecución', tab: 'orq', ir: 'Ir a Orquestación',
     texto: 'Sin ningún paso seleccionado, el panel derecho muestra "Ejecución": elige python o spark-submit. Si un job usa la salida de otro, en "Enlaces de datos" pulsa "Sugerir" o créalos. "Datos sintéticos" genera entradas de prueba y deja el base_path listo. "Dry-run" muestra qué correría y en qué orden, sin ejecutar nada.' },
   { n: 6, titulo: 'Ejecutar o llevar a producción', tab: null,
@@ -203,6 +205,56 @@ const PASOS = [
       '.venv/bin/python -m src.orquestador ejecutar output/<proyecto>/orquestacion_<plan>.json --ejecutar',
     extra: 'Para Airflow: "DAG Airflow" y descarga el .py del DAG.' },
 ]
+
+// Crear un "plan de planes": elegir 2+ orquestaciones del proyecto en el orden en que corren.
+function ComponerPanel({ t, btn, card, planes, actual, onCreado, onError }) {
+  const [orden, setOrden] = useState(() => (actual && !/orquestacion_PLANES_/.test(actual) ? [actual] : []))
+  const [nombre, setNombre] = useState('')
+  const [cadena, setCadena] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const etiqueta = (f) => f.split('/').pop().replace(/^orquestacion_/, '').replace(/\.json$/, '')
+  const toggle = (f) => setOrden(o => o.includes(f) ? o.filter(x => x !== f) : [...o, f])
+  const crear = async () => {
+    if (orden.length < 2) { onError('Elige al menos 2 planes.'); return }
+    if (!/^[A-Za-z0-9][\w.-]{0,80}$/.test(nombre.trim())) { onError('Escribe un nombre (letras, números, . _ -).'); return }
+    setBusy(true)
+    try {
+      const r = await fetch(`${ORQUESTADOR_URL}/componer`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ planes: orden, nombre: nombre.trim(), cadena }),
+      })
+      const d = await r.json().catch(() => ({}))
+      if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`)
+      onCreado(d.file)
+    } catch (e) { onError(`No se creó: ${e.message}`) }
+    setBusy(false)
+  }
+  return (
+    <div style={{ ...card, margin: '0 12px 8px', fontSize: 12 }}>
+      <div style={{ fontWeight: 700, marginBottom: 4 }}>🧩 Nuevo plan de planes</div>
+      <div style={{ color: t.muted, marginBottom: 6 }}>
+        Marca los planes en el orden en que deben correr (el número indica el orden). Puedes usar el plan base o
+        una variante por pset (<code>plan__pset</code>).
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 4, maxHeight: 160, overflowY: 'auto' }}>
+        {planes.map(f => (
+          <label key={f} style={{ display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
+            <input type="checkbox" checked={orden.includes(f)} onChange={() => toggle(f)} />
+            <span style={{ width: 18, textAlign: 'right', color: '#38bdf8', fontWeight: 700 }}>
+              {orden.includes(f) ? orden.indexOf(f) + 1 : ''}</span>
+            <span style={{ wordBreak: 'break-all' }}>{etiqueta(f)}</span>
+          </label>))}
+        {planes.length < 2 && <div style={{ color: '#f59e0b' }}>Este proyecto tiene menos de 2 planes.</div>}
+      </div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
+        <input value={nombre} onChange={e => setNombre(e.target.value)} placeholder="Nombre, ej. cierre_mensual"
+          style={{ ...btn(false), textAlign: 'left', minWidth: 220 }} />
+        <label><input type="checkbox" checked={cadena} onChange={e => setCadena(e.target.checked)} /> En cadena (cada uno espera al anterior)</label>
+        <button style={btn(true)} onClick={crear} disabled={busy || orden.length < 2}>Crear</button>
+      </div>
+    </div>
+  )
+}
 
 function GuiaUso({ t, btn, irA, cerrar }) {
   return (
@@ -269,6 +321,7 @@ export default function OrquestadorPage({ theme }) {
   const [procLog, setProcLog] = useState(null)  // {ok, log}
   const [processing, setProcessing] = useState(false)
   const [code, setCode] = useState(null)      // {name,size,truncated,code}
+  const [componiendo, setComponiendo] = useState(false)   // panel "Plan de planes"
   const [nodes, setNodes, onNodesChange] = useNodesState([])
   const [edges, setEdges, onEdgesChange] = useEdgesState([])
 
@@ -318,6 +371,26 @@ export default function OrquestadorPage({ theme }) {
   }, [setNodes, t])
 
   useEffect(() => { if (plan) relayout(plan) }, [file, plan?.plan])  // eslint-disable-line
+
+  // ---- encuadre automatico: mostrar SIEMPRE todos los pasos ----
+  const [rf, setRf] = useState(null)         // instancia de ReactFlow (onInit)
+  const lienzoRef = useRef(null)
+  const verTodo = useCallback(() => {
+    if (!rf) return
+    // doble rAF: esperar a que React pinte los nodos y el layout cambie de tamaño
+    requestAnimationFrame(() => requestAnimationFrame(() => rf.fitView({ padding: 0.15, duration: 250 })))
+  }, [rf])
+  // al cambiar de plan, al (re)acomodar y al abrir/cerrar paneles que cambian el alto
+  useEffect(() => { verTodo() }, [verTodo, file, nodes.length, !!code, !!dry, ayuda, tab])  // eslint-disable-line
+  // al cambiar el tamaño del lienzo (ventana, paneles laterales)
+  useEffect(() => {
+    const el = lienzoRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    let timer = null
+    const ro = new ResizeObserver(() => { clearTimeout(timer); timer = setTimeout(verTodo, 120) })
+    ro.observe(el)
+    return () => { ro.disconnect(); clearTimeout(timer) }
+  }, [verTodo, tab])
 
   // Mantener datos/aristas sincronizados con el plan sin mover posiciones
   useEffect(() => {
@@ -566,7 +639,7 @@ export default function OrquestadorPage({ theme }) {
 
       {tab === 'orq' && (
         <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflowY: 'auto' }}>
             <div style={{ padding: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
               <select value={file} onChange={e => {
                 if (dirty && !window.confirm('Hay cambios sin guardar. ¿Descartarlos?')) return
@@ -577,7 +650,8 @@ export default function OrquestadorPage({ theme }) {
               </select>
               <button style={btn(false)} onClick={loadList}>↻ Recargar lista</button>
               <button style={btn(true)} onClick={guardar} disabled={!dirty || busy}>💾 Guardar{dirty ? ' *' : ''}</button>
-              <button style={btn(false)} onClick={() => plan && relayout(plan)}>⇄ Reacomodar</button>
+              <button style={btn(false)} onClick={() => { if (plan) { relayout(plan); verTodo() } }}>⇄ Reacomodar</button>
+              <button style={btn(false)} onClick={verTodo} disabled={!plan} title="Encuadrar el diagrama para ver todos los pasos">⛶ Ver todo</button>
               <button style={btn(false)} onClick={invertir} disabled={!plan}>⇅ Invertir flechas</button>
               <button style={btn(false)} onClick={() => { if (!dirty || window.confirm('¿Descartar cambios?')) loadPlan(file) }} disabled={!dirty}>↺ Descartar</button>
               <button style={btn(false)} onClick={dryRun} disabled={!plan || busy}>▶ Dry-run</button>
@@ -585,18 +659,53 @@ export default function OrquestadorPage({ theme }) {
               <button style={btn(false)} onClick={datosSinteticos} disabled={!plan || busy}
                 title="Genera parquet de entrada en <carpeta del plan>/datos_sinteticos/raw y deja el base_path apuntando ahí">🧪 Datos sintéticos</button>
               <button style={btn(false)} onClick={descargar} disabled={!plan}>📥 JSON</button>
+              <button style={btn(componiendo)} onClick={() => setComponiendo(v => !v)} disabled={!file}
+                title="Une 2 o más planes de este proyecto en un plan de planes">🧩 Plan de planes</button>
             </div>
+            {componiendo && (
+              <ComponerPanel t={t} btn={btn} card={card} actual={file}
+                planes={files.filter(f => f.split('/').slice(0, -1).join('/') === file.split('/').slice(0, -1).join('/')
+                  && !/orquestacion_PLANES_/.test(f))}
+                onCreado={async (nuevo) => {
+                  setComponiendo(false)
+                  const d = await post('list'); setFiles(d.plans || []); setMaps(d.maps || [])
+                  setFile(nuevo); flash('ok', 'Plan de planes creado.')
+                }}
+                onError={(m) => flash('err', m)} />
+            )}
+            {plan?.tipo === 'plan_de_planes' && (
+              <div style={{ margin: '0 12px 6px', fontSize: 12, color: '#a78bfa' }}>
+                🧩 <b>Plan de planes</b>: cada cuadro es una orquestación completa. Acomoda el orden igual que en un plan;
+                “Abrir este plan” entra a cada una. El <i>base path</i> de aquí, si lo pones, se comparte con todos.
+              </div>
+            )}
+            {plan?.pset && (
+              <details style={{ margin: '0 12px 6px', fontSize: 12 }}>
+                <summary style={{ cursor: 'pointer', color: '#38bdf8' }}>
+                  Variante del pset <b>{plan.pset}</b> · {Object.keys(plan.ejecucion?.env || {}).length} parámetro(s) aplicados
+                  {Object.keys(plan.params_pendientes || {}).length > 0 &&
+                    <span style={{ color: '#f59e0b' }}> · {Object.keys(plan.params_pendientes).length} sin resolver</span>}
+                </summary>
+                <div style={{ color: t.muted, marginTop: 4 }}>
+                  Se pasan como variables de entorno a cada job (ganan sobre el valor por defecto del grafo).
+                  {Object.entries(plan.ejecucion?.env || {}).map(([k, v]) => <div key={k}><code>{k}={v}</code></div>)}
+                  {Object.entries(plan.params_pendientes || {}).map(([k, v]) =>
+                    <div key={k} style={{ color: '#f59e0b' }}><code>{k}</code>: {v}</div>)}
+                </div>
+              </details>
+            )}
             <div style={{ fontSize: 11, color: t.muted, padding: '0 12px 6px' }}>
               Arrastra del punto derecho de un paso al izquierdo de otro para añadir una dependencia (el primero corre antes).
               Selecciona una flecha y pulsa Supr para quitarla. La ejecución real no está disponible desde la GUI.
             </div>
-            <div style={{ flex: 1, minHeight: 300 }}>
+            <div ref={lienzoRef} style={{ flex: 1, minHeight: 360 }}>
               <ReactFlow
                 nodes={nodes} edges={edges} nodeTypes={nodeTypes}
                 onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
                 onConnect={onConnect} onEdgesDelete={onEdgesDelete}
                 onNodeClick={(_, n) => setSelId(n.id)} onPaneClick={() => setSelId(null)}
-                deleteKeyCode={['Delete', 'Backspace']} fitView minZoom={0.2}
+                onInit={setRf}
+                deleteKeyCode={['Delete', 'Backspace']} fitView fitViewOptions={{ padding: 0.15 }} minZoom={0.1}
               >
                 <Background /><Controls />
                 {/* Minimapa con colores del tema (por defecto es blanco y tapa el diagrama en modo oscuro) */}
@@ -619,13 +728,17 @@ export default function OrquestadorPage({ theme }) {
                 </div>
                 {code.truncated && <div style={{ color: '#f59e0b', fontSize: 11, marginBottom: 4 }}>
                   Vista parcial (primeros 400 KB). El archivo completo está en la ruta indicada arriba.</div>}
-                <pre style={{ margin: 0, maxHeight: 340, overflow: 'auto', fontSize: 11, background: t.codeBg || '#0b1220', padding: 8, borderRadius: 6 }}>{code.code}</pre>
+                <pre style={{ margin: 0, maxHeight: 220, overflow: 'auto', fontSize: 11, background: t.codeBg || '#0b1220', padding: 8, borderRadius: 6 }}>{code.code}</pre>
               </div>
             )}
             {dry && (
-              <pre style={{ ...card, margin: 10, maxHeight: 200, overflow: 'auto', fontSize: 11, whiteSpace: 'pre-wrap' }}>
-                {dry.output}{'\n'}{dry.ok ? '✔ sin problemas' : '✖ hay archivos faltantes o fallos (ver arriba)'}
-              </pre>
+              <div style={{ ...card, margin: 10, position: 'relative' }}>
+                <button style={{ ...btn(false), position: 'absolute', top: 6, right: 6, padding: '0 6px' }}
+                  onClick={() => setDry(null)} aria-label="Cerrar resultado">✕</button>
+                <pre style={{ margin: 0, maxHeight: 160, overflow: 'auto', fontSize: 11, whiteSpace: 'pre-wrap', paddingRight: 28 }}>
+                  {dry.output}{'\n'}{dry.ok ? '✔ sin problemas' : '✖ hay archivos faltantes o fallos (ver arriba)'}
+                </pre>
+              </div>
             )}
           </div>
 
@@ -649,6 +762,11 @@ export default function OrquestadorPage({ theme }) {
                 {sel.action?.target && <div style={{ wordBreak: 'break-all', color: t.muted }}>{sel.action.target}</div>}
                 {sel.action?.type === 'graph' && sel.action?.target &&
                   <button style={btn(true)} onClick={() => verCodigo(sel.action.target)}>👁 Ver código PySpark</button>}
+                {sel.action?.type === 'plan' && sel.action?.target &&
+                  <button style={btn(true)} onClick={() => {
+                    if (dirty && !window.confirm('Hay cambios sin guardar en este plan de planes. ¿Descartarlos?')) return
+                    setFile(sel.action.target)
+                  }}>📂 Abrir este plan</button>}
                 {sel.action?.source && !sel.action?.target && <div style={{ color: '#f87171' }}>Falta: {sel.action.source}</div>}
                 {sel.action?.nota && <div style={{ color: t.muted }}>{sel.action.nota}</div>}
                 <label><input type="checkbox" checked={sel.enabled}

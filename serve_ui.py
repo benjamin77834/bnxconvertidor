@@ -1226,9 +1226,12 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             zip_size = os.path.getsize(zip_path)
             with open(os.path.join(tmpdir, token + ".name"), "w", encoding="utf-8") as fh:
                 fh.write(filename)
+            from src.mlops_pkg import ULTIMO_FALTAN_OFFLINE, ULTIMO_VENDOR
             self._json_response(200, {
                 "ok": True, "filename": filename, "size": zip_size,
                 "vendor_series": vendor_list,
+                "offline_faltan": dict(ULTIMO_FALTAN_OFFLINE),
+                "vendor_mb": ULTIMO_VENDOR.get("mb"),
                 "download_url": f"/export/download?token={token}",
             })
         except Exception as e:
@@ -3674,6 +3677,32 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                                       "truncated": size > limit, "code": text})
             return
 
+        if action == "componer":
+            # Plan de planes: {planes: [file, ...] (en orden), nombre, cadena?}
+            planes = data.get("planes")
+            if not isinstance(planes, list) or len(planes) < 2:
+                self._json_response(400, {"error": "elige al menos 2 planes"})
+                return
+            rutas = []
+            for p in planes:
+                fpp = self._orq_safe(p, "output", orq_re)
+                if not fpp or not os.path.isfile(fpp):
+                    self._json_response(400, {"error": f"plan invalido: {p!r}"})
+                    return
+                rutas.append(fpp)
+            if len({os.path.dirname(r) for r in rutas}) != 1:
+                self._json_response(400, {"error": "todos los planes deben ser del mismo proyecto"})
+                return
+            try:
+                o = _orq.componer(str(data.get("nombre") or ""), rutas,
+                                  en_cadena=data.get("cadena", True) is not False)
+            except (ValueError, OSError, KeyError) as e:
+                self._json_response(400, {"error": str(e)})
+                return
+            out = _orq.save_all({o["nombre"]: o}, os.path.dirname(rutas[0]))[0]
+            self._json_response(200, {"ok": True, "file": os.path.relpath(out, root)})
+            return
+
         fp = self._orq_safe(data.get("file"), "output", orq_re)
         if not fp:
             self._json_response(400, {"error": "archivo invalido (debe ser output/**/orquestacion_*.json)"})
@@ -3754,7 +3783,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             except (ValueError, KeyError, TypeError) as e:
                 self._json_response(400, {"error": str(e)})
                 return
-            name = "dag_" + os.path.splitext(str(plan.get("plan", "plan")))[0] + ".py"
+            # nombre por ORQUESTACION (no por plan): las variantes por pset no se pisan
+            name = "dag_" + _orq.dag_id_de(plan)[len("bnx_"):] + ".py"
             self._json_response(200, {"name": re.sub(r"[^\w.\-]", "_", name), "code": code})
             return
 

@@ -46,12 +46,10 @@ def _numeric_hint(col, code):
 
 
 def _detect_pii(name):
-    """Heuristica simple de PII por nombre de columna (es/en)."""
-    n = name.lower()
-    keys = ("nombre", "name", "apellido", "email", "correo", "telefono", "phone",
-            "rfc", "curp", "ssn", "dni", "cuenta", "account", "tarjeta", "card",
-            "direccion", "address", "cliente", "customer", "cvv", "password", "clabe")
-    return any(k in n for k in keys)
+    """PII por nombre de columna (bool). Usa el MISMO detector que Data Sintetica
+    (src/datagen.detect_pii) para que las dos partes del portal coincidan."""
+    from src.datagen import detect_pii
+    return detect_pii(name) is not None
 
 
 def _read_var_names(tree):

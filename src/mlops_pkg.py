@@ -19,7 +19,9 @@ Cloudera/Artifactory) en requirements.txt; en la red del banco se resuelven
 desde su indice privado. En local corre con PySpark open source.
 """
 import io
+import json
 import os
+import shutil
 import zipfile
 import ast as _ast_mod
 import re as _re
@@ -768,12 +770,27 @@ BANK_LINKS=""
 if [ -d "vendor/bank" ]; then BANK_LINKS="--find-links vendor/bank"; fi
 
 if [ -n "$VENDOR_DIR" ] && ls "$VENDOR_DIR"/*.whl >/dev/null 2>&1; then
-  echo "      OFFLINE desde $VENDOR_DIR (sin internet)."
   python -m pip install --no-index --find-links "$VENDOR_DIR" pip setuptools wheel >/dev/null 2>&1 || true
-  python -m pip install --no-index --find-links "$VENDOR_DIR" $BANK_LINKS -r requirements.txt
-  # Paquete propio en editable SIN aislamiento (usa el setuptools ya instalado,
-  # no intenta bajar build-system por internet).
-  python -m pip install --no-build-isolation -e .
+  if ls "$VENDOR_DIR"/pyspark-*.whl >/dev/null 2>&1; then
+    echo "      OFFLINE desde $VENDOR_DIR (ambiente completo, sin internet)."
+    python -m pip install --no-index --find-links "$VENDOR_DIR" $BANK_LINKS -r requirements.txt
+  else
+    # Paquete LIGERO: trae todas las librerias MENOS PySpark (se usa el del cluster).
+    echo "      OFFLINE desde $VENDOR_DIR (paquete LIGERO: todo menos PySpark)."
+    mkdir -p .bnx_tmp
+    grep -viE '^[[:space:]]*(pyspark|py4j)([^a-z0-9_-]|$)' requirements.txt > .bnx_tmp/requirements-sin-spark.txt
+    python -m pip install --no-index --find-links "$VENDOR_DIR" $BANK_LINKS -r .bnx_tmp/requirements-sin-spark.txt
+    grep -iE '^[[:space:]]*pyspark' requirements.txt > .bnx_tmp/requirements-spark.txt || true
+    if python -m pip install --retries 0 --timeout 15 -r .bnx_tmp/requirements-spark.txt >/dev/null 2>&1; then
+      echo "      PySpark instalado por internet."
+    else
+      echo "      PySpark NO viene en el paquete ligero (normal). Corre con el Spark del cluster:"
+      echo "        BNX_SPARK=cluster bash run.sh ..."
+    fi
+  fi
+  # Paquete propio en editable SIN aislamiento ni deps (ya estan instaladas; en el
+  # ligero pyspark viene del cluster) para no intentar bajar nada por internet.
+  python -m pip install --no-build-isolation --no-deps -e .
 else
   echo "      vendor/ (PySpark) no disponible; instalando por internet (red del banco)."
   # Si estas en la red del banco, descomenta --index-url con tu Artifactory:
@@ -805,8 +822,10 @@ fi
 if [ -f requirements-bank.txt ]; then
   if ls vendor/bank/*.tar.gz >/dev/null 2>&1 || ls vendor/bank/*.whl >/dev/null 2>&1; then
     echo "      Instalando librerias internas del banco OFFLINE desde vendor/bank/ ..."
-    python -m pip install --no-index --find-links vendor/bank -r requirements-bank.txt || \
-      python -m pip install --no-index --find-links vendor/bank vendor/bank/*.tar.gz || \
+    # Las deps de las mex-lib (pandas, ...) estan en vendor/<serie>/, no en vendor/bank/.
+    VLINKS=""; if [ -n "$VENDOR_DIR" ]; then VLINKS="--find-links $VENDOR_DIR"; fi
+    python -m pip install --no-index --find-links vendor/bank $VLINKS -r requirements-bank.txt || \\
+      python -m pip install --no-index --find-links vendor/bank $VLINKS vendor/bank/*.tar.gz || \\
       echo "      [!]  Fallo la instalacion offline de libs del banco. Revisa vendor/bank/."
   else
     echo "      Instalando librerias internas del banco (Artifactory privado) ..."
@@ -1013,6 +1032,11 @@ if [ -n "$CLUSTER_SUBMIT" ]; then
     --conf spark.io.compression.codec="${BNX_IO_CODEC:-lz4}" \\
     --conf spark.shuffle.mapStatus.compression.codec="${BNX_IO_CODEC:-lz4}" \\
     main.py "$@"
+fi
+if ! python -c "import pyspark" >/dev/null 2>&1; then
+  echo "[run.sh] Este entorno no tiene PySpark (paquete LIGERO). Usa el Spark del cluster:" >&2
+  echo "         BNX_SPARK=cluster bash run.sh $*" >&2
+  exit 1
 fi
 exec python main.py "$@"
 '''
@@ -2332,6 +2356,7 @@ Uso:  python check_env.py          (sale con codigo !=0 si falta algo)
 Es SOLO lectura: no instala nada.
 """
 import ast
+import glob
 import importlib.util
 import os
 import sys
@@ -2453,6 +2478,8 @@ def _probar_jobs():
     base = os.path.join(_project_root(), "framework_mlops_v2", "aggregates")
     if not os.path.isdir(base):
         return []
+    if not _can_import("pyspark"):
+        return []   # paquete ligero sin PySpark: los jobs se prueban al correr en el cluster
     if _project_root() not in sys.path:
         sys.path.insert(0, _project_root())
     errores = []
@@ -2477,6 +2504,11 @@ def main():
         if _is_stdlib(mod) or mod in _IGNORAR:
             continue  # stdlib o modulo ignorado (no se usa en el despliegue)
         (ok if _can_import(mod) else faltan).append(mod)
+    # Paquete LIGERO: PySpark no viene a proposito (se usa el del cluster). No es un faltante.
+    if "pyspark" in faltan and not glob.glob(os.path.join(_project_root(), "vendor", "*", "pyspark-*.whl")):
+        faltan.remove("pyspark")
+        print("[i] PySpark no esta en este entorno: paquete LIGERO (normal). Corre con el Spark "
+              "del cluster:  BNX_SPARK=cluster bash run.sh ...")
 
     if not quiet:
         print("== Verificacion de dependencias (check_env.py) ==")
@@ -2673,6 +2705,51 @@ def _apoyo_name(raw_name):
     if not _re.fullmatch(r"[A-Za-z_]\w*", stem):
         stem = _safe_name(base)
     return stem + ".py"
+
+
+_SUBMOD_RE = _re.compile(
+    r"^\s*(?:from\s+([A-Za-z_]\w*)\.([A-Za-z_]\w*)(?:\.[\w.]+)?\s+import\b"
+    r"|import\s+([A-Za-z_]\w*)\.([A-Za-z_]\w*))", _re.M)
+_NO_PAQUETE_BANCO = {"pyspark", "pandas", "numpy", "framework_mlops_v2", "sklearn",
+                     "xgboost", "scipy", "dateutil", "concurrent", "importlib"}
+
+
+def _imports_paquete_modulo(code):
+    """[(paquete, modulo)] de los imports REALES 'paquete.modulo' (AST: ignora los que
+    estan dentro de docstrings/comentarios). Si el archivo no parsea, por regex."""
+    try:
+        tree = _ast_mod.parse(code or "")
+    except SyntaxError:
+        return [((m.group(1), m.group(2)) if m.group(1) else (m.group(3), m.group(4)))
+                for m in _SUBMOD_RE.finditer(code or "")]
+    res = []
+    for n in _ast_mod.walk(tree):
+        nombres = []
+        if isinstance(n, _ast_mod.ImportFrom) and n.module and not n.level:
+            nombres = [n.module]
+        elif isinstance(n, _ast_mod.Import):
+            nombres = [a.name for a in n.names]
+        for nm in nombres:
+            partes = nm.split(".")
+            if len(partes) >= 2:
+                res.append((partes[0], partes[1]))
+    return res
+
+
+def _paquetes_importados(sources):
+    """{modulo_lower: (paquete, modulo, [importadores])} de los 'paquete.modulo' que
+    importan los archivos subidos (toolbox.kernel, utils.emails_full, ...).
+    Si un archivo subido se llama como ese modulo, ES de ese paquete (apoyo)."""
+    out = {}
+    for it in sources or []:
+        quien = os.path.basename(str(it.get("name") or ""))
+        for pkg, mod in _imports_paquete_modulo(it.get("code") or ""):
+            if pkg in _NO_PAQUETE_BANCO or _is_stdlib_module(pkg):
+                continue
+            ent = out.setdefault(mod.lower(), (pkg, mod, []))
+            if quien not in ent[2]:
+                ent[2].append(quien)
+    return out
 
 
 def _hoist_imports_ast(code):
@@ -2942,6 +3019,12 @@ def _extract_todos(code):
     return out
 
 
+# {serie: {version_python: error}} del ultimo zip_from_files: que version no podria
+# instalar offline (se muestra en el portal y va en vendor/OFFLINE_FALTANTES.txt).
+ULTIMO_FALTAN_OFFLINE = {}
+ULTIMO_VENDOR = {}   # {"pyspark": bool, "mb": float} del ultimo vendor empaquetado
+
+
 def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all",
                    out_path=None):
     """Empaqueta un ZIP a partir de dicts de archivos YA LISTOS (texto). Reusable
@@ -2960,7 +3043,31 @@ def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all",
         no los bytes.
     Devuelve (zip_bytes_o_ruta, filename, vendor_series_list)."""
     extra_steps = any("scoring/scorer.py" in p for p in (code_files or {}))
-    vendor_series = _vendor_files_for_pkg(py_target, extra_steps) if full_env else {}
+    # Requisitos open source del paquete (los de requirements-bank.txt son mex-lib*:
+    # van como sdist aparte en vendor/bank/).
+    req_lineas = []
+    for _rq in ("requirements.txt", "requirements-extra.txt"):
+        req_lineas += [ln for ln in (code_files or {}).get(_rq, "").splitlines()
+                       if ln.strip() and not ln.strip().startswith("#")]
+    if full_env:
+        # Completo: PySpark + deps (como siempre) + lo que pip resuelve del cache para
+        # CADA version de la serie (p.ej. pandas 1.3.1 cp38 del banco para Python 3.8).
+        vendor_series = _vendor_files_for_pkg(py_target, extra_steps)
+        sel, faltan_offline = _vendor_ligero(py_target, extra_steps, req_lineas, incluir_spark=True)
+        for _s, _fs in sel.items():
+            vendor_series[_s] = list(dict.fromkeys(list(vendor_series.get(_s, [])) + _fs))
+    else:
+        # Ligero: TODAS las librerias offline MENOS PySpark (~300-400 MB): en el
+        # cluster se usa su Spark (BNX_SPARK=cluster). Antes no llevaba ninguna.
+        vendor_series, faltan_offline = _vendor_ligero(py_target, extra_steps, req_lineas,
+                                                       incluir_spark=False)
+    ULTIMO_FALTAN_OFFLINE.clear()
+    ULTIMO_FALTAN_OFFLINE.update(faltan_offline)
+    _todos = [f for fs in (vendor_series or {}).values() for f in fs]
+    ULTIMO_VENDOR.clear()
+    ULTIMO_VENDOR.update({
+        "pyspark": any(_wheel_dist(f) == "pyspark" for f in _todos),
+        "mb": round(sum(os.path.getsize(f) for f in _todos if os.path.isfile(f)) / 1048576, 1)})
     # Empaquetar las LIBRERIAS INTERNAS del banco OFFLINE SIEMPRE que el paquete
     # las use (hay requirements-bank.txt) y tengamos el cache, TAMBIEN en el
     # paquete ligero. Son Python puro y pesan ~260 KB (no PySpark), asi que no
@@ -2976,14 +3083,14 @@ def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all",
     bank_extracted = {}
     if uses_bank:
         bank_sdists, bank_pkgcode = _bank_vendor_files()
+        # vendor/bank/ SOLO lleva las mex-lib* del banco. Las deps open source del
+        # stack (cytoolz/unidecode/pandas cp38/...) ya van en vendor/<serie>/ con
+        # solo lo que pip resolvio (antes se metian TODAS: ~350 MB).
+        bank_sdists = [p for p in bank_sdists if os.path.basename(p).lower().startswith("mex")]
         # Ademas de los sdist (que pip instala), extraemos las mex-lib verificadas
         # como CODIGO en pkgcode/ para que funcionen por PYTHONPATH sin pip/build
         # (fallback a prueba de fallos en Windows/Python 3.8).
         bank_extracted = _bank_extracted_pkgs()
-    elif uses_extra:
-        # Solo las wheels open source del stack (sin mex-lib* ni codigo de path).
-        bank_sdists = [p for p in _bank_vendor_files()[0]
-                       if not os.path.basename(p).lower().startswith("mex")]
     # Evitar escribir la MISMA ruta dos veces (en Python 3.8/Windows un ZipInfo
     # duplicado o un estado inconsistente puede dejar el stream en mal estado y
     # romper el cierre con 'I/O operation on closed file'). Deduplicamos por ruta.
@@ -3023,6 +3130,14 @@ def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all",
     try:
         for path, content in (code_files or {}).items():
             _put_str(z, "framework_mlops_v2_pkg/" + path, content)
+        if faltan_offline:
+            _txt = ["Versiones de Python que NO podran instalar todo OFFLINE con este paquete",
+                    "(faltan wheels en el cache del generador). En esas versiones setup.sh",
+                    "intentara bajar lo que falte por internet / Artifactory.", ""]
+            for _s, _vs in sorted(faltan_offline.items()):
+                for _v, _e in sorted(_vs.items()):
+                    _txt.append(f"- {_s} / Python {_v}: {_e}")
+            _put_str(z, "framework_mlops_v2_pkg/vendor/OFFLINE_FALTANTES.txt", "\n".join(_txt) + "\n")
         for path, content in (sep_files or {}).items():
             _put_str(z, "framework_mlops_metrics_pkg/" + path, content)
         for serie_dir, whls in (vendor_series or {}).items():
@@ -3277,6 +3392,171 @@ def _vendor_files_for_pkg(py_target="all", extra_steps=False):
     return base
 
 
+# Versiones de Python que cubre cada serie de vendor/ (las wheels binarias de
+# pandas/numpy/cytoolz son por version: hay que resolver para cada una).
+_SERIE_VERSIONES = {"py38-311": ["3.8", "3.9", "3.10", "3.11"], "py312plus": ["3.12", "3.13"]}
+_SPARK_DISTS = ("pyspark", "py4j")
+_BOOTSTRAP = ("pip", "setuptools", "wheel")
+_seleccion_cache = {}
+_descarga_fallida = set()   # (serie, version, reqs) cuya bajada ya se intento
+
+
+def _wheel_dist(fname):
+    return _re.split(r"-\d", os.path.basename(fname), maxsplit=1)[0].lower().replace("-", "_")
+
+
+def _pool_wheels(serie_dir, extra_steps, incluir_spark):
+    """Wheels disponibles en cache para una serie: deps del framework, deps del stack
+    del banco (cp38, cytoolz, ...) y, si incluir_spark, PySpark/py4j."""
+    raiz = os.path.dirname(_MLOPS_VENDOR_CACHE)
+    dirs = [os.path.join(_MLOPS_VENDOR_CACHE, serie_dir),
+            os.path.join(_MLOPS_VENDOR_CACHE, serie_dir + "_extra") if extra_steps else None,
+            os.path.join(_MLOPS_VENDOR_CACHE, serie_dir + "_dl"),   # bajadas automaticas
+            os.path.join(_BANK_LIBS_CACHE, "wheels"),
+            os.path.join(raiz, serie_dir)]
+    pool = {}
+    for d in dirs:
+        if not d or not os.path.isdir(d):
+            continue
+        for f in os.listdir(d):
+            if not f.endswith(".whl"):
+                continue
+            dist = _wheel_dist(f)
+            if not incluir_spark and dist in _SPARK_DISTS:
+                continue
+            pool.setdefault(f, os.path.join(d, f))
+    return pool
+
+
+def _reqs_para(version, lineas, incluir_spark):
+    """Requisitos (sin markers) que aplican a una version de Python destino en Linux."""
+    try:
+        from packaging.requirements import Requirement
+    except ImportError:          # pip trae packaging vendorizado
+        from pip._vendor.packaging.requirements import Requirement
+    env = {"python_version": version, "python_full_version": version + ".0",
+           "sys_platform": "linux", "platform_system": "Linux", "os_name": "posix",
+           "implementation_name": "cpython", "platform_python_implementation": "CPython",
+           "platform_machine": "x86_64"}
+    out = []
+    for ln in lineas:
+        ln = ln.split("#")[0].strip()
+        if not ln:
+            continue
+        try:
+            r = Requirement(ln)
+        except Exception:
+            continue
+        if r.marker is not None and not r.marker.evaluate(env):
+            continue
+        if not incluir_spark and r.name.lower() in _SPARK_DISTS:
+            continue
+        r.marker = None
+        out.append(str(r))
+    return out
+
+
+def _seleccionar_wheels(serie_dir, req_lineas, extra_steps=False, incluir_spark=True,
+                        _descargar=True):
+    """Resuelve con pip (sin instalar) que wheels hacen falta para TODAS las versiones
+    de Python de la serie, usando solo el cache local. Devuelve ([rutas], {version:
+    error}). Asi el paquete lleva lo necesario (no los 350 MB del cache del banco) y
+    se sabe de antemano si a alguna version le falta algo para instalar offline."""
+    import json as _json
+    import tempfile as _tf
+    pool = _pool_wheels(serie_dir, extra_steps, incluir_spark)
+    clave = (serie_dir, tuple(req_lineas), extra_steps, incluir_spark, tuple(sorted(pool)))
+    if clave in _seleccion_cache:
+        return _seleccion_cache[clave]
+    elegidas = {f for f in pool if _wheel_dist(f) in _BOOTSTRAP}
+    faltan = {}
+    with _tf.TemporaryDirectory() as tmp:
+        links = os.path.join(tmp, "links")
+        os.makedirs(links)
+        for f, full in pool.items():          # un solo find-links (enlaces, no copias)
+            try:
+                os.symlink(full, os.path.join(links, f))
+            except OSError:
+                shutil.copy2(full, os.path.join(links, f))
+        for v in _SERIE_VERSIONES.get(serie_dir, []):
+            reqs = _reqs_para(v, req_lineas, incluir_spark)
+            if not reqs:
+                continue
+            rep = os.path.join(tmp, f"r{v}.json")
+            abi = "cp" + v.replace(".", "")
+            cmd = [_sys.executable, "-m", "pip", "install", "--dry-run", "--ignore-installed",
+                   "--quiet", "--no-index", "--find-links", links, "--only-binary=:all:",
+                   "--python-version", v, "--implementation", "cp",
+                   "--abi", abi, "--abi", "abi3", "--abi", "none",
+                   "--platform", "manylinux2014_x86_64", "--platform", "manylinux_2_17_x86_64",
+                   "--platform", "manylinux_2_28_x86_64", "--platform", "linux_x86_64",
+                   "--platform", "any", "--target", os.path.join(tmp, "t"),
+                   "--report", rep, *reqs]
+            try:
+                r = _sp.run(cmd, capture_output=True, text=True, timeout=300)
+            except Exception as e:
+                faltan[v] = str(e)[:200]
+                continue
+            if r.returncode != 0 or not os.path.isfile(rep):
+                err = [ln for ln in (r.stderr or "").splitlines() if "ERROR" in ln]
+                faltan[v] = (err[0] if err else (r.stderr or "fallo pip")[-200:]).replace("ERROR: ", "")
+                continue
+            with open(rep, encoding="utf-8") as fh:
+                for item in _json.load(fh).get("install", []):
+                    url = (item.get("download_info") or {}).get("url", "")
+                    name = os.path.basename(url.split("?")[0])
+                    if name in pool:
+                        elegidas.add(name)
+    if faltan and _descargar and os.environ.get("BNX_NO_DOWNLOAD") != "1":
+        # Al cache le faltan wheels (p.ej. el servidor del portal no tiene cytoolz /
+        # unidecode): bajarlas UNA vez, para Linux y esa version de Python, y resolver
+        # de nuevo. Sin internet falla rapido y queda el aviso.
+        dl = os.path.join(_MLOPS_VENDOR_CACHE, serie_dir + "_dl")
+        os.makedirs(dl, exist_ok=True)
+        bajo_algo = False
+        for v in list(faltan):
+            reqs = _reqs_para(v, req_lineas, incluir_spark)
+            intento = (serie_dir, v, tuple(reqs))
+            if intento in _descarga_fallida:
+                continue          # ya fallo en este proceso (sin red): no reintentar
+            _descarga_fallida.add(intento)
+            abi = "cp" + v.replace(".", "")
+            for plat in ("manylinux2014_x86_64", "manylinux_2_17_x86_64", "manylinux_2_28_x86_64"):
+                try:
+                    r = _sp.run([_sys.executable, "-m", "pip", "download", "--quiet",
+                                 "--retries", "1", "--timeout", "15", "--only-binary=:all:",
+                                 "--python-version", v, "--implementation", "cp",
+                                 "--abi", abi, "--abi", "abi3", "--abi", "none",
+                                 "--platform", plat, "--platform", "any", "-d", dl, *reqs],
+                                capture_output=True, text=True, timeout=240)
+                    if r.returncode == 0:
+                        bajo_algo = True
+                        break
+                except Exception:
+                    break   # sin red / timeout: no insistir
+        if bajo_algo:
+            return _seleccionar_wheels(serie_dir, req_lineas, extra_steps, incluir_spark,
+                                       _descargar=False)
+    res = ([pool[f] for f in sorted(elegidas)], faltan)
+    _seleccion_cache[clave] = res
+    return res
+
+
+def _vendor_ligero(py_target, extra_steps, req_lineas, incluir_spark=False):
+    """vendor/ por serie con SOLO lo necesario (sin PySpark si incluir_spark=False).
+    Devuelve ({serie_dir: [rutas]}, {serie_dir: {version: error}})."""
+    series = {"py38-311": ["py38-311"], "py312plus": ["py312plus"]}.get(
+        py_target, ["py38-311", "py312plus"])
+    out, faltan = {}, {}
+    for s in series:
+        files, f = _seleccionar_wheels(s, req_lineas, extra_steps, incluir_spark)
+        if files:
+            out[s] = files
+        if f:
+            faltan[s] = f
+    return out, faltan
+
+
 def build_package_from_sources(sources, convert_fn, optimize_fn=None,
                                include_bank_libs=True, optimize=True,
                                extra_steps=False, include_monitoring=False,
@@ -3310,6 +3590,7 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     report = []
     seen = set()
     original_codes = []    # codigo pandas original de cada fuente (para detectar libs)
+    paquetes = _paquetes_importados(sources)
 
     for item in sources or []:
         raw_name = item.get("name") or "fuente.py"
@@ -3320,6 +3601,27 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
             report.append({"name": raw_name, "ok": False, "reason": "vacio"})
             continue
         src = _safe_name(raw_name)
+        # ¿Otro archivo subido lo importa como 'paquete.este_modulo'? Entonces es un
+        # modulo de ESE paquete (toolbox/kernel.py, utils/emails_full.py, ...): va
+        # EXACTO a bank_src/<paquete>/ para que el import funcione aunque el servidor
+        # del portal no tenga ese paquete en su cache. Salvo que el usuario lo haya
+        # marcado explicitamente como job, NO se registra.
+        _stem = _norm_fuente(raw_name)
+        _imp = paquetes.get(_stem)
+        if _imp and os.path.basename(raw_name) not in _imp[2]:
+            pkg, mod, quienes = _imp
+            rel_pkg = f"bank_src/{pkg}/{mod}.py"
+            if rel_pkg not in files:
+                files[rel_pkg] = pandas_code
+                files.setdefault(f"bank_src/{pkg}/__init__.py",
+                                 f"# BNX: paquete '{pkg}' armado con los archivos subidos al portal.\n")
+            explicito = registry is not None and _en_registry(raw_name, src, registry)
+            if not explicito:
+                report.append({"name": raw_name, "source": None, "ok": True, "role": "apoyo",
+                               "verbatim": True, "file": rel_pkg, "todos": [], "warnings": 0,
+                               "unsupported": 0, "paquete": pkg,
+                               "nota": f"se importa como {pkg}.{mod} desde " + ", ".join(quienes[:3])})
+                continue
         if registry is not None and not _en_registry(raw_name, src, registry):
             # MODULO DE APOYO (toolbox/utils/settings/main del banco...): copia EXACTA,
             # importable via bank_src/ en el sys.path. Antes se convertia y se metia
@@ -3471,13 +3773,35 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     # (cache vacio / sin internet en el server). vendor_list trae las series
     # incluidas; 'bank' no cuenta como PySpark. Si no hay ninguna serie de
     # PySpark, el ambiente completo salio SIN PySpark (ZIP chico, engañoso).
-    pyspark_series = [s for s in (vendor_list or []) if s != "bank"]
-    vendor_missing = bool(full_env) and not pyspark_series
+    # (El ligero ahora tambien trae series en vendor/, pero sin PySpark: se mira el wheel.)
+    vendor_missing = bool(full_env) and not ULTIMO_VENDOR.get("pyspark")
+
+    # Modulos de paquetes del banco que el codigo importa (toolbox.log, ...) y que NO
+    # vienen ni en lo subido ni en el cache de este servidor: el job fallaria con
+    # "No module named ...". Se avisa en el portal para que los suban.
+    _cache_code = os.path.join(_BANK_LIBS_CACHE, "pkgcode")
+    modulos_faltantes = {}
+    for _cod in original_codes + [c for p, c in files.items() if p.startswith("bank_src/")]:
+        for pkg, mod in _imports_paquete_modulo(_cod):
+            if pkg in _NO_PAQUETE_BANCO or _is_stdlib_module(pkg) or pkg == "mex_lib_cs":
+                continue
+            if not (pkg in (bank_libs or []) or any(p.startswith(f"bank_src/{pkg}/") for p in files)):
+                continue   # no es un paquete del banco/de lo subido (p.ej. libreria pip)
+            en_subido = (f"bank_src/{pkg}/{mod}.py" in files
+                         or any(p.startswith(f"bank_src/{pkg}/{mod}/") for p in files))
+            en_cache = (bool(bank_libs) and (os.path.isfile(os.path.join(_cache_code, pkg, mod + ".py"))
+                        or os.path.isdir(os.path.join(_cache_code, pkg, mod))))
+            if not en_subido and not en_cache:
+                modulos_faltantes.setdefault(pkg, set()).add(mod)
+    modulos_faltantes = {k: sorted(v) for k, v in sorted(modulos_faltantes.items())}
 
     # Meta: incluye los archivos de CODIGO (editables) para guardarlos por token.
     report.append({"_meta": True, "full_env": bool(full_env),
                    "vendor_series": vendor_list,
                    "vendor_missing": vendor_missing,
+                   "offline_faltan": json.loads(json.dumps(ULTIMO_FALTAN_OFFLINE)),
+                   "modulos_faltantes": modulos_faltantes,
+                   "vendor_mb": ULTIMO_VENDOR.get("mb"),
                    "py_target": py_target,
                    "bank_libs": bank_libs,
                    "bank_verified": bank_verified,

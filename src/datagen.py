@@ -50,28 +50,278 @@ def normalize_type(raw_type):
 # ---------------------------------------------------------------------------
 # Detección de PII por nombre de campo
 # ---------------------------------------------------------------------------
-# Cada categoría PII tiene patrones de nombre (regex sobre el nombre en minúsculas)
-# y una función de redacción.
-PII_PATTERNS = {
-    "name":    r"(nombre|name|apellido|surname|firstname|lastname|fullname|cliente|customer_name)",
-    "email":   r"(email|correo|e_mail|mail)",
-    "phone":   r"(phone|telefono|tel|celular|movil|mobile|msisdn)",
-    "card":    r"(card|tarjeta|pan|creditcard|debitcard)",
-    "account": r"(account|cuenta|acct|iban|clabe)",
-    "ssn":     r"(ssn|curp|rfc|dni|nss|tax_id|taxid|nif)",
-    "address": r"(address|direccion|domicilio|street|calle|zip|postal|cp)",
-    "dob":     r"(birth|nacimiento|dob|fecha_nac)",
-    "id":      r"(customer_id|client_id|user_id|cust_id|id_cliente|id_usuario)",
+# Dos señales, en Python puro (sin librerias externas):
+#   1) NOMBRE de la columna: se parte en palabras (snake_case, camelCase, acentos,
+#      abreviaturas del banco: num_cta, tel_cel, fec_nac, cve_cte...) y se evalua
+#      con CONTEXTO: 'num_cuenta' es PII, 'tipo_cuenta'/'saldo_cuenta' no;
+#      'nombre_cliente' si, 'nombre_archivo' no; 'id_cliente' si, 'id_producto' no.
+#   2) VALORES (opcional, si se pasan muestras): validadores reales -> email, CURP,
+#      RFC, tarjeta (Luhn), CLABE (digito verificador), IBAN, telefono.
+# Categorias: name, email, phone, card, account, ssn, address, dob, id, secret.
+# explicar_pii() devuelve ademas la confianza y el motivo de la decision.
+import unicodedata as _ud
+
+# Palabras (tokens) que por si solas indican la categoria. Orden = prioridad.
+_PII_TOKENS = {
+    "secret":  {"password", "passwd", "pwd", "contrasena", "clave_acceso", "cvv", "cvc", "cvv2",
+                "nip", "pin", "token", "secret", "secreto", "otp"},
+    "card":    {"tarjeta", "tdc", "tdd", "card", "creditcard", "debitcard", "pan", "plastico",
+                "bin_tarjeta"},
+    "account": {"cuenta", "cta", "cuentas_cliente", "account", "acct", "acc", "iban", "clabe",
+                "contrato_cuenta"},
+    "ssn":     {"curp", "rfc", "nss", "ssn", "dni", "nif", "ine", "ife", "pasaporte", "passport",
+                "taxid", "tax_id", "cedula", "credencial_elector"},
+    "email":   {"email", "correo", "mail", "e_mail", "emailaddress"},
+    "phone":   {"telefono", "tel", "tels", "celular", "cel", "movil", "mobile", "phone", "msisdn",
+                "whatsapp", "fax", "lada"},
+    "dob":     {"dob", "birthdate", "birthday", "fnac", "fechanacimiento", "fecnac", "nacimiento",
+                "birth", "edad", "age", "fec_nac", "fecha_nac", "f_nac", "fech_nac",
+                "fec_nacimiento", "dt_nac", "date_birth", "nac_fecha"},
+    "address": {"direccion", "domicilio", "address", "calle", "street", "colonia", "cp",
+                "codigo_postal", "codigopostal", "zip", "zipcode", "postal", "postcode",
+                "numero_exterior", "num_ext", "num_int", "municipio", "alcaldia", "geoloc",
+                "latitud", "longitud", "latitude", "longitude"},
+    "name":    {"nombre", "nombres", "name", "names", "apellido", "apellidos", "paterno",
+                "materno", "surname", "firstname", "lastname", "fullname", "first_name",
+                "last_name", "razon_social", "razonsocial", "nom"},
 }
+# Formas concatenadas SIN separador (nombrecliente, fechanacimiento, numerocuenta):
+# se buscan como subcadena solo si son largas y distintivas.
+_PII_COMPACTOS = {
+    "dob": ("fechanacimiento", "fechadenacimiento", "fechanac", "birthdate", "dateofbirth"),
+    "name": ("nombrecliente", "nombrecompleto", "apellidopaterno", "apellidomaterno",
+             "customername", "clientname", "firstname", "lastname", "fullname"),
+    "account": ("numerocuenta", "numcuenta", "nocuenta", "accountnumber", "accountno"),
+    "card": ("numerotarjeta", "numtarjeta", "notarjeta", "cardnumber", "creditcard", "debitcard"),
+    "email": ("correoelectronico", "emailaddress"),
+    "phone": ("telefonocelular", "numerotelefono", "phonenumber", "telcelular"),
+    "address": ("codigopostal", "zipcode"),
+}
+# Palabras que identifican a una PERSONA (dan sentido a 'id', 'nombre', 'cve'...).
+_PERSONA = {"cliente", "clientes", "cte", "cli", "customer", "cust", "client", "usuario",
+            "usuarios", "user", "usr", "persona", "personas", "titular", "empleado",
+            "employee", "emp", "socio", "beneficiario", "acreditado", "deudor", "aval",
+            "contacto", "contact", "prospecto", "solicitante", "conyuge", "paciente"}
+# Prefijos que convierten algo en IDENTIFICADOR (num_cuenta, no_tarjeta, cve_cte).
+_IDENTIFICADOR = {"num", "numero", "no", "nro", "number", "nbr", "id", "cve", "clave", "folio"}
+# Si aparece alguna de estas, la columna DESCRIBE algo (no es el dato personal):
+# tipo_cuenta, saldo_cuenta, fecha_apertura_cuenta, estatus_tarjeta, num_cuentas...
+_DESCRIPTOR = {"tipo", "tipos", "type", "tasa", "rate", "saldo", "saldos", "balance", "monto",
+               "importe", "amount", "limite", "limit", "estatus", "status", "estado",
+               "flag", "ind", "indicador", "bandera", "cnt", "count", "conteo", "total",
+               "totales", "num_de", "cantidad", "qty", "fecha", "fec", "date", "dt", "anio",
+               "mes", "periodo", "dias", "producto", "segmento", "categoria", "nivel",
+               "marca", "red", "brand", "plazo", "comision", "interes", "pct", "porcentaje",
+               "score", "promedio", "avg", "max", "min", "sum", "desc", "descripcion",
+               "edad", "antiguedad", "vigencia", "apertura", "cierre", "corte", "costo"}
+# Objetos que NO son personas: 'nombre_archivo', 'name_table', 'id_producto'...
+_NO_PERSONA = {"archivo", "file", "filename", "tabla", "table", "columna", "column", "campo",
+               "field", "host", "hostname", "server", "servidor", "proceso", "process", "job",
+               "plan", "modelo", "model", "producto", "product", "sucursal", "branch", "banco",
+               "bank", "segmento", "categoria", "category", "campana", "campaign", "esquema",
+               "schema", "base", "db", "database", "dominio", "domain", "app", "aplicacion",
+               "sistema", "system", "paquete", "package", "interfaz", "interface", "variable",
+               "var", "regla", "rule", "reporte", "report", "pais", "country", "estado_civil",
+               "ciudad", "city", "moneda", "currency", "transaccion", "trx", "operacion",
+               "movimiento", "evento", "event", "lote", "batch", "grafo", "graph", "nodo"}
+# Tokens cortos/ambiguos: solo cuentan con contexto de persona o identificador.
+_AMBIGUOS = {"pan", "cp", "tel", "cel", "nom", "mail", "pin", "acc", "edad", "age", "birth",
+             "lada", "fax", "token", "ine", "ife", "postal", "zip", "nacimiento"}
+_ORDEN_PII = ("secret", "card", "account", "ssn", "email", "phone", "dob", "address", "name", "id")
 
 
-def detect_pii(field_name):
-    """Devuelve la categoría PII detectada por nombre, o None."""
-    fname = (field_name or "").lower()
-    for category, pattern in PII_PATTERNS.items():
-        if re.search(pattern, fname):
-            return category
+def _pii_tokens(field_name):
+    """'NumCtaCliente' / 'num_cta-cliente' / 'Teléfono Cel' -> ['num','cta','cliente'] ..."""
+    s = _ud.normalize("NFKD", str(field_name or "")).encode("ascii", "ignore").decode()
+    s = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s)        # camelCase -> camel_Case
+    s = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", s)      # IDCliente -> ID_Cliente
+    s = re.sub(r"(?<=[A-Za-z])(?=\d)|(?<=\d)(?=[A-Za-z])", "_", s)
+    return [t for t in re.split(r"[^a-z0-9]+", s.lower()) if t]
+
+
+def _pii_por_nombre(field_name):
+    """(categoria, confianza 0-1, motivo) usando solo el nombre de la columna."""
+    toks = _pii_tokens(field_name)
+    if not toks:
+        return None, 0.0, "sin nombre"
+    tset = set(toks)
+    pares = {"_".join(toks[i:i + 2]) for i in range(len(toks) - 1)}
+    compacto = "".join(toks)
+    persona = bool(tset & _PERSONA)
+    ident = bool(tset & _IDENTIFICADOR)
+    descr = sorted(tset & _DESCRIPTOR)
+    objeto = sorted(tset & _NO_PERSONA)
+    # Plurales de la entidad (num_cuentas, total_tarjetas) cuentan cosas, no las identifican
+    plural_conteo = bool({"cuentas", "tarjetas", "accounts", "cards"} & tset) and not persona
+
+    for cat in _ORDEN_PII:
+        if cat == "id":
+            continue
+        hits = sorted((tset | pares) & _PII_TOKENS[cat])
+        comp = next((c for c in _PII_COMPACTOS.get(cat, ()) if c in compacto), None)
+        if not hits and not comp:
+            continue
+        hit = hits[0] if hits else comp
+        fuertes = [h for h in hits if h not in _AMBIGUOS]
+        if len(hits) >= 2 and not fuertes:
+            fuertes = hits                              # 'tel_cel': dos pistas de lo mismo
+        if not fuertes and not comp and not (persona or ident or len(toks) == 1):
+            continue                                     # 'pan_dulce', 'hotel_cp'... sin contexto
+        if cat == "dob":
+            # 'fecha_nacimiento' es dob aunque 'fecha' sea descriptor; 'edad'/'age' solo con persona
+            if hit in ("edad", "age") and not persona:
+                continue
+            return "dob", 0.9 if (comp or "nacimiento" in tset or hit in ("dob", "birthdate", "fnac")) else 0.6, \
+                f"fecha/edad de nacimiento ('{hit}')"
+        if cat == "name":
+            if objeto and not persona:
+                return None, 0.0, f"'{hit}' de un objeto ({objeto[0]}), no de una persona"
+            if descr and not persona:
+                continue
+            conf = 0.95 if (persona or hit in ("apellido", "apellidos", "paterno", "materno",
+                                               "razon_social", "fullname", "firstname", "lastname")
+                            or comp) else 0.7
+            return "name", conf, f"nombre de persona ('{hit}')"
+        if cat in ("account", "card"):
+            if plural_conteo:
+                return None, 0.0, f"cuenta de {hit}s (conteo), no un identificador"
+            if descr and not (ident or comp or hit in ("clabe", "iban")):
+                return None, 0.0, f"describe la {hit} ({descr[0]}), no es su numero"
+            conf = 0.95 if (ident or comp or hit in ("clabe", "iban", "tdc", "tdd")) else 0.75
+            return cat, conf, f"{'numero de ' if ident else ''}{hit}"
+        if cat == "address":
+            if descr and not persona and hit not in ("direccion", "domicilio", "address", "calle", "street"):
+                continue
+            return "address", 0.85 if fuertes else 0.6, f"direccion/ubicacion ('{hit}')"
+        if cat == "email" and objeto and not persona and hit == "mail":
+            continue                                     # 'mail_server', 'mailbox_table'
+        if cat == "phone" and descr and not persona and not fuertes:
+            continue
+        return cat, (0.95 if fuertes or comp else 0.7), f"{cat} ('{hit}')"
+
+    # 'id' de PERSONA: id_cliente, cve_cte, customer_id, user_id, no_cliente...
+    if persona and (ident or len(toks) == 1) and not descr:
+        return "id", 0.85, "identificador de persona (" + ", ".join(sorted(tset & _PERSONA)) + ")"
+    if compacto in ("customerid", "clientid", "userid", "custid", "idcliente", "idusuario"):
+        return "id", 0.85, "identificador de persona"
+    return None, 0.0, "no parece PII"
+
+
+# --- validadores de VALORES -----------------------------------------------
+_RE_EMAIL = re.compile(r"^[A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
+_RE_CURP = re.compile(r"^[A-Z][AEIOUX][A-Z]{2}\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])[HMX]"
+                      r"(AS|BC|BS|CC|CL|CM|CS|CH|DF|DG|GT|GR|HG|JC|MC|MN|MS|NT|NL|OC|PL|QT|QR|SP|SL|"
+                      r"SR|TC|TS|TL|VZ|YN|ZS|NE)[B-DF-HJ-NP-TV-Z]{3}[A-Z0-9]\d$")
+_RE_RFC = re.compile(r"^[A-ZÑ&]{3,4}\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])[A-Z0-9]{2}[A0-9]$")
+_RE_IBAN = re.compile(r"^[A-Z]{2}\d{2}[A-Z0-9]{11,30}$")
+
+
+def _luhn_ok(d):
+    tot = 0
+    for i, ch in enumerate(reversed(d)):
+        n = int(ch)
+        if i % 2 == 1:
+            n = n * 2 - 9 if n > 4 else n * 2
+        tot += n
+    return tot % 10 == 0
+
+
+def _clabe_ok(d):
+    if len(d) != 18:
+        return False
+    pesos = (3, 7, 1) * 6
+    s = sum((int(d[i]) * pesos[i]) % 10 for i in range(17))
+    return (10 - s % 10) % 10 == int(d[17])
+
+
+def _iban_ok(s):
+    if not _RE_IBAN.match(s):
+        return False
+    r = s[4:] + s[:4]
+    num = "".join(str(int(c, 36)) for c in r)
+    return int(num) % 97 == 1
+
+
+def _categoria_valor(v):
+    """Categoria de UN valor segun su forma, o None."""
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s or s.lower() in ("nan", "none", "null"):
+        return None
+    if _RE_EMAIL.match(s):
+        return "email"
+    u = s.upper().replace(" ", "").replace("-", "")
+    if _RE_CURP.match(u):
+        return "ssn"
+    if _RE_RFC.match(u) and not u.isdigit():
+        return "ssn"
+    if _iban_ok(u):
+        return "account"
+    d = re.sub(r"[\s\-]", "", s)
+    if d.isdigit():
+        if len(d) == 18 and _clabe_ok(d):
+            return "account"
+        if 13 <= len(d) <= 19 and _luhn_ok(d) and len(set(d)) > 2:
+            return "card"
+    tel = re.sub(r"[\s\-().]", "", s)
+    if re.fullmatch(r"(\+?52)?1?\d{10}", tel) or re.fullmatch(r"\+\d{11,14}", tel):
+        return "phone"
     return None
+
+
+def _pii_por_valores(sample_values, minimo=3, umbral=0.6):
+    """(categoria, confianza, motivo) si >= umbral de las muestras no vacias validan."""
+    vals = [v for v in (sample_values or []) if v is not None and str(v).strip() not in ("", "nan", "None", "null")]
+    if len(vals) < minimo:
+        return None, 0.0, "pocas muestras"
+    vals = vals[:500]
+    conteo = {}
+    for v in vals:
+        c = _categoria_valor(v)
+        if c:
+            conteo[c] = conteo.get(c, 0) + 1
+    if not conteo:
+        return None, 0.0, "los valores no tienen forma de PII"
+    cat, n = max(conteo.items(), key=lambda kv: kv[1])
+    frac = n / len(vals)
+    if frac < umbral:
+        return None, 0.0, f"solo {frac:.0%} de valores con forma de {cat}"
+    # telefono por valores es la senal mas debil (10 digitos = muchos codigos)
+    conf = round(min(0.99, frac) * (0.75 if cat == "phone" else 1.0), 2)
+    return cat, conf, f"{frac:.0%} de {len(vals)} valores validan como {cat}"
+
+
+def explicar_pii(field_name, sample_values=None):
+    """{'categoria', 'confianza', 'motivo', 'fuente'}: por que (no) es PII.
+    Con muestras, una evidencia FUERTE en los valores (CURP/RFC/Luhn/CLABE/email)
+    gana sobre el nombre; el telefono por valores solo confirma, no contradice."""
+    cn, pn, mn = _pii_por_nombre(field_name)
+    if sample_values is not None:
+        cv, pv, mv = _pii_por_valores(sample_values)
+        # 10 digitos tambien son importes/codigos: telefono por valores solo si el
+        # nombre no es claramente de negocio (monto, saldo, folio de transaccion...)
+        nombre_negocio = bool(set(_pii_tokens(field_name)) & (_DESCRIPTOR | _NO_PERSONA))
+        if cv == "phone" and nombre_negocio and cn != "phone":
+            cv = None
+        if cv and (cv != "phone" or cn in (None, "phone")) and pv >= max(pn, 0.6):
+            return {"categoria": cv, "confianza": pv, "motivo": mv,
+                    "fuente": "valores" if cv != cn else "nombre+valores"}
+        if cv and cv == cn:
+            return {"categoria": cn, "confianza": max(pn, pv), "motivo": f"{mn}; {mv}",
+                    "fuente": "nombre+valores"}
+    return {"categoria": cn, "confianza": pn, "motivo": mn, "fuente": "nombre" if cn else None}
+
+
+def detect_pii(field_name, sample_values=None):
+    """Categoria PII de una columna (o None). Misma firma de siempre: con solo el
+    nombre funciona igual; con sample_values usa tambien los validadores de valores."""
+    return explicar_pii(field_name, sample_values)["categoria"]
+
+
+# Compatibilidad: algunos modulos/pruebas importaban PII_PATTERNS (dict cat -> regex).
+PII_PATTERNS = {c: r"\b(" + "|".join(sorted(t, key=len, reverse=True)) + r")\b"
+                for c, t in _PII_TOKENS.items()}
 
 
 # ---------------------------------------------------------------------------

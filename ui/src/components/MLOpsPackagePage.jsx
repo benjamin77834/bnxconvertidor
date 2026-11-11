@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { COMPILE_URL } from '../config'
 import OrdenFuentesPanel from './OrdenFuentesPanel'
 
@@ -80,8 +80,20 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
   const [jobSel, setJobSel] = useState(() => {
     try { return JSON.parse(localStorage.getItem('bnx_mlops_registry') || '{}') } catch { return {} }
   })
+  // Modulos que OTRO archivo subido importa como 'paquete.modulo' (toolbox.kernel,
+  // utils.emails_full, ...): son de apoyo aunque usen pandas (read.py, data_pull.py).
+  const importadosComoModulo = useMemo(() => {
+    const s = new Set()
+    const re = /^\s*(?:from\s+([A-Za-z_]\w*)\.([A-Za-z_]\w*)[\w.]*\s+import\b|import\s+([A-Za-z_]\w*)\.([A-Za-z_]\w*))/gm
+    ;[...files, ...(pasted.trim() ? [{ code: pasted }] : [])].forEach(f => {
+      for (const m of (f.code || '').matchAll(re)) s.add((m[2] || m[4]).toLowerCase())
+    })
+    return s
+  }, [files, pasted])
   const esJob = (f) => {
     if (f.name in jobSel) return !!jobSel[f.name]
+    const stem = f.name.replace(/\.(py|txt)$/i, '').toLowerCase()
+    if (importadosComoModulo.has(stem)) return false
     const c = f.code || ''
     return /^\s*(import\s+pandas\b|from\s+pandas[\w.]*\s+import)/m.test(c) || /^def\s+run\s*\(/m.test(c)
   }
@@ -177,11 +189,24 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
         body: JSON.stringify({ token: buildResult.edit_token }),
       })
       const data = await res.json()
-      if (!res.ok || data.error) { setEditMsg('⚠️ ' + (data.error || 'no se pudo rehacer')); return }
-      setBuildResult(r => ({ ...r, size: data.size, download_url: data.download_url, filename: data.filename }))
+      if (!res.ok || data.error) { setEditMsg('⚠️ ' + (data.error || 'no se pudo rehacer')); return null }
+      setBuildResult(r => ({ ...r, size: data.size, download_url: data.download_url, filename: data.filename,
+                             offline_faltan: data.offline_faltan, vendor_mb: data.vendor_mb }))
       setEditMsg('✅ Paquete rehecho con tus ediciones — listo para descargar.')
-    } catch (e) { setEditMsg('⚠️ ' + e.message) }
+      return data
+    } catch (e) { setEditMsg('⚠️ ' + e.message); return null }
     finally { setRebuilding(false) }
+  }
+
+  // Rehacer el ZIP (con orden.json y ediciones) y DESCARGARLO en un paso.
+  const rebuildYDescargar = async () => {
+    const data = await rebuild()
+    if (!data?.download_url) return false
+    const a = document.createElement('a')
+    a.href = `${API_BASE}${data.download_url}`
+    a.download = data.filename || 'framework_mlops_v2.zip'
+    document.body.appendChild(a); a.click(); a.remove()
+    return true
   }
 
   // Monta el paquete en un venv real y lo PRUEBA (check_env.py + pytest opcional),
@@ -351,9 +376,9 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
           </label>
           <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: t.text || '#e2e8f0', cursor: 'pointer' }}>
             <input type="checkbox" checked={fullEnv} onChange={e => setFullEnv(e.target.checked)} />
-            <span>Incluir <b>ambiente completo</b> (PySpark offline en <code>vendor/</code> + <code>setup.sh</code> que monta el venv sin internet)</span>
+            <span>Incluir <b>ambiente completo</b> (también PySpark offline en <code>vendor/</code>). Sin marcar = <b>ligero</b>: todas las librerías offline menos PySpark</span>
           </label>
-          {fullEnv && (
+          {(
             <div style={{ marginLeft: 24, display: 'flex', flexDirection: 'column', gap: 6 }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: t.text || '#e2e8f0' }}>
                 Versión de Python del destino:
@@ -363,14 +388,16 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                     background: t.codeBg || '#081220', color: t.text || '#e2e8f0',
                     border: `1px solid ${t.border || '#334155'}`, outline: 'none', cursor: 'pointer',
                   }}>
-                  <option value="all">Cualquiera (universal) — ~736 MB</option>
-                  <option value="py38-311">Python 3.8–3.11 — ~306 MB</option>
-                  <option value="py312plus">Python 3.12+ — ~417 MB</option>
+                  <option value="all">Cualquiera (universal){fullEnv ? ' — ~870 MB' : ' — ~100 MB'}</option>
+                  <option value="py38-311">Python 3.8–3.11{fullEnv ? ' — ~400 MB' : ' — ~55 MB'}</option>
+                  <option value="py312plus">Python 3.12+{fullEnv ? ' — ~470 MB' : ' — ~50 MB'}</option>
                 </select>
               </label>
               <div style={{ fontSize: 11, color: t.muted || '#94a3b8' }}>
-                Elige la versión de los nodos del banco para bajar el tamaño (empaqueta UNA serie de PySpark
-                en vez de dos). Usa tu Python y Java del sistema; esos no se empaquetan.
+                {fullEnv
+                  ? 'Completo: TODO offline, incluido PySpark. Elige la versión de los nodos del banco para bajar el tamaño.'
+                  : 'Ligero: TODAS las librerías offline (pandas, numpy, pytest, cytoolz, las del banco…) MENOS PySpark: en el servidor se usa el Spark del cluster (BNX_SPARK=cluster bash run.sh).'}
+                {' '}Usa tu Python y Java del sistema; esos no se empaquetan.
               </div>
             </div>
           )}
@@ -439,6 +466,35 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                           {(meta.vendor_series || []).length ? ` (${meta.vendor_series.join(', ')})` : ''}. Monta con <code>bash setup.sh</code>.
                         </div>
                       )}
+                      {Object.keys(meta?.modulos_faltantes || {}).length > 0 && (
+                        <div style={{ fontSize: 11.5, color: '#fca5a5', marginBottom: 2, padding: 8, borderRadius: 6,
+                                      border: '1px solid #ef444455' }}>
+                          ⛔ Tu código importa módulos de paquetes del banco que <b>no vienen en el paquete</b> (ni subidos ni en el
+                          caché de este servidor). Los jobs fallarán con <code>No module named …</code>. Súbelos junto con tus
+                          archivos (se acomodan solos en su paquete) o cárgalos en <b>📚 Librerías del banco</b>:
+                          {Object.entries(meta.modulos_faltantes).map(([p, ms]) =>
+                            <div key={p}>· <code>{p}</code>: {ms.map(m => `${m}.py`).join(', ')}</div>)}
+                        </div>
+                      )}
+                      {meta && (
+                        <div style={{ fontSize: 11.5, color: t.muted || '#94a3b8', marginBottom: 2 }}>
+                          📚 Librerías offline en <code>vendor/</code>: {meta.vendor_mb ?? '?'} MB
+                          {meta.full_env ? ' (con PySpark)' : ' (ligero: sin PySpark, usa el Spark del cluster)'}
+                        </div>
+                      )}
+                      {(() => {
+                        const f = buildResult.offline_faltan || meta?.offline_faltan || {}
+                        const filas = Object.entries(f).flatMap(([s, vs]) => Object.entries(vs).map(([v, e]) => ({ s, v, e })))
+                        if (!filas.length) return null
+                        return (
+                          <div style={{ fontSize: 11.5, color: '#f59e0b', marginBottom: 2, padding: 8, borderRadius: 6,
+                                        border: '1px solid #f59e0b55' }}>
+                            ⚠ En estas versiones de Python NO se podrá instalar todo offline (faltan wheels en el cache del
+                            generador); ahí setup.sh intentará bajar lo que falte por internet. Si tu servidor usa otra versión, no te afecta:
+                            {filas.map(x => <div key={x.s + x.v}>· Python {x.v} ({x.s}): {String(x.e).slice(0, 120)}</div>)}
+                          </div>
+                        )
+                      })()}
                       {meta?.full_env && meta?.vendor_missing && (
                         <div style={{
                           fontSize: 11.5, color: '#fca5a5', marginBottom: 2, padding: 8, borderRadius: 6,
@@ -461,7 +517,7 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                       <span style={{ color: t.muted || '#94a3b8' }}> ← {r.name}</span>
                       {r.file && <span style={{ color: t.dim || '#64748b' }}> · {r.file}</span>}
                       {r.ok && r.role === 'apoyo'
-                        ? <span style={{ color: '#a78bfa' }}> · módulo de apoyo: copia exacta (no está en el REGISTRY)</span>
+                        ? <span style={{ color: '#a78bfa' }}> · módulo de apoyo: copia exacta (no está en el REGISTRY){r.nota ? ` — ${r.nota}` : ''}</span>
                         : r.ok && r.verbatim
                         ? <span style={{ color: '#38bdf8' }}> · PySpark / Python sin pandas: copiado completo, sin conversión</span>
                         : r.ok
@@ -627,7 +683,9 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
             {/* ORDEN: quien va primero entre las fuentes (orden.json del paquete) */}
             {buildResult?.edit_token && (
               <OrdenFuentesPanel token={buildResult.edit_token} theme={t} apiBase={API_BASE}
-                onSaved={() => loadEditFiles(buildResult.edit_token)} />
+                onSaved={() => loadEditFiles(buildResult.edit_token)}
+                onDescargar={rebuildYDescargar} descargando={rebuilding}
+                completo={!!buildResult.report?.find(r => r._meta)?.full_env} />
             )}
 
             {/* EDITOR: editar archivos generados y rehacer el paquete */}

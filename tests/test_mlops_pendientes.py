@@ -47,12 +47,34 @@ def test_extra_sin_libs_del_banco_incluye_wheels(tmp_path):
     z, files, _ = _build(tmp_path, [{"name": "job_1.py", "code": code}])
     assert "requirements-extra.txt" in files
     assert "requirements-bank.txt" not in files
-    wheels = [os.path.basename(f) for f in files if f.startswith("vendor/bank/")]
+    # Las wheels open source van en vendor/<serie>/ (solo lo que pip resolvio), tambien
+    # en el paquete LIGERO; vendor/bank/ queda solo para las mex-lib del banco.
+    wheels = [os.path.basename(f) for f in files if f.startswith("vendor/py")]
     assert any(w.startswith("cytoolz-") for w in wheels)
     assert any(w.lower().startswith("unidecode-") for w in wheels)
     assert any(w.startswith("toolz-") for w in wheels)          # dependencia de cytoolz
-    assert not any(w.lower().startswith("mex") for w in wheels)  # sin libs internas
-    assert not any(f.startswith("vendor/bank/pkgcode/") for f in files)
+    assert any(w.startswith("pandas-") for w in wheels)          # deps del framework
+    assert not any(w.startswith("pyspark-") for w in wheels)     # ligero: sin PySpark
+    assert not any(f.startswith("vendor/bank/") for f in files)  # sin libs internas
+
+
+@pytest.mark.skipif(not os.path.isdir(CACHE_WHEELS), reason="sin cache de wheels del banco")
+def test_ligero_trae_lo_necesario_y_no_todo_el_cache(tmp_path):
+    code = "import pandas as pd\nfrom toolbox.kernel import Kernel\ndef run(df):\n    return df\n"
+    z, files, rep = _build(tmp_path, [{"name": "job_1.py", "code": code}], py_target="py38-311")
+    vend = [f for f in files if f.startswith("vendor/")]
+    assert not any(os.path.basename(f).startswith(("xgboost-", "scipy-", "scikit_learn-")) for f in vend)
+    # Python 3.8 (el del banco): pandas/numpy cp38 desde el cache del banco
+    assert any("pandas-1.3.1-cp38" in f for f in vend)
+    assert all(os.path.basename(f).lower().startswith("mex") for f in vend
+               if f.startswith("vendor/bank/") and f.endswith((".whl", ".tar.gz")))
+    meta = [r for r in mp.build_package_from_sources(
+        [{"name": "job_1.py", "code": code}], convert_fn=_convert, py_target="py38-311",
+        out_path=str(tmp_path / "b.zip"))[2] if r.get("_meta")][0]
+    # ~65-125 MB segun cuantas versiones (3.8-3.11) tenga el cache; nunca los ~350 MB de antes
+    assert meta["vendor_mb"] < 200 and meta["vendor_missing"] is False
+    for rel in ("setup.sh", "run.sh"):
+        assert "requirements-sin-spark" in _read(z, files, "setup.sh") or rel == "run.sh"
 
 
 # --- 2) --source -----------------------------------------------------------
@@ -122,12 +144,17 @@ def test_registry_y_modulos_de_apoyo_exactos(tmp_path):
     reg = ast.literal_eval(router.split("REGISTRY = ")[1].split("}")[0].replace(
         "Job3Aggregate", "1").replace("Job4Aggregate", "1") + "}")
     assert set(reg) == {"job_3", "job_4"}                         # 5) solo los jobs elegidos
-    for f in fuentes[2:]:                                          # 4) apoyo: copia EXACTA
-        assert _read(z, files, "bank_src/" + f["name"]) == f["code"]
+    # 4) apoyo: copia EXACTA. Los que otro archivo importa como toolbox.<x> van a su
+    #    PAQUETE (bank_src/toolbox/), asi 'from toolbox.kernel import Kernel' funciona
+    #    aunque el servidor no tenga toolbox en cache; el resto, sueltos en bank_src/.
+    for f in fuentes[2:]:
+        rel = ("bank_src/toolbox/" + f["name"]) if f["name"] != "main.py" else "bank_src/main.py"
+        assert _read(z, files, rel) == f["code"], rel
         assert "framework_mlops_v2/aggregates/" + f["name"] not in files
+    assert "bank_src/toolbox/__init__.py" in files
     por = {r["name"]: r for r in rep}
-    assert por["kernel.py"]["role"] == "apoyo"
-    assert "aviso" in por["email.py"]                             # choca con stdlib 'email'
+    assert por["kernel.py"]["role"] == "apoyo" and por["kernel.py"]["paquete"] == "toolbox"
+    assert "aviso" not in por["email.py"]   # dentro del paquete toolbox ya no choca con stdlib
     assert por["job_3.py"]["job_kernel"] and por["job_4.py"]["job_kernel"]
     # job sin pandas registrado: NO pasa por el conversor (conserva comentarios)
     agg = _read(z, files, "framework_mlops_v2/aggregates/job_4.py")
