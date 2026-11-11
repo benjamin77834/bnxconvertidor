@@ -18,7 +18,8 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
   const [monitoring, setMonitoring] = useState(false)
   const [separateMon, setSeparateMon] = useState(false)
   const [fullEnv, setFullEnv] = useState(false)
-  const [pyTarget, setPyTarget] = useState('all')  // all | py38-311 | py312plus
+  // Version EXACTA de Python del servidor Linux (una wheel por libreria = lo mas ligero).
+  const [pyTarget, setPyTarget] = useState('py3.8')  // py3.8 (banco) | py3.12
   const [loading, setLoading] = useState(true)
 
   // Entrada del usuario: codigo pegado + archivos de carpeta.
@@ -39,7 +40,7 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
   const [verifyLog, setVerifyLog] = useState('')
   const [verifyResult, setVerifyResult] = useState(null)  // {ok_env, checks, steps}
   const [runPytest, setRunPytest] = useState(false)
-  const [verifySerie, setVerifySerie] = useState('py38-311')  // target Linux a emular
+  const [verifySerie, setVerifySerie] = useState('py3.8')  // target Linux a emular
   // Firma / despliegue del paquete.
   const [signing, setSigning] = useState(false)
   const [signResult, setSignResult] = useState(null)  // {manifest, verify, public_key_pem, private_key_pem}
@@ -388,9 +389,8 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                     background: t.codeBg || '#081220', color: t.text || '#e2e8f0',
                     border: `1px solid ${t.border || '#334155'}`, outline: 'none', cursor: 'pointer',
                   }}>
-                  <option value="all">Cualquiera (universal){fullEnv ? ' — ~870 MB' : ' — ~100 MB'}</option>
-                  <option value="py38-311">Python 3.8–3.11{fullEnv ? ' — ~400 MB' : ' — ~55 MB'}</option>
-                  <option value="py312plus">Python 3.12+{fullEnv ? ' — ~470 MB' : ' — ~50 MB'}</option>
+                  <option value="py3.8">Linux · Python 3.8 (servidor del banco){fullEnv ? ' — ~340 MB (con PySpark 3.5)' : ' — ~35 MB'}</option>
+                  <option value="py3.12">Linux · Python 3.12{fullEnv ? ' — ~450 MB (con PySpark 4.0)' : ' — ~36 MB'}</option>
                 </select>
               </label>
               <div style={{ fontSize: 11, color: t.muted || '#94a3b8' }}>
@@ -636,8 +636,8 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                   <select value={verifySerie} onChange={e => setVerifySerie(e.target.value)} disabled={runPytest}
                     style={{ padding: '4px 8px', borderRadius: 6, fontSize: 11.5, background: t.codeBg || '#081220',
                              border: `1px solid ${t.border || '#334155'}`, color: t.text || '#e2e8f0' }}>
-                    <option value="py38-311">Python 3.8–3.11 (cp38)</option>
-                    <option value="py312plus">Python 3.12+ (cp312)</option>
+                    <option value="py3.8">Linux · Python 3.8 (cp38)</option>
+                    <option value="py3.12">Linux · Python 3.12 (cp312)</option>
                   </select>
                 </label>
                 <label style={{ fontSize: 11.5, color: t.muted || '#94a3b8', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>

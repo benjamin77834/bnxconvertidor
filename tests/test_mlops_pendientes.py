@@ -201,3 +201,29 @@ def test_check_env_importa_los_jobs_de_verdad():
     assert "def _probar_jobs" in mp._CHECK_ENV
     assert "_probar_jobs()" in mp._CHECK_ENV
     ast.parse(mp._CHECK_ENV)
+
+
+# --- version EXACTA de Python (Linux): lo mas ligero con todas las librerias -------
+
+def test_versiones_target():
+    assert mp._versiones_target("py3.8") == {"py38-311": ["3.8"]}
+    assert mp._versiones_target("py3.12") == {"py312plus": ["3.12"]}
+    assert mp._versiones_target("py38-311") == {"py38-311": ["3.8", "3.9", "3.10", "3.11"]}
+    assert set(mp._versiones_target("all")) == {"py38-311", "py312plus"}
+
+
+@pytest.mark.skipif(not os.path.isdir(CACHE_WHEELS), reason="sin cache de wheels del banco")
+@pytest.mark.parametrize("tgt,abi", [("py3.8", "cp38"), ("py3.12", "cp312")])
+def test_version_exacta_solo_lo_necesario(tmp_path, tgt, abi, monkeypatch):
+    monkeypatch.setenv("BNX_NO_DOWNLOAD", "1")
+    code = "import pandas as pd\nimport cytoolz\ndef run(df):\n    return df\n"
+    z, files, _ = _build(tmp_path, [{"name": "job_1.py", "code": code}], py_target=tgt)
+    whl = [os.path.basename(f) for f in files if f.endswith(".whl")]
+    assert _read(z, files, "vendor/PYTHON_TARGET").strip() == tgt[2:]
+    assert not any("aarch64" in w for w in whl)                       # solo x86_64
+    otras = [w for w in whl if "-cp3" in w and f"-{abi}-" not in w and "abi3" not in w]
+    assert not otras, otras                                            # solo esa version
+    dists = [w.split("-")[0].lower() for w in whl]
+    assert len(dists) == len(set(dists))                               # sin duplicadas
+    assert {"pandas", "numpy", "cytoolz", "toolz"} <= set(dists)
+    assert "pyspark" not in dists                                      # ligero

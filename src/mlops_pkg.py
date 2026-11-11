@@ -754,6 +754,16 @@ python -m pip install --upgrade pip >/dev/null 2>&1 || true
 # instalamos TODO offline con --no-index. pandas/numpy/pyspark/py4j/pytest estan
 # ahi. Sin vendor/, caemos a internet (red del banco / Artifactory).
 PYMINOR="$(python -c 'import sys; print(sys.version_info[1])')"
+# Paquete armado para UNA version exacta de Python (lo mas ligero): avisar si no coincide.
+if [ -f vendor/PYTHON_TARGET ]; then
+  PY_T="$(cat vendor/PYTHON_TARGET | tr -d '[:space:]')"
+  PY_V="$(python -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+  if [ "$PY_T" != "$PY_V" ]; then
+    echo "[!] Este paquete se armo para Python $PY_T y este servidor tiene Python $PY_V."
+    echo "    Las librerias offline no van a coincidir: genera el paquete para Python $PY_V"
+    echo "    (o corre con:  PYTHON=python$PY_T bash setup.sh )."
+  fi
+fi
 VENDOR_DIR=""
 if [ "$PYMINOR" -ge 12 ] 2>/dev/null && [ -d "vendor/py312plus" ]; then
   VENDOR_DIR="vendor/py312plus"
@@ -3050,12 +3060,17 @@ def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all",
         req_lineas += [ln for ln in (code_files or {}).get(_rq, "").splitlines()
                        if ln.strip() and not ln.strip().startswith("#")]
     if full_env:
-        # Completo: PySpark + deps (como siempre) + lo que pip resuelve del cache para
-        # CADA version de la serie (p.ej. pandas 1.3.1 cp38 del banco para Python 3.8).
-        vendor_series = _vendor_files_for_pkg(py_target, extra_steps)
-        sel, faltan_offline = _vendor_ligero(py_target, extra_steps, req_lineas, incluir_spark=True)
-        for _s, _fs in sel.items():
-            vendor_series[_s] = list(dict.fromkeys(list(vendor_series.get(_s, [])) + _fs))
+        # Completo: SOLO lo que pip resuelve para la(s) version(es) destino, CON PySpark.
+        # Antes se metia ademas la serie entera del cache (wheels de 4 versiones de
+        # Python y de aarch64): ~870 MB. _vendor_files_for_pkg se llama solo para que
+        # el cache tenga PySpark (lo baja si falta); su lista ya no se empaqueta.
+        try:
+            for _serie in _versiones_target(py_target):
+                _vendor_files_for_pkg(_serie, extra_steps)
+        except Exception:
+            pass
+        vendor_series, faltan_offline = _vendor_ligero(py_target, extra_steps, req_lineas,
+                                                       incluir_spark=True)
     else:
         # Ligero: TODAS las librerias offline MENOS PySpark (~300-400 MB): en el
         # cluster se usa su Spark (BNX_SPARK=cluster). Antes no llevaba ninguna.
@@ -3130,6 +3145,9 @@ def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all",
     try:
         for path, content in (code_files or {}).items():
             _put_str(z, "framework_mlops_v2_pkg/" + path, content)
+        _vts = [v for vs in _versiones_target(py_target).values() for v in vs]
+        if len(_vts) == 1:   # version exacta: setup.sh avisa si el servidor tiene otra
+            _put_str(z, "framework_mlops_v2_pkg/vendor/PYTHON_TARGET", _vts[0] + "\n")
         if faltan_offline:
             _txt = ["Versiones de Python que NO podran instalar todo OFFLINE con este paquete",
                     "(faltan wheels en el cache del generador). En esas versiones setup.sh",
@@ -3457,7 +3475,7 @@ def _reqs_para(version, lineas, incluir_spark):
 
 
 def _seleccionar_wheels(serie_dir, req_lineas, extra_steps=False, incluir_spark=True,
-                        _descargar=True):
+                        _descargar=True, versiones=None):
     """Resuelve con pip (sin instalar) que wheels hacen falta para TODAS las versiones
     de Python de la serie, usando solo el cache local. Devuelve ([rutas], {version:
     error}). Asi el paquete lleva lo necesario (no los 350 MB del cache del banco) y
@@ -3465,7 +3483,9 @@ def _seleccionar_wheels(serie_dir, req_lineas, extra_steps=False, incluir_spark=
     import json as _json
     import tempfile as _tf
     pool = _pool_wheels(serie_dir, extra_steps, incluir_spark)
-    clave = (serie_dir, tuple(req_lineas), extra_steps, incluir_spark, tuple(sorted(pool)))
+    versiones = list(versiones or _SERIE_VERSIONES.get(serie_dir, []))
+    clave = (serie_dir, tuple(req_lineas), extra_steps, incluir_spark, tuple(versiones),
+             tuple(sorted(pool)))
     if clave in _seleccion_cache:
         return _seleccion_cache[clave]
     elegidas = {f for f in pool if _wheel_dist(f) in _BOOTSTRAP}
@@ -3478,7 +3498,7 @@ def _seleccionar_wheels(serie_dir, req_lineas, extra_steps=False, incluir_spark=
                 os.symlink(full, os.path.join(links, f))
             except OSError:
                 shutil.copy2(full, os.path.join(links, f))
-        for v in _SERIE_VERSIONES.get(serie_dir, []):
+        for v in versiones:
             reqs = _reqs_para(v, req_lineas, incluir_spark)
             if not reqs:
                 continue
@@ -3538,20 +3558,32 @@ def _seleccionar_wheels(serie_dir, req_lineas, extra_steps=False, incluir_spark=
                     break   # sin red / timeout: no insistir
         if bajo_algo:
             return _seleccionar_wheels(serie_dir, req_lineas, extra_steps, incluir_spark,
-                                       _descargar=False)
+                                       _descargar=False, versiones=versiones)
     res = ([pool[f] for f in sorted(elegidas)], faltan)
     _seleccion_cache[clave] = res
     return res
 
 
+def _versiones_target(py_target):
+    """{serie_dir: [versiones]} para un destino. Version EXACTA ('py3.8', 'py3.12',
+    '3.8') = solo esa (lo mas ligero: una wheel por libreria). 'py38-311'/'py312plus'
+    = la serie completa; 'all' = las dos."""
+    m = _re.fullmatch(r"(?:py)?3\.(\d{1,2})", str(py_target or "").strip())
+    if m:
+        v = "3." + m.group(1)
+        return {("py312plus" if int(m.group(1)) >= 12 else "py38-311"): [v]}
+    if py_target in _SERIE_VERSIONES:
+        return {py_target: list(_SERIE_VERSIONES[py_target])}
+    return {s: list(vs) for s, vs in _SERIE_VERSIONES.items()}
+
+
 def _vendor_ligero(py_target, extra_steps, req_lineas, incluir_spark=False):
     """vendor/ por serie con SOLO lo necesario (sin PySpark si incluir_spark=False).
     Devuelve ({serie_dir: [rutas]}, {serie_dir: {version: error}})."""
-    series = {"py38-311": ["py38-311"], "py312plus": ["py312plus"]}.get(
-        py_target, ["py38-311", "py312plus"])
     out, faltan = {}, {}
-    for s in series:
-        files, f = _seleccionar_wheels(s, req_lineas, extra_steps, incluir_spark)
+    for s, versiones in _versiones_target(py_target).items():
+        files, f = _seleccionar_wheels(s, req_lineas, extra_steps, incluir_spark,
+                                       versiones=versiones)
         if files:
             out[s] = files
         if f:
@@ -4241,11 +4273,14 @@ def _verify_resolve_linux(pkg_root, py_target, _log, steps, timeout):
     import tempfile as _tf
     import shutil as _sh
 
-    # Series del destino: 'all' verifica las dos. Cada serie se prueba en TODAS sus
-    # versiones de Python (3.8-3.11 / 3.12-3.13): las wheels binarias son por version.
-    series = {"py38-311": ["py38-311"], "py312plus": ["py312plus"]}.get(
-        py_target, ["py38-311", "py312plus"])
-    plats = ["manylinux2014_x86_64", "manylinux_2_17_x86_64", "manylinux_2_28_x86_64"]
+    # Version(es) destino: exacta (py3.8 / py3.12) o la serie. Por cada version se SIMULA
+    # la instalacion COMPLETA (pip resuelve todo el arbol de dependencias, como el
+    # 'pip install' del servidor Linux), no paquete por paquete: asi tambien se detecta
+    # una dependencia transitiva que falte (python-dateutil de pandas, threadpoolctl...).
+    destino = _versiones_target(py_target)
+    series = list(destino)
+    plats = ["manylinux2014_x86_64", "manylinux_2_17_x86_64", "manylinux_2_28_x86_64",
+             "linux_x86_64"]
     bank_dir = os.path.join(pkg_root, "vendor", "bank")
 
     _log("== Verificacion emulando el SERVIDOR LINUX del banco ==")
@@ -4261,6 +4296,7 @@ def _verify_resolve_linux(pkg_root, py_target, _log, steps, timeout):
         return reqs
 
     core = _read_reqs(os.path.join(pkg_root, "requirements.txt"))
+    extra = _read_reqs(os.path.join(pkg_root, "requirements-extra.txt"))
     bank = _read_reqs(os.path.join(pkg_root, "requirements-bank.txt"))
 
     def _mex_ok(name):
@@ -4282,32 +4318,50 @@ def _verify_resolve_linux(pkg_root, py_target, _log, steps, timeout):
         if ligero:
             _log("[%s] paquete LIGERO: PySpark no se verifica (en el servidor se usa el Spark "
                  "del cluster: BNX_SPARK=cluster bash run.sh)." % serie)
-        for pyver in _SERIE_VERSIONES.get(serie, []):
+        for pyver in destino[serie]:
             abi = "cp" + pyver.replace(".", "")
-            reqs = _reqs_para(pyver, core, incluir_spark=not ligero)
-            faltan = []
-            for req in reqs + [b for b in bank if not b.lower().startswith("mex")]:
-                tmp = _tf.mkdtemp(prefix="bnx_res_")
-                try:
-                    cmd = ([_sys.executable, "-m", "pip", "download", "--no-index", "--no-deps",
-                            "--only-binary=:all:"] + links
-                           + ["--python-version", pyver, "--implementation", "cp",
-                              "--abi", abi, "--abi", "abi3", "--abi", "none"]
-                           + [x for pl in plats for x in ("--platform", pl)]
-                           + ["--platform", "any", "-d", tmp, req])
-                    ok1 = _sp.run(cmd, capture_output=True, text=True, timeout=timeout).returncode == 0
-                except Exception:
-                    ok1 = False
-                finally:
-                    _sh.rmtree(tmp, ignore_errors=True)
-                if not ok1:
-                    faltan.append(_re.split(r"[<>=!~ ;\[]", req, maxsplit=1)[0].strip())
+            reqs = _reqs_para(pyver, core + extra + [b for b in bank if not b.lower().startswith("mex")],
+                              incluir_spark=not ligero)
+            base_cmd = (["--no-index", "--only-binary=:all:"] + links
+                        + ["--python-version", pyver, "--implementation", "cp",
+                           "--abi", abi, "--abi", "abi3", "--abi", "none"]
+                           + [x for pl in plats for x in ("--platform", pl)] + ["--platform", "any"])
+            faltan, instalaria = [], 0
+            tmp = _tf.mkdtemp(prefix="bnx_res_")
+            try:
+                rep = os.path.join(tmp, "r.json")
+                p = _sp.run([_sys.executable, "-m", "pip", "install", "--dry-run", "--ignore-installed",
+                             "--quiet", "--target", os.path.join(tmp, "t"), "--report", rep]
+                            + base_cmd + reqs, capture_output=True, text=True, timeout=timeout)
+                if p.returncode == 0 and os.path.isfile(rep):
+                    with open(rep, encoding="utf-8") as fh:
+                        instalaria = len(json.load(fh).get("install", []))
+                else:
+                    # pip se detiene en el PRIMER faltante: listar todos (directos + el
+                    # transitivo que reporto pip) para que el mensaje sea completo.
+                    faltan += _re.findall(r"No matching distribution found for ([A-Za-z0-9_.\-]+)",
+                                          p.stderr or "")
+                    for req in reqs:
+                        d = os.path.join(tmp, "d")
+                        q = _sp.run([_sys.executable, "-m", "pip", "download", "--no-deps",
+                                     "--quiet", "-d", d] + base_cmd + [req],
+                                    capture_output=True, text=True, timeout=timeout)
+                        if q.returncode != 0:
+                            faltan.append(_re.split(r"[<>=!~ ;\[]", req, maxsplit=1)[0].strip())
+                    if not faltan:
+                        faltan.append("(conflicto de versiones: " +
+                                      ((p.stderr or "").strip().splitlines() or ["?"])[-1][:120] + ")")
+            except Exception as e:
+                faltan.append("(error al simular: %s)" % str(e)[:120])
+            finally:
+                _sh.rmtree(tmp, ignore_errors=True)
             # mex-lib del banco: son sdist (.tar.gz), se comprueba que esten en vendor/bank
             faltan += [b for b in (_re.split(r"[<>=!~ ;]", x, maxsplit=1)[0].strip()
                                    for x in bank if x.lower().startswith("mex")) if not _mex_ok(b)]
+            faltan = sorted(set(faltan), key=str.lower)
             ok = not faltan
-            _log("$ Python %s (Linux %s): %d requisitos -> %s"
-                 % (pyver, abi, len(reqs), "OK" if ok else "faltan: " + ", ".join(sorted(set(faltan)))))
+            _log("$ Python %s (Linux %s): instalacion completa simulada -> %s"
+                 % (pyver, abi, ("OK, %d paquetes" % instalaria) if ok else "faltan: " + ", ".join(faltan)))
             steps.append({"name": "Python %s (%s)" % (pyver, serie), "exit_code": 0 if ok else 1, "ok": ok})
             if faltan:
                 faltan_por_ver["%s/%s" % (serie, pyver)] = sorted(set(faltan))
@@ -4316,13 +4370,15 @@ def _verify_resolve_linux(pkg_root, py_target, _log, steps, timeout):
     ok_env = not faltantes
     _log("")
     if ok_env:
-        _log("[OK] Todo el stack resuelve OFFLINE para el servidor Linux en todas las versiones.")
+        _log("[OK] El paquete se instala OFFLINE en el servidor Linux (Python %s)."
+             % ", ".join(v for vs in destino.values() for v in vs))
     else:
         _log("[FALTAN] para Linux:")
         for k, fs in sorted(faltan_por_ver.items()):
             _log("  - Python %s: %s" % (k.split("/")[1], ", ".join(fs)))
-        _log("  -> El cache de ESTE servidor del portal no tiene esas wheels. Importalo una vez:")
-        _log("       python importar_vendor.py bnx_vendor_all.zip   (y reinicia el portal)")
+        _log("  -> El cache de ESTE servidor del portal no tiene esas wheels. Importa una vez el")
+        _log("     ZIP de vendor para tu version (python exportar_vendor.py --python 3.8 en una")
+        _log("     maquina con el cache; aqui: python importar_vendor.py <zip>) y reinicia el portal,")
         _log("     o cargalas en 'Librerias del banco'.")
     return {"ok_env": ok_env, "checks": {"ok": [], "missing": faltantes,
                                          "por_version": faltan_por_ver}}

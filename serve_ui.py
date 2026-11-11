@@ -915,9 +915,11 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             include_monitoring = bool(data.get("include_monitoring", False))
             separate_monitoring = bool(data.get("separate_monitoring", False))
             full_env = bool(data.get("full_env", False))
-            py_target = data.get("py_target") or "all"
-            if py_target not in ("all", "py38-311", "py312plus"):
-                py_target = "all"
+            py_target = data.get("py_target") or "py3.8"
+            # Version EXACTA de Python del servidor (py3.8, py3.12: lo mas ligero) o serie.
+            if py_target not in ("all", "py38-311", "py312plus") and \
+                    not re.fullmatch(r"py3\.(8|9|10|11|12|13)", str(py_target)):
+                py_target = "py3.8"
             # Jobs a registrar en el REGISTRY (el resto = modulos de apoyo copiados
             # exactos a bank_src/). Ausente o null = todos registrados (como antes).
             registry = data.get("registry")
@@ -1335,8 +1337,11 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             # py_target: si el paquete se genero 'all', emular py38-311 por defecto
             # (lo mas comun en el banco); el usuario puede pedir py312plus.
             pyt = state.get("py_target", "all")
-            if emulate_linux and pyt == "all":
-                pyt = data.get("serie", "py38-311")
+            # Paquete armado para una version EXACTA: se simula esa. Si se armo para una
+            # serie / 'all', la que pida el usuario (default 3.8, la del banco).
+            if emulate_linux and not re.fullmatch(r"py3\.\d+", str(pyt)):
+                pedida = str(data.get("serie") or "py3.8")
+                pyt = pedida if re.fullmatch(r"py3\.\d+|py38-311|py312plus", pedida) else "py3.8"
             result = verify_package_env(
                 state.get("code_files") or {},
                 full_env=bool(state.get("full_env")),
