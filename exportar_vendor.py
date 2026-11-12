@@ -13,8 +13,11 @@ USO (en tu Mac, donde SI tienes el cache lleno):
     python exportar_vendor.py --python 3.8                 # RECOMENDADO: solo lo que
                                                            # usa Python 3.8 en Linux
     python exportar_vendor.py --python 3.8 --python 3.12   # ademas Python 3.12
+    python exportar_vendor.py --python 3.8 --extra         # + xgboost/scikit-learn (pasos extra)
+Siempre lleva TODAS las librerias del banco (bank_libs) + solo el minimo (PySpark+deps).
     python exportar_vendor.py --serie all                  # (antiguo) cache entero, pesado
     python exportar_vendor.py -o /ruta/salida.zip
+    python exportar_vendor.py --python 3.12 --sin-banco    # SIN librerias del banco (publicable)
 
 Produce 'bnx_vendor_py3.8.zip' (o bnx_vendor_<serie>.zip). En el portal:
     python importar_vendor.py bnx_vendor_py3.8.zip
@@ -35,6 +38,16 @@ SERIES = {"py38-311", "py312plus"}
 ALWAYS = ["bank_libs"]
 
 
+# Nombres de modulos/archivos internos del banco que --sin-banco nunca debe incluir.
+_INTERNOS = ("bank_libs", "mex-lib", "mex_lib", "bnmxverse", "toolbox")
+
+
+def _es_interno(ruta):
+    r = ruta.replace(os.sep, "/").lower()
+    partes = r.split("/")
+    return any(i in r for i in _INTERNOS[:4]) or "toolbox" in partes or "utils" in partes[:-1]
+
+
 def _dirs_for(serie):
     """(antiguo) Carpetas del cache a incluir segun la serie ('all' = todo)."""
     dirs = list(ALWAYS)
@@ -53,32 +66,28 @@ def _dirs_for(serie):
     return dirs
 
 
-def _files_for_python(versiones):
+def _files_for_python(versiones, extra=False, sin_banco=False):
     """Archivos MINIMOS del cache para generar paquetes (ligero y completo, con y sin
     pasos extra) para esas versiones EXACTAS de Python en Linux: lo que pip resuelve
     + el codigo de path del banco (toolbox/bnmxverse/utils) + las mex-lib."""
     sys.path.insert(0, ROOT)
     os.environ.setdefault("BNX_NO_DOWNLOAD", "1")   # exportar lo que HAY, sin bajar
     from src import mlops_pkg as mp
-    base = [l for l in mp._requirements(True, False).splitlines() if l.strip() and not l.startswith("#")]
-    extra = [l for l in mp._requirements(True, True).splitlines() if l.strip() and not l.startswith("#")]
-    stack = ["cytoolz", "toolz", "Unidecode", "cloudpickle", "joblib"]   # stack del banco
-    files, faltan = set(), {}
-    for v in versiones:
-        serie = list(mp._versiones_target("py" + v))[0]
-        for reqs, xs in ((base + stack, False), (extra + stack, True)):
-            for spark in (True, False):
-                fs, f = mp._seleccionar_wheels(serie, reqs, extra_steps=xs, incluir_spark=spark,
-                                               versiones=[v])
-                files.update(fs)
-                faltan.update(f)
+    from src import vendor_cache as vc
+    # Minimo indispensable: lo que pip resuelve (con PySpark) para esas versiones; los pasos
+    # extra (xgboost/scikit-learn) solo con extra=True.
+    keep, faltan = vc.minimo(versiones, extra=extra)
+    files = set(keep)
+    if sin_banco:
+        files = {f for f in files if not _es_interno(os.path.relpath(f, CACHE))}
+        return sorted(files), faltan
     bank = os.path.join(CACHE, "bank_libs")
     for root, subdirs, fns in os.walk(os.path.join(bank, "pkgcode")):
         subdirs[:] = [s for s in subdirs if s != "__pycache__"]
         files.update(os.path.join(root, f) for f in fns
                      if not f.endswith((".pyc", ".pyo")) and f != ".DS_Store")
     wh = os.path.join(bank, "wheels")
-    if os.path.isdir(wh):
+    if os.path.isdir(wh):          # TODAS las librerias del banco (los 8 sdist mex-lib*)
         files.update(os.path.join(wh, f) for f in os.listdir(wh) if f.lower().startswith("mex"))
     return sorted(files), faltan
 
@@ -90,6 +99,11 @@ def main():
                          "exacta de Python (repetible: --python 3.8 --python 3.12).")
     ap.add_argument("--serie", default="all", choices=["all", "py38-311", "py312plus"],
                     help="(antiguo) cache completo de la serie: mucho mas pesado.")
+    ap.add_argument("--extra", action="store_true",
+                    help="Incluir tambien xgboost/scikit-learn (pasos extra). Default: solo el minimo.")
+    ap.add_argument("--sin-banco", action="store_true",
+                    help="NO incluir bank_libs/ ni modulos internos (bnmxverse/toolbox/utils/mex-lib): "
+                         "ZIP publicable (p.ej. GitHub Release). Requiere --python.")
     ap.add_argument("-o", "--output", default=None, help="Ruta del ZIP de salida.")
     args = ap.parse_args()
 
@@ -97,11 +111,14 @@ def main():
         print("ERROR: no existe el cache %s (genera un paquete 'ambiente completo' primero)." % CACHE)
         return 1
 
+    if args.sin_banco and not args.python:
+        print("ERROR: --sin-banco requiere --python 3.X")
+        return 1
     if args.python:
         versiones = sorted({v.replace("py", "").strip() for v in args.python},
                            key=lambda s: [int(x) for x in s.split(".")])
         etiqueta = "py" + "_".join(versiones)
-        lista, faltan = _files_for_python(versiones)
+        lista, faltan = _files_for_python(versiones, extra=args.extra, sin_banco=args.sin_banco)
         if faltan:
             print("AVISO: al cache le faltan wheels para:", faltan)
     else:
@@ -123,6 +140,8 @@ def main():
             if rel.startswith(".."):
                 continue
             arc = os.path.join(".bnx_vendor_cache", rel).replace(os.sep, "/")
+            if args.sin_banco and _es_interno(rel):
+                continue
             z.write(full, arc)
             n_files += 1
             total += os.path.getsize(full)

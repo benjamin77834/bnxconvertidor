@@ -227,3 +227,14 @@ def test_version_exacta_solo_lo_necesario(tmp_path, tgt, abi, monkeypatch):
     assert len(dists) == len(set(dists))                               # sin duplicadas
     assert {"pandas", "numpy", "cytoolz", "toolz"} <= set(dists)
     assert "pyspark" not in dists                                      # ligero
+
+
+def test_setup_sh_pyspark_online_y_respeta_cluster():
+    s = mp._SETUP_SH
+    assert 'BNX_SPARK:-}" = "cluster"' in s                      # cluster: no instala pyspark
+    assert "pyspark==3.5.6" in s and "pyspark==4.0.0" in s       # pin por serie
+    assert 'pip install --retries 1 --timeout 30 "$SPARK_PIN" py4j' in s
+    assert "[AVISO] No se pudo instalar PySpark por internet" in s
+    assert "BNX_SPARK=cluster bash run.sh" in s                  # alternativa en el aviso
+    assert 'PYSPARK_PYTHON="$PWD/.venv/bin/python"' in mp._RUN_SH
+    assert 'PYSPARK_DRIVER_PYTHON="$PWD/.venv/bin/python"' in mp._RUN_SH

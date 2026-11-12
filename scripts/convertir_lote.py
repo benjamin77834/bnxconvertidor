@@ -77,7 +77,7 @@ def main():
     if any(f.lower().endswith(".plan") for f in os.listdir(a.folder)):
         sys.path.insert(0, ROOT)
         from src import orquestador
-        for p in orquestador.save_all(orquestador.build(a.folder, a.out), a.out):
+        for p in orquestador.regenerar(a.folder, a.out):
             print(f"[ok] orquestacion: {p}")
 
 

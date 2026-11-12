@@ -25,7 +25,8 @@ EXT_KIND = {".pset": "pset", ".mp": "graph", ".plan": "plan",
             ".xfr": "xfr", ".dml": "dml", ".dbc": "dbc", ".ksh": "ksh"}
 
 # Rutas $AI_XXX/...archivo.ext (con o sin llaves, con ${VAR} anidadas)
-_REF_RE = re.compile(r"\$\{?AI_[A-Z_]+\}?/[A-Za-z0-9_./${}\-]+\.(?:mp|pset|plan|xfr|dml|dbc|ksh)")
+_REF_RE = re.compile(r"\$\{?AI_[A-Z_]+\}?[/\\][A-Za-z0-9_./\\${}\-]+\.(?:mp|pset|plan|xfr|dml|dbc|ksh)",
+                     re.I)
 _PROTO_RE = re.compile(r"^!prototype\|[^|]*\|{3}(.+)$")
 _PARAM_RE = re.compile(r"^(\w+)\|[^|]?\|{3}(.*)$|^(\w+)\|{4}(.*)$")
 _PREFIX_RE = re.compile(r"^\d+_")
@@ -35,8 +36,10 @@ _OUTPUT_KEYS = ("OUTPUT_FILE", "OUTPUT_NAME")
 
 
 def _norm_name(path_or_ref):
-    """Nombre base sin prefijo numerico de descarga: '1_foo.mp' -> 'foo.mp'."""
-    return _PREFIX_RE.sub("", os.path.basename(path_or_ref))
+    """Nombre base sin prefijo numerico de descarga: '1_foo.mp' -> 'foo.mp'.
+    Acepta '/' y '\\' (rutas de Windows en cualquier SO) y variables ($AI_MP, ${AI_MP})."""
+    s = str(path_or_ref).strip().strip("\"'").replace("\\", "/")
+    return _PREFIX_RE.sub("", s.rsplit("/", 1)[-1])
 
 
 def _kind_of(name):
@@ -78,7 +81,7 @@ def parse_eme_refs(path):
 
 _ENT_RE = re.compile(r"^\{(\d+)\|(XXG\w+)\|(\d+)\|")
 _REL_RE = re.compile(r"^\{(\d+)\|(XXG\w+_\w+_\w+)\|(\d+)\|[^{]*\{(.*?)\}(\d+)\|(\d+)\|\}\s*$")
-_RUN_REF_RE = re.compile(r"[A-Za-z0-9_$\{\}/.\-]+\.(?:mp|pset|plan|ksh)\b")
+_RUN_REF_RE = re.compile(r"[A-Za-z0-9_$\{\}/\\.\-]+\.(?:mp|pset|plan|ksh)\b", re.I)
 
 
 def parse_plan_tasks(path):
@@ -102,7 +105,7 @@ def parse_plan_tasks(path):
                 current = eid
         if current is not None:
             for r in _RUN_REF_RE.findall(line):
-                if r.startswith("$AI_") or "${AI_" in r:
+                if r.upper().startswith("$AI_") or "${AI_" in r.upper() or "\\{AI_" in r.upper():
                     refs[current].add(_norm_name(r))
         m = _REL_RE.match(line)
         if not m:
@@ -171,9 +174,15 @@ def scan(folder):
 
     edges = []
 
+    lower = {k.lower(): k for k in nodes}
+
     def ensure(name):
-        """Registra un nodo faltante (referenciado pero no presente)."""
+        """Registra un nodo faltante (referenciado pero no presente).
+        La comparacion ignora mayusculas ('T.MP' == 't.mp'): devuelve la clave existente."""
+        if name not in nodes and name.lower() in lower:
+            return lower[name.lower()]
         if name not in nodes:
+            lower[name.lower()] = name
             nodes[name] = {"name": name, "file": None,
                            "kind": _kind_of(name) or "unknown", "present": False}
         return name

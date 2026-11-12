@@ -74,12 +74,12 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
     }, 2000)
     return () => clearInterval(id)
   }, [vendorJob?.running])
-  const startVendorPrepare = async (ver) => {
+  const startVendorPrepare = async (ver, podar) => {
     setVendorErr('')
     try {
       const res = await fetch(VENDOR_PREPARE_URL, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ versions: [ver] }),
+        body: JSON.stringify({ versions: [ver], ...(podar ? { podar } : {}) }),
       })
       const d = await res.json()
       if (!d.ok && res.status !== 409) { setVendorErr(d.error || 'No se pudo iniciar'); return }
@@ -410,7 +410,7 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
           </label>
           <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: t.text || '#e2e8f0', cursor: 'pointer' }}>
             <input type="checkbox" checked={fullEnv} onChange={e => setFullEnv(e.target.checked)} />
-            <span>Incluir <b>ambiente completo</b> (también PySpark offline en <code>vendor/</code>). Sin marcar = <b>ligero</b>: todas las librerías offline menos PySpark</span>
+            <span>Incluir <b>ambiente completo</b> (también PySpark offline en <code>vendor/</code>). Sin marcar: todas las librerías offline y PySpark se instala por internet en el servidor (o usas el Spark del cluster con <code>BNX_SPARK=cluster</code>)</span>
           </label>
           {(
             <div style={{ marginLeft: 24, display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -429,14 +429,14 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
               <div style={{ fontSize: 11, color: t.muted || '#94a3b8' }}>
                 {fullEnv
                   ? 'Completo: TODO offline, incluido PySpark. Elige la versión de los nodos del banco para bajar el tamaño.'
-                  : 'Ligero: TODAS las librerías offline (pandas, numpy, pytest, cytoolz, las del banco…) MENOS PySpark: en el servidor se usa el Spark del cluster (BNX_SPARK=cluster bash run.sh).'}
+                  : 'Sin PySpark: TODAS las librerías offline (pandas, numpy, pytest, las del banco…); setup.sh instala PySpark por internet (PyPI o PIP_INDEX_URL). Sin internet: BNX_SPARK=cluster bash run.sh usa el Spark del cluster.'}
                 {' '}Usa tu Python y Java del sistema; esos no se empaquetan.
               </div>
               {(() => {
                 const ver = pyTarget.replace('py', '')
                 const est = vendorStatus?.versiones?.[ver]
                 const corriendo = vendorJob?.running
-                if (!corriendo && (!est || est.ok) && !vendorJob?.log) return null
+                if (!corriendo && !vendorJob?.log && !vendorStatus) return null
                 return (
                   <div style={{ fontSize: 11.5, color: '#fcd34d', padding: 8, borderRadius: 6,
                                 background: '#f59e0b15', border: '1px solid #f59e0b55' }}>
@@ -447,11 +447,33 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                         <code>{vendorStatus.cache_dir}</code>.
                       </div>
                     )}
+                    {est?.ok && <div>✅ Cache de vendor completo para Python {ver} (mínimo indispensable).</div>}
+                    {vendorStatus?.banco && (
+                      <div>📚 Librerías del banco: {vendorStatus.banco.sdists.length}/{vendorStatus.banco.sdists.length + vendorStatus.banco.sdists_faltan.length} mex-lib
+                        {(vendorStatus.banco.sdists_faltan.length + vendorStatus.banco.pkgcode_faltan.length) > 0 &&
+                          <> · faltan: {[...vendorStatus.banco.sdists_faltan, ...vendorStatus.banco.pkgcode_faltan].join(', ')}</>}
+                      </div>)}
                     <button onClick={() => startVendorPrepare(ver)} disabled={corriendo}
                       style={{ marginTop: 6, padding: '6px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600,
                                cursor: corriendo ? 'wait' : 'pointer', background: t.accent || '#6366f1',
                                color: '#fff', border: 'none' }}>
                       {corriendo ? '⏳ Bajando/generando…' : `⬇ Bajar/generar cache (Python ${ver})`}
+                    </button>
+                    <button onClick={() => startVendorPrepare(ver, 'mostrar')} disabled={corriendo}
+                      title="Muestra qué archivos del cache sobran (solo el mínimo + librerías del banco). No borra."
+                      style={{ marginTop: 6, marginLeft: 6, padding: '6px 12px', borderRadius: 6, fontSize: 12,
+                               cursor: corriendo ? 'wait' : 'pointer', background: 'transparent',
+                               color: t.text || '#e2e8f0', border: '1px solid #64748b' }}>
+                      🧹 Ver qué se puede podar
+                    </button>
+                    <button onClick={() => {
+                      if (window.confirm(`Se borrará del cache todo lo que no sea el mínimo para Python ${ver} (las librerías del banco se conservan). ¿Continuar?`))
+                        startVendorPrepare(ver, 'si')
+                    }} disabled={corriendo}
+                      style={{ marginTop: 6, marginLeft: 6, padding: '6px 12px', borderRadius: 6, fontSize: 12,
+                               cursor: corriendo ? 'wait' : 'pointer', background: 'transparent',
+                               color: '#fca5a5', border: '1px solid #ef444477' }}>
+                      Podar cache (Python {ver})
                     </button>
                     {vendorErr && <div style={{ color: '#fca5a5' }}>{vendorErr}</div>}
                     {vendorJob?.log && (
@@ -546,7 +568,7 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                       {meta && (
                         <div style={{ fontSize: 11.5, color: t.muted || '#94a3b8', marginBottom: 2 }}>
                           📚 Librerías offline en <code>vendor/</code>: {meta.vendor_mb ?? '?'} MB
-                          {meta.full_env ? ' (con PySpark)' : ' (ligero: sin PySpark, usa el Spark del cluster)'}
+                          {meta.full_env ? ' (con PySpark)' : ' (sin PySpark offline: setup.sh lo baja por internet o usa BNX_SPARK=cluster)'}
                         </div>
                       )}
                       {(() => {
@@ -954,7 +976,7 @@ function RunInstructions({ theme }) {
 
           <div style={step}>1) Montar el entorno (una sola vez)</div>
           <pre style={pre}>{`cd framework_mlops_v2_pkg
-bash setup.sh       # con vendor/: PySpark OFFLINE; sin vendor/: por internet`}</pre>
+bash setup.sh       # con PySpark en vendor/: offline; sin él: PySpark por internet o BNX_SPARK=cluster`}</pre>
 
           <div style={step}>2) Correr el framework (entry point: main.py)</div>
           <pre style={pre}>{`bash run.sh                      # modo DEMO (datos sintéticos, sin configurar)

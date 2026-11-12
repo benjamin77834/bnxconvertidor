@@ -195,7 +195,7 @@ function createsCycle(steps, stepId, depId) {
 function StepNode({ data }) {
   const s = data.step
   const color = STATUS_COLOR[s.action?.status] || '#64748b'
-  const tgt = s.action?.target ? s.action.target.split('/').pop() : (s.action?.source || '')
+  const tgt = s.action?.target ? s.action.target.split(/[\\/]/).pop() : (s.action?.source || '')
   const nuevo = s.action?.type in TIPOS_UI && s.action.type !== 'graph'
   const u = s.action?.type === 'plan' ? null : UBIC[ubicDe(s.action)]
   return (
@@ -218,7 +218,7 @@ function StepNode({ data }) {
           : `${s.id} · ${s.action?.type}${tgt ? `: ${tgt}` : ''}`}
       </div>
       <div style={{ fontSize: 10, marginTop: 2 }}>
-        <span style={{ color }}>● {s.action?.status}</span>
+        <span style={{ color }}>● {s.action?.status === 'sin_convertir' ? 'sin convertir' : s.action?.status}</span>
         {s.solo_en_fallo && <span style={{ color: '#fb923c' }}> · solo en fallo</span>}
         {!s.enabled && <span> · deshabilitado</span>}
       </div>
@@ -854,13 +854,23 @@ export default function OrquestadorPage({ theme }) {
 
   const nombreOk = /^[A-Za-z0-9][\w.\-]{0,63}$/.test(projName.trim())
 
+  const convertirAhora = async (mp) => {
+    setProcessing(true)
+    try {
+      const d = await post('convertir', { project: proyectoDe(file), mp })
+      await loadPlan(file)
+      flash('ok', `Convertido: ${mp}. Orquestación actualizada (${(d.plans || []).length} archivo/s).`)
+    } catch (e) { flash('err', `No se pudo convertir ${mp}: ${e.data?.error || e.message}`) }
+    setProcessing(false)
+  }
+
   const verCodigo = async (target) => {
     try { setCode(await post('code', { file: target })) }
     catch (e) { flash('err', `No se pudo leer el código: ${e.message}`) }
   }
 
   // ---- pasos de una orquestacion manual ----
-  const proyectoDe = (f) => (plan?.proyecto || f.split('/').slice(-2, -1)[0] || '')
+  const proyectoDe = (f) => (plan?.proyecto || f.split(/[\\/]/).slice(-2, -1)[0] || '')
   const aplicarPaso = (datos, id) => {
     const next = JSON.parse(JSON.stringify(plan))
     let nid = id
@@ -1087,7 +1097,14 @@ export default function OrquestadorPage({ theme }) {
                     if (dirty && !window.confirm('Hay cambios sin guardar en este plan de planes. ¿Descartarlos?')) return
                     setFile(sel.action.target)
                   }}>📂 Abrir este plan</button>}
-                {sel.action?.source && !sel.action?.target && <div style={{ color: '#f87171' }}>Falta: {sel.action.source}</div>}
+                {sel.action?.status === 'sin_convertir' && <>
+                  <div style={{ color: '#f59e0b' }}>El grafo <b>{sel.action.source}</b> está en la carpeta pero aún no se convierte.</div>
+                  <button style={btn(true)} disabled={processing || busy}
+                    onClick={() => convertirAhora(sel.action.source)}>
+                    {processing ? 'Convirtiendo…' : '⚙ Convertir ahora'}</button>
+                </>}
+                {sel.action?.status === 'faltante' && sel.action?.source && !sel.action?.target &&
+                  <div style={{ color: '#f87171' }}>Falta: {sel.action.source}{sel.action.pset ? ` (grafo del pset ${sel.action.pset})` : ''}</div>}
                 {sel.action?.nota && <div style={{ color: t.muted }}>{sel.action.nota}</div>}
                 <label><input type="checkbox" checked={sel.enabled}
                   onChange={e => mutate(p => { p.steps.find(s => s.id === sel.id).enabled = e.target.checked })} /> Habilitado</label>

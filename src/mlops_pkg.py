@@ -785,17 +785,28 @@ if [ -n "$VENDOR_DIR" ] && ls "$VENDOR_DIR"/*.whl >/dev/null 2>&1; then
     echo "      OFFLINE desde $VENDOR_DIR (ambiente completo, sin internet)."
     python -m pip install --no-index --find-links "$VENDOR_DIR" $BANK_LINKS -r requirements.txt
   else
-    # Paquete LIGERO: trae todas las librerias MENOS PySpark (se usa el del cluster).
-    echo "      OFFLINE desde $VENDOR_DIR (paquete LIGERO: todo menos PySpark)."
+    # Paquete SIN PySpark: todas las librerias offline; PySpark online o del cluster.
+    echo "      OFFLINE desde $VENDOR_DIR (sin PySpark: el resto de librerias offline)."
     mkdir -p .bnx_tmp
     grep -viE '^[[:space:]]*(pyspark|py4j)([^a-z0-9_-]|$)' requirements.txt > .bnx_tmp/requirements-sin-spark.txt
     python -m pip install --no-index --find-links "$VENDOR_DIR" $BANK_LINKS -r .bnx_tmp/requirements-sin-spark.txt
-    grep -iE '^[[:space:]]*pyspark' requirements.txt > .bnx_tmp/requirements-spark.txt || true
-    if python -m pip install --retries 0 --timeout 15 -r .bnx_tmp/requirements-spark.txt >/dev/null 2>&1; then
-      echo "      PySpark instalado por internet."
+    # PySpark: con BNX_SPARK=cluster se usa el del cluster (no se instala). Si no,
+    # se intenta por internet (PyPI o PIP_INDEX_URL) la serie acorde al Python:
+    # 3.5.6 para 3.8-3.11 y 4.0.0 para 3.12+. Si falla NO se rompe el resto.
+    if [ "${BNX_SPARK:-}" = "cluster" ]; then
+      echo "      BNX_SPARK=cluster: PySpark NO se instala (se usa el Spark del cluster)."
     else
-      echo "      PySpark NO viene en el paquete ligero (normal). Corre con el Spark del cluster:"
-      echo "        BNX_SPARK=cluster bash run.sh ..."
+      if [ "$PYMINOR" -ge 12 ] 2>/dev/null; then SPARK_PIN="pyspark==4.0.0"; else SPARK_PIN="pyspark==3.5.6"; fi
+      echo "      PySpark no viene en el paquete: instalando $SPARK_PIN + py4j por internet ..."
+      if python -m pip install --retries 1 --timeout 30 "$SPARK_PIN" py4j >.bnx_tmp/pyspark-online.log 2>&1; then
+        echo "      PySpark ($SPARK_PIN) instalado por internet."
+      else
+        echo "      [AVISO] No se pudo instalar PySpark por internet (sin acceso a PyPI/PIP_INDEX_URL)."
+        echo "              El resto del entorno quedo instalado. Opciones:"
+        echo "                - usar el Spark del cluster:  BNX_SPARK=cluster bash run.sh ..."
+        echo "                - o generar el paquete con 'ambiente completo' (PySpark offline en vendor/)."
+        echo "              Detalle: .bnx_tmp/pyspark-online.log"
+      fi
     fi
   fi
   # Paquete propio en editable SIN aislamiento ni deps (ya estan instaladas; en el
@@ -1044,10 +1055,12 @@ if [ -n "$CLUSTER_SUBMIT" ]; then
     main.py "$@"
 fi
 if ! python -c "import pyspark" >/dev/null 2>&1; then
-  echo "[run.sh] Este entorno no tiene PySpark (paquete LIGERO). Usa el Spark del cluster:" >&2
+  echo "[run.sh] Este entorno no tiene PySpark (paquete sin PySpark y sin internet al instalar). Usa el Spark del cluster:" >&2
   echo "         BNX_SPARK=cluster bash run.sh $*" >&2
   exit 1
 fi
+export PYSPARK_PYTHON="$PWD/.venv/bin/python"
+export PYSPARK_DRIVER_PYTHON="$PWD/.venv/bin/python"
 exec python main.py "$@"
 '''
 
@@ -1143,7 +1156,9 @@ datos reales. No necesitas configurar nada para la demo. (Requiere Java para Spa
 
 ### 1) Montar el entorno (una sola vez)
 ```bash
-bash setup.sh        # con vendor/: PySpark OFFLINE; sin vendor/: por internet
+bash setup.sh        # con PySpark en vendor/: TODO OFFLINE. Sin PySpark en vendor/: el resto
+                     # offline y PySpark por internet (3.5.6 / 4.0.0 segun tu Python), o usa
+                     # BNX_SPARK=cluster para el Spark del cluster (no instala PySpark)
 bash setup.sh --test # (opcional) ademas corre pytest
 ```
 Esto crea `.venv`, instala dependencias e instala el propio framework

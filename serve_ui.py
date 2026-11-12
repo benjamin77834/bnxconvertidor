@@ -3693,6 +3693,40 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 lock.release()
             return
 
+        if action == "convertir":
+            # "Convertir ahora": convierte UN .mp sin convertir y refresca las acciones de
+            # las orquestaciones del proyecto conservando lo editado (dependencias, etc.).
+            proj = str(data.get("project") or "")
+            mp = os.path.basename(str(data.get("mp") or ""))
+            ab = os.path.join(root, "abinitio", proj)
+            if not re.fullmatch(proj_re, proj) or not os.path.isdir(ab):
+                self._json_response(400, {"error": "proyecto no encontrado"})
+                return
+            if not mp.lower().endswith(".mp"):
+                self._json_response(400, {"error": "indica un archivo .mp"})
+                return
+            lock = BNXHandler.__dict__.get("_orq_lock")
+            if lock is None:
+                BNXHandler._orq_lock = lock = _th.Lock()
+            if not lock.acquire(blocking=False):
+                self._json_response(409, {"error": "ya hay un proceso en curso; espera a que termine"})
+                return
+            try:
+                out_dir = os.path.join(root, "output", proj)
+                filas = _orq.convertir_pendientes(ab, out_dir, solo=mp)
+                if not filas:
+                    self._json_response(404, {"error": f"{mp}: no esta en la carpeta o ya esta convertido"})
+                    return
+                rutas = _orq.regenerar(ab, out_dir)
+                ok = all(r["ok"] for r in filas)
+                self._json_response(200 if ok else 500, {
+                    "ok": ok, "convertidos": filas,
+                    "error": None if ok else filas[0]["err"],
+                    "plans": [os.path.relpath(r, root) for r in rutas]})
+            finally:
+                lock.release()
+            return
+
         if action == "code":
             # Codigo generado de un paso (solo lectura, solo <grafo>_<target>.py bajo output/).
             cp = self._orq_safe(data.get("file"), "output", r"[\w.\-]+_(?:spark|glue|flink|python)\.py")
@@ -4508,6 +4542,10 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                                                       "preparar_vendor.py")]
             for v in versions:
                 cmd += ["--python", v]
+            if data.get("extra"):
+                cmd.append("--extra")
+            if data.get("podar") in ("mostrar", "si"):   # quitar del cache lo que no sea el minimo
+                cmd += ["--podar", "--mostrar"] if data["podar"] == "mostrar" else ["--podar", "--si"]
             logf = open(log_path, "w", encoding="utf-8")
             _VENDOR_JOB.update({"proc": _sp.Popen(cmd, stdout=logf, stderr=_sp.STDOUT,
                                                   stdin=_sp.DEVNULL),

@@ -9,7 +9,10 @@
 #
 # Cache de vendor (wheels de PySpark/deps para armar paquetes Linux offline) en
 # .venv/bnx_vendor_cache. Al arrancar se revisa; si falta algo se ofrece bajarlo/generarlo.
+# Bajar = primero el GitHub Release publico (vendor-linux-v1: rapido, sin libs del banco),
+# si falla cae a pip. Las libs del banco: preparar_vendor.py --bank-libs <carpeta|zip>.
 #   BNX_VENDOR_AUTO=3.8|3.12|ambas  sin tty: baja automatico sin preguntar
+#   BNX_VENDOR_PODAR=3.8|3.12|ambas  quita del cache lo que no sea el minimo (sin preguntar)
 #   BNX_VENDOR_CHECK=0              omite el chequeo
 #   BNX_ONLY_CHECK=1                solo hace el chequeo y sale (no mata ni arranca el server)
 
@@ -41,6 +44,13 @@ vendor_check() {
   fi
   echo "[vendor] Revisando el cache de vendor..."
   "$VPY" -B preparar_vendor.py --estado || rc=$?
+  if [ -n "${BNX_VENDOR_PODAR:-}" ]; then
+    case "$BNX_VENDOR_PODAR" in
+      3.8)   "$VPY" -B preparar_vendor.py --podar --si --python 3.8 || true ;;
+      3.12)  "$VPY" -B preparar_vendor.py --podar --si --python 3.12 || true ;;
+      ambas) "$VPY" -B preparar_vendor.py --podar --si --python 3.8 --python 3.12 || true ;;
+    esac
+  fi
   [ "$rc" = "0" ] && return 0
   if [ "$rc" != "3" ]; then
     echo "[vendor] AVISO: no pude revisar el cache (codigo $rc); sigo."
@@ -58,14 +68,15 @@ vendor_check() {
   fi
   echo ""
   echo "Falta el cache de vendor para armar paquetes Linux offline. ¿Qué hago?"
-  echo "  [1] Bajar/generar para Python 3.8"
-  echo "  [2] Bajar/generar para Python 3.12"
+  echo "  [1] Bajar (GitHub Release; si falla, pip) para Python 3.8"
+  echo "  [2] Bajar (GitHub Release; si falla, pip) para Python 3.12"
   echo "  [3] Ambas"
   echo "  [4] Importar desde ZIP"
-  echo "  [5] Ahora no"
-  printf "Opción [5]: "
-  read -r op || op=5
-  case "${op:-5}" in
+  echo "  [5] Podar: quitar del cache lo que no sea el mínimo (3.8 y 3.12; muestra y pregunta)"
+  echo "  [6] Ahora no"
+  printf "Opción [6]: "
+  read -r op || op=6
+  case "${op:-6}" in
     1) "$VPY" -B preparar_vendor.py --python 3.8 || true ;;
     2) "$VPY" -B preparar_vendor.py --python 3.12 || true ;;
     3) "$VPY" -B preparar_vendor.py --python 3.8 --python 3.12 || true ;;
@@ -82,6 +93,7 @@ vendor_check() {
       fi
       z="${z/#\~/$HOME}"
       if [ -n "$z" ]; then "$VPY" -B preparar_vendor.py --zip "$z" || true; fi ;;
+    5) "$VPY" -B preparar_vendor.py --podar --python 3.8 --python 3.12 || true ;;
     *) echo "[vendor] Ok, sin cache por ahora (puedes usar el boton 'Bajar/generar cache' en la UI)." ;;
   esac
   return 0

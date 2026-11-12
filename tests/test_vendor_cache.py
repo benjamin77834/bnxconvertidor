@@ -147,3 +147,94 @@ def test_preparar_version_arma_comandos(monkeypatch, tmp_path):
     llamadas.clear()
     vc.preparar_version("3.12", log=lambda *_: None, cache=str(tmp_path))
     assert llamadas == []
+
+
+# ---- minimo / podar / librerias del banco ----
+def _cache_falso(tmp_path):
+    for rel in ("py38-311/pyspark-3.5.6-py2.py3-none-any.whl", "py38-311/sobra-1.0-py3-none-any.whl",
+                "mlops_deps/py38-311_dl/numpy-1-cp39-cp39-x.whl", "mlops_deps/py38-311/util-1-py3-none-any.whl",
+                "bank_libs/wheels/mex-libextract-2.2.0.tar.gz", "bank_libs/wheels/otra-1-py3-none-any.whl",
+                "bank_libs/pkgcode/toolbox/kernel.py"):
+        f = tmp_path / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("x")
+    return tmp_path
+
+
+def test_podar_borra_solo_lo_que_no_es_minimo(monkeypatch, tmp_path):
+    c = _cache_falso(tmp_path)
+    monkeypatch.setenv("BNX_VENDOR_CACHE", str(c))
+    keep = {os.path.realpath(c / "py38-311/pyspark-3.5.6-py2.py3-none-any.whl"),
+            os.path.realpath(c / "mlops_deps/py38-311/util-1-py3-none-any.whl")}
+    monkeypatch.setattr(vc, "minimo", lambda versiones, extra=False: (keep, {}))
+    lista, _ = vc.sobrantes(["3.8"], cache=str(c))
+    nombres = {os.path.basename(f) for f, _n in lista}
+    assert nombres == {"sobra-1.0-py3-none-any.whl", "numpy-1-cp39-cp39-x.whl", "otra-1-py3-none-any.whl"}
+    assert vc.podar(["3.8"], aplicar=False, log=lambda *_: None, cache=str(c)) == (0, 0)   # dry-run
+    assert (c / "py38-311/sobra-1.0-py3-none-any.whl").exists()
+    assert vc.podar(["3.8"], aplicar=True, confirmar=lambda: False, log=lambda *_: None, cache=str(c)) == (0, 0)
+    n, _b = vc.podar(["3.8"], aplicar=True, confirmar=lambda: True, log=lambda *_: None, cache=str(c))
+    assert n == 3 and not (c / "mlops_deps/py38-311_dl").exists()
+    assert (c / "bank_libs/wheels/mex-libextract-2.2.0.tar.gz").exists()      # sdist del banco intacto
+    assert (c / "bank_libs/pkgcode/toolbox/kernel.py").exists()
+
+
+def test_podar_no_borra_si_el_minimo_esta_incompleto(monkeypatch, tmp_path):
+    c = _cache_falso(tmp_path)
+    monkeypatch.setenv("BNX_VENDOR_CACHE", str(c))
+    monkeypatch.setattr(vc, "minimo", lambda versiones, extra=False: (set(), {"3.8": "Could not find x"}))
+    assert vc.podar(["3.8"], aplicar=True, confirmar=lambda: True, log=lambda *_: None, cache=str(c)) == (0, 0)
+    assert (c / "py38-311/sobra-1.0-py3-none-any.whl").exists()
+
+
+def test_importar_bank_libs_carpeta_y_estado(monkeypatch, tmp_path):
+    dest = tmp_path / "cache"
+    monkeypatch.setenv("BNX_VENDOR_CACHE", str(dest))
+    src = tmp_path / "banco"
+    (src / "toolbox").mkdir(parents=True)
+    (src / "toolbox" / "kernel.py").write_text("x = 1")
+    (src / "mex-libextract-2.2.0.tar.gz").write_text("x")
+    sd, mods = vc.importar_bank_libs(str(src), log=lambda *_: None, cache=str(dest))
+    assert sd == ["mex-libextract-2.2.0.tar.gz"] and mods == ["toolbox"]
+    b = vc.estado_banco(str(dest))
+    assert b["sdists"] == ["mex-libextract"] and "mex-libgroupby" in b["sdists_faltan"]
+    assert b["pkgcode"] == ["toolbox"] and set(b["pkgcode_faltan"]) == {"bnmxverse", "utils"}
+
+
+def test_desde_github_rechaza_sha_distinto(tmp_path, monkeypatch):
+    """sha256 distinto al de SHA256SUMS -> no se importa nada."""
+    import zipfile as zf
+    from src import vendor_cache as vc
+    z = tmp_path / "a.zip"
+    with zf.ZipFile(z, "w") as f:
+        f.writestr(".bnx_vendor_cache/py38-311/x.whl", "x")
+
+    def fake(url, destino=None, log=print, timeout=60):
+        if url.endswith("SHA256SUMS"):
+            return b"0" * 64 + b"  bnx_vendor_linux_py3.8.zip\n"
+        open(destino, "wb").write(z.read_bytes())
+        return "1" * 64
+    monkeypatch.setattr(vc, "_http_get", fake)
+    cache = tmp_path / "c"
+    assert vc.desde_github("3.8", cache=str(cache), log=lambda *_: None) is False
+    assert not (cache / "py38-311" / "x.whl").exists()
+
+
+def test_desde_github_importa_con_sha_ok(tmp_path, monkeypatch):
+    import hashlib
+    import zipfile as zf
+    from src import vendor_cache as vc
+    z = tmp_path / "a.zip"
+    with zf.ZipFile(z, "w") as f:
+        f.writestr(".bnx_vendor_cache/py38-311/x.whl", "x")
+    sha = hashlib.sha256(z.read_bytes()).hexdigest()
+
+    def fake(url, destino=None, log=print, timeout=60):
+        if url.endswith("SHA256SUMS"):
+            return (sha + "  bnx_vendor_linux_py3.8.zip\n").encode()
+        open(destino, "wb").write(z.read_bytes())
+        return sha
+    monkeypatch.setattr(vc, "_http_get", fake)
+    cache = tmp_path / "c"
+    assert vc.desde_github("3.8", cache=str(cache), log=lambda *_: None) is True
+    assert (cache / "py38-311" / "x.whl").exists()

@@ -83,33 +83,63 @@ from src import pset_map as pm
 # Construccion
 # ---------------------------------------------------------------------------
 
+def _ckey(name):
+    """Clave de comparacion: sin ruta (/ o \\), sin prefijo numerico, sin mayusculas."""
+    return pm._norm_name(name).lower()
+
+
 def _index_converted(converted_dir):
-    """{nombre_mp_normalizado: ruta_py} a partir de '<base>_<target>.py'."""
+    """{nombre_normalizado.mp: ruta_py} a partir de '<base>_<target>.py'.
+    Las claves son minusculas y sin prefijo numerico ('2_T002_x_spark.py' -> 't002_x.mp');
+    se consulta con _ckey()."""
     idx = {}
     if not converted_dir or not os.path.isdir(converted_dir):
         return idx
     for f in sorted(os.listdir(converted_dir)):
-        m = re.match(r"^(.*)_(?:spark|glue|flink|python)\.py$", f)
+        m = re.match(r"^(.*)_(?:spark|glue|flink|python)\.py$", f, re.I)
         if m:
-            idx[pm._norm_name(m.group(1) + ".mp")] = os.path.join(converted_dir, f)
+            idx.setdefault(_ckey(m.group(1) + ".mp"), os.path.join(converted_dir, f))
     return idx
 
 
+def _nodo(nodes, name):
+    """Nodo por nombre sin distinguir mayusculas."""
+    if name in nodes:
+        return nodes[name]
+    low = name.lower()
+    return next((n for k, n in nodes.items() if k.lower() == low), None)
+
+
 def _resolve_action(refs, nodes, converted):
-    """Decide que hace un paso segun los archivos que referencia."""
+    """Decide que hace un paso segun los archivos que referencia.
+
+    Estados de un grafo/pset: ok (hay .py convertido), sin_convertir (el .mp esta pero
+    no hay .py) y faltante (no esta el .mp). Para un pset el archivo que importa es el
+    .mp de su !prototype: 'source' lo nombra (no al pset)."""
+    converted = {k.lower(): v for k, v in converted.items()}
     for r in refs:
         kind = pm._kind_of(r)
-        node = nodes.get(r)
+        node = _nodo(nodes, r)
         if kind == "graph":
-            if r in converted:
-                return {"type": "graph", "target": converted[r], "source": r, "status": "ok"}
+            if _ckey(r) in converted:
+                return {"type": "graph", "target": converted[_ckey(r)], "source": r, "status": "ok"}
             st = "sin_convertir" if node and node.get("present") else "faltante"
             return {"type": "graph", "target": None, "source": r, "status": st}
         if kind == "pset":
-            proto = nodes.get(r, {}).get("prototype")
-            g = pm._norm_name(proto) if proto else None
+            proto = (node or {}).get("prototype")
+            g = _ckey(proto) if proto else None
             if g and g in converted:
                 return {"type": "graph", "target": converted[g], "source": r, "status": "ok"}
+            # el .py puede llamarse como el pset (T002_..._D_spark.py)
+            alt = _ckey(os.path.splitext(r)[0] + ".mp")
+            if alt in converted:
+                return {"type": "graph", "target": converted[alt], "source": r, "status": "ok"}
+            if proto:
+                src = pm._norm_name(proto)
+                gn = _nodo(nodes, src)
+                st = "sin_convertir" if gn and gn.get("present") else "faltante"
+                return {"type": "graph", "target": None, "source": src, "status": st,
+                        "pset": r}
             return {"type": "graph", "target": None, "source": r, "status": "faltante"}
         if kind == "ksh":
             present = bool(node and node.get("present"))
@@ -233,7 +263,7 @@ def build(ab_folder, converted_dir):
             elif st["action"]["type"] == "script" and st["action"]["status"] == "ok":
                 # El .ksh se ejecuta/regenera por ruta: la del archivo en la carpeta Ab Initio
                 # (relativa a la raiz del proyecto si esta dentro), no el nombre suelto.
-                fp = os.path.abspath(os.path.join(ab_folder, m["nodes"][st["action"]["target"]]["file"]))
+                fp = os.path.abspath(os.path.join(ab_folder, _nodo(m["nodes"], st["action"]["target"])["file"]))
                 st["action"]["target"] = fp if os.path.relpath(fp, _ROOT).startswith("..") else os.path.relpath(fp, _ROOT)
         topo_order(steps)  # valida que no haya ciclos
         stem = os.path.splitext(name)[0]
@@ -332,6 +362,64 @@ def save_all(orchs, out_dir):
             json.dump(o, f, indent=2, ensure_ascii=False)
         paths.append(p)
     return paths
+
+
+def refrescar_acciones(almacenado, nuevo):
+    """Copia a `almacenado` la accion de cada paso de `nuevo` (mismo id y nombre),
+    conservando todo lo editado (dependencias, flags, enlaces, ejecucion). Solo planes
+    generados desde .plan; las orquestaciones manuales y planes de planes no se tocan."""
+    if almacenado.get("origen") == "manual" or almacenado.get("tipo") == "plan_de_planes":
+        return almacenado
+    por_id = {s["id"]: s for s in nuevo.get("steps", [])}
+    for s in almacenado.get("steps", []):
+        n = por_id.get(s["id"])
+        if n and n["name"] == s["name"] and s.get("action", {}).get("type") in ("graph", "script", "noop"):
+            s["action"] = n["action"]
+    return almacenado
+
+
+def pendientes_de_convertir(ab_folder, converted_dir):
+    """Archivos .mp presentes en la carpeta que aun no tienen <grafo>_<target>.py."""
+    conv = _index_converted(converted_dir)
+    return sorted(f for f in os.listdir(ab_folder)
+                  if f.lower().endswith(".mp") and _ckey(f) not in conv)
+
+
+def convertir_pendientes(ab_folder, out_dir, solo=None, target="spark", timeout=900):
+    """Convierte (con scripts/convertir_lote.convertir) los .mp sin convertir.
+    solo: nombre de un .mp (con o sin prefijo/ruta/mayusculas) para convertir uno solo.
+    Devuelve la lista de resultados de convertir()."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "convertir_lote", os.path.join(_ROOT, "scripts", "convertir_lote.py"))
+    cl = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cl)
+    os.makedirs(out_dir, exist_ok=True)
+    quiero = _ckey(solo) if solo else None
+    filas = []
+    for f in pendientes_de_convertir(ab_folder, out_dir):
+        if quiero and _ckey(f) != quiero:
+            continue
+        filas.append(cl.convertir(os.path.join(ab_folder, f), out_dir, target, timeout))
+    return filas
+
+
+def regenerar(ab_folder, out_dir):
+    """Reconstruye las orquestaciones de la carpeta. Las que ya existen conservan lo
+    editado (solo se refresca la accion de cada paso); las nuevas se crean. Devuelve rutas."""
+    orchs = build(ab_folder, out_dir)
+    rutas = []
+    for name, o in orchs.items():
+        p = os.path.join(out_dir, "orquestacion_" + (o.get("nombre") or os.path.splitext(name)[0]) + ".json")
+        if os.path.isfile(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    o = refrescar_acciones(json.load(f), o)
+                validar_plan(o)
+            except (ValueError, OSError, KeyError):
+                pass  # almacenado ilegible/invalido: se reemplaza por el recien generado
+        rutas += save_all({name: o}, out_dir)
+    return rutas
 
 
 

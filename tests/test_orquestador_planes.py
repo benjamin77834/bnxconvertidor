@@ -91,3 +91,87 @@ def test_paso_script_apunta_al_ksh_de_la_carpeta(tmp_path):
     a = next(s["action"] for s in orchs["Plan_ingesta_clientes"]["steps"] if s["action"]["type"] == "script")
     assert a["status"] == "ok" and a["target"].endswith("prepara_directorios.ksh")
     assert os.path.isfile(o._ruta_plan(a["target"]))
+
+
+# ---- pset con prototipo presente pero sin convertir (rutas Windows, prefijos, mayusculas) ----
+def _proyecto_windows(tmp_path, prefijo="", mp_ext=".mp"):
+    """Plan -> pset (nombre distinto al mp, !prototype estilo Windows) -> .mp presente."""
+    ab = tmp_path / "ab"
+    ab.mkdir()
+    plan = open(os.path.join(EJERCICIO, "Plan_ingesta_clientes.plan"), encoding="utf-8").read()
+    plan = plan.replace("$AI_PSET/ingesta_clientes.pset", "$AI_PSET\\T002_File_To_Dataset_ACCRL_MAST_D.pset")
+    (ab / (prefijo + "Plan_x.plan")).write_text(plan, encoding="utf-8")
+    (ab / "T002_File_To_Dataset_ACCRL_MAST_D.pset").write_text(
+        "!prototype|P|||$AI_MP\\T002_File_To_Dataset.mp\nFECHA||||20250115\n", encoding="utf-8")
+    (ab / (prefijo + "T002_File_To_Dataset" + mp_ext)).write_bytes(
+        open(os.path.join(EJERCICIO, "ingesta_clientes.mp"), "rb").read())
+    out = tmp_path / "out"
+    out.mkdir()
+    return str(ab), str(out)
+
+
+def _paso_graph(orchs):
+    return next(s["action"] for s in orchs["Plan_x"]["steps"] if s["name"] == "Run_ingesta_clientes")
+
+
+@pytest.mark.skipif(not os.path.isdir(EJERCICIO), reason="sin el ejercicio de 3 planes")
+@pytest.mark.parametrize("prefijo,ext", [("", ".mp"), ("1_", ".mp"), ("", ".MP")])
+def test_pset_con_mp_presente_sin_convertir_no_es_faltante(tmp_path, prefijo, ext):
+    ab, out = _proyecto_windows(tmp_path, prefijo, ext)
+    a = _paso_graph(o.build(ab, out))
+    assert a["status"] == "sin_convertir" and a["target"] is None
+    assert a["source"].lower() == "t002_file_to_dataset.mp"
+    # tras convertir (aqui simulado con el .py) -> ok; el .py puede traer prefijo numerico
+    (tmp_path / "out" / "2_T002_File_To_Dataset_spark.py").write_text("x = 1\n")
+    a = _paso_graph(o.build(ab, out))
+    assert a["status"] == "ok" and a["target"].endswith("2_T002_File_To_Dataset_spark.py")
+
+
+@pytest.mark.skipif(not os.path.isdir(EJERCICIO), reason="sin el ejercicio de 3 planes")
+def test_pset_sin_mp_es_faltante_con_el_mp_en_source(tmp_path):
+    ab, out = _proyecto_windows(tmp_path)
+    os.remove(os.path.join(ab, "T002_File_To_Dataset.mp"))
+    a = _paso_graph(o.build(ab, out))
+    assert a["status"] == "faltante" and a["source"] == "T002_File_To_Dataset.mp"
+
+
+@pytest.mark.skipif(not os.path.isdir(EJERCICIO), reason="sin el ejercicio de 3 planes")
+def test_py_con_nombre_del_pset_tambien_vale(tmp_path):
+    ab, out = _proyecto_windows(tmp_path)
+    (tmp_path / "out" / "T002_File_To_Dataset_ACCRL_MAST_D_spark.py").write_text("x = 1\n")
+    assert _paso_graph(o.build(ab, out))["status"] == "ok"
+
+
+@pytest.mark.skipif(not os.path.isdir(EJERCICIO), reason="sin el ejercicio de 3 planes")
+def test_ksh_faltante_no_afecta_al_grafo(tmp_path):
+    ab, out = _proyecto_windows(tmp_path)
+    orch = o.build(ab, out)["Plan_x"]
+    est = {s["name"]: s["action"]["status"] for s in orch["steps"]}
+    assert est["Prepara_directorios"] == "faltante"      # el .ksh no esta en la carpeta
+    assert est["Run_ingesta_clientes"] == "sin_convertir"
+
+
+def test_norm_name_acepta_rutas_windows_y_variables():
+    from src import pset_map as pm
+    assert pm._norm_name("$AI_MP\\2_x.mp") == "x.mp"
+    assert pm._norm_name("${AI_MP}/x.mp") == "x.mp"
+    assert pm._norm_name("C:\\a\\b\\3_Y.MP") == "Y.MP"
+
+
+@pytest.mark.skipif(not os.path.isdir(EJERCICIO), reason="sin el ejercicio de 3 planes")
+def test_regenerar_conserva_ediciones_y_refresca_accion(tmp_path):
+    ab, out = _proyecto_windows(tmp_path)
+    assert o.pendientes_de_convertir(ab, out) == ["T002_File_To_Dataset.mp"]
+    (r,) = [p for p in o.regenerar(ab, out) if p.endswith("orquestacion_Plan_x.json")]
+    d = json.load(open(r))
+    sid = next(s["id"] for s in d["steps"] if s["name"] == "Run_ingesta_clientes")
+    for s in d["steps"]:
+        if s["id"] == sid:
+            s["enabled"] = False        # edicion del usuario
+    json.dump(d, open(r, "w"))
+    (tmp_path / "out" / "T002_File_To_Dataset_spark.py").write_text("x = 1\n")
+    assert o.pendientes_de_convertir(ab, out) == []
+    o.regenerar(ab, out)
+    d = json.load(open(r))
+    st = next(s for s in d["steps"] if s["id"] == sid)
+    assert st["enabled"] is False and st["action"]["status"] == "ok"
