@@ -213,6 +213,20 @@ ssh -i /ruta/monkey2.pem ec2-user@<IP-EC2>
 cd app && git pull && sudo systemctl restart bnx
 ```
 
+### Cache de vendor (Framework MLOps v2, paquetes Linux offline)
+Los wheels que se empaquetan (PySpark 3.5.6/4.0.0, py4j, pandas/numpy manylinux, mex-lib del banco)
+viven **dentro del venv**: `.venv/bnx_vendor_cache/` (o `BNX_VENDOR_CACHE=/otra/ruta`). `./start_server.sh`
+lo revisa al arrancar y, si falta algo, pregunta si bajarlo/generarlo (3.8, 3.12, ambas) o importarlo
+desde un ZIP; sin terminal interactiva solo avisa (o baja solo con `BNX_VENDOR_AUTO=3.8|3.12|ambas`).
+```bash
+.venv/bin/python preparar_vendor.py --estado            # que falta (--json para maquinas)
+.venv/bin/python preparar_vendor.py --python 3.12        # baja/genera (~500 MB por version)
+.venv/bin/python preparar_vendor.py --zip bnx_vendor_py3.8.zip   # sin internet: ZIP de otra maquina
+python exportar_vendor.py --python 3.8                   # en la maquina con cache: arma el ZIP
+```
+Las mex-lib del banco no estan en PyPI: llegan por ZIP o desde la pagina "Librerias del banco".
+La pagina del Framework MLOps v2 tambien tiene el boton **Bajar/generar cache**.
+
 ---
 
 ## ⚡ API Endpoints

@@ -3216,17 +3216,14 @@ import sys as _sys
 
 # Cache propio del paquete MLOps para las deps del framework (pandas/numpy/...),
 # separado por serie de Python. Vive fuera de git.
-_MLOPS_VENDOR_CACHE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    ".bnx_vendor_cache", "mlops_deps")
+from src import vendor_cache as _vc   # ubicacion unica del cache (dentro del venv)
+_MLOPS_VENDOR_CACHE = os.path.join(_vc.cache_dir(), "mlops_deps")
 
 # Cache de las LIBRERIAS INTERNAS del banco (mex-lib* como sdist + toolbox/bnmxverse/
 # utils como codigo de path). Son Python puro, sirven para cualquier plataforma/
 # version. Vive fuera de git. 'wheels/' = sdist pip-instalables; 'pkgcode/' =
 # modulos que el codigo espera en el PYTHONPATH (toolbox, etc.).
-_BANK_LIBS_CACHE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    ".bnx_vendor_cache", "bank_libs")
+_BANK_LIBS_CACHE = os.path.join(_vc.cache_dir(), "bank_libs")
 
 
 def _bank_vendor_files():
@@ -4376,10 +4373,11 @@ def _verify_resolve_linux(pkg_root, py_target, _log, steps, timeout):
         _log("[FALTAN] para Linux:")
         for k, fs in sorted(faltan_por_ver.items()):
             _log("  - Python %s: %s" % (k.split("/")[1], ", ".join(fs)))
-        _log("  -> El cache de ESTE servidor del portal no tiene esas wheels. Importa una vez el")
-        _log("     ZIP de vendor para tu version (python exportar_vendor.py --python 3.8 en una")
-        _log("     maquina con el cache; aqui: python importar_vendor.py <zip>) y reinicia el portal,")
-        _log("     o cargalas en 'Librerias del banco'.")
+        _log("  -> El cache de ESTE servidor del portal no tiene esas wheels. Bajalas/generalas con")
+        _log("     `.venv/bin/python preparar_vendor.py --python 3.X` (o el boton 'Bajar/generar cache'")
+        _log("     de la pagina), o importa un ZIP hecho en otra maquina con")
+        _log("     `exportar_vendor.py --python 3.X` (aqui: preparar_vendor.py --zip <zip>).")
+        _log("     Las mex-lib del banco no estan en PyPI: cargalas en 'Librerias del banco' o por ZIP.")
     return {"ok_env": ok_env, "checks": {"ok": [], "missing": faltantes,
                                          "por_version": faltan_por_ver}}
 
@@ -4454,7 +4452,7 @@ def bank_libs_import_from_path(src_path):
 
     # Cache de PySpark (series). pyspark 3.5.x -> py38-311; 4.0.x -> py312plus.
     pyspark_cache = os.path.join(
-        os.path.dirname(_BANK_LIBS_CACHE), "")  # .bnx_vendor_cache/
+        os.path.dirname(_BANK_LIBS_CACHE), "")  # raiz del cache (vendor_cache.cache_dir())
 
     def _pyspark_serie(fname):
         low = fname.lower()
@@ -4590,9 +4588,7 @@ def bank_lib_verify(name, timeout=300):
         # Instalar deps de prueba (pandas/pyspark/cytoolz) OFFLINE desde el cache
         # local si existe (rapido); si no, por internet. Las mex-lib importan
         # pyspark/pandas en su __init__, por eso hacen falta para probar el import.
-        cache_root = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            ".bnx_vendor_cache")
+        cache_root = _vc.cache_dir()
         links = []
         for sub in ("py38-311", "py312plus",
                     os.path.join("mlops_deps", "py38-311"),
@@ -4652,9 +4648,7 @@ def export_vendor_zip(out_path, serie="py38-311"):
     por serie de Python del destino. Devuelve {ok, files, bytes, missing}. El ZIP
     se descomprime en el server con importar_vendor.py. Escribe a DISCO (streaming).
     """
-    cache = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        ".bnx_vendor_cache")
+    cache = _vc.cache_dir()
     dirs = _VENDOR_EXPORT_DIRS.get(serie, _VENDOR_EXPORT_DIRS["py38-311"])
     n_files, total = 0, 0
     missing = []
@@ -4687,9 +4681,7 @@ def export_vendor_zip(out_path, serie="py38-311"):
 def vendor_cache_status():
     """Resumen del cache de vendor para la UI: que series de PySpark hay y su
     tamaño. Asi el usuario sabe si puede exportar o si falta poblar el cache."""
-    cache = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        ".bnx_vendor_cache")
+    cache = _vc.cache_dir()
     out = {}
     for serie in ("py38-311", "py312plus"):
         sdir = os.path.join(cache, serie)

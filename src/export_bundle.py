@@ -341,9 +341,7 @@ VENDOR_SERIES = [
 
 # Cache de dependencias en el server para no re-descargar/reconstruir en cada
 # exportacion. Vive fuera de git (raiz del proyecto).
-_VENDOR_CACHE_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".bnx_vendor_cache"
-)
+_VENDOR_CACHE_DIR = None   # se resuelve en fetch_vendor_files via vendor_cache.cache_dir()
 
 def _build_series(cache_dir, serie):
     """Prepara los wheels de UNA serie de PySpark en cache_dir/<serie.dir>/:
@@ -408,7 +406,8 @@ def fetch_vendor_files(cache_dir=None, only_series=None):
     No construye venvs (no son portables). Empaqueta wheels py2.py3-none-any
     (Python puro, cualquier Linux). setup.sh elige la serie segun el Python del
     destino. Si pip falla, devuelve {} y el bundle cae a instalacion por internet."""
-    cache_dir = cache_dir or _VENDOR_CACHE_DIR
+    from src import vendor_cache as _vc
+    cache_dir = cache_dir or _VENDOR_CACHE_DIR or _vc.cache_dir()
     os.makedirs(cache_dir, exist_ok=True)
     out = {}
     for serie in VENDOR_SERIES:

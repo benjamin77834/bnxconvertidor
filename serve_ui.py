@@ -131,6 +131,22 @@ if not os.path.isdir(UI_DIR):
     UI_DIR = None
 
 
+# Tarea en background de "Bajar/generar cache" (preparar_vendor.py).
+_VENDOR_JOB = {"lock": __import__("threading").Lock(), "proc": None, "log": None, "versions": []}
+def _vendor_job_info(with_log=False):
+    proc = _VENDOR_JOB.get("proc")
+    info = {"started": proc is not None, "running": bool(proc is not None and proc.poll() is None),
+            "returncode": (proc.poll() if proc is not None else None),
+            "versions": _VENDOR_JOB.get("versions", [])}
+    if with_log:
+        txt = ""
+        try:
+            with open(_VENDOR_JOB.get("log") or "", encoding="utf-8", errors="replace") as fh:
+                txt = fh.read()[-6000:]
+        except OSError:
+            pass
+        info["log"] = txt
+    return info
 class BNXHandler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         if UI_DIR:
@@ -150,6 +166,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_orquestador(path)
         elif path in ("/mlops/package/orden", "/api/mlops/package/orden"):
             self._handle_mlops_package_orden()
+        elif path in ("/vendor/prepare", "/api/vendor/prepare"):
+            self._handle_vendor_prepare()
         elif "/library" in path:
             # Biblioteca de grafos LOCAL (no depende del bucket S3 de DataLab,
             # que esta bloqueado por una SCP). Se guarda en ./bnx_library/.
@@ -276,6 +294,13 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_export_download()
             return
 
+        # Estado del cache de vendor (.venv/bnx_vendor_cache) y log de la preparacion.
+        if path in ("/vendor/status", "/api/vendor/status"):
+            self._handle_vendor_status()
+            return
+        if path in ("/vendor/prepare/log", "/api/vendor/prepare/log"):
+            self._handle_vendor_prepare_log()
+            return
         # Pasos + ejemplos del Framework MLOps (seccion educativa/operativa).
         if path == "/mlops/framework" or path == "/api/mlops/framework":
             self._handle_mlops_framework()
@@ -1288,8 +1313,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                     self._json_response(200, {
                         "ok": False,
                         "error": "El cache de vendor esta vacio para la serie '%s'. "
-                                 "Genera un paquete 'ambiente completo' con internet "
-                                 "una vez, o pobla el cache, antes de exportar." % serie,
+                                 "Bajalo/generalo con '.venv/bin/python preparar_vendor.py "
+                                 "--python 3.X' (o el boton 'Bajar/generar cache') antes de exportar." % serie,
                         "missing": res.get("missing", [])})
                     return
                 fname = "bnx_vendor_%s.zip" % serie
@@ -4451,6 +4476,45 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         tmp.close()
         return tmp.name
 
+    def _handle_vendor_status(self):
+        """GET: que falta en el cache de vendor por version de Python (3.8 / 3.12)."""
+        try:
+            from src import vendor_cache as vc
+            est = vc.estado(["3.8", "3.12"])
+            est["job"] = _vendor_job_info()
+            self._json_response(200, {"ok": True, **est})
+        except Exception as e:
+            self._json_response(500, {"ok": False, "error": str(e)})
+    def _handle_vendor_prepare(self):
+        """POST {versions: ["3.8"|"3.12"]}: lanza preparar_vendor.py en background."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length) if content_length else b""
+        try:
+            data = json.loads(body.decode("utf-8", errors="replace")) if body else {}
+            from src import vendor_cache as vc
+            versions = [vc.norm_version(v) for v in (data.get("versions") or ["3.8"])]
+        except Exception as e:
+            self._json_response(400, {"ok": False, "error": str(e)})
+            return
+        with _VENDOR_JOB["lock"]:
+            proc = _VENDOR_JOB.get("proc")
+            if proc is not None and proc.poll() is None:
+                self._json_response(409, {"ok": False, "error": "Ya hay una preparacion en curso.",
+                                          "job": _vendor_job_info()})
+                return
+            import subprocess as _sp
+            log_path = os.path.join(tempfile.gettempdir(), "bnx_vendor_prepare.log")
+            cmd = [sys.executable, "-B", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                      "preparar_vendor.py")]
+            for v in versions:
+                cmd += ["--python", v]
+            logf = open(log_path, "w", encoding="utf-8")
+            _VENDOR_JOB.update({"proc": _sp.Popen(cmd, stdout=logf, stderr=_sp.STDOUT,
+                                                  stdin=_sp.DEVNULL),
+                                "log": log_path, "versions": versions, "logf": logf})
+        self._json_response(200, {"ok": True, "job": _vendor_job_info()})
+    def _handle_vendor_prepare_log(self):
+        self._json_response(200, {"ok": True, "job": _vendor_job_info(with_log=True)})
     def _json_response(self, status, data):
         self.send_response(status)
         self._cors_headers()

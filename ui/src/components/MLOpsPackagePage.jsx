@@ -8,6 +8,9 @@ import OrdenFuentesPanel from './OrdenFuentesPanel'
 const API_BASE = COMPILE_URL.replace(/\/compile$/, '')
 const MANIFEST_URL = `${API_BASE}/mlops/package/manifest`
 const BUILD_URL = `${API_BASE}/mlops/package/build`
+const VENDOR_STATUS_URL = `${API_BASE}/vendor/status`
+const VENDOR_PREPARE_URL = `${API_BASE}/vendor/prepare`
+const VENDOR_LOG_URL = `${API_BASE}/vendor/prepare/log`
 const DOWNLOAD_URL = (bank, extra) => `${API_BASE}/mlops/package/download?bank=${bank ? 1 : 0}&extra=${extra ? 1 : 0}`
 
 export default function MLOpsPackagePage({ theme, onEmulate }) {
@@ -53,6 +56,36 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
       .finally(() => setLoading(false))
   }, [])
 
+  // Cache de vendor (.venv/bnx_vendor_cache): estado por version y progreso de "Bajar/generar".
+  const [vendorStatus, setVendorStatus] = useState(null)
+  const [vendorJob, setVendorJob] = useState(null)   // {running, returncode, log}
+  const [vendorErr, setVendorErr] = useState('')
+  const loadVendorStatus = () =>
+    fetch(VENDOR_STATUS_URL).then(r => r.json()).then(d => { if (d.ok) setVendorStatus(d) }).catch(() => {})
+  useEffect(() => { loadVendorStatus() }, [])
+  useEffect(() => {
+    if (!vendorJob?.running) return undefined
+    const id = setInterval(() => {
+      fetch(VENDOR_LOG_URL).then(r => r.json()).then(d => {
+        if (!d.ok) return
+        setVendorJob(d.job)
+        if (!d.job.running) loadVendorStatus()
+      }).catch(() => {})
+    }, 2000)
+    return () => clearInterval(id)
+  }, [vendorJob?.running])
+  const startVendorPrepare = async (ver) => {
+    setVendorErr('')
+    try {
+      const res = await fetch(VENDOR_PREPARE_URL, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ versions: [ver] }),
+      })
+      const d = await res.json()
+      if (!d.ok && res.status !== 409) { setVendorErr(d.error || 'No se pudo iniciar'); return }
+      setVendorJob({ ...(d.job || {}), running: true, log: '' })
+    } catch (e) { setVendorErr(String(e)) }
+  }
   // Lee los .py de una carpeta o seleccion de archivos.
   const onPickFiles = async (fileList) => {
     const arr = Array.from(fileList || []).filter(f => /\.(py|txt)$/i.test(f.name))
@@ -399,6 +432,40 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                   : 'Ligero: TODAS las librerías offline (pandas, numpy, pytest, cytoolz, las del banco…) MENOS PySpark: en el servidor se usa el Spark del cluster (BNX_SPARK=cluster bash run.sh).'}
                 {' '}Usa tu Python y Java del sistema; esos no se empaquetan.
               </div>
+              {(() => {
+                const ver = pyTarget.replace('py', '')
+                const est = vendorStatus?.versiones?.[ver]
+                const corriendo = vendorJob?.running
+                if (!corriendo && (!est || est.ok) && !vendorJob?.log) return null
+                return (
+                  <div style={{ fontSize: 11.5, color: '#fcd34d', padding: 8, borderRadius: 6,
+                                background: '#f59e0b15', border: '1px solid #f59e0b55' }}>
+                    {est && !est.ok && (
+                      <div>
+                        ⚠ Falta el cache de vendor para Python {ver} ({est.falta.join(', ')}). Sin él el paquete
+                        no podrá ser offline completo{fullEnv ? ' y PySpark NO se incluirá' : ''}. Se guarda en{' '}
+                        <code>{vendorStatus.cache_dir}</code>.
+                      </div>
+                    )}
+                    <button onClick={() => startVendorPrepare(ver)} disabled={corriendo}
+                      style={{ marginTop: 6, padding: '6px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600,
+                               cursor: corriendo ? 'wait' : 'pointer', background: t.accent || '#6366f1',
+                               color: '#fff', border: 'none' }}>
+                      {corriendo ? '⏳ Bajando/generando…' : `⬇ Bajar/generar cache (Python ${ver})`}
+                    </button>
+                    {vendorErr && <div style={{ color: '#fca5a5' }}>{vendorErr}</div>}
+                    {vendorJob?.log && (
+                      <pre style={{ marginTop: 6, maxHeight: 160, overflow: 'auto', fontSize: 10.5,
+                                    color: t.muted || '#94a3b8', whiteSpace: 'pre-wrap' }}>{vendorJob.log}</pre>
+                    )}
+                    {vendorJob && !vendorJob.running && vendorJob.started && (
+                      <div>{vendorJob.returncode === 0
+                        ? '✅ Listo: ya puedes generar de nuevo.'
+                        : 'Terminó con avisos (revisa el log). Las mex-lib del banco no se bajan de PyPI: impórtalas por ZIP o en “Librerías del banco”.'}</div>
+                    )}
+                  </div>
+                )
+              })()}
             </div>
           )}
         </div>
@@ -502,9 +569,11 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                         }}>
                           ⚠️ <b>Ambiente completo pedido, pero PySpark NO se incluyó.</b> Este servidor no tiene
                           el cache de PySpark (vendor vacío) y no pudo descargarlo (sin internet). El ZIP trae el
-                          código pero <b>no el PySpark offline</b>. Solución: en una máquina con el cache lleno corre
-                          <code>python exportar_vendor.py --serie py38-311</code>, copia el ZIP a este servidor y
-                          corre <code>python importar_vendor.py bnx_vendor_py38-311.zip</code>. Luego vuelve a generar.
+                          código pero <b>no el PySpark offline</b>. Solución: corre{' '}
+                          <code>.venv/bin/python preparar_vendor.py --python 3.X</code> o usa el botón
+                          “Bajar/generar cache” de arriba; o importa un ZIP hecho en otra máquina con{' '}
+                          <code>exportar_vendor.py --python 3.X</code> (<code>preparar_vendor.py --zip &lt;zip&gt;</code>).
+                          Luego vuelve a generar.
                         </div>
                       )}
                     </>

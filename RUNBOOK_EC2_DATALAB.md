@@ -146,6 +146,10 @@ y **Guardar** (se persiste en el navegador). A partir de ahí, el botón
 ---
 
 ## 6. Notas
+- Cache de vendor del Framework MLOps v2: vive en `.venv/bnx_vendor_cache/` (o `BNX_VENDOR_CACHE`).
+  En una instancia sin internet: `python exportar_vendor.py --python 3.8` donde haya cache y aquí
+  `.venv/bin/python preparar_vendor.py --zip bnx_vendor_py3.8.zip`. Con systemd (sin tty) el chequeo
+  de `start_server.sh` no bloquea; `preparar_vendor.py --estado` dice qué falta.
 
 - La instancia es interna: no se expone por CloudFront ni a internet.
 - Para "todos por internet" seguir usando el despliegue de la cuenta monkey

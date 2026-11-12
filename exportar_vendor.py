@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-exportar_vendor.py — Empaqueta el CACHE de vendor (.bnx_vendor_cache/) en un ZIP
+exportar_vendor.py — Empaqueta el CACHE de vendor (.venv/bnx_vendor_cache/) en un ZIP
 para llevarlo a un servidor AISLADO (sin internet), como el del banco o un portal
 en Windows sin cache.
 
@@ -25,7 +25,9 @@ import sys
 import zipfile
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-CACHE = os.path.join(ROOT, ".bnx_vendor_cache")
+sys.path.insert(0, ROOT)
+from src.vendor_cache import cache_dir  # noqa: E402
+CACHE = cache_dir()   # <venv>/bnx_vendor_cache (o BNX_VENDOR_CACHE / cache viejo)
 
 # Series de PySpark por version de Python del DESTINO.
 SERIES = {"py38-311", "py312plus"}
