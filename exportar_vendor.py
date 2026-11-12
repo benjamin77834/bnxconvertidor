@@ -24,6 +24,7 @@ Produce 'bnx_vendor_py3.8.zip' (o bnx_vendor_<serie>.zip). En el portal:
 """
 import argparse
 import os
+import re
 import sys
 import zipfile
 
@@ -38,14 +39,31 @@ SERIES = {"py38-311", "py312plus"}
 ALWAYS = ["bank_libs"]
 
 
-# Nombres de modulos/archivos internos del banco que --sin-banco nunca debe incluir.
-_INTERNOS = ("bank_libs", "mex-lib", "mex_lib", "bnmxverse", "toolbox")
-
-
 def _es_interno(ruta):
+    """Codigo/libs INTERNAS del banco (nunca publicables): bank_libs/pkgcode (toolbox,
+    bnmxverse, utils) y los sdist mex-lib*. Las wheels publicas de PyPI que viven en
+    bank_libs/wheels (pandas 1.3.1 cp38, numpy, pytest...) NO son internas."""
     r = ruta.replace(os.sep, "/").lower()
     partes = r.split("/")
-    return any(i in r for i in _INTERNOS[:4]) or "toolbox" in partes or "utils" in partes[:-1]
+    base = partes[-1]
+    return (r.startswith("bank_libs/pkgcode") or base.startswith(("mex-lib", "mex_lib"))
+            or any(p in ("bnmxverse", "toolbox") for p in partes))
+
+
+def _arc_sin_banco(rel, versiones):
+    """Ruta(s) dentro del ZIP --sin-banco: las wheels publicas de bank_libs/wheels se
+    reubican en mlops_deps/<serie>/ (el ZIP publico no lleva la carpeta bank_libs)."""
+    from src.vendor_cache import serie_de
+    r = rel.replace(os.sep, "/")
+    if not r.startswith("bank_libs/wheels/"):
+        return [r]
+    nombre = r.split("/")[-1]
+    m = re.search(r"-cp3(\d+)-", nombre)
+    if m:
+        series = {serie_de("3." + m.group(1))}
+    else:
+        series = {serie_de(v) for v in versiones}
+    return ["mlops_deps/%s/%s" % (sr, nombre) for sr in sorted(series)]
 
 
 def _dirs_for(serie):
@@ -79,7 +97,7 @@ def _files_for_python(versiones, extra=False, sin_banco=False):
     keep, faltan = vc.minimo(versiones, extra=extra)
     files = set(keep)
     if sin_banco:
-        files = {f for f in files if not _es_interno(os.path.relpath(f, CACHE))}
+        files = {f for f in files if not _es_interno(os.path.relpath(os.path.realpath(f), os.path.realpath(CACHE)))}
         return sorted(files), faltan
     bank = os.path.join(CACHE, "bank_libs")
     for root, subdirs, fns in os.walk(os.path.join(bank, "pkgcode")):
@@ -139,12 +157,16 @@ def main():
             rel = os.path.relpath(os.path.realpath(full), cache_real)
             if rel.startswith(".."):
                 continue
-            arc = os.path.join(".bnx_vendor_cache", rel).replace(os.sep, "/")
-            if args.sin_banco and _es_interno(rel):
-                continue
-            z.write(full, arc)
-            n_files += 1
-            total += os.path.getsize(full)
+            if args.sin_banco:
+                if _es_interno(rel):
+                    continue
+                arcs = [".bnx_vendor_cache/" + a for a in _arc_sin_banco(rel, versiones)]
+            else:
+                arcs = [os.path.join(".bnx_vendor_cache", rel).replace(os.sep, "/")]
+            for arc in arcs:
+                z.write(full, arc)
+                n_files += 1
+                total += os.path.getsize(full)
 
     mb = total / 1024 / 1024
     print("OK: %s" % out)
