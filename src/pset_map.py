@@ -333,6 +333,12 @@ def to_markdown(m):
 
 
 def main(argv=None):
+    import sys as _sys
+    for _s in (_sys.stdout, _sys.stderr):  # Windows cp1252: nombres/rutas con acentos
+        try:
+            _s.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     ap = argparse.ArgumentParser(description="Mapa de relaciones pset/grafo/plan")
     ap.add_argument("folder")
     ap.add_argument("--out", default=None)

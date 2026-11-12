@@ -1849,6 +1849,11 @@ def generar_airflow(o, root=None):
 # ---------------------------------------------------------------------------
 
 def main(argv=None):
+    for _s in (sys.stdout, sys.stderr):  # Windows cp1252: nombres/rutas con acentos
+        try:
+            _s.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     ap = argparse.ArgumentParser(description="Orquestador editable de planes Ab Initio")
     sub = ap.add_subparsers(dest="cmd", required=True)
     g = sub.add_parser("generar")

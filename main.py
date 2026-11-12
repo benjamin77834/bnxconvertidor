@@ -2,6 +2,15 @@
 import argparse
 import os
 import re
+import sys
+
+# Windows: la consola/pipe usa cp1252 y los mensajes llevan caracteres como '→';
+# sin esto print() revienta con UnicodeEncodeError y la conversion falla.
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
 from src.mp_parser import parse_mp_ast
 from src.dag.builder import build_dag
 from src.xfr_parser import parse_xfr

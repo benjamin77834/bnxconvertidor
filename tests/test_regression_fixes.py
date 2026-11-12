@@ -727,3 +727,21 @@ def test_extract_prefer_name_elige_miembro_homonimo():
     # Match por nombre SIN extension (contenedor '.alg_mux' vs miembro '.alg_m').
     got_stem = extract_source_from_bytes(raw, prefer_name="S016_L191.alg_mux")
     assert "BEGIN" in got_stem and "IDENTIFICATION DIVISION" not in got_stem
+
+
+def test_main_py_no_revienta_con_consola_cp1252(tmp_path):
+    """Windows (Kalpana): main.py imprime '→' y con stdout cp1252 fallaba con
+    UnicodeEncodeError ('No se pudo convertir T002_File_To_Dataset.mp')."""
+    import os
+    import subprocess
+    import sys
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    mp = os.path.join(root, "abinitio", "ejercicio_3_planes", "ingesta_clientes.mp")
+    out = tmp_path / "x_spark.py"
+    env = dict(os.environ, PYTHONIOENCODING="cp1252")
+    env.pop("PYTHONUTF8", None)
+    r = subprocess.run([sys.executable, os.path.join(root, "main.py"), "--project", mp,
+                        "--output", str(out), "--target", "spark"],
+                       cwd=root, env=env, capture_output=True, timeout=300)
+    assert r.returncode == 0, r.stderr.decode("utf-8", "replace")[-500:]
+    assert out.exists()

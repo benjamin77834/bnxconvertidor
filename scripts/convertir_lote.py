@@ -17,6 +17,20 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# Windows (cp1252): forzar UTF-8 en nuestra salida y en la de los main.py hijos.
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
+
+def _env_utf8():
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    return env
+
 
 def convertir(mp, out_dir, target, timeout):
     base = os.path.splitext(os.path.basename(mp))[0]
@@ -26,7 +40,8 @@ def convertir(mp, out_dir, target, timeout):
         r = subprocess.run(
             [sys.executable, os.path.join(ROOT, "main.py"), "--project", mp,
              "--output", out_py, "--target", target],
-            cwd=ROOT, capture_output=True, text=True, timeout=timeout)
+            cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            env=_env_utf8(), timeout=timeout)
         log, rc = (r.stdout or "") + (r.stderr or ""), r.returncode
     except subprocess.TimeoutExpired as e:
         log, rc = ((e.stdout or b"").decode("utf-8", "replace") if isinstance(e.stdout, bytes)

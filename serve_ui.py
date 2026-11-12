@@ -17,6 +17,16 @@ import json
 import re
 import tempfile
 import http.server
+
+# Windows (cp1252): todo proceso Python hijo (main.py, convertir_lote, pset_map,
+# orquestador...) hereda UTF-8; si no, un print('→') revienta la conversion.
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+os.environ.setdefault("PYTHONUTF8", "1")
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
 import socketserver
 from urllib.parse import urlparse, parse_qs
 from io import BytesIO
@@ -3674,11 +3684,13 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 out_dir = os.path.join("output", proj)
                 log = []
                 r1 = _sp.run([sys.executable, "-m", "src.pset_map", ab], cwd=root,
-                             capture_output=True, text=True, timeout=300)
+                             capture_output=True, text=True, encoding="utf-8",
+                             errors="replace", timeout=300)
                 log.append((r1.stdout or "") + (r1.stderr or ""))
                 r2 = _sp.run([sys.executable, os.path.join("scripts", "convertir_lote.py"), ab,
                               "--out", out_dir, "--target", "spark", "--timeout", "900"],
-                             cwd=root, capture_output=True, text=True, timeout=3600)
+                             cwd=root, capture_output=True, text=True, encoding="utf-8",
+                             errors="replace", timeout=3600)
                 log.append((r2.stdout or "") + (r2.stderr or ""))
                 odir = os.path.join(root, "output", proj)
                 plans = sorted(os.path.join("output", proj, f) for f in
