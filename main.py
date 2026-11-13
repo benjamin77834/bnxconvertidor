@@ -597,9 +597,16 @@ def _parse_gde_native(content):
         for fvid in list(layout_paths.keys()):
             path_val = layout_paths[fvid]
             # Replace $\{VAR\} patterns (escaped braces in GDE format)
-            resolved = re.sub(r'\$\\?\{(\w+)\\?\}', lambda m: params.get(m.group(1), m.group(0)), path_val)
+            # Un parametro declarado 'NOT SET' en el grafo (sin valor) NO es un valor: se deja
+            # la referencia ($\{X\}) para que el job la resuelva con el pset / entorno.
+            def _pval(m):
+                v = params.get(m.group(1))
+                if v is None or v.strip().upper() in ("", "NOT SET", "NOTSET"):
+                    return m.group(0)
+                return v
+            resolved = re.sub(r'\$\\?\{(\w+)\\?\}', _pval, path_val)
             # Replace remaining $VAR patterns
-            resolved = re.sub(r'\$(\w+)', lambda m: params.get(m.group(1), m.group(0)), resolved)
+            resolved = re.sub(r'\$(\w+)', _pval, resolved)
             if resolved != path_val:
                 layout_paths[fvid] = resolved
                 print(f"  [dbg] Resolved path: {path_val} -> {resolved}")

@@ -5,6 +5,7 @@ import ReactFlow, {
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import { ORQUESTADOR_URL } from '../config'
+import ParquetVisor from './ParquetVisor'
 
 // Colores por estado de la accion del paso
 const STATUS_COLOR = {
@@ -157,6 +158,58 @@ async function post(path, body) {
   return d
 }
 
+// Booleano persistido en localStorage ('1'/'0'); sin storage (modo privado) funciona en memoria
+function usePersist(key, def) {
+  const [v, setV] = useState(() => {
+    try { const x = localStorage.getItem(key); return x === null ? def : x === '1' } catch { return def }
+  })
+  const set = useCallback((n) => setV(prev => {
+    const nv = typeof n === 'function' ? n(prev) : n
+    try { localStorage.setItem(key, nv ? '1' : '0') } catch { /* sin storage */ }
+    return nv
+  }), [key])
+  return [v, set]
+}
+
+// Boton de cabecera para colapsar/expandir un panel
+function ToggleBtn({ abierto, onClick, label, btn, controls }) {
+  return (
+    <button style={{ ...btn(false), padding: '0 8px', fontSize: 13, lineHeight: '20px' }} onClick={onClick}
+      aria-expanded={abierto} aria-controls={controls}
+      aria-label={`${abierto ? 'Colapsar' : 'Expandir'} ${label}`} title={`${abierto ? 'Colapsar' : 'Expandir'} ${label}`}>
+      {abierto ? '▾' : '▸'}</button>
+  )
+}
+
+// Datasets (parquet/csv) de <base>/output y <base>/raw, clicables para abrir el visor
+function DatasetsRapidos({ t, btn, base, onAbrir, refresco }) {
+  const [lista, setLista] = useState(null)
+  const [err, setErr] = useState('')
+  useEffect(() => {
+    let vivo = true
+    post('datasets', { base_path: base }).then(d => { if (vivo) { setLista(d.datasets || []); setErr('') } })
+      .catch(e => { if (vivo) { setLista([]); setErr(e.message) } })
+    return () => { vivo = false }
+  }, [base, refresco])
+  if (err) return <div style={{ fontSize: 11, color: t.muted, marginTop: 4 }}>Visor: {err}</div>
+  if (!lista) return null
+  const grupo = (zona) => lista.filter(d => d.zona === zona)
+  return (
+    <div style={{ marginTop: 6, fontSize: 12 }}>
+      <b>Ver datos</b> <span style={{ color: t.muted }}>(clic para abrir el visor)</span>
+      {['output', 'raw'].map(z => (
+        <div key={z} style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center', marginTop: 3 }}>
+          <span style={{ color: t.muted, width: 48 }}>{z}</span>
+          {grupo(z).length === 0 && <span style={{ color: t.muted }}>(vacío)</span>}
+          {grupo(z).map(d => (
+            <button key={d.nombre} style={{ ...btn(false), padding: '0 6px', fontSize: 11, wordBreak: 'break-all' }}
+              onClick={() => onAbrir(z, d.nombre)} aria-label={`Ver datos de ${z}/${d.nombre}`}>
+              {d.nombre}</button>))}
+        </div>))}
+    </div>
+  )
+}
+
 const EXT_OK = ['.pset', '.plan', '.mp', '.xfr', '.dml', '.ksh', '.dbc']
 const extOf = (n) => (n.match(/\.[^.]+$/) || [''])[0].toLowerCase()
 
@@ -262,7 +315,7 @@ function runsBefore(steps, a, b) {
 }
 
 // Panel de configuracion de ejecucion (python / spark-submit) y enlaces de datos
-function EjecucionPanel({ t, btn, ej, setEj, plan, nameOf, sugerir, addEnlace, toggleEnlace, delEnlace }) {
+function EjecucionPanel({ t, btn, ej, setEj, plan, nameOf, sugerir, addEnlace, toggleEnlace, delEnlace, verDatos }) {
   const [nuevo, setNuevo] = useState({ desde: '', salida: '', hacia: '', entrada: '' })
   const [argsTxt, setArgsTxt] = useState((ej.spark_args || []).join(' '))
   useEffect(() => { setArgsTxt((ej.spark_args || []).join(' ')) }, [plan.plan])  // eslint-disable-line
@@ -288,6 +341,9 @@ function EjecucionPanel({ t, btn, ej, setEj, plan, nameOf, sugerir, addEnlace, t
         Se usa en la ejecución real (botón "Ejecutar plan (real)", terminal o Airflow) y en "Datos sintéticos".
         En Windows: <code>C:\Users\usuario\bnx</code> o <code>C:/Users/usuario/bnx</code> (carpeta local, sin comillas).
       </div>
+      <button style={btn(false)} onClick={() => verDatos()} disabled={!(ej.base_path || '').trim()}
+        aria-label="Ver datos parquet de raw y output en el Base path"
+        title="Abre el visor de los parquet/csv de <base>/raw y <base>/output">🔍 Ver datos</button>
 
       <div style={{ fontWeight: 700, marginTop: 10 }}>Enlaces de datos</div>
       <div style={{ fontSize: 10, color: t.muted }}>
@@ -589,6 +645,12 @@ export default function OrquestadorPage({ theme }) {
   const [confirmar, setConfirmar] = useState(null)          // modal {body, alcance, dry_run, checks, bloqueado, error}
   const [run, setRun] = useState(null)                      // {id, plan, alcance, estado, pasos, log, offset, activa, ...}
   const logRef = useRef(null)
+  // ---- paneles colapsables (se recuerdan en localStorage) y visor de datos ----
+  const [colGrafo, setColGrafo] = usePersist('bnx_orq_col_grafo', false)
+  const [colLog, setColLog] = usePersist('bnx_orq_col_log', false)
+  const [colPanel, setColPanel] = usePersist('bnx_orq_col_panel', false)
+  const [visor, setVisor] = useState(null)            // {basePath, zona?, nombre?}
+  const cerrarVisor = useCallback(() => setVisor(null), [])
 
   const card = { background: t.card || '#1e2433', border: `1px solid ${t.border || '#334155'}`, borderRadius: 10, padding: 12 }
   const btn = (primary) => ({
@@ -598,6 +660,13 @@ export default function OrquestadorPage({ theme }) {
     border: `1px solid ${primary ? (t.accent || '#1a73e8') : (t.border || '#334155')}`,
   })
   const flash = (kind, text) => { setMsg({ kind, text }); setTimeout(() => setMsg(null), 6000) }
+  // abre el visor de datos con un base_path (el del plan por defecto); s3:// no se puede leer aqui
+  const abrirVisor = (zona, nombre, base) => {
+    const bp = String(base ?? plan?.ejecucion?.base_path ?? '').trim()
+    if (!bp) { flash('err', 'Indica el Base path (panel Ejecución) para ver datos.'); return }
+    if (bp.startsWith('s3://')) { flash('err', 'El visor solo lee rutas locales; s3:// no está soportado.'); return }
+    setVisor({ basePath: bp, zona, nombre, k: Date.now() })
+  }
   // estado en vivo de cada paso del plan que se esta viendo (si la ejecucion es de este plan)
   const runPasos = run && run.plan === file ? run.pasos : null
   const corriendo = !!run && run.estado === 'corriendo'
@@ -658,7 +727,7 @@ export default function OrquestadorPage({ theme }) {
     requestAnimationFrame(() => requestAnimationFrame(() => rf.fitView({ padding: 0.15, duration: 250 })))
   }, [rf])
   // al cambiar de plan, al (re)acomodar y al abrir/cerrar paneles que cambian el alto
-  useEffect(() => { verTodo() }, [verTodo, file, nodes.length, !!code, !!dry, ayuda, tab])  // eslint-disable-line
+  useEffect(() => { verTodo() }, [verTodo, file, nodes.length, !!code, !!dry, ayuda, tab, colGrafo, colPanel])  // eslint-disable-line
   // al cambiar el tamaño del lienzo (ventana, paneles laterales)
   useEffect(() => {
     const el = lienzoRef.current
@@ -667,7 +736,7 @@ export default function OrquestadorPage({ theme }) {
     const ro = new ResizeObserver(() => { clearTimeout(timer); timer = setTimeout(verTodo, 120) })
     ro.observe(el)
     return () => { ro.disconnect(); clearTimeout(timer) }
-  }, [verTodo, tab])
+  }, [verTodo, tab, colGrafo])
 
   // Mantener datos/aristas sincronizados con el plan sin mover posiciones
   useEffect(() => {
@@ -858,6 +927,22 @@ export default function OrquestadorPage({ theme }) {
     } catch (e) { flash('err', `No se pudo preparar la ejecución: ${e.message}`) }
     setBusy(false)
   }
+  // Desde el modal de confirmacion: genera SOLO las entradas que faltan (no sobrescribe)
+  // en el mismo base path y vuelve a correr el chequeo previo para refrescar los avisos.
+  const generarEntradasFaltantes = async () => {
+    const c = confirmar
+    if (!c || c.enviando) return
+    setConfirmar({ ...c, enviando: true, error: null })
+    try {
+      await post('datos', { file, filas: 20, base_path: c.body.base_path })
+      const d = await post('preflight', c.body)
+      setConfirmar({ ...c, enviando: false, error: null, dry_run: d.dry_run, dry_ok: d.dry_ok,
+        checks: d.checks, bloqueado: d.bloqueado })
+      flash('ok', 'Datos de entrada generados en ' + c.body.base_path + '/raw')
+    } catch (e) {
+      setConfirmar({ ...c, enviando: false, error: `No se pudieron generar los datos: ${e.message}` })
+    }
+  }
   const lanzarEjecucion = async () => {
     const c = confirmar
     if (!c || c.enviando) return
@@ -865,12 +950,14 @@ export default function OrquestadorPage({ theme }) {
     try {
       const d = await post('ejecutar', { ...c.body, confirmado: true })
       setConfirmar(null)
+      setColLog(false)
       setRun({ id: d.run, plan: file, alcance: c.etiqueta, estado: 'corriendo', pasos: {}, subpasos: {},
         log: '', offset: 0, activa: true, base_path: c.body.base_path })
     } catch (e) {
       if (e.data?.run) {      // 409: ya corre -> mostrar su avance
         setConfirmar(null)
         flash('err', `${e.message}: mostrando su avance`)
+        setColLog(false)
         setRun({ id: e.data.run, plan: file, alcance: 'en curso', estado: 'corriendo', pasos: {}, subpasos: {},
           log: '', offset: 0, activa: true })
       } else {
@@ -1138,7 +1225,14 @@ export default function OrquestadorPage({ theme }) {
               Arrastra del punto derecho de un paso al izquierdo de otro para añadir una dependencia (el primero corre antes).
               Selecciona una flecha y pulsa Supr para quitarla. “▶▶ Ejecutar plan (real)” ejecuta de verdad (pide confirmación).
             </div>
-            <div ref={lienzoRef} style={{ flex: 1, minHeight: 360 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 12px 4px', fontSize: 12 }}>
+              <ToggleBtn abierto={!colGrafo} onClick={() => setColGrafo(v => !v)} label="el grafo" btn={btn} controls="orq-grafo" />
+              <strong>Grafo</strong>
+              {plan && <span style={{ color: t.muted }}>{plan.steps.length} paso{plan.steps.length === 1 ? '' : 's'}
+                {colGrafo && runPasos ? ` · ${Object.entries(Object.values(runPasos).reduce((a, v) => ({ ...a, [v]: (a[v] || 0) + 1 }), {}))
+                  .map(([k, n]) => `${n} ${RUN_LABEL[k] || k}`).join(' · ')}` : ''}</span>}
+            </div>
+            {!colGrafo && <div id="orq-grafo" ref={lienzoRef} style={{ flex: 1, minHeight: 360 }}>
               <ReactFlow
                 nodes={nodes} edges={edges} nodeTypes={nodeTypes}
                 onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
@@ -1157,7 +1251,7 @@ export default function OrquestadorPage({ theme }) {
                     : STATUS_COLOR[n.data?.step?.action?.status] || '#64748b')}
                   nodeStrokeWidth={2} />
               </ReactFlow>
-            </div>
+            </div>}
             {code && (
               <div style={{ ...card, margin: 10 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 6, fontSize: 12 }}>
@@ -1182,12 +1276,19 @@ export default function OrquestadorPage({ theme }) {
                 </pre>
               </div>
             )}
-            {run && (
-              <div style={{ ...card, margin: 10 }} role="region" aria-label="Ejecución real">
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 6, fontSize: 12 }}>
+            {run && (() => {
+              const actuales = Object.entries(run.pasos || {}).filter(([, v]) => v === 'corriendo').map(([id]) => (run.plan === file ? nameOf(id) : id))
+              const cuerpoVisible = !colLog
+              return (
+              <div style={{ ...card, margin: 10, ...(colGrafo && cuerpoVisible ? { flex: 1, minHeight: 200, display: 'flex', flexDirection: 'column' } : {}) }}
+                role="region" aria-label="Ejecución real">
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: cuerpoVisible ? 6 : 0, fontSize: 12 }}>
+                  <ToggleBtn abierto={cuerpoVisible} onClick={() => setColLog(v => !v)} label="la ejecución real" btn={btn} controls="orq-log" />
                   <strong>Ejecución real</strong>
-                  <span style={{ color: RUN_COLOR[run.estado] || t.muted, fontWeight: 700 }}>
+                  <span role="status" style={{ color: RUN_COLOR[run.estado] || t.muted, fontWeight: 700 }}>
                     {run.estado === 'corriendo' ? '⏳ corriendo…' : `● ${RUN_LABEL[run.estado] || run.estado}${run.rc != null ? ` (código ${run.rc})` : ''}`}</span>
+                  {run.estado === 'corriendo' && actuales.length > 0 &&
+                    <span style={{ color: t.text }}>paso: <b>{actuales.join(', ')}</b></span>}
                   <span style={{ color: t.muted }}>{run.alcance}{run.segundos != null ? ` · ${run.segundos}s` : ''}
                     {run.plan !== file ? ` · plan ${run.plan?.split('/').pop()}` : ''}</span>
                   <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
@@ -1196,13 +1297,14 @@ export default function OrquestadorPage({ theme }) {
                     {run.estado !== 'corriendo' && <button style={btn(false)} onClick={() => setRun(null)} aria-label="Cerrar la consola">✕</button>}
                   </span>
                 </div>
+                {cuerpoVisible && <div id="orq-log" style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
                 {Object.keys(run.subpasos || {}).length > 0 && (
                   <div style={{ fontSize: 11, color: t.muted, marginBottom: 4, wordBreak: 'break-word' }}>
                     Sub-pasos: {Object.entries(run.subpasos).map(([k, v]) => (
                       <span key={k} style={{ marginRight: 8, color: RUN_COLOR[v] }}>{k}:{RUN_LABEL[v] || v}</span>))}
                   </div>)}
-                <pre ref={logRef} style={{ margin: 0, maxHeight: 260, overflow: 'auto', fontSize: 11, whiteSpace: 'pre-wrap',
-                  background: t.codeBg || '#0b1220', padding: 8, borderRadius: 6 }}>{run.log || '(esperando salida…)'}</pre>
+                <pre ref={logRef} style={{ margin: 0, maxHeight: colGrafo ? 'none' : 260, flex: colGrafo ? 1 : undefined, minHeight: 60, overflow: 'auto',
+                  fontSize: 11, whiteSpace: 'pre-wrap', background: t.codeBg || '#0b1220', padding: 8, borderRadius: 6 }}>{run.log || '(esperando salida…)'}</pre>
                 {run.errorPoll && <div style={{ color: '#f87171', fontSize: 12, marginTop: 4 }}>{run.errorPoll}</div>}
                 {run.estado !== 'corriendo' && run.salidas_dir && (
                   <div style={{ fontSize: 12, marginTop: 6 }}>
@@ -1213,12 +1315,24 @@ export default function OrquestadorPage({ theme }) {
                       : <ul style={{ margin: '4px 0 0', paddingLeft: 18, maxHeight: 120, overflow: 'auto' }}>
                           {run.salidas.map(x => <li key={x.ruta}><code>{x.ruta}</code> <span style={{ color: t.muted }}>{x.bytes} B</span></li>)}
                         </ul>}
+                    {run.base_path && !String(run.base_path).startsWith('s3://') &&
+                      <DatasetsRapidos t={t} btn={btn} base={run.base_path} refresco={run.id}
+                        onAbrir={(z, n) => abrirVisor(z, n, run.base_path)} />}
                   </div>)}
-              </div>
-            )}
+                </div>}
+              </div>)
+            })()}
           </div>
 
-          <div style={{ width: 290, borderLeft: `1px solid ${t.border}`, padding: 12, overflowY: 'auto' }}>
+          <div id="orq-panel" style={{ width: colPanel ? 40 : 290, flexShrink: 0, borderLeft: `1px solid ${t.border}`,
+            padding: colPanel ? '12px 6px' : 12, overflowY: colPanel ? 'hidden' : 'auto' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: colPanel ? 0 : 6 }}>
+              <ToggleBtn abierto={!colPanel} onClick={() => setColPanel(v => !v)} label="el panel de detalles" btn={btn} controls="orq-panel-cuerpo" />
+              {!colPanel && <strong style={{ fontSize: 12 }}>{sel ? 'Paso' : 'Ejecución'}</strong>}
+            </div>
+            {colPanel && <div style={{ writingMode: 'vertical-rl', fontSize: 11, color: t.muted, marginTop: 8 }}>
+              {sel ? `Paso: ${sel.name}` : 'Detalles / Ejecución'}</div>}
+            {!colPanel && <div id="orq-panel-cuerpo">
             {form && plan && (
               <PasoForm key={form.id || 'nuevo'} t={t} btn={btn} plan={plan}
                 inicial={form.id ? plan.steps.find(x => x.id === form.id) : null}
@@ -1237,7 +1351,7 @@ export default function OrquestadorPage({ theme }) {
                   <span style={{ color: ub.color }}>▌</span> {ub.icon} {ub.label}</div>)}
               </div>
               {plan && <EjecucionPanel t={t} btn={btn} ej={ej} setEj={setEj} plan={plan}
-                nameOf={nameOf} sugerir={sugerir} addEnlace={addEnlace}
+                nameOf={nameOf} sugerir={sugerir} addEnlace={addEnlace} verDatos={() => abrirVisor()}
                 toggleEnlace={(id) => mutate(p => { const e = p.enlaces.find(x => x.id === id); e.habilitado = !e.habilitado })}
                 delEnlace={(id) => mutate(p => { p.enlaces = p.enlaces.filter(x => x.id !== id) })} />}
             </div>}
@@ -1256,6 +1370,25 @@ export default function OrquestadorPage({ theme }) {
                     <button style={btn(false)} onClick={() => setForm({})}>+ Paso</button>
                   </div>)}
                 {sel.action?.target && <div style={{ wordBreak: 'break-all', color: t.muted }}>{sel.action.target}</div>}
+                {['lee', 'escribe'].some(k => (sel.action?.io?.[k] || []).length > 0) && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                    {[['lee', 'Entradas'], ['escribe', 'Salidas']].map(([k, titulo]) => (sel.action.io[k] || []).length > 0 && (
+                      <div key={k}>
+                        <div style={{ fontWeight: 600 }}>{titulo} (datasets)</div>
+                        {sel.action.io[k].map(x => {
+                          const [zona, ...resto] = String(x.ruta).split('/')
+                          const nombre = resto.join('/')
+                          const ok = (zona === 'raw' || zona === 'output') && nombre && x.resuelto !== false && !nombre.includes('/')
+                          return (
+                            <div key={x.ruta} style={{ display: 'flex', gap: 6, alignItems: 'center', justifyContent: 'space-between' }}>
+                              <code style={{ wordBreak: 'break-all', fontSize: 11 }}>{x.ruta}</code>
+                              <button style={{ ...btn(false), padding: '0 6px', flexShrink: 0 }} disabled={!ok}
+                                onClick={() => abrirVisor(zona, nombre)} aria-label={`Ver datos de ${x.ruta}`}
+                                title={ok ? 'Abrir en el visor (Base path del plan)' : 'Ruta con parámetros sin resolver'}>🔍</button>
+                            </div>)
+                        })}
+                      </div>))}
+                  </div>)}
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   <button style={{ ...btn(true), background: '#16a34a', borderColor: '#16a34a' }} disabled={busy || corriendo || !sel.enabled}
                     onClick={() => prepararEjecucion({ paso: sel.id })}
@@ -1313,6 +1446,7 @@ export default function OrquestadorPage({ theme }) {
                 </select>
               </div>
             )}
+            </div>}
           </div>
         </div>
       )}
@@ -1423,6 +1557,9 @@ export default function OrquestadorPage({ theme }) {
           </div>
         </div>
       )}
+      {visor && <ParquetVisor key={visor.k} t={t} btn={btn} post={post} basePath={visor.basePath}
+        inicial={visor.nombre ? { zona: visor.zona, nombre: visor.nombre } : (visor.zona ? { zona: visor.zona } : null)}
+        onClose={cerrarVisor} />}
       {confirmar && (
         <div role="dialog" aria-modal="true" aria-labelledby="orq-confirm-t"
           style={{ position: 'fixed', inset: 0, background: '#000a', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }}>
@@ -1446,6 +1583,14 @@ export default function OrquestadorPage({ theme }) {
             {!confirmar.dry_ok && <div style={{ color: '#f59e0b', fontSize: 12 }}>
               El dry-run reporta archivos faltantes: esos pasos fallarán.</div>}
             {confirmar.error && <div style={{ color: '#f87171', fontSize: 12 }}>✖ {confirmar.error}</div>}
+            {confirmar.checks.some(c => c.id === 'entradas' && c.nivel === 'warn') &&
+              !String(confirmar.body.base_path || '').startsWith('s3://') &&
+              <div style={{ fontSize: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
+                <button style={btn(true)} onClick={generarEntradasFaltantes} disabled={confirmar.enviando}
+                  aria-label="Generar los datos sintéticos de entrada que faltan en este base path">
+                  {confirmar.enviando ? 'Generando…' : '🧪 Generar datos de entrada que faltan'}</button>
+                <span style={{ color: t.muted }}>20 filas por dataset; no sobrescribe lo que ya existe.</span>
+              </div>}
             {confirmar.checks.some(c => c.nivel === 'warn') && !confirmar.bloqueado &&
               <div style={{ fontSize: 12, color: '#f59e0b' }}>Hay avisos (⚠): puedes continuar bajo tu responsabilidad.</div>}
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>

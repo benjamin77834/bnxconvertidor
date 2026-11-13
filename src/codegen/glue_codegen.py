@@ -1,7 +1,8 @@
 # src/codegen/glue_codegen.py
 import re
 from datetime import datetime
-from src.codegen.spark_codegen import _translate_dml_expr, _map_date_functions, _map_string_functions, _sanitize_generated_file, _emit_pset_params, _unescape_gde, _normalize_logical_ops, _sql_arg, _is_untranslatable, _one_line, _strip_dml_comments, _emit_shell_literal, _emit_join_body_columns, _safe_path_fragment, _safe_dbtable, _emit_update_table_helper, _sanitize_join_keys, _derived_join_key_from_expr, _join_key_raw_text
+from src.codegen.params_runtime import emit_params_runtime, raw_path_fragment
+from src.codegen.spark_codegen import _emit_filter_pair, _emit_os_system, _translate_dml_expr, _map_date_functions, _map_string_functions, _sanitize_generated_file, _emit_pset_params, _unescape_gde, _normalize_logical_ops, _sql_arg, _is_untranslatable, _one_line, _strip_dml_comments, _emit_shell_literal, _emit_join_body_columns, _safe_path_fragment, _safe_dbtable, _emit_update_table_helper, _sanitize_join_keys, _derived_join_key_from_expr, _join_key_raw_text
 
 
 # Local functions removed — using improved versions from spark_codegen
@@ -597,6 +598,7 @@ def generate_glue(dag, output_path, xfr_rules=None, pset_params=None):
         # Parametros del .pset (ver _emit_pset_params en spark_codegen).
         _emit_pset_params(f, pset_params)
         f.write('\n')
+        emit_params_runtime(f)
         f.write('print("[*] BNX Glue Job V54 Started")\n\n')
         
         # Emit helpers SIEMPRE: el pre-scan puede no detectar todos los patrones que
@@ -649,7 +651,17 @@ def generate_glue(dag, output_path, xfr_rules=None, pset_params=None):
         
         f.write("def output_indexes_split(df, index_expr, num_outputs):\n")
         f.write('    """Split DataFrame into N outputs based on index expression."""\n')
-        f.write('    return [df.filter(F.expr(f"{index_expr} = {i}")) for i in range(num_outputs)]\n\n\n')
+        f.write('    try:\n')
+        f.write('        outs = [df.filter(F.expr(f"{index_expr} = {i}")) for i in range(num_outputs)]\n')
+        f.write('        _ = [o.schema for o in outs]\n')
+        f.write('        return outs\n')
+        f.write('    except Exception as _e:\n')
+        f.write('        if "UNRESOLVED_COLUMN" not in str(_e) and "cannot be resolved" not in str(_e):\n')
+        f.write('            raise\n')
+        f.write('        # El .mp no trae la logica de salida (DML sin traducir): sin la columna de indice\n')
+        f.write('        # todo va a la salida 0 y las demas quedan vacias.\n')
+        f.write('        print("[!] output_indexes_split: columna de indice no disponible (%s); todo va a la salida 0" % index_expr)\n')
+        f.write('        return [df] + [df.limit(0) for _ in range(num_outputs - 1)]\n\n\n')
         
         f.write("# =========================\n# DAG EXECUTION V54\n# =========================\n\n")
 
@@ -730,7 +742,9 @@ def generate_glue(dag, output_path, xfr_rules=None, pset_params=None):
                         # Path from Layout, use PARAMS.BASE_PATH + relative path.
                         # _safe_path_fragment resuelve $[string_concat(...)]/$VAR y
                         # neutraliza comillas dobles que romperian el f-string.
-                        _p = _safe_path_fragment(path)
+                        _p = raw_path_fragment(path, var_id)
+                        if _p is None:
+                            _p = _safe_path_fragment(path)
                         if fmt == "csv":
                             f.write(f'{var_id}_df = spark.read.format("csv").option("header", "true").option("inferSchema", "true").load(f"{{PARAMS.BASE_PATH}}/raw/{_p}")\n')
                         else:
@@ -795,7 +809,7 @@ def generate_glue(dag, output_path, xfr_rules=None, pset_params=None):
                         cmd_clean = re.sub(r'\$\{?(\w+)\}?', r'{PARAMS.\1}', cmd_clean)
                         f.write(f'# Run_Program: shell command from Ab Initio\n')
                         f.write(f'{var_id}_df = {src}  # passthrough data\n')
-                        f.write(f'os.system(f"{_emit_shell_literal(cmd_clean)}")\n')
+                        _emit_os_system(f, cmd_clean)
                     elif is_run_program:
                         f.write(f'# Run_Program: no commandline extracted\n')
                         f.write(f'{var_id}_df = {src}  # passthrough (Run_Program)\n')
@@ -825,7 +839,7 @@ def generate_glue(dag, output_path, xfr_rules=None, pset_params=None):
                         cmd_clean = re.sub(r'\$\{?AI_SERIAL\}?', f'{{PARAMS.BASE_PATH}}/raw', cmd_clean)
                         cmd_clean = re.sub(r'\$\{?(\w+)\}?', r'{PARAMS.\1}', cmd_clean)
                         f.write(f'# Run_Program: shell command (no data dependency)\n')
-                        f.write(f'os.system(f"{_emit_shell_literal(cmd_clean)}")\n')
+                        _emit_os_system(f, cmd_clean)
                         f.write(f'{var_id}_df = None  # Run_Program has no dataframe output\n')
                     elif is_run_program_nop:
                         f.write(f'# Run_Program: no commandline extracted from MP\n')
@@ -1128,8 +1142,7 @@ def generate_glue(dag, output_path, xfr_rules=None, pset_params=None):
                             # where() con expresiones numericas: FILTER_NOT_BOOLEAN).
                             spark_where = _to_boolean_filter(spark_where)
                             spark_where_escaped = _sql_arg(spark_where)
-                            f.write(f'{var_id}_df = {src}.where("{spark_where_escaped}")\n')
-                            f.write(f'{var_id}_reject_df = {src}.where("NOT ({spark_where_escaped})")\n')
+                            _emit_filter_pair(f, var_id, src, spark_where_escaped, log_name)
                     else:
                         f.write(f'{var_id}_df = {src}\n')
                         f.write(f'{var_id}_reject_df = spark.createDataFrame([], {src}.schema)\n')

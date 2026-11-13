@@ -5,6 +5,7 @@ Same logic as glue_codegen but with SparkSession instead of GlueContext.
 """
 import re
 from datetime import datetime
+from src.codegen.params_runtime import emit_params_runtime, raw_path_fragment
 
 
 def _unescape_gde(expr):
@@ -1652,6 +1653,14 @@ def _translate_dml_expr(expr_clean):
     # Salvaguarda final: si quedo algun cast Ab Initio crudo (tipo(N))x sin resolver
     # (p.ej. anidado en argumentos de substring/lpad), traducirlo a CAST(...).
     mapped = translate_abinitio_casts(mapped)
+    # to_date('${PARAM}', 'yyyyMMdd'): el valor del parametro (p.ej. un timestamp
+    # YYYYMMDDTHHMISS) puede traer texto sobrante y to_date falla en ANSI; la fecha son
+    # los primeros len(fmt) caracteres.
+    mapped = re.sub(
+        r"\b(to_date|to_timestamp)\(\s*'(\$\{\w+\}|\$\w+)'\s*,\s*'([yMdHhmsS]+)'\s*\)",
+        lambda m: f"{m.group(1)}(substring('{m.group(2)}', 1, {len(m.group(3))}), '{m.group(3)}')",
+        mapped,
+    )
     return mapped
 
 
@@ -2173,6 +2182,7 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
         # valor real en vez de caer al placeholder BNX_PARAM_<VAR>.
         _emit_pset_params(f, pset_params)
         f.write('\n')
+        emit_params_runtime(f)
         f.write('print("[*] BNX PySpark Job Started")\n\n')
         
         # Emit helpers SIEMPRE: el pre-scan puede no detectar todos los patrones que
@@ -2266,7 +2276,17 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
         
         f.write("def output_indexes_split(df, index_expr, num_outputs):\n")
         f.write('    """Split DataFrame into N outputs based on index expression."""\n')
-        f.write('    return [df.filter(F.expr(f"{index_expr} = {i}")) for i in range(num_outputs)]\n\n\n')
+        f.write('    try:\n')
+        f.write('        outs = [df.filter(F.expr(f"{index_expr} = {i}")) for i in range(num_outputs)]\n')
+        f.write('        _ = [o.schema for o in outs]\n')
+        f.write('        return outs\n')
+        f.write('    except Exception as _e:\n')
+        f.write('        if "UNRESOLVED_COLUMN" not in str(_e) and "cannot be resolved" not in str(_e):\n')
+        f.write('            raise\n')
+        f.write('        # El .mp no trae la logica de salida (DML sin traducir): sin la columna de indice\n')
+        f.write('        # todo va a la salida 0 y las demas quedan vacias.\n')
+        f.write('        print("[!] output_indexes_split: columna de indice no disponible (%s); todo va a la salida 0" % index_expr)\n')
+        f.write('        return [df] + [df.limit(0) for _ in range(num_outputs - 1)]\n\n\n')
         
         f.write("# =========================\n# DAG EXECUTION V54\n# =========================\n\n")
 
@@ -2279,6 +2299,7 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                     node_to_graph[nid] = gname
         current_graph = None
 
+        _empty_nodes = set()  # nodos emitidos como DataFrame vacio (sin datos reales)
         for node in dag.execution_order:
             # Insert graph boundary comment if graph changed
             if node_to_graph:
@@ -2341,7 +2362,11 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                         # Layout-derived path, prefix with PARAMS.BASE_PATH.
                         # _safe_path_fragment resuelve $[string_concat(...)]/$VAR y
                         # neutraliza comillas dobles que romperian el f-string.
-                        _p = _safe_path_fragment(path)
+                        _p = raw_path_fragment(path, var_id)
+                        if _p is None:
+                            _p = _safe_path_fragment(path)
+                        else:
+                            f.write(f'# BNX: nombre del dataset en raw/ = ruta del Input File con parametros; si no se resuelve se usa el nombre del nodo ({var_id})\n')
                         if fmt == "csv":
                             f.write(f'{var_id}_df = spark.read.option("header", "true").option("inferSchema", "true").csv(f"{{PARAMS.BASE_PATH}}/raw/{_p}")\n')
                         elif fmt == "json":
@@ -2380,7 +2405,7 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
             elif ntype in ("TRANSFORM", "XFR"):
                 f.write(f'# [.] TRANSFORM: {log_name}\n')
                 if parents:
-                    src = f'{parents[0]}_df'
+                    src = f'{_first_parent(parents, _empty_nodes)}_df'
                     # Detect Run_Program components
                     is_run_program = ("run_program" in log_name.lower() or
                                       "run_program" in var_id.lower())
@@ -2398,7 +2423,7 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                         cmd_clean = re.sub(r'\$\{?(\w+)\}?', r'{PARAMS.\1}', cmd_clean)
                         f.write(f'# Run_Program: shell command from Ab Initio\n')
                         f.write(f'{var_id}_df = {src}  # passthrough data\n')
-                        f.write(f'os.system(f"{_emit_shell_literal(cmd_clean)}")\n')
+                        _emit_os_system(f, cmd_clean)
                     elif is_run_program:
                         f.write(f'# Run_Program: no commandline extracted\n')
                         f.write(f'{var_id}_df = {src}  # passthrough (Run_Program)\n')
@@ -2427,7 +2452,7 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                         cmd_clean = re.sub(r'\$\{?AI_SERIAL\}?', f'{{PARAMS.BASE_PATH}}/raw', cmd_clean)
                         cmd_clean = re.sub(r'\$\{?(\w+)\}?', r'{PARAMS.\1}', cmd_clean)
                         f.write(f'# Run_Program: shell command (no data dependency)\n')
-                        f.write(f'os.system(f"{_emit_shell_literal(cmd_clean)}")\n')
+                        _emit_os_system(f, cmd_clean)
                         f.write(f'{var_id}_df = None  # Run_Program has no dataframe output\n')
                     elif is_run_program:
                         f.write(f'# Run_Program: no commandline extracted from MP\n')
@@ -2438,6 +2463,7 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                         # componente DESCONECTADO en el grafo original de Ab Initio
                         # (deshabilitado o sin flujos). No es un fallo de conversion.
                         f.write(f'# [i] Componente aislado en el grafo original (sin entradas ni salidas conectadas)\n')
+                        _empty_nodes.add(var_id)
                         f.write(f'{var_id}_df = spark.createDataFrame([], StructType([]))  # nodo desconectado en origen\n')
                     else:
                         # Tiene hijos pero no padres: es un generador de registros
@@ -2451,13 +2477,14 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                             f.write(gen_code + "\n")
                         else:
                             f.write(f'# [i] Nodo sin entrada de datos: se emite DataFrame vacio (evita None en hijos)\n')
+                            _empty_nodes.add(var_id)
                             f.write(f'{var_id}_df = spark.createDataFrame([], StructType([]))\n')
                 f.write(f'print("[~] TRANSFORM: {log_name}")\n\n')
 
             elif ntype == "FILTER":
                 f.write(f'# [-] FILTER: {log_name}\n')
                 if parents:
-                    src = f'{parents[0]}_df'
+                    src = f'{_first_parent(parents, _empty_nodes)}_df'
                     where = rule.get("where", "") if rule else ""
                     if where:
                         # Detect header/trailer filter pattern:
@@ -2532,14 +2559,12 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                             mapped = re.sub(r'is_defined\((\w+)\)', r'\1 IS NOT NULL', mapped)
                             mapped = _to_boolean_filter(mapped)
                             mapped_escaped = _sql_arg(mapped)
-                            f.write(f'{var_id}_df = {src}.where("{mapped_escaped}")\n')
-                            f.write(f'{var_id}_reject_df = {src}.where("NOT ({mapped_escaped})")\n')
+                            _emit_filter_pair(f, var_id, src, mapped_escaped, log_name)
                         else:
                             where_mapped = _translate_dml_expr(where)
                             where_mapped = _to_boolean_filter(where_mapped)
                             where_escaped = _sql_arg(where_mapped)
-                            f.write(f'{var_id}_df = {src}.where("{where_escaped}")\n')
-                            f.write(f'{var_id}_reject_df = {src}.where("NOT ({where_escaped})")\n')
+                            _emit_filter_pair(f, var_id, src, where_escaped, log_name)
                     else:
                         f.write(f'{var_id}_df = {src}\n')
                         f.write(f'{var_id}_reject_df = spark.createDataFrame([], {src}.schema)\n')
@@ -2912,6 +2937,29 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
     _sanitize_generated_file(output_path)
 
 
+def _emit_os_system(f, cmd_clean):
+    """os.system del comando de un Run_Program. Si el comando es solo un interprete
+    (p.ej. 'ksh', sin script ni argumentos) no se ejecuta: abriria un shell esperando stdin."""
+    if re.fullmatch(r"\s*(ksh|sh|bash|csh|zsh)\s*", cmd_clean):
+        f.write(f'# Run_Program: el comando es solo el interprete "{cmd_clean.strip()}" (sin script); no se ejecuta\n')
+    else:
+        f.write(f'os.system(f"{_emit_shell_literal(cmd_clean)}")\n')
+def _first_parent(parents, empty_nodes):
+    """Primer padre con datos: salta los nodos emitidos como DataFrame vacio (p.ej. Table_*
+    sin entrada) cuando hay otro padre real que alimenta al mismo componente."""
+    for p in parents:
+        if p not in empty_nodes:
+            return p
+    return parents[0]
+def _emit_filter_pair(f, var_id, src, sql_escaped, log_name):
+    """Emite (salida, reject) de un Filter by Expression. Si la expresion referencia
+    parametros Ab Initio ($X/${X}) usa _bnx_filter_split (pass-through si el parametro
+    esta vacio o su *_FLAG es 0; BNX_STRICT_PARAMS=1 -> error)."""
+    if "$" in sql_escaped:
+        f.write(f'{var_id}_df, {var_id}_reject_df = _bnx_filter_split({src}, "{sql_escaped}", "{log_name}")\n')
+    else:
+        f.write(f'{var_id}_df = {src}.where("{sql_escaped}")\n')
+        f.write(f'{var_id}_reject_df = {src}.where("NOT ({sql_escaped})")\n')
 def _emit_pset_params(f, pset_params):
     """Emite los parametros del .pset como atributos de la clase PARAMS.
 
@@ -2941,10 +2989,40 @@ def _emit_pset_params(f, pset_params):
             continue
         # PDL sin resolver ($[...]): dejar como comentario para referencia + default vacio.
         if val.startswith("$["):
-            f.write(f'    # {k} = {val!r}  # PDL Ab Initio (no resuelto)\n')
-            f.write(f'    {k} = os.environ.get("{k}", "")\n')
+            # El runtime (params_runtime) lo evalua con un mini-evaluador PDL seguro;
+            # si no puede, queda '' (o el valor de la variable de entorno si existe).
+            f.write(f'    {k} = os.environ.get("{k}", {val!r})  # PDL Ab Initio\n')
             continue
         f.write(f'    {k} = os.environ.get("{k}", {val!r})\n')
+
+
+def _define_missing_params(lines):
+    """Define en `class PARAMS` los atributos que el job usa ({PARAMS.AI_BIN}, ...) y que ni
+    el pset ni el grafo declaran: sin esto el job muere con AttributeError. Se definen desde
+    el entorno (os.environ) con default vacio."""
+    try:
+        i0 = next(i for i, ln in enumerate(lines) if ln.startswith("class PARAMS"))
+    except StopIteration:
+        return lines
+    i1 = i0 + 1
+    while i1 < len(lines) and (lines[i1].startswith((" ", "\t")) or not lines[i1].strip()):
+        i1 += 1
+    definidos = set()
+    for ln in lines[i0 + 1:i1]:
+        m = re.match(r"\s+(\w+)\s*=", ln)
+        if m:
+            definidos.add(m.group(1))
+    usados = []
+    for ln in lines[:i0] + lines[i1:]:
+        if ln.lstrip().startswith("#"):
+            continue
+        for n in re.findall(r"\bPARAMS\.([A-Za-z_]\w*)", ln):
+            if n not in definidos and n not in usados and not n.startswith("_"):
+                usados.append(n)
+    if not usados:
+        return lines
+    nuevas = [f'    {n} = os.environ.get("{n}", "")  # BNX: no declarado en el pset/grafo\n' for n in usados]
+    return lines[:i0 + 1] + nuevas + lines[i0 + 1:]
 
 
 def _sanitize_generated_file(output_path):
@@ -3018,6 +3096,7 @@ def _sanitize_generated_file(output_path):
     # en ese punto (p.ej. tras un LOOKUP que no la produjo), la salida queda NULL
     # en vez de romper con UNRESOLVED_COLUMN. Portable a Glue.
     out = _wrap_reformat_safe_col(out)
+    out = _define_missing_params(out)
 
     if changed or True:
         with open(output_path, "w", encoding="utf-8") as fh:

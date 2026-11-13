@@ -3648,6 +3648,19 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 _glob.glob(os.path.join(root, "abinitio", "**", "pset_map.json"), recursive=True))]
             self._json_response(200, {"plans": plans, "maps": maps})
             return
+        if action in ("datasets", "leer_parquet"):
+            # Visor de datos (SOLO LECTURA): rutas validadas en src/parquet_visor.py
+            from src import parquet_visor as _pv
+            try:
+                if action == "datasets":
+                    self._json_response(200, _pv.listar(data.get("base_path")))
+                else:
+                    self._json_response(200, _pv.leer(
+                        data.get("base_path"), data.get("zona"), data.get("nombre"),
+                        data.get("limite", _pv.LIMITE_DEFECTO), data.get("offset", 0)))
+            except _pv.VisorError as e:
+                self._json_response(400, {"ok": False, "error": str(e), "codigo": e.codigo})
+            return
 
         if action == "map":
             fp = self._orq_safe(data.get("file"), "abinitio", r"pset_map\.json")

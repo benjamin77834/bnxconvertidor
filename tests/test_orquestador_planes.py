@@ -175,3 +175,16 @@ def test_regenerar_conserva_ediciones_y_refresca_accion(tmp_path):
     d = json.load(open(r))
     st = next(s for s in d["steps"] if s["id"] == sid)
     assert st["enabled"] is False and st["action"]["status"] == "ok"
+
+
+def test_norm_name_quita_sufijo_de_copia_del_navegador():
+    """'T002_File_To_Dataset 1.mp' (descarga duplicada) debe casar con el !prototype
+    '$AI_MP/T002_File_To_Dataset.mp'; si no, el paso del plan salia 'faltante'."""
+    from src.pset_map import _norm_name
+    assert _norm_name("T002_File_To_Dataset 1.mp") == "T002_File_To_Dataset.mp"
+    assert _norm_name("T002_File_To_Dataset_ACCRL_MAST_D 1.pset") == "T002_File_To_Dataset_ACCRL_MAST_D.pset"
+    assert _norm_name("a (2).pset") == "a.pset"
+    assert _norm_name("x - Copy.mp") == "x.mp"
+    assert _norm_name("x - copia (3).plan") == "x.plan"
+    assert _norm_name("2_foo_1.mp") == "foo_1.mp"  # '_1' es parte del nombre
+    assert _norm_name("$AI_MP\\T002_File_To_Dataset.mp") == "T002_File_To_Dataset.mp"

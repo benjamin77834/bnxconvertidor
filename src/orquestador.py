@@ -456,15 +456,7 @@ def parse_job_io(py_path):
         zona, nombre = m.group(1), m.group(2)
         if "$[" in nombre or not nombre:   # rutas PDL de log/error sin resolver
             continue
-        resuelto = [True]
-
-        def sub(mm):
-            v = defaults.get(mm.group(1))
-            if v and "$" not in v:
-                return v
-            resuelto[0] = False
-            return mm.group(0)
-        nombre = re.sub(r"\{PARAMS\.(\w+)\}", sub, nombre)
+        nombre, resuelto = _resolver_nombre(nombre, defaults)
         if ".write" in line or ".save(" in line:
             kind = "escribe"
         elif "read" in line or ".load(" in line:
@@ -475,7 +467,7 @@ def parse_job_io(py_path):
         if key in seen:
             continue
         seen.add(key)
-        out[kind].append({"ruta": f"{zona}/{nombre}", "resuelto": resuelto[0]})
+        out[kind].append({"ruta": f"{zona}/{nombre}", "resuelto": resuelto})
     return out
 
 
@@ -1653,8 +1645,15 @@ _READ_VAR = re.compile(
     r'^\s*(\w+?)(?:_df)?\s*=\s*spark\.read\.parquet\(f"\{PARAMS\.BASE_PATH\}/raw/([^"]*)"\)', re.M)
 
 
+_RAW_NAME = re.compile(r"\{_bnx_raw_name\('((?:[^'\\]|\\.)*)',\s*'([^']*)'\)\}")
+
+
 def _resolver_nombre(nombre, defaults):
-    """Sustituye {PARAMS.X} por su default literal. Devuelve (nombre, resuelto)."""
+    """Resuelve el nombre de un dataset de entrada: {_bnx_raw_name('<ruta>', '<nodo>')} con el
+    MISMO algoritmo del job (params_runtime) y {PARAMS.X} por su default literal.
+    Devuelve (nombre, resuelto)."""
+    from src.codegen.params_runtime import resolve_raw_name
+    nombre = _RAW_NAME.sub(lambda mm: resolve_raw_name(mm.group(1), mm.group(2), defaults)[0], nombre)
     ok = [True]
 
     def sub(mm):
@@ -1682,7 +1681,16 @@ _COL_CALLS = re.compile(
     r"partitionBy|withColumnRenamed)\(|(?:F\.)?(?:col|expr)\(")
 
 
-def _columnas_por_fuente(code, fuentes):
+# Helpers del job que reciben (df, "columna", ...): la columna es de la entrada. Los demas
+# helpers `_bnx_*`/split reciben nombres de columnas CREADAS o expresiones, no se consideran.
+_HELPER_COL = re.compile(r'(?<![\w.])([A-Za-z]\w*)\(\s*(\w+_df)\s*,\s*"([A-Za-z_]\w*)"')
+_HELPER_SKIP = {"output_indexes_split", "is_valid_record", "col", "lit", "expr", "F", "withColumn"}
+_HDR_TRL = re.compile(
+    r'filter_by_expression_hdr_trl\(\s*(\w+_df)\s*,\s*"(\w+)"\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*\[([^\]]*)\]')
+_DF_INDEX = re.compile(r'(\w+_df)\s*\[\s*"([A-Za-z_]\w*)"\s*\]')
+
+
+def _columnas_por_fuente(code, fuentes, marcas=None):
     """{fuente_lower: {columna: tipo}} siguiendo el linaje de DataFrames del job.
 
     Cada asignacion `A_df = B_df.op(...)` atribuye las columnas citadas en sus literales
@@ -1691,10 +1699,14 @@ def _columnas_por_fuente(code, fuentes):
     columnas que el propio job crea (withColumn / alias / AS). Tipo: numerico si la
     columna se castea a numero o se compara con un literal numerico; fecha si va en
     to_date; si no, string. Es una heuristica sobre el codigo generado por BNX.
+    Tambien cuenta: helpers tipo filter_by_expression_hdr_trl(df, "Campo", ...), df["X"],
+    on="X". `marcas` (dict opcional) recibe {fuente: {columna: (inicio, largo, [valores])}}
+    para los filtros HDR/TRL (el generador de datos incluye esas filas).
     """
     raices = {f.lower() + "_df": {f.lower()} for f in fuentes}
     creadas = set(re.findall(r'withColumn\(\s*"(\w+)"', code))
     creadas |= set(re.findall(r'\.alias\(\s*"(\w+)"\s*\)', code))
+    creadas |= set(re.findall(r'_bnx_safe_col\(\s*\w+\s*,\s*"(\w+)"', code))
     creadas |= set(re.findall(r"\bas\s+`?(\w+)`?\s*(?:,|$)", code, re.I))
     out = defaultdict(dict)
 
@@ -1730,6 +1742,19 @@ def _columnas_por_fuente(code, fuentes):
         on = re.search(r"\bon\s*=\s*\[([^\]]*)\]", rhs)
         if on:
             agregar(todos, re.findall(r'"(\w+)"', on.group(1)), rhs)
+        on1 = re.search(r'\bon\s*=\s*"([A-Za-z_]\w*)"', rhs)
+        if on1:
+            agregar(todos, [on1.group(1)], rhs)
+        for hm in _HELPER_COL.finditer(rhs):
+            if hm.group(1) not in _HELPER_SKIP and not hm.group(1).startswith("_bnx_"):
+                agregar(raices.get(hm.group(2).lower(), set()), [hm.group(3)], rhs)
+        for dm in _DF_INDEX.finditer(rhs):
+            agregar(raices.get(dm.group(1).lower(), set()), [dm.group(2)], rhs)
+        if marcas is not None:
+            for hm in _HDR_TRL.finditer(rhs):
+                vals = re.findall(r'"([^"]*)"', hm.group(5))
+                for r in raices.get(hm.group(1).lower(), set()):
+                    marcas.setdefault(r, {})[hm.group(2)] = (int(hm.group(3)), int(hm.group(4)), vals)
         # literales de expresion en llamadas que referencian columnas
         if _COL_CALLS.search(rhs):
             for lit in _STR_LIT.findall(rhs):
@@ -1808,6 +1833,21 @@ def entradas_faltantes(o, base_path, seleccion=None, _nivel=0):
     return falt
 
 
+def _valor_hdr_trl(i, n, ini, largo, vals, base):
+    """Texto de la fila i de n para un campo cuyo substring(ini, largo) se compara con
+    los marcadores `vals` (p.ej. ["HDR", "TRL"]): cabecera, cola o datos."""
+    pre = "x" * (ini - 1)
+    if i == 0 and vals:
+        marca = vals[0]
+    elif i == n - 1 and len(vals) > 1:
+        marca = vals[1]
+    else:
+        marca = "DAT"
+        while marca in vals:
+            marca = "D" + marca
+    return pre + marca[:largo].ljust(largo, "0") + "|" + str(base if base is not None else "")
+
+
 def generar_datos(o, base_path, n_rows=20, seed=42, sobrescribir=False):
     """Escribe parquet sintetico en <base>/raw/<x> para cada lectura de los jobs del plan.
 
@@ -1860,9 +1900,15 @@ def generar_datos(o, base_path, n_rows=20, seed=42, sobrescribir=False):
         esquema = {x["node"].lower(): x["columns"] for x in infer_input_schema(code)}
         # Completar con las columnas que el job usa aguas abajo de cada fuente
         lecturas = [mm.group(1) for mm in _READ_VAR.finditer(code)]
-        linaje = _columnas_por_fuente(code, lecturas)
+        marcas = {}
+        linaje = _columnas_por_fuente(code, lecturas, marcas)
         for fuente, cols in linaje.items():
             base_cols = {c["name"].lower(): c for c in esquema.get(fuente, [])}
+            # col1..col3 son el relleno de infer_input_schema cuando no detecta nada: se
+            # descartan si el codigo SI usa columnas (y no las cita).
+            if cols and all(re.fullmatch(r"col[1-3]", k) for k in base_cols) \
+                    and not any(re.search(rf'["\']{k}["\']', code) for k in base_cols):
+                base_cols = {}
             for nombre_c, tipo_c in cols.items():
                 prev = base_cols.get(nombre_c.lower())
                 if prev is None:
@@ -1899,6 +1945,13 @@ def generar_datos(o, base_path, n_rows=20, seed=42, sobrescribir=False):
                 cols, nota = [{"name": "id", "type": "string"}], "sin columnas detectadas: se uso 'id'"
             gen = build_synthetic_data(cols, n_rows=n_rows, fmt="json", seed=seed)
             nombres = [c["name"] for c in gen["columns"]]
+            hdr_trl = marcas.get(var.lower()) or {}
+            for cn, (ini, largo, vals) in hdr_trl.items():
+                # filas HDR/TRL (primera/ultima) + filas de datos: el filtro tiene efecto
+                n_f = len(gen["rows"])
+                for i, row in enumerate(gen["rows"]):
+                    if cn in row:
+                        row[cn] = _valor_hdr_trl(i, n_f, ini, largo, vals, row[cn])
             if os.path.isdir(dest):
                 shutil.rmtree(dest)
             elif os.path.exists(dest):

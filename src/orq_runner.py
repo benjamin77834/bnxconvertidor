@@ -214,10 +214,12 @@ def preflight(plan, p):
                 falt = []
             if falt:
                 out.append(_chk("entradas", "warn",
-                                f"Faltan {len(falt)} dataset(s) de entrada en {base}/raw: " + ", ".join(falt[:6])
+                                f"Faltan {len(falt)} dataset(s) de entrada; los jobs esperan exactamente: "
+                                + ", ".join(os.path.join(base, *r.split("/")) for r in falt[:6])
                                 + ("..." if len(falt) > 6 else ""),
-                                "Pulse '🧪 Datos sintéticos' (con este mismo base path) para generarlos, "
-                                "o copie sus datos reales a esa carpeta."))
+                                "La ejecucion FALLARA en esos jobs (PATH_NOT_FOUND). Pulse '🧪 Datos sintéticos' "
+                                "(con este mismo base path) para generarlos, o copie sus datos reales "
+                                "con ese nombre exacto a esa carpeta."))
             else:
                 out.append(_chk("entradas", "ok", "Datos de entrada presentes en <base>/raw"))
     tipos = _tipos_pasos(plan, p)

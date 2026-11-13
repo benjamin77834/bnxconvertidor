@@ -30,6 +30,8 @@ _REF_RE = re.compile(r"\$\{?AI_[A-Z_]+\}?[/\\][A-Za-z0-9_./\\${}\-]+\.(?:mp|pset
 _PROTO_RE = re.compile(r"^!prototype\|[^|]*\|{3}(.+)$")
 _PARAM_RE = re.compile(r"^(\w+)\|[^|]?\|{3}(.*)$|^(\w+)\|{4}(.*)$")
 _PREFIX_RE = re.compile(r"^\d+_")
+_COPY_SUFFIX_RE = re.compile(
+    r"(?:\s+-\s+(?:copy|copia)(?:\s*\(\d+\))?|\s*\(\d{1,2}\)|\s+\d{1,2})+$", re.I)
 
 _INPUT_KEYS = ("INPUT_FILE", "INPUT_INTERFACE_FILE")
 _OUTPUT_KEYS = ("OUTPUT_FILE", "OUTPUT_NAME")
@@ -39,7 +41,14 @@ def _norm_name(path_or_ref):
     """Nombre base sin prefijo numerico de descarga: '1_foo.mp' -> 'foo.mp'.
     Acepta '/' y '\\' (rutas de Windows en cualquier SO) y variables ($AI_MP, ${AI_MP})."""
     s = str(path_or_ref).strip().strip("\"'").replace("\\", "/")
-    return _PREFIX_RE.sub("", s.rsplit("/", 1)[-1])
+    base = _PREFIX_RE.sub("", s.rsplit("/", 1)[-1])
+    # Copias del navegador/explorador: 'foo 1.mp', 'foo (1).mp', 'foo - Copy.mp',
+    # 'foo - copia (2).mp' -> 'foo.mp' (solo con espacio antes, para no tocar 'foo_1.mp').
+    stem, ext = os.path.splitext(base)
+    if ext.lower() in EXT_KIND:
+        stem = _COPY_SUFFIX_RE.sub("", stem)
+        base = stem + ext
+    return base
 
 
 def _kind_of(name):
