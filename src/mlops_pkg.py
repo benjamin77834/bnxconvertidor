@@ -18,6 +18,7 @@ El paquete declara las dependencias (incluidas las del banco, p.ej. libs de
 Cloudera/Artifactory) en requirements.txt; en la red del banco se resuelven
 desde su indice privado. En local corre con PySpark open source.
 """
+import glob
 import io
 import json
 import os
@@ -554,7 +555,7 @@ _EXTRA_PIP = {
     "lightgbm": "lightgbm", "scipy": "scipy", "statsmodels": "statsmodels",
     "matplotlib": "matplotlib", "seaborn": "seaborn", "yaml": "PyYAML",
     "openpyxl": "openpyxl", "xlrd": "xlrd", "pyarrow": "pyarrow", "requests": "requests",
-    "tqdm": "tqdm", "dill": "dill",
+    "tqdm": "tqdm", "dill": "dill", "threadpoolctl": "threadpoolctl",
 }
 # Dependencias de una lib (para instalar offline sin --no-deps fallido).
 _EXTRA_DEPS = {"cytoolz": ["toolz"]}
@@ -584,6 +585,46 @@ def _detect_extra_imports(source_codes):
     return pkgs
 
 
+# Librerias de ML que, si el codigo las importa, viajan en requirements.txt y en el
+# vendor/ OFFLINE como pandas/numpy (sin necesitar extra_steps). xgboost y
+# scikit-learn van SIEMPRE juntos: en Mac scikit-learn trae su propia libomp
+# (.dylibs/) que xgboost puede usar si no hay 'brew install libomp'.
+_ML_PIP = ("xgboost", "lightgbm", "scikit-learn", "scipy", "statsmodels", "matplotlib",
+           "seaborn", "joblib", "threadpoolctl")
+# Linea de requirements.txt de cada una (las transitivas -numpy, patsy, contourpy,
+# pillow...- las resuelve pip al armar vendor/).
+_ML_REQ = {
+    "xgboost": "xgboost>=1.7  # pila de ciencia de datos (offline en vendor/)",
+    # lightgbm 3.3.5 (ultima con wheel manylinux2014) no es compatible con scikit-learn/numpy
+    # recientes de Python 3.12: ahi se pide 4.x (wheel manylinux_2_28, glibc >= 2.28).
+    "lightgbm": ('lightgbm>=3.3 ; python_version < "3.12"  # pila de ciencia de datos (offline en vendor/)\n'
+                 'lightgbm>=4.0 ; python_version >= "3.12"  # pila de ciencia de datos (4.x: manylinux_2_28)'),
+    "scikit-learn": "scikit-learn>=1.1  # pila de ciencia de datos; en Mac trae libomp para xgboost/lightgbm",
+    "scipy": "scipy>=1.7  # pila de ciencia de datos",
+    "statsmodels": "statsmodels>=0.13  # pila de ciencia de datos",
+    "matplotlib": "matplotlib>=3.5  # pila de ciencia de datos",
+    "seaborn": "seaborn>=0.11  # pila de ciencia de datos",
+    "joblib": "joblib>=1.1  # pila de ciencia de datos",
+    "threadpoolctl": "threadpoolctl>=3.0  # pila de ciencia de datos",
+}
+
+
+def _ml_libs_detectadas(extra_pkgs, ciencia=False):
+    """Librerias de la pila de ciencia de datos que van al paquete: TODAS si ciencia=True
+    (opcion 'Incluir pila de ciencia de datos'), si no solo las que importa el codigo.
+    xgboost/lightgbm siempre con scikit-learn (en Mac trae la libomp que necesitan);
+    importar sklearn o xgboost trae ambos. [] si no usa ninguna."""
+    if ciencia:
+        return list(_ML_PIP)
+    pk = set(extra_pkgs or []) & set(_ML_PIP)
+    orig = set(pk)
+    if orig & {"xgboost", "lightgbm"}:
+        pk.add("scikit-learn")
+    if orig & {"xgboost", "scikit-learn"}:
+        pk |= {"xgboost", "scikit-learn"}
+    return [m for m in _ML_PIP if m in pk]
+
+
 def _requirements_extra(pkgs):
     lines = [
         "# Librerias OPEN SOURCE que importa tu codigo (fuera del core).",
@@ -593,7 +634,7 @@ def _requirements_extra(pkgs):
     return "\n".join(lines + list(pkgs)) + "\n"
 
 
-def _requirements(include_bank_libs, extra_steps=False, bank_libs=None):
+def _requirements(include_bank_libs, extra_steps=False, bank_libs=None, ml_libs=None):
     base = [
         "# Framework MLOps v2 — dependencias",
         "# PySpark segun la version de Python (markers de pip): 3.5.x soporta",
@@ -606,11 +647,21 @@ def _requirements(include_bank_libs, extra_steps=False, bank_libs=None):
         "pytest>=7.0",
         "chispa>=0.9  # testing de DataFrames Spark",
     ]
+    ml = list(ml_libs or [])
     if extra_steps:
         base += [
             "xgboost>=1.7  # scoring (paso extra)",
             "scikit-learn>=1.1  # metricas/preparacion (paso extra)",
         ]
+        ml = [m for m in ml if m not in ("xgboost", "scikit-learn")]
+    # Librerias de ML que importa el codigo subido (offline en vendor/, como pandas).
+    for _m in ml:
+        base.append(_ML_REQ.get(_m, _m))
+    if ml:
+        # Sin tope pip elegiria pandas 3.x (Python 3.12) al resolver la pila: cambia el
+        # comportamiento del codigo pandas del usuario (copy-on-write, dtype string).
+        base.append("pandas<3  # pandas 3 cambia el comportamiento de tu codigo; se mantiene 2.x")
+
     # Librerias INTERNAS del banco detectadas en el codigo original. Se dan de
     # ALTA en requirements.txt para que pip las resuelva desde el Artifactory
     # privado (--index-url). Van ACTIVAS (no comentadas) cuando se detectaron,
@@ -728,6 +779,63 @@ python_files = test_*.py
 addopts = -p no:cacheprovider
 '''
 
+_LIBOMP_SH = r'''# ---------------------------------------------------------------------------
+# xgboost necesita OpenMP del sistema (bash 3.2 compatible, sin dependencias):
+#  - macOS: libxgboost.dylib busca @rpath/libomp.dylib (Homebrew). Si no hay
+#    'brew install libomp', se usa la copia que traen scikit-learn (sklearn/.dylibs)
+#    o torch dentro del venv, exportando DYLD_LIBRARY_PATH. Alternativa permanente:
+#    install_name_tool -add_rpath <carpeta con libomp.dylib> <venv>/.../xgboost/lib/libxgboost.dylib
+#  - Linux: la wheel manylinux enlaza libgomp del sistema (yum/apt install libgomp).
+# ---------------------------------------------------------------------------
+bnx_libomp_fix() {
+  [ "$(uname)" = "Darwin" ] || return 0
+  BNX_SP="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])' 2>/dev/null || true)"
+  if [ -z "$BNX_SP" ] || { [ ! -d "$BNX_SP/xgboost" ] && [ ! -d "$BNX_SP/lightgbm" ]; }; then return 0; fi
+  if [ -f /opt/homebrew/opt/libomp/lib/libomp.dylib ] || [ -f /usr/local/opt/libomp/lib/libomp.dylib ]; then
+    return 0
+  fi
+  BNX_OMP_DIR=""
+  for f in "$BNX_SP"/sklearn/.dylibs/libomp.dylib "$BNX_SP"/torch/lib/libomp*.dylib "$BNX_SP"/*/.dylibs/libomp*.dylib; do
+    if [ -f "$f" ]; then BNX_OMP_DIR="$(dirname "$f")"; break; fi
+  done
+  if [ -n "$BNX_OMP_DIR" ]; then
+    case ":${DYLD_LIBRARY_PATH:-}:" in
+      *":$BNX_OMP_DIR:"*) ;;
+      *) export DYLD_LIBRARY_PATH="$BNX_OMP_DIR${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" ;;
+    esac
+    echo "      [libomp] macOS sin Homebrew libomp: xgboost usara la de $BNX_OMP_DIR (DYLD_LIBRARY_PATH)."
+    BNX_BAD=0
+    for lib in xgboost lightgbm; do
+      if [ -d "$BNX_SP/$lib" ] && ! python -c "import $lib" >/dev/null 2>&1; then BNX_BAD=1; fi
+    done
+    if [ "$BNX_BAD" = "1" ]; then
+      echo "      [AVISO] xgboost/lightgbm siguen sin cargar. Instala OpenMP:  brew install libomp"
+      echo "              o fija la ruta: install_name_tool -add_rpath $BNX_OMP_DIR $BNX_SP/xgboost/lib/libxgboost.dylib"
+    fi
+  else
+    echo "      [AVISO] xgboost/lightgbm necesitan OpenMP en Mac y no hay libomp: instala  brew install libomp"
+    echo "              (o instala scikit-learn en este venv: trae su propia libomp)."
+  fi
+  return 0
+}
+
+bnx_libgomp_check() {
+  [ "$(uname)" = "Linux" ] || return 0
+  BNX_SP="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])' 2>/dev/null || true)"
+  if [ -z "$BNX_SP" ] || { [ ! -d "$BNX_SP/xgboost" ] && [ ! -d "$BNX_SP/lightgbm" ]; }; then return 0; fi
+  BNX_BAD=0
+  for lib in xgboost lightgbm; do
+    if [ -d "$BNX_SP/$lib" ] && ! python -c "import $lib" >/dev/null 2>&1; then BNX_BAD=1; fi
+  done
+  if [ "$BNX_BAD" = "0" ]; then return 0; fi
+  if { ldconfig -p || /sbin/ldconfig -p; } 2>/dev/null | grep -q libgomp; then return 0; fi
+  echo "      [AVISO] xgboost/lightgbm no cargan y el sistema no tiene libgomp (OpenMP). Instalalo (requiere root):"
+  echo "                yum install libgomp      (RHEL/CentOS)   |   apt-get install libgomp1   (Debian/Ubuntu)"
+  echo "              El montaje continua; los jobs que usen xgboost fallaran hasta instalarlo."
+  return 0
+}
+'''
+
 _SETUP_SH = '''#!/usr/bin/env bash
 # setup.sh - MONTA el entorno (una sola vez): crea .venv e instala todo.
 # Si el paquete trae vendor/ (ambiente completo) monta TODO OFFLINE, sin internet.
@@ -783,13 +891,19 @@ if [ -n "$VENDOR_DIR" ] && ls "$VENDOR_DIR"/*.whl >/dev/null 2>&1; then
   python -m pip install --no-index --find-links "$VENDOR_DIR" pip setuptools wheel >/dev/null 2>&1 || true
   if ls "$VENDOR_DIR"/pyspark-*.whl >/dev/null 2>&1; then
     echo "      OFFLINE desde $VENDOR_DIR (ambiente completo, sin internet)."
-    python -m pip install --no-index --find-links "$VENDOR_DIR" $BANK_LINKS -r requirements.txt
+    python -m pip install --no-index --find-links "$VENDOR_DIR" $BANK_LINKS -r requirements.txt || {
+      echo "      [!] Falto alguna wheel en vendor/: intento completar por internet (PyPI/PIP_INDEX_URL) ..."
+      python -m pip install --find-links "$VENDOR_DIR" $BANK_LINKS -r requirements.txt
+    }
   else
     # Paquete SIN PySpark: todas las librerias offline; PySpark online o del cluster.
     echo "      OFFLINE desde $VENDOR_DIR (sin PySpark: el resto de librerias offline)."
     mkdir -p .bnx_tmp
     grep -viE '^[[:space:]]*(pyspark|py4j)([^a-z0-9_-]|$)' requirements.txt > .bnx_tmp/requirements-sin-spark.txt
-    python -m pip install --no-index --find-links "$VENDOR_DIR" $BANK_LINKS -r .bnx_tmp/requirements-sin-spark.txt
+    python -m pip install --no-index --find-links "$VENDOR_DIR" $BANK_LINKS -r .bnx_tmp/requirements-sin-spark.txt || {
+      echo "      [!] Falto alguna wheel en vendor/: intento completar por internet (PyPI/PIP_INDEX_URL) ..."
+      python -m pip install --find-links "$VENDOR_DIR" $BANK_LINKS -r .bnx_tmp/requirements-sin-spark.txt
+    }
     # PySpark: con BNX_SPARK=cluster se usa el del cluster (no se instala). Si no,
     # se intenta por internet (PyPI o PIP_INDEX_URL) la serie acorde al Python:
     # 3.5.6 para 3.8-3.11 y 4.0.0 para 3.12+. Si falla NO se rompe el resto.
@@ -951,6 +1065,10 @@ EOF_ACT
 echo "      Entorno virtual configurado: SPARK_CONF_DIR=.venv/spark_conf, tmp=$BNX_TMP_ABS"
 . "$ACT"
 
+@@LIBOMP@@
+bnx_libomp_fix
+bnx_libgomp_check
+
 echo "[3/4] Verificando dependencias (check_env.py) ..."
 # Avisa si falta alguna libreria que el codigo importa (no aborta el montaje).
 python check_env.py || echo "  [!]  Faltan librerias (ver arriba). Instalalas antes de produccion."
@@ -993,6 +1111,9 @@ if [ "${BNX_SPARK:-}" = "cluster" ]; then
   fi
 fi
 . .venv/bin/activate
+
+@@LIBOMP@@
+bnx_libomp_fix
 
 # Modulos de path del banco (toolbox, bnmxverse, utils) que dejo setup.sh.
 if [ -d bank_pkg ]; then export PYTHONPATH="$PWD/bank_pkg:${PYTHONPATH:-}"; fi
@@ -1063,6 +1184,9 @@ export PYSPARK_PYTHON="$PWD/.venv/bin/python"
 export PYSPARK_DRIVER_PYTHON="$PWD/.venv/bin/python"
 exec python main.py "$@"
 '''
+
+_SETUP_SH = _SETUP_SH.replace("@@LIBOMP@@", _LIBOMP_SH)
+_RUN_SH = _RUN_SH.replace("@@LIBOMP@@", _LIBOMP_SH)
 
 # run.sh del paquete de monitoreo (sin main.py): corre sus pruebas.
 _RUN_SH_METRICS = '''#!/usr/bin/env bash
@@ -2181,6 +2305,20 @@ metastore/HDFS del cluster y no fallan con zstd/snappy nativos. Si el
 `hive-site.xml` del cluster esta en otra ruta: `SPARK_CONF_DIR=/ruta bash setup.sh`.
 (Es normal ver "Picked up JAVA_TOOL_OPTIONS: ..." al arrancar Java.)
 
+### Pila de ciencia de datos (xgboost, lightgbm, scikit-learn, scipy, statsmodels, matplotlib, seaborn, joblib, threadpoolctl) y OpenMP
+Si generaste el paquete con "Incluir pila de ciencia de datos", o tu codigo importa alguna de
+estas librerias, el paquete las trae AUTOMATICAMENTE (requirements.txt + wheels offline en
+`vendor/`, con sus dependencias: numpy, patsy, contourpy, pillow, ...). No hace falta el paso
+extra de scoring. xgboost/lightgbm viajan siempre con scikit-learn.
+- **Linux (servidor)**: las wheels de xgboost/lightgbm usan `libgomp` del sistema. Si `import xgboost`
+  falla: `yum install libgomp` (RHEL/CentOS) o `apt-get install libgomp1`.
+- **Mac**: xgboost/lightgbm buscan `libomp.dylib` de Homebrew. `setup.sh`/`run.sh` usan solos la copia
+  que trae scikit-learn (`DYLD_LIBRARY_PATH=<venv>/.../sklearn/.dylibs`) si no hay
+  `brew install libomp`. Si lo corres a mano: `export DYLD_LIBRARY_PATH=<esa carpeta>`
+  o `brew install libomp`.
+- **Windows**: instala Microsoft Visual C++ Redistributable (vcomp140.dll).
+- `python check_env.py` imprime la pista exacta de tu sistema si xgboost no carga.
+
 ## 2) Correr con los settings del banco (pivot.json / datapull.json)
 Los JSON de `bin/settings/<modelo>/` se leen tal cual (ambientes prod/uat/sbx con
 `tables_info`). Cada tabla se convierte en
@@ -2496,6 +2634,48 @@ def _classify(mod):
     return "otro"
 
 
+def _es_error_openmp(txt):
+    return "libomp" in txt or "OpenMP" in txt or "XGBoost Library" in txt or "libgomp" in txt
+
+
+def _pista_openmp():
+    """Pista EXACTA por sistema operativo para que xgboost cargue (falta OpenMP)."""
+    import platform
+    so = platform.system()
+    if so == "Darwin":
+        pista = " -> en Mac instala OpenMP:  brew install libomp"
+        for base in glob.glob(os.path.join(sys.prefix, "lib", "python*", "site-packages")) + \\
+                    glob.glob(os.path.join(sys.prefix, "lib", "site-packages")):
+            for pat in ("sklearn/.dylibs/libomp.dylib", "torch/lib/libomp*.dylib",
+                        "*/.dylibs/libomp*.dylib"):
+                hits = glob.glob(os.path.join(base, pat))
+                if hits:
+                    return (pista + "\\n     o usa la libomp de scikit-learn ya instalada (sin brew):"
+                            "\\n       export DYLD_LIBRARY_PATH=%s:$DYLD_LIBRARY_PATH"
+                            "\\n     (bash run.sh y setup.sh ya lo hacen solos)" % os.path.dirname(hits[0]))
+        return pista
+    if so == "Windows":
+        return " -> instala Microsoft Visual C++ Redistributable (vcomp140.dll)"
+    return " -> instala libgomp del sistema:  yum install libgomp  |  apt-get install libgomp1"
+
+
+def _probar_xgboost():
+    """Intenta importar xgboost/lightgbm de verdad (find_spec no detecta una libreria
+    nativa rota). Devuelve '' si cargan o no estan instalados; si no, el mensaje con
+    la pista por SO."""
+    for lib in ("xgboost", "lightgbm"):
+        if not _can_import(lib):
+            continue
+        try:
+            importlib.import_module(lib)
+        except Exception as e:
+            txt = str(e)
+            primera = txt.strip().splitlines()[0] if txt.strip() else type(e).__name__
+            return "%s: %s: %s%s" % (lib, type(e).__name__, primera,
+                                     _pista_openmp() if _es_error_openmp(txt) else "")
+    return ""
+
+
 def _probar_jobs():
     """Importa cada aggregate del paquete. Devuelve [(job, error)] de los que fallan."""
     import importlib
@@ -2519,11 +2699,8 @@ def _probar_jobs():
             txt = str(e)
             primera = txt.strip().splitlines()[0] if txt.strip() else ""
             pista = ""
-            if "libomp" in txt or "OpenMP" in txt or "XGBoost Library" in txt:
-                import platform
-                pista = {"Darwin": " -> en Mac instala OpenMP:  brew install libomp",
-                         "Windows": " -> instala Microsoft Visual C++ Redistributable (vcomp140.dll)",
-                         }.get(platform.system(), " -> instala libgomp del sistema (yum/apt install libgomp)")
+            if _es_error_openmp(txt):
+                pista = _pista_openmp()
             errores.append((fn[:-3], "%s: %s (en %s:%s)%s" % (
                 type(e).__name__, primera, os.path.basename(ultimo.filename), ultimo.lineno, pista)))
     return errores
@@ -2553,6 +2730,11 @@ def main():
     # 'utils.emails_full' tapado por otro 'utils'). El chequeo de arriba solo ve
     # los imports de primer nivel.
     errores_jobs = _probar_jobs()
+    # xgboost instalado pero con la libreria nativa rota (falta OpenMP): se avisa aunque
+    # ningun job se pudo probar (paquete ligero sin PySpark).
+    err_xgb = _probar_xgboost()
+    if err_xgb and not any(("xgboost" in e.lower() or "lightgbm" in e.lower()) for _, e in errores_jobs):
+        errores_jobs.append(("xgboost", err_xgb))
     if not faltan and not errores_jobs:
         print("\\n[OK] No falta ninguna libreria. El entorno esta completo.")
         return 0
@@ -3225,6 +3407,9 @@ def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all",
             for _s, _vs in sorted(faltan_offline.items()):
                 for _v, _e in sorted(_vs.items()):
                     _txt.append(f"- {_s} / Python {_v}: {_e}")
+            if any(_re.match(r"\s*(xgboost|lightgbm|scikit[-_]learn|scipy|statsmodels|matplotlib|seaborn)\b", _l, _re.I) for _l in req_lineas):
+                _txt += ["", "Tu codigo usa xgboost/scikit-learn/scipy: para tener sus wheels offline corre en",
+                         "el generador:  .venv/bin/python preparar_vendor.py --extra --python 3.X"]
             _put_str(z, "framework_mlops_v2_pkg/vendor/OFFLINE_FALTANTES.txt", "\n".join(_txt) + "\n")
         for path, content in (sep_files or {}).items():
             _put_str(z, "framework_mlops_metrics_pkg/" + path, content)
@@ -3490,13 +3675,16 @@ def _wheel_dist(fname):
     return _re.split(r"-\d", os.path.basename(fname), maxsplit=1)[0].lower().replace("-", "_")
 
 
-def _pool_wheels(serie_dir, extra_steps, incluir_spark):
+def _pool_wheels(serie_dir, extra_steps, incluir_spark, ml=False):
     """Wheels disponibles en cache para una serie: deps del framework, deps del stack
     del banco (cp38, cytoolz, ...) y, si incluir_spark, PySpark/py4j."""
     raiz = os.path.dirname(_MLOPS_VENDOR_CACHE)
     dirs = [os.path.join(_MLOPS_VENDOR_CACHE, serie_dir),
-            os.path.join(_MLOPS_VENDOR_CACHE, serie_dir + "_extra") if extra_steps else None,
+            os.path.join(_MLOPS_VENDOR_CACHE, serie_dir + "_extra") if (extra_steps or ml) else None,
             os.path.join(_MLOPS_VENDOR_CACHE, serie_dir + "_dl"),   # bajadas automaticas
+            # pila de ciencia de datos: aparte, para no cambiar lo que resuelven los
+            # paquetes que NO la usan (pandas/numpy mas nuevos, glibc, ...)
+            os.path.join(_MLOPS_VENDOR_CACHE, serie_dir + "_ciencia") if ml else None,
             os.path.join(_BANK_LIBS_CACHE, "wheels"),
             os.path.join(raiz, serie_dir)]
     pool = {}
@@ -3541,6 +3729,37 @@ def _reqs_para(version, lineas, incluir_spark):
     return out
 
 
+def _fijar_pandas_numpy(serie_dir, extra_steps, incluir_spark, v, dl):
+    """Con la pila de ciencia de datos: archivo de constraints que FIJA pandas/numpy a lo
+    que ya resuelve el paquete sin ella (p.ej. pandas 1.3.1 del banco en py3.8), para no
+    cambiar la version del usuario ni bajar otro pandas/numpy. None si no hay nada."""
+    try:
+        from packaging.version import Version as _Ver
+    except ImportError:
+        from pip._vendor.packaging.version import Version as _Ver
+    base_pool = _pool_wheels(serie_dir, extra_steps, incluir_spark, ml=False)
+    abi_ = "cp" + v.replace(".", "")
+    fijas = []
+    for dist_ in ("pandas", "numpy"):
+        cand = []
+        for f_ in base_pool:
+            pt = f_[:-4].split("-")
+            if len(pt) >= 5 and _wheel_dist(f_) == dist_ and (
+                    pt[-3] == abi_ or (pt[-3].startswith("py") and pt[-2] == "none")):
+                try:
+                    cand.append((_Ver(pt[1]), pt[1]))
+                except Exception:
+                    pass
+        if cand:
+            fijas.append("%s==%s" % (dist_, max(cand)[1]))
+    if not fijas:
+        return None
+    path = os.path.join(dl, "constraints-%s.txt" % v)
+    with open(path, "w") as fh_:
+        fh_.write("\n".join(fijas) + "\n")
+    return path
+
+
 def _seleccionar_wheels(serie_dir, req_lineas, extra_steps=False, incluir_spark=True,
                         _descargar=True, versiones=None):
     """Resuelve con pip (sin instalar) que wheels hacen falta para TODAS las versiones
@@ -3549,7 +3768,8 @@ def _seleccionar_wheels(serie_dir, req_lineas, extra_steps=False, incluir_spark=
     se sabe de antemano si a alguna version le falta algo para instalar offline."""
     import json as _json
     import tempfile as _tf
-    pool = _pool_wheels(serie_dir, extra_steps, incluir_spark)
+    ml = any(_re.match(r"\s*(xgboost|lightgbm|scikit[-_]learn|scipy|statsmodels|matplotlib|seaborn)\b", ln, _re.I) for ln in req_lineas)
+    pool = _pool_wheels(serie_dir, extra_steps, incluir_spark, ml)
     versiones = list(versiones or _SERIE_VERSIONES.get(serie_dir, []))
     clave = (serie_dir, tuple(req_lineas), extra_steps, incluir_spark, tuple(versiones),
              tuple(sorted(pool)))
@@ -3598,7 +3818,7 @@ def _seleccionar_wheels(serie_dir, req_lineas, extra_steps=False, incluir_spark=
         # Al cache le faltan wheels (p.ej. el servidor del portal no tiene cytoolz /
         # unidecode): bajarlas UNA vez, para Linux y esa version de Python, y resolver
         # de nuevo. Sin internet falla rapido y queda el aviso.
-        dl = os.path.join(_MLOPS_VENDOR_CACHE, serie_dir + "_dl")
+        dl = os.path.join(_MLOPS_VENDOR_CACHE, serie_dir + ("_ciencia" if ml else "_dl"))
         os.makedirs(dl, exist_ok=True)
         bajo_algo = False
         for v in list(faltan):
@@ -3610,13 +3830,45 @@ def _seleccionar_wheels(serie_dir, req_lineas, extra_steps=False, incluir_spark=
                 continue          # ya fallo en este proceso (sin red): no reintentar
             _descarga_fallida.add(intento)
             abi = "cp" + v.replace(".", "")
-            for plat in ("manylinux2014_x86_64", "manylinux_2_17_x86_64", "manylinux_2_28_x86_64"):
+            _plats = ["manylinux2014_x86_64", "manylinux_2_17_x86_64", "manylinux_2_28_x86_64"]
+            _cf = _fijar_pandas_numpy(serie_dir, extra_steps, incluir_spark, v, dl)
+            _cons = ["-c", _cf] if _cf else []
+            # Todo se baja preferentemente manylinux2014 (glibc 2.17), una plataforma por
+            # vez. Excepcion Python >= 3.12: lightgbm 4.x solo existe en manylinux_2_28; se
+            # baja APARTE (--no-deps, sus deps ya vienen en 2014) para no arrastrar
+            # numpy/scipy/scikit-learn 2_28 al resto de paquetes.
+            _lgbm = [r_ for r_ in reqs if r_.lower().startswith("lightgbm")] \
+                if int(v.split(".")[1]) >= 12 else []
+            if _lgbm:
+                reqs = [r_ for r_ in reqs if r_ not in _lgbm]
+                try:
+                    _sp.run([_sys.executable, "-m", "pip", "download", "--quiet", "--no-deps",
+                             "--retries", "1", "--timeout", "15", "--only-binary=:all:",
+                             "--python-version", v, "--implementation", "cp",
+                             "--abi", abi, "--abi", "abi3", "--abi", "none",
+                             *[x for pl in _plats for x in ("--platform", pl)],
+                             "--platform", "any", "-d", dl, *_lgbm],
+                            capture_output=True, text=True, timeout=240)
+                    bajo_algo = True
+                    # Sus dependencias (narwhals, ...) se bajan con el resto (en 2014).
+                    for w_ in sorted(glob.glob(os.path.join(dl, "lightgbm-*.whl")))[-1:]:
+                        with zipfile.ZipFile(w_) as zw:
+                            meta_ = next(zw.read(n_).decode("utf-8", "replace")
+                                         for n_ in zw.namelist() if n_.endswith(".dist-info/METADATA"))
+                        for ln_ in meta_.splitlines():
+                            if ln_.startswith("Requires-Dist:") and "extra ==" not in ln_:
+                                reqs += _reqs_para(v, [ln_.split(":", 1)[1].strip()], False)
+                except Exception:
+                    pass
+            _grupos = [[p_] for p_ in _plats]
+            for grupo in _grupos:
                 try:
                     r = _sp.run([_sys.executable, "-m", "pip", "download", "--quiet",
                                  "--retries", "1", "--timeout", "15", "--only-binary=:all:",
                                  "--python-version", v, "--implementation", "cp",
                                  "--abi", abi, "--abi", "abi3", "--abi", "none",
-                                 "--platform", plat, "--platform", "any", "-d", dl, *reqs],
+                                 *[x for pl in grupo for x in ("--platform", pl)],
+                                 "--platform", "any", "-d", dl, *_cons, *reqs],
                                 capture_output=True, text=True, timeout=240)
                     if r.returncode == 0:
                         bajo_algo = True
@@ -3662,8 +3914,13 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
                                include_bank_libs=True, optimize=True,
                                extra_steps=False, include_monitoring=False,
                                separate_monitoring=False, full_env=False,
-                               py_target="all", out_path=None, registry=None):
+                               py_target="all", out_path=None, registry=None,
+                               ciencia=False):
     """Arma el Framework v2 EMPAQUETADO con la logica del usuario dentro.
+    ciencia: si True agrega la PILA DE CIENCIA DE DATOS (xgboost, lightgbm, scikit-learn,
+        scipy, statsmodels, matplotlib, seaborn, joblib, threadpoolctl + transitivas) a
+        requirements.txt y al vendor/ offline aunque el codigo no las importe. Con False
+        solo se agregan las que el codigo importa (el paquete ligero sigue ligero).
     registry: lista de fuentes (nombre de archivo o de modulo, sin importar .py ni
         mayusculas) que se REGISTRAN como jobs en router.py. Las demas son MODULOS
         DE APOYO: se copian EXACTOS a bank_src/<archivo> (sin conversion ni
@@ -3827,12 +4084,14 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     # (vendor/) no se rompa: el core se instala con --no-index y las del banco se
     # intentan aparte desde el Artifactory (sin abortar si no hay acceso).
     bank_libs = _detect_bank_imports(original_codes)
-    files["requirements.txt"] = _requirements(include_bank_libs, extra_steps, bank_libs)
+    extra_pkgs = _detect_extra_imports(original_codes)
+    ml_libs = _ml_libs_detectadas(extra_pkgs, ciencia)
+    files["requirements.txt"] = _requirements(include_bank_libs, extra_steps, bank_libs, ml_libs)
     if bank_libs:
         files["requirements-bank.txt"] = _requirements_bank(bank_libs)
-    extra_pkgs = _detect_extra_imports(original_codes)
-    if extra_steps:
-        extra_pkgs = [p for p in extra_pkgs if p not in ("xgboost", "scikit-learn")]
+    # xgboost/scikit-learn/scipy ya van en requirements.txt (y en vendor/): no se repiten.
+    extra_pkgs = [p for p in extra_pkgs if p not in _ML_PIP
+                  and not (extra_steps and p in ("xgboost", "scikit-learn"))]
     if extra_pkgs:
         files["requirements-extra.txt"] = _requirements_extra(extra_pkgs)
     # 'mex_lib_cs' es una fachada que escribimos nosotros: va EMBEBIDA en la raiz
@@ -4447,6 +4706,9 @@ def _verify_resolve_linux(pkg_root, py_target, _log, steps, timeout):
         _log("     `.venv/bin/python preparar_vendor.py --python 3.X` (o el boton 'Bajar/generar cache'")
         _log("     de la pagina), o importa un ZIP hecho en otra maquina con")
         _log("     `exportar_vendor.py --python 3.X` (aqui: preparar_vendor.py --zip <zip>).")
+        if any(f.lower().split("[")[0] in _ML_PIP
+               for f in faltantes):
+            _log("     pila de ciencia de datos: corre `.venv/bin/python preparar_vendor.py --extra --python 3.X`.")
         _log("     Las mex-lib del banco no estan en PyPI: cargalas en 'Librerias del banco' o por ZIP.")
     return {"ok_env": ok_env, "checks": {"ok": [], "missing": faltantes,
                                          "por_version": faltan_por_ver}}

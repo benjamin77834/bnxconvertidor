@@ -9,7 +9,7 @@
 #
 # Cache de vendor (wheels de PySpark/deps para armar paquetes Linux offline) en
 # .venv/bnx_vendor_cache. Al arrancar se revisa; si falta algo se ofrece bajarlo/generarlo.
-# Bajar = primero el GitHub Release publico (vendor-linux-v1: rapido, sin libs del banco),
+# Bajar = primero el GitHub Release publico (vendor-linux-v2, o BNX_VENDOR_TAG: rapido, sin libs del banco),
 # si falla cae a pip. Las libs del banco: preparar_vendor.py --bank-libs <carpeta|zip>.
 #   BNX_VENDOR_AUTO=3.8|3.12|ambas  sin tty: baja automatico sin preguntar
 #   BNX_VENDOR_PODAR=3.8|3.12|ambas  quita del cache lo que no sea el minimo (sin preguntar)

@@ -98,8 +98,10 @@ def _dir_bytes(d):
 def _reqs_listas():
     """(base, extra) de requisitos open source, igual que exportar_vendor."""
     from src import mlops_pkg as mp
-    base = [l for l in mp._requirements(True, False).splitlines() if l.strip() and not l.startswith("#")]
-    extra = [l for l in mp._requirements(True, True).splitlines() if l.strip() and not l.startswith("#")]
+    # La pila de ciencia de datos va SIEMPRE en el cache (viaja con el env que se baja).
+    base = [l for l in mp._requirements(True, False, ml_libs=list(mp._ML_PIP)).splitlines()
+            if l.strip() and not l.startswith("#")]
+    extra = [l for l in mp._requirements(True, True, ml_libs=list(mp._ML_PIP)).splitlines() if l.strip() and not l.startswith("#")]
     bk = _bank_requires()
     return base + STACK_BANCO + bk, extra + STACK_BANCO + bk
 
@@ -370,7 +372,7 @@ def importar_zip(zpath, log=print, cache=None):
 
 # ------------------------------------------------- GitHub Release (repo publico)
 GH_REPO = "benjamin77834/bnxconvertidor"
-GH_TAG = "vendor-linux-v1"
+GH_TAG = os.environ.get("BNX_VENDOR_TAG") or "vendor-linux-v2"   # incluye la pila de ciencia de datos
 GH_VERSIONES = ("3.8", "3.12")          # assets publicados (sin librerias del banco)
 def _gh_url(tag, nombre):
     return "https://github.com/%s/releases/download/%s/%s" % (GH_REPO, tag, nombre)

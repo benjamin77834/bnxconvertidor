@@ -213,6 +213,10 @@ ssh -i /ruta/monkey2.pem ec2-user@<IP-EC2>
 cd app && git pull && sudo systemctl restart bnx
 ```
 
+### Pila de ciencia de datos en el Framework MLOps v2
+El env que se baja (`preparar_vendor.py`, `start_server.sh`; tag del Release `vendor-linux-v2`, configurable con `--tag` o `BNX_VENDOR_TAG`) ya trae PySpark **y** la pila: xgboost, lightgbm, scikit-learn, scipy, statsmodels, matplotlib, seaborn, joblib, threadpoolctl (+ transitivas). En la pagina del paquete la opcion "Incluir pila de ciencia de datos" viene activada; si la desmarcas solo van las librerias que tu codigo importa (xgboost/sklearn/lightgbm/scipy/...), y un paquete sin ellas sigue ligero. `setup.sh` las instala offline desde `vendor/` y, si falta una wheel, completa por internet.
+OpenMP: en Mac, `setup.sh`/`run.sh` usan la `libomp` de scikit-learn (`DYLD_LIBRARY_PATH`) si no hay `brew install libomp`; en Linux hace falta `libgomp` (`yum install libgomp` / `apt-get install libgomp1`); en Windows el Visual C++ Redistributable.
+
 ### Cache de vendor (Framework MLOps v2, paquetes Linux offline)
 Los wheels que se empaquetan (PySpark 3.5.6/4.0.0, py4j, pandas/numpy manylinux, mex-lib del banco)
 viven **dentro del venv**: `.venv/bnx_vendor_cache/` (o `BNX_VENDOR_CACHE=/otra/ruta`). `./start_server.sh`

@@ -6,7 +6,7 @@ preparar_vendor.py — Baja/genera el cache de vendor DENTRO del venv (.venv/bnx
 USO:
     .venv/bin/python preparar_vendor.py --python 3.8              # default
     .venv/bin/python preparar_vendor.py --python 3.8 --python 3.12
-    .venv/bin/python preparar_vendor.py --desde-github --python 3.12 [--tag vendor-linux-v1]
+    .venv/bin/python preparar_vendor.py --desde-github --python 3.12 [--tag vendor-linux-v2]
     .venv/bin/python preparar_vendor.py --zip ~/Downloads/bnx_vendor_py3.8.zip
     .venv/bin/python preparar_vendor.py --estado [--json] [--python 3.12]
 
@@ -40,9 +40,9 @@ def main(argv=None):
     ap.add_argument("--tag", default=vc.GH_TAG, help="Tag del Release (default %s)." % vc.GH_TAG)
     ap.add_argument("--estado", action="store_true", help="Solo reporta que falta.")
     ap.add_argument("--json", action="store_true", help="Con --estado: salida JSON.")
-    ap.add_argument("--extra", action="store_true",
-                    help="Incluir tambien las deps de pasos extra (xgboost, scikit-learn). Sin esto "
-                         "solo el minimo base.")
+    ap.add_argument("--extra", "--ciencia", dest="extra", action="store_true",
+                    help="Incluir tambien las deps de los pasos extra (scoring). La pila de ciencia de "
+                         "datos (xgboost, lightgbm, scikit-learn, ...) ya va SIEMPRE.")
     ap.add_argument("--bank-libs", metavar="RUTA",
                     help="Importar las librerias del banco (mex-lib*.tar.gz, toolbox/bnmxverse/utils) "
                          "desde una carpeta o ZIP a bank_libs/.")

@@ -951,6 +951,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             include_bank = bool(data.get("include_bank_libs", True))
             optimize = bool(data.get("optimize", True))
             extra_steps = bool(data.get("extra_steps", False))
+            ciencia = bool(data.get("ciencia", True))   # pila de ciencia de datos (ON por defecto)
             include_monitoring = bool(data.get("include_monitoring", False))
             separate_monitoring = bool(data.get("separate_monitoring", False))
             full_env = bool(data.get("full_env", False))
@@ -979,7 +980,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 include_bank_libs=include_bank, optimize=optimize,
                 extra_steps=extra_steps, include_monitoring=include_monitoring,
                 separate_monitoring=separate_monitoring, full_env=full_env,
-                py_target=py_target, out_path=zip_path, registry=registry)
+                py_target=py_target, out_path=zip_path, registry=registry,
+                ciencia=ciencia)
             # Separar el meta (trae los archivos de codigo editables, grandes).
             meta = next((r for r in report if r.get("_meta")), {})
             code_files = meta.pop("_code_files", {}) if meta else {}

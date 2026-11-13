@@ -18,6 +18,7 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
   const [manifest, setManifest] = useState(null)
   const [bankLibs, setBankLibs] = useState(true)
   const [extraSteps, setExtraSteps] = useState(false)
+  const [ciencia, setCiencia] = useState(true)
   const [monitoring, setMonitoring] = useState(false)
   const [separateMon, setSeparateMon] = useState(false)
   const [fullEnv, setFullEnv] = useState(false)
@@ -148,7 +149,7 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
       const res = await fetch(BUILD_URL, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          sources, include_bank_libs: bankLibs, optimize: true, extra_steps: extraSteps,
+          sources, include_bank_libs: bankLibs, optimize: true, extra_steps: extraSteps, ciencia,
           include_monitoring: monitoring, separate_monitoring: monitoring && separateMon,
           full_env: fullEnv, py_target: pyTarget, registry,
         }),
@@ -393,6 +394,10 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
           <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: t.text || '#e2e8f0', cursor: 'pointer' }}>
             <input type="checkbox" checked={extraSteps} onChange={e => setExtraSteps(e.target.checked)} />
             Generar también los demás pasos (feature engineering, vector assembler, scoring + pipeline)
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: t.text || '#e2e8f0', cursor: 'pointer' }}>
+            <input type="checkbox" checked={ciencia} onChange={e => setCiencia(e.target.checked)} />
+            Incluir pila de ciencia de datos offline (xgboost, lightgbm, scikit-learn, scipy, statsmodels, matplotlib, seaborn, joblib, threadpoolctl). Si la desmarcas solo van las que tu código importa.
           </label>
           <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: t.text || '#e2e8f0', cursor: 'pointer' }}>
             <input type="checkbox" checked={monitoring} onChange={e => setMonitoring(e.target.checked)} />

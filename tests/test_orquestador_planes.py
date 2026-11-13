@@ -188,3 +188,17 @@ def test_norm_name_quita_sufijo_de_copia_del_navegador():
     assert _norm_name("x - copia (3).plan") == "x.plan"
     assert _norm_name("2_foo_1.mp") == "foo_1.mp"  # '_1' es parte del nombre
     assert _norm_name("$AI_MP\\T002_File_To_Dataset.mp") == "T002_File_To_Dataset.mp"
+
+
+def test_spark_submit_windows_devuelve_ruta_completa_con_extension(monkeypatch, tmp_path):
+    """Windows (Kalpana): which('spark-submit') encuentra spark-submit.cmd por PATHEXT, pero
+    devolver el nombre pelado hacia fallar subprocess con [WinError 2]."""
+    from src import orquestador as o
+    cmd = tmp_path / "spark-submit.cmd"
+    cmd.write_text("@echo off\n")
+    monkeypatch.setattr(o.os, "name", "nt")
+    monkeypatch.setattr(o.shutil, "which", lambda e: str(cmd) if e == "spark-submit" else None)
+    assert o._spark_submit_bin({}) == str(cmd)
+    # en POSIX se conserva el comportamiento anterior (nombre tal cual esta en el PATH)
+    monkeypatch.setattr(o.os, "name", "posix")
+    assert o._spark_submit_bin({}) == "spark-submit"

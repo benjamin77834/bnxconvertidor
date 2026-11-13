@@ -117,8 +117,9 @@ def main():
                          "exacta de Python (repetible: --python 3.8 --python 3.12).")
     ap.add_argument("--serie", default="all", choices=["all", "py38-311", "py312plus"],
                     help="(antiguo) cache completo de la serie: mucho mas pesado.")
-    ap.add_argument("--extra", action="store_true",
-                    help="Incluir tambien xgboost/scikit-learn (pasos extra). Default: solo el minimo.")
+    ap.add_argument("--extra", "--ciencia", dest="extra", action="store_true",
+                    help="Incluir tambien las deps de los pasos extra. La pila de ciencia de datos "
+                         "(xgboost, lightgbm, scikit-learn, scipy, statsmodels, matplotlib, seaborn...) va SIEMPRE.")
     ap.add_argument("--sin-banco", action="store_true",
                     help="NO incluir bank_libs/ ni modulos internos (bnmxverse/toolbox/utils/mex-lib): "
                          "ZIP publicable (p.ej. GitHub Release). Requiere --python.")

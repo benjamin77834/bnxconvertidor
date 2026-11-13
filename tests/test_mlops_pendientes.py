@@ -265,3 +265,105 @@ def test_router_perezoso_un_job_roto_no_tumba_a_los_demas(tmp_path, monkeypatch)
     with pytest.raises(ImportError) as ei:
         router.REGISTRY["job_4"]
     assert "job_4" in str(ei.value) and ("libomp" in str(ei.value) or "libgomp" in str(ei.value))
+
+
+# --- 6) pila de ciencia de datos (xgboost, lightgbm, sklearn, ...) + OpenMP ----------
+ML_JOB = ("import xgboost as xgb\nfrom sklearn.metrics import roc_auc_score\n"
+          "def run(df):\n    return df\n")
+PLAIN_JOB = "from pyspark.sql import functions as F\ndef run(df):\n    return df\n"
+PILA = ("xgboost", "lightgbm", "scikit-learn", "scipy", "statsmodels", "matplotlib",
+        "seaborn", "joblib", "threadpoolctl")
+
+
+def _req_names(txt):
+    return {ln.split("#")[0].strip().split(">")[0].split("<")[0].split("=")[0].split(";")[0].strip()
+            for ln in txt.splitlines() if ln.strip() and not ln.startswith("#")}
+
+
+@pytest.fixture
+def vendor_falso(monkeypatch, tmp_path):
+    """_vendor_ligero falso: registra los requisitos y devuelve wheels falsas por requisito."""
+    visto = {}
+
+    def fake(py_target, extra_steps, req_lineas, incluir_spark=False):
+        visto["reqs"] = list(req_lineas)
+        d = tmp_path / "whl"
+        d.mkdir(exist_ok=True)
+        fs = []
+        for n in sorted(_req_names("\n".join(req_lineas))) + ["threadpoolctl", "numpy"]:
+            f = d / ("%s-1.0-py3-none-any.whl" % n.replace("-", "_"))
+            f.write_bytes(b"x")
+            fs.append(str(f))
+        return {"py38-311": sorted(set(fs))}, {}
+    monkeypatch.setattr(mp, "_vendor_ligero", fake)
+    return visto
+
+
+def test_codigo_con_xgboost_agrega_xgboost_y_sklearn_sin_extra_steps(tmp_path, vendor_falso):
+    z, files, _ = _build(tmp_path, [{"name": "job_4.py", "code": ML_JOB}])
+    names = _req_names(_read(z, files, "requirements.txt"))
+    assert {"xgboost", "scikit-learn"} <= names
+    assert "lightgbm" not in names and "matplotlib" not in names   # sin ciencia: solo lo importado
+    assert "requirements-extra.txt" not in files or "xgboost" not in _read(z, files, "requirements-extra.txt")
+    whl = [os.path.basename(f) for f in files if f.startswith("vendor/py")]
+    assert any(w.startswith("xgboost-") for w in whl) and any(w.startswith("scikit_learn-") for w in whl)
+    assert any("xgboost" in r for r in vendor_falso["reqs"])
+
+
+def test_paquete_sin_xgboost_sigue_ligero(tmp_path, vendor_falso):
+    z, files, _ = _build(tmp_path, [{"name": "job_1.py", "code": PLAIN_JOB}])
+    txt = _read(z, files, "requirements.txt")
+    assert not (_req_names(txt) & set(PILA))
+    assert not any("xgboost" in r or "lightgbm" in r for r in vendor_falso["reqs"])
+
+
+def test_opcion_ciencia_agrega_toda_la_pila(tmp_path, vendor_falso):
+    z, files, _ = _build(tmp_path, [{"name": "job_1.py", "code": PLAIN_JOB}], ciencia=True)
+    assert set(PILA) <= _req_names(_read(z, files, "requirements.txt"))
+    assert _read(z, files, "requirements.txt").count("lightgbm") >= 2     # marker py<3.12 / >=3.12
+    assert "pandas<3" in _read(z, files, "requirements.txt")
+
+
+def test_ml_libs_detectadas_agrupa_libomp():
+    assert mp._ml_libs_detectadas(["lightgbm"]) == ["lightgbm", "scikit-learn"]
+    assert mp._ml_libs_detectadas(["scikit-learn"]) == ["xgboost", "scikit-learn"]
+    assert mp._ml_libs_detectadas(["seaborn"]) == ["seaborn"]
+    assert mp._ml_libs_detectadas([]) == []
+    assert mp._ml_libs_detectadas([], ciencia=True) == list(PILA)
+
+
+def test_scripts_traen_bloque_libomp_y_son_bash_valido(tmp_path, vendor_falso):
+    import subprocess
+    z, files, _ = _build(tmp_path, [{"name": "job_4.py", "code": ML_JOB}])
+    for sh in ("setup.sh", "run.sh"):
+        txt = _read(z, files, sh)
+        assert "@@LIBOMP@@" not in txt
+        assert 'uname)" = "Darwin"' in txt and "DYLD_LIBRARY_PATH" in txt
+        assert "sklearn/.dylibs/libomp.dylib" in txt and "brew install libomp" in txt
+        p = tmp_path / sh
+        p.write_text(txt)
+        assert subprocess.run(["bash", "-n", str(p)]).returncode == 0
+    assert "libgomp" in _read(z, files, "setup.sh")
+    # setup.sh completa por internet si falta alguna wheel offline
+    assert "intento completar por internet" in _read(z, files, "setup.sh")
+
+
+def test_check_env_imprime_pista_openmp(tmp_path, vendor_falso, monkeypatch):
+    z, files, _ = _build(tmp_path, [{"name": "job_4.py", "code": ML_JOB}])
+    src = _read(z, files, "check_env.py")
+    ns = {"__name__": "check_env_test", "__file__": str(tmp_path / "check_env.py")}
+    exec(compile(src, "check_env.py", "exec"), ns)
+    import platform
+    for so, esperado in (("Darwin", "brew install libomp"), ("Windows", "vcomp140"),
+                         ("Linux", "libgomp")):
+        monkeypatch.setattr(platform, "system", lambda so=so: so)
+        assert esperado in ns["_pista_openmp"]()
+    assert ns["_es_error_openmp"]("Library not loaded: @rpath/libomp.dylib")
+    assert not ns["_es_error_openmp"]("No module named x")
+
+
+def test_tag_github_por_defecto_incluye_pila():
+    from src import vendor_cache as vc
+    assert vc.GH_TAG == "vendor-linux-v2" or os.environ.get("BNX_VENDOR_TAG")
+    base, extra = vc._reqs_listas()
+    assert {"xgboost", "scikit-learn"} <= _req_names("\n".join(base))

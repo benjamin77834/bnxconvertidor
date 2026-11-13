@@ -716,7 +716,10 @@ def _spark_submit_bin(ej):
     exe = ej.get("spark_submit") or "spark-submit"
     w = shutil.which(exe)
     if w:
-        return exe
+        # Ruta COMPLETA que resolvio which (en Windows incluye la extension .cmd/.bat via
+        # PATHEXT). Devolver el nombre pelado ('spark-submit') hace que subprocess falle con
+        # [WinError 2] aunque which lo encontrara: CreateProcess no aplica PATHEXT.
+        return w if os.name == "nt" else exe
     nombres = [os.path.basename(exe)] + ([os.path.basename(exe) + ".cmd"] if os.name == "nt" else [])
     dirs = [os.path.dirname(sys.executable), os.path.join(os.path.dirname(sys.executable), "Scripts")]
     try:
