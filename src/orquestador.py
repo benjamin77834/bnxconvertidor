@@ -1416,6 +1416,44 @@ def seleccion_pasos(o, solo=None, desde=None):
     return None
 
 
+def _io_subplan(a):
+    """({nombres que lee (raw/X -> X)}, {nombres que escribe}) de un paso `plan`, recursivo."""
+    try:
+        with open(_ruta_plan(a["target"]), "r", encoding="utf-8") as f:
+            jobs = _jobs_del_plan(json.load(f), None, 1, _pila=(os.path.realpath(_ruta_plan(a["target"])),))
+    except (OSError, ValueError, KeyError):
+        return set(), set()
+    lee = {_nombre_dataset(r) for j in jobs for _v, r, ok in j["lee"] if ok}
+    esc = {_nombre_dataset(w) for j in jobs for w in j["escribe"]}
+    return lee, esc
+
+
+def _enlaces_implicitos(o, s, by_id, done, failed, enlaces, seleccion):
+    """Enlaces output/X -> raw/X entre sub-planes del mismo plan cuando X lo escribe un sub-plan
+    anterior y lo lee `s`, y ningun enlace explicito ya entrega esa entrada."""
+    lee, _ = _io_subplan(s["action"])
+    if not lee:
+        return []
+    anc = _ancestros(o["steps"]).get(s["id"], set())
+    cubiertas = {e["entrada"] for e in enlaces if e["hacia"] == s["id"]}
+    prod = {}
+    for d in sorted(anc, key=_num):
+        sd = by_id[d]
+        if not sd["enabled"] or sd["action"]["type"] != "plan" or d not in done or d in failed:
+            continue
+        if seleccion is not None and d not in seleccion:
+            continue
+        for nombre in _io_subplan(sd["action"])[1]:
+            prod[nombre] = d
+    out = []
+    for nombre in sorted(prod):
+        if nombre in lee and "raw/" + nombre not in cubiertas:
+            out.append({"id": f"i{len(out) + 1}", "desde": prod[nombre], "salida": "output/" + nombre,
+                        "hacia": s["id"], "entrada": "raw/" + nombre, "origen": "implicito",
+                        "habilitado": True})
+    return out
+
+
 def ejecutar(o, real=False, modo=None, base_path=None, _nivel=0, _pila=(),
              solo=None, desde=None, permitir_remotos=True, spark_args=None, _prefijo=""):
     """solo / desde: ejecutar un unico paso, o ese paso y sus descendientes (el resto se da por
@@ -1493,6 +1531,12 @@ def ejecutar(o, real=False, modo=None, base_path=None, _nivel=0, _pila=(),
         enlace_ok = True
         for e in enlaces:
             if e["hacia"] == sid and e["desde"] in done and e["desde"] not in failed:
+                fuera = seleccion is not None and e["desde"] not in seleccion
+                enlace_ok = materializar_enlace(e, ej, real, tolerante=fuera) and enlace_ok
+        if a["type"] == "plan":
+            # Plan de planes: lo que un sub-plan anterior escribe (output/X) y este lee (raw/X) sin
+            # enlace explicito se enlaza por coincidencia de nombre (sobrescribe el raw intermedio).
+            for e in _enlaces_implicitos(o, s, by_id, done, failed, enlaces, seleccion):
                 fuera = seleccion is not None and e["desde"] not in seleccion
                 enlace_ok = materializar_enlace(e, ej, real, tolerante=fuera) and enlace_ok
         if not enlace_ok and not s["continue_on_error"]:
@@ -1678,19 +1722,61 @@ _SQL_WORDS = {
     "interval", "current_date", "current_timestamp", "struct", "array", "map", "binary"}
 _COL_CALLS = re.compile(
     r"\.(?:where|filter|orderBy|sort|groupBy|groupby|select|selectExpr|drop|dropDuplicates|"
-    r"partitionBy|withColumnRenamed)\(|(?:F\.)?(?:col|expr)\(")
+    r"partitionBy|withColumnRenamed)\(|(?:F\.)?(?:col|expr)\(|_bnx_safe_col\(")
 
 
 # Helpers del job que reciben (df, "columna", ...): la columna es de la entrada. Los demas
 # helpers `_bnx_*`/split reciben nombres de columnas CREADAS o expresiones, no se consideran.
-_HELPER_COL = re.compile(r'(?<![\w.])([A-Za-z]\w*)\(\s*(\w+_df)\s*,\s*"([A-Za-z_]\w*)"')
+_HELPER_COL = re.compile(r'(?<![\w.])([A-Za-z_]\w*)\(\s*(\w+_df)\s*,\s*"([A-Za-z_]\w*)"')
 _HELPER_SKIP = {"output_indexes_split", "is_valid_record", "col", "lit", "expr", "F", "withColumn"}
 _HDR_TRL = re.compile(
     r'filter_by_expression_hdr_trl\(\s*(\w+_df)\s*,\s*"(\w+)"\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*\[([^\]]*)\]')
 _DF_INDEX = re.compile(r'(\w+_df)\s*\[\s*"([A-Za-z_]\w*)"\s*\]')
 
 
-def _columnas_por_fuente(code, fuentes, marcas=None):
+_WHERE_LIT = re.compile(r'\.(?:where|filter)\(\s*"((?:[^"\\]|\\.)*)"')
+_ATOMO = re.compile(r"^\(*\s*([A-Za-z_]\w*)\s*(==|=|!=|<>|>=|<=|>|<)\s*('(?:[^']*)'|-?\d+(?:\.\d+)?)\s*\)*$")
+_ATOMO_IN = re.compile(r"^\(*\s*([A-Za-z_]\w*)\s+IN\s*\(([^)]*)\)\s*\)*$", re.I)
+
+
+def _condiciones_and(expr):
+    """[(columna, op, literal)] de una expresion SQL de filtro formada solo por condiciones
+    unidas con AND (sin OR ni NOT: no se pueden satisfacer de forma independiente).
+    literal: str para 'texto', int/float para numeros, lista para IN (...)."""
+    if re.match(r"\s*NOT\b", expr, re.I) or re.search(r"\bOR\b|\|\|", expr, re.I):
+        return []
+    out = []
+    for atomo in re.split(r"\s+AND\s+|\s*&&\s*", expr, flags=re.I):
+        atomo = atomo.strip()
+        m = _ATOMO.match(atomo)
+        if m:
+            lit = m.group(3)
+            if lit.startswith("'"):
+                lit = lit[1:-1]
+            else:
+                lit = float(lit) if "." in lit else int(lit)
+            out.append((m.group(1), {"=": "==", "<>": "!="}.get(m.group(2), m.group(2)), lit))
+            continue
+        m = _ATOMO_IN.match(atomo)
+        if m:
+            vals = [v.strip() for v in m.group(2).split(",") if v.strip()]
+            vals = [v[1:-1] if v.startswith("'") else (float(v) if "." in v else int(v))
+                    for v in vals if re.fullmatch(r"'[^']*'|-?\d+(?:\.\d+)?", v)]
+            if vals:
+                out.append((m.group(1), "in", vals))
+    return out
+
+
+def _alias_creados(code):
+    """Nombres de .alias("x") que CREAN una columna/alias de DataFrame. Un
+    expr("`s0`.`x`").alias("x") solo la renombra a si misma: x es columna de entrada."""
+    propios = {m.group(2) for m in re.finditer(
+        r'expr\(\s*"((?:[^"\\]|\\.)*)"\s*\)\.alias\(\s*"(\w+)"\s*\)', code)
+        if re.search(rf"\b{re.escape(m.group(2))}\b", m.group(1))}
+    return set(re.findall(r'\.alias\(\s*"(\w+)"\s*\)', code)) - propios
+
+
+def _columnas_por_fuente(code, fuentes, marcas=None, filtros=None):
     """{fuente_lower: {columna: tipo}} siguiendo el linaje de DataFrames del job.
 
     Cada asignacion `A_df = B_df.op(...)` atribuye las columnas citadas en sus literales
@@ -1701,12 +1787,21 @@ def _columnas_por_fuente(code, fuentes, marcas=None):
     to_date; si no, string. Es una heuristica sobre el codigo generado por BNX.
     Tambien cuenta: helpers tipo filter_by_expression_hdr_trl(df, "Campo", ...), df["X"],
     on="X". `marcas` (dict opcional) recibe {fuente: {columna: (inicio, largo, [valores])}}
-    para los filtros HDR/TRL (el generador de datos incluye esas filas).
+    para los filtros HDR/TRL (el generador de datos incluye esas filas). `filtros` (dict
+    opcional) recibe {fuente: {columna: [(op, literal)]}} con las condiciones AND de los
+    .where/.filter con literal (==, !=, IN, <, >...) para generar filas que las cumplan.
     """
     raices = {f.lower() + "_df": {f.lower()} for f in fuentes}
     creadas = set(re.findall(r'withColumn\(\s*"(\w+)"', code))
-    creadas |= set(re.findall(r'\.alias\(\s*"(\w+)"\s*\)', code))
-    creadas |= set(re.findall(r'_bnx_safe_col\(\s*\w+\s*,\s*"(\w+)"', code))
+    creadas |= _alias_creados(code)
+    for sm in re.finditer(r'_bnx_safe_col\(\s*\w+\s*,\s*"(\w+)"\s*,\s*"((?:[^"\\]|\\.)*)"', code):
+        # una columna que se reescribe a partir de si misma (trim(x)) es ENTRADA, no creada
+        if not re.search(rf"\b{re.escape(sm.group(1))}\b", sm.group(2)):
+            creadas.add(sm.group(1))
+    creadas |= set(re.findall(r'_bnx_safe_col\(\s*\w+\s*,\s*"(\w+)"\s*\)', code))
+    # prefijos de tabla/alias de join dentro de expresiones: `s0`.`col`, s1.col
+    for lit in _STR_LIT.findall(code):
+        creadas |= set(re.findall(r"`?\b([A-Za-z_]\w*)`?\s*\.\s*`?[A-Za-z_]", lit))
     creadas |= set(re.findall(r"\bas\s+`?(\w+)`?\s*(?:,|$)", code, re.I))
     out = defaultdict(dict)
 
@@ -1718,6 +1813,10 @@ def _columnas_por_fuente(code, fuentes, marcas=None):
             return "int"
         if re.search(rf"to_date\(\s*(?:trim\()?\s*\b{e}\b", txt, re.I):
             return "date"
+        # aritmetica (c * 100, a / c) y agregaciones numericas (sum/avg de la columna)
+        if re.search(rf"\b{e}\b\s*[*/+-]\s*[\w(]", txt) or re.search(rf"[\w)]\s*[*/+-]\s*\(?\b{e}\b", txt) \
+                or re.search(rf"\b(?:sum|avg|mean)\(\s*(?:_bnx_aggcol\(\s*\w+\s*,\s*)?[\"']?{e}\b", txt, re.I):
+            return "int"
         return "string"
 
     def agregar(roots, cols, txt):
@@ -1746,7 +1845,8 @@ def _columnas_por_fuente(code, fuentes, marcas=None):
         if on1:
             agregar(todos, [on1.group(1)], rhs)
         for hm in _HELPER_COL.finditer(rhs):
-            if hm.group(1) not in _HELPER_SKIP and not hm.group(1).startswith("_bnx_"):
+            if hm.group(1) not in _HELPER_SKIP and (
+                    not hm.group(1).startswith("_bnx_") or hm.group(1) in ("_bnx_aggcol", "_bnx_safe_col")):
                 agregar(raices.get(hm.group(2).lower(), set()), [hm.group(3)], rhs)
         for dm in _DF_INDEX.finditer(rhs):
             agregar(raices.get(dm.group(1).lower(), set()), [dm.group(2)], rhs)
@@ -1755,6 +1855,12 @@ def _columnas_por_fuente(code, fuentes, marcas=None):
                 vals = re.findall(r'"([^"]*)"', hm.group(5))
                 for r in raices.get(hm.group(1).lower(), set()):
                     marcas.setdefault(r, {})[hm.group(2)] = (int(hm.group(3)), int(hm.group(4)), vals)
+        if filtros is not None:
+            for fm in _WHERE_LIT.finditer(rhs):
+                for col, op, lit in _condiciones_and(fm.group(1)):
+                    if col not in creadas:
+                        for r in roots_first:
+                            filtros.setdefault(r, {}).setdefault(col, []).append((op, lit))
         # literales de expresion en llamadas que referencian columnas
         if _COL_CALLS.search(rhs):
             for lit in _STR_LIT.findall(rhs):
@@ -1762,10 +1868,12 @@ def _columnas_por_fuente(code, fuentes, marcas=None):
                     continue
                 sin_textos = re.sub(r"'(?:[^'\\]|\\.)*'", "''", lit)  # quitar literales 'texto'
                 agregar(roots_first, _IDENT.findall(sin_textos), lit)
+    # lados de join: _bnx_ensure_side(X_df, ["col", ...]) lista las columnas que se leen de X
+    for em in re.finditer(r'_bnx_ensure_side\(\s*(\w+_df)\s*,\s*\[([^\]]*)\]', code):
+        agregar(raices.get(em.group(1).lower(), set()), re.findall(r'"(\w+)"', em.group(2)), "")
     return out
 
 
-_nivel_datos = [0]   # profundidad de recursion (plan de planes) en generar_datos
 def escribir_parquet(dest, columnas, filas):
     """Escribe un dataset parquet (carpeta con part-00000.parquet) con el primer motor
     disponible: pyarrow -> fastparquet -> escritor puro-python (src.parquet_puro).
@@ -1794,23 +1902,40 @@ def escribir_parquet(dest, columnas, filas):
     return "python-puro"
 
 
-def entradas_faltantes(o, base_path, seleccion=None, _nivel=0):
-    """Datasets <base>/raw/... que los jobs del plan leen y NO existen (ni llegan por un enlace).
-    seleccion: ids a considerar en este plan (None = todos). Incluye los sub-planes."""
-    base = normalizar_base_path(base_path)
-    on = {s["id"] for s in o["steps"] if s["enabled"] and (seleccion is None or s["id"] in seleccion)}
-    por_enlace = {(e["hacia"], e["entrada"]) for e in (o.get("enlaces") or [])
-                  if e.get("habilitado", True) and e["desde"] in {
-                      s["id"] for s in o["steps"] if s["enabled"] and (seleccion is None or s["id"] in seleccion)}}
-    falt = []
-    for s in o["steps"]:
+def _nombre_dataset(ruta):
+    """'raw/banca/x.dat' / 'output/banca/x.dat' -> 'banca/x.dat' (sin zona)."""
+    return ruta.split("/", 1)[1] if "/" in ruta else ruta
+
+
+def _jobs_del_plan(o, seleccion=None, _nivel=0, _cubiertas=frozenset(), _prefijo="", _pila=()):
+    """Jobs (pasos graph con codigo) del plan y de sus sub-planes, en orden de ejecucion.
+
+    Cada item: {paso, step, code, lee: [(var, ruta, resuelto)], escribe: {ruta_output},
+    cubiertas: set de rutas de entrada que llegan por un enlace habilitado}.
+    seleccion (ids del nivel superior): solo esos pasos cuentan; los sub-planes van completos."""
+    out = []
+    steps = {s["id"]: s for s in o["steps"]}
+    on = {i for i, s in steps.items() if s["enabled"] and (seleccion is None or i in seleccion)}
+    enlaces = [e for e in (o.get("enlaces") or []) if e.get("habilitado", True) and e["desde"] in on]
+    try:
+        orden = topo_order(o["steps"])
+    except ValueError:
+        orden = [s["id"] for s in o["steps"]]
+    for sid in orden:
+        s = steps[sid]
         a = s["action"]
-        if s["id"] not in on:
+        if sid not in on:
             continue
+        cub = set(_cubiertas) | {e["entrada"] for e in enlaces if e["hacia"] == sid}
         if a["type"] == "plan" and _nivel < 3:
             try:
-                with open(_ruta_plan(a["target"]), "r", encoding="utf-8") as f:
-                    falt += entradas_faltantes(json.load(f), base, None, _nivel + 1)
+                fp = _ruta_plan(a["target"])
+                if os.path.realpath(fp) in _pila:
+                    continue
+                with open(fp, "r", encoding="utf-8") as f:
+                    sub = json.load(f)
+                out += _jobs_del_plan(sub, None, _nivel + 1, frozenset(cub), f"{_prefijo}{sid}/",
+                                      _pila + (os.path.realpath(fp),))
             except (OSError, ValueError, KeyError):
                 pass
             continue
@@ -1823,13 +1948,49 @@ def entradas_faltantes(o, base_path, seleccion=None, _nivel=0):
             continue
         defaults = {m.group(1): (m.group(2) if m.group(2) is not None else m.group(3))
                     for m in _PARAM_DEF.finditer(code)}
+        lee = []
         for m in _READ_VAR.finditer(code):
             nombre, resuelto = _resolver_nombre(m.group(2), defaults)
-            ruta = "raw/" + nombre.lstrip("/")
-            if not resuelto or (s["id"], ruta) in por_enlace:
-                continue
-            if not os.path.exists(os.path.join(base, *ruta.split("/"))) and ruta not in falt:
-                falt.append(ruta)
+            lee.append((m.group(1), "raw/" + nombre.lstrip("/"), resuelto))
+        escribe = {w["ruta"] for w in parse_job_io(a["target"])["escribe"] if w["resuelto"]}
+        out.append({"paso": f"{_prefijo}{sid}", "step": s, "code": code, "lee": lee,
+                    "escribe": escribe, "cubiertas": cub, "defaults": defaults})
+    return out
+
+
+def _clasificar_entradas(jobs):
+    """Recorre los jobs en orden y devuelve [(job, var, ruta, resuelto, origen)] donde origen es
+    None (entrada EXTERNA: la aporta el usuario), ('enlace', None) o ('intermedio', paso)
+    cuando un job anterior del plan escribe ese mismo dataset (output/X -> raw/X)."""
+    producido = {}   # nombre sin zona -> paso que lo escribe
+    res = []
+    for j in jobs:
+        for var, ruta, resuelto in j["lee"]:
+            nombre = _nombre_dataset(ruta)
+            if ruta in j["cubiertas"]:
+                origen = ("enlace", None)
+            elif nombre in producido and producido[nombre] != j["paso"]:
+                origen = ("intermedio", producido[nombre])
+            else:
+                origen = None
+            res.append((j, var, ruta, resuelto, origen))
+        for w in j["escribe"]:
+            producido.setdefault(_nombre_dataset(w), j["paso"])
+    return res
+
+
+def entradas_faltantes(o, base_path, seleccion=None, _nivel=0):
+    """Datasets <base>/raw/... EXTERNOS que los jobs del plan leen y NO existen. No cuenta los que
+    llegan por un enlace ni los INTERMEDIOS (los escribe un paso anterior del plan o de un
+    sub-plan: output/X -> raw/X, se materializan al ejecutar). Con seleccion (--paso/--desde)
+    solo cuentan como productores los pasos seleccionados."""
+    base = normalizar_base_path(base_path)
+    falt = []
+    for j, var, ruta, resuelto, origen in _clasificar_entradas(_jobs_del_plan(o, seleccion)):
+        if origen is not None or not resuelto:
+            continue
+        if not os.path.exists(os.path.join(base, *ruta.split("/"))) and ruta not in falt:
+            falt.append(ruta)
     return falt
 
 
@@ -1848,16 +2009,223 @@ def _valor_hdr_trl(i, n, ini, largo, vals, base):
     return pre + marca[:largo].ljust(largo, "0") + "|" + str(base if base is not None else "")
 
 
-def generar_datos(o, base_path, n_rows=20, seed=42, sobrescribir=False):
-    """Escribe parquet sintetico en <base>/raw/<x> para cada lectura de los jobs del plan.
+# --- esquema desde el DML del .mp -------------------------------------------------------
 
-    - Esquema: columnas que el codigo PySpark usa de cada fuente (src.py2spark.infer_input_schema).
-      Es una inferencia: si una fuente no tiene columnas detectables se usa una columna 'id'.
-    - Valores: src.datagen.build_synthetic_data (mismo generador de la seccion Data Sintetica,
-      con PII redactada). Fechas y decimales salen como texto/float.
-    - Se omiten las entradas que llegan por un enlace habilitado (las produce el job anterior),
-      las rutas con parametros sin resolver y las que ya existen (salvo sobrescribir=True).
-    - Solo base_path local; las rutas resueltas deben quedar dentro de base_path.
+def _tipo_dml(t):
+    t = (t or "").lower()
+    if t in ("integer", "int", "long", "bigint", "smallint", "number"):
+        return "integer"
+    if t in ("decimal", "real", "double", "float", "numeric"):
+        return "decimal"
+    if t in ("date", "datetime"):
+        return t
+    return "string"
+
+
+_DML_CAMPO = re.compile(r"^\s*(\w+)\s*(?:\([^)]*\))?\s*(?:\([^)]*\))?\s+(\w+)\s*(?:=[^;]*)?;", re.M)
+
+
+def _columnas_dml(texto):
+    """[{name, type}] de un record DML (campos simples `tipo(n) nombre;`)."""
+    cols, vistos = [], set()
+    for m in _DML_CAMPO.finditer(texto):
+        if m.group(1).lower() in ("record", "end", "begin", "type", "let", "if"):
+            continue
+        if m.group(2).lower() not in vistos:
+            vistos.add(m.group(2).lower())
+            cols.append({"name": m.group(2), "type": _tipo_dml(m.group(1))})
+    return cols
+
+
+def _dir_abinitio(target):
+    """abinitio/<proyecto> hermano de output/<proyecto> del job (None si no existe)."""
+    proj = os.path.basename(os.path.dirname(os.path.abspath(target)))
+    for raiz in (os.getcwd(), _ROOT):
+        d = os.path.join(raiz, "abinitio", proj)
+        if os.path.isdir(d):
+            return d
+    return None
+
+
+def _buscar_ci(d, nombre):
+    try:
+        for f in os.listdir(d):
+            if f.lower() == nombre.lower():
+                return os.path.join(d, f)
+    except OSError:
+        pass
+    return None
+
+
+def _leer(path):
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def _mp_del_paso(a, ab):
+    cand = []
+    src = a.get("source") or ""
+    if src.lower().endswith(".pset"):
+        ps = _buscar_ci(ab, src)
+        m = re.search(r"^!prototype\|[^|]*\|[^|]*\|[^|]*\|\S*?([^/\\|\s]+\.mp)\s*$", _leer(ps) if ps else "", re.M)
+        if m:
+            cand.append(m.group(1))
+    elif src.lower().endswith(".mp"):
+        cand.append(src)
+    stem = re.sub(r"_spark$", "", os.path.splitext(os.path.basename(a.get("target") or ""))[0])
+    cand.append(stem + ".mp")
+    for c in cand:
+        p = _buscar_ci(ab, c)
+        if p:
+            return p
+    return None
+
+
+def _dml_de_entradas(a):
+    """{'nodo': {nodo_lower: cols}, 'layout': {basename_layout: cols}} de los Input File del .mp
+    del paso, con las columnas/tipos de su DML (metadata_file o record embebido)."""
+    ab = _dir_abinitio(a.get("target") or "")
+    res = {"nodo": {}, "layout": {}, "ab": ab}
+    mp = _mp_del_paso(a, ab) if ab else None
+    if not mp:
+        return res
+    for bloque in re.split(r"(?=\{2010503005\|XXGfvertex\|)", _leer(mp)):
+        if "Datasets/Input_File" not in bloque:
+            continue
+        nom = re.findall(r"\}\}@([^|\n]+)\|@@", bloque)
+        cols = []
+        mf = re.search(r"\|metadata_file\|([^|]*)\|", bloque)
+        if mf:
+            p = _buscar_ci(ab, re.split(r"[/\\]", mf.group(1).strip())[-1])
+            cols = _columnas_dml(_leer(p)) if p else []
+        if not cols:
+            rec = re.search(r"\|(?:out_metadata|in_metadata)\|(record.*?end;)", bloque, re.S)
+            cols = _columnas_dml(rec.group(1)) if rec else []
+        if not cols:
+            continue
+        if nom:
+            res["nodo"][nom[-1].strip().lower()] = cols
+        lay = re.search(r"\|Layout\|([^|]*)\|", bloque)
+        if lay:
+            res["layout"][os.path.basename(lay.group(1).strip()).lower()] = cols
+    return res
+
+
+def _columnas_de_fuente(var, ruta, dml, cols_codigo, cols_infer, alias):
+    """Columnas finales de un dataset externo y la nota de origen.
+    1) DML del .mp: EXACTAMENTE sus columnas/tipos (+ las que el codigo usa y el DML no trae).
+    2) columnas detectadas en el codigo con tipo por uso.
+    3) infer_input_schema, sin alias ni relleno col1..col3.  4) 'id'."""
+    cols = dml["nodo"].get(var.lower()) or dml["layout"].get(os.path.basename(ruta).lower())
+    if not cols and dml.get("ab"):
+        p = _buscar_ci(dml["ab"], os.path.splitext(os.path.basename(ruta))[0] + ".dml")
+        cols = _columnas_dml(_leer(p)) if p else []
+    if cols:
+        res = [dict(c) for c in cols]
+        conocidas = {c["name"].lower() for c in res}
+        for n, t in cols_codigo.items():
+            if n.lower() not in conocidas and n not in alias:
+                res.append({"name": n, "type": t})
+        return res, "esquema tomado del DML"
+    if cols_codigo:
+        return [{"name": n, "type": t} for n, t in cols_codigo.items()], None
+    inf = [c for c in cols_infer if c["name"] not in alias and not re.fullmatch(r"col[1-3]", c["name"])]
+    if inf:
+        return inf, None
+    return [{"name": "id", "type": "string"}], "sin columnas detectadas: se uso 'id'"
+
+
+def _cumple(v, op, lit):
+    try:
+        if op == "==":
+            return v == lit
+        if op == "!=":
+            return v != lit
+        if op == "in":
+            return v in lit
+        return {">": v > lit, ">=": v >= lit, "<": v < lit, "<=": v <= lit}[op]
+    except TypeError:
+        return False
+
+
+def _aplicar_filtros(rows, cols, conds, hdr_trl=()):
+    """Hace que ~80% de las filas cumplan las condiciones AND de los filtros del job (==, IN,
+    <, >...) sobre cada columna, y deja el resto como las genero el generador (rechazos).
+    Determinista: la fila i es de rechazo si i % 5 == 4. No toca columnas HDR/TRL."""
+    tipo = {c["name"]: c["type"] for c in cols}
+    n = len(rows)
+    for col, lista in conds.items():
+        if col not in tipo or col in hdr_trl:
+            continue
+        es_num = tipo[col] in ("integer", "decimal")
+        lista = [(op, lit) for op, lit in lista if _lit_num(lit) == es_num]
+        for i, row in enumerate(rows):
+            if not lista or (i % 5 == 4 and n >= 5):
+                continue
+            if all(_cumple(row.get(col), op, lit) for op, lit in lista):
+                continue
+            nuevo = _valor_que_cumple(lista, es_num, tipo[col], i)
+            if nuevo is not None:
+                row[col] = nuevo
+
+
+def _lit_num(lit):
+    x = lit[0] if isinstance(lit, list) and lit else lit
+    return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+
+def _valor_que_cumple(lista, es_num, tipo, i):
+    eq = next((lit for op, lit in lista if op == "=="), None)
+    if eq is None:
+        ins = next((lit for op, lit in lista if op == "in"), None)
+        if ins:
+            eq = ins[i % len(ins)]
+    if eq is not None:
+        return eq
+    if not es_num:
+        return None
+    lo = hi = None
+    lo_incl = hi_incl = True
+    for op, lit in lista:
+        if not isinstance(lit, (int, float)) or isinstance(lit, bool):
+            continue
+        if op in (">", ">=") and (lo is None or lit >= lo):
+            lo, lo_incl = lit, op == ">="
+        elif op in ("<", "<=") and (hi is None or lit <= hi):
+            hi, hi_incl = lit, op == "<="
+    ent = tipo == "integer"
+    paso = 1 if ent else 0.01
+    if lo is not None and hi is not None:
+        ini = lo if lo_incl else lo + paso
+        fin = hi if hi_incl else hi - paso
+        if fin < ini:
+            return None
+        v = ini + (fin - ini) * ((i * 37) % 101) / 100
+    elif lo is not None:
+        v = (lo if lo_incl else lo + paso) + (i * 37) % 500
+    elif hi is not None:
+        v = (hi if hi_incl else hi - paso) - (i * 37) % 500
+    else:
+        return None
+    return int(v) if ent else round(float(v), 2)
+
+
+def generar_datos(o, base_path, n_rows=20, seed=42, sobrescribir=False, seleccion=None):
+    """Escribe parquet sintetico en <base>/raw/<x> para cada ENTRADA EXTERNA de los jobs del plan.
+
+    - Externa = dataset raw que ningun paso anterior del plan (ni de los sub-planes de un plan
+      de planes) escribe como output/<mismo nombre> ni llega por un enlace. Los intermedios se
+      materializan al ejecutar (enlaces) y NO se generan.
+    - Esquema: si el .mp tiene DML para esa entrada (metadata_file o record embebido), sus
+      columnas y tipos EXACTOS; si no, las columnas que el codigo usa de la fuente con tipo
+      inferido por uso. Nunca alias de joins ni col1..col3 si hay columnas conocidas.
+    - Valores: src.datagen.build_synthetic_data (PII redactada, claves de join compartidas) y
+      ~80% de las filas cumplen los filtros con literales del job (el resto ejercita rechazos).
+    - Se omiten los enlaces, las rutas con parametros sin resolver y las que ya existen (salvo
+      sobrescribir=True). Solo base_path local; las rutas deben quedar dentro de base_path.
     Devuelve una lista de dicts {paso, ruta, estado, filas?, columnas?, motivo?}.
     """
     from src.py2spark import infer_input_schema
@@ -1867,105 +2235,69 @@ def generar_datos(o, base_path, n_rows=20, seed=42, sobrescribir=False):
     if not base_path or "://" in base_path:
         raise ValueError("generar datos requiere un base_path local (no s3://)")
     base = os.path.realpath(normalizar_base_path(base_path))
-    on = {s["id"] for s in o["steps"] if s["enabled"]}
-    por_enlace = {(e["hacia"], e["entrada"]): e["id"] for e in (o.get("enlaces") or [])
-                  if e.get("habilitado", True) and e["desde"] in on}
     hechos, rep = set(), []
-    for s in o["steps"]:
-        a = s["action"]
-        if s["id"] in on and a["type"] == "plan" and _nivel_datos[0] < 3:
-            # Plan de planes: los datos de cada sub-plan van al MISMO base_path (es el
-            # que se comparte al ejecutar el plan de planes).
-            try:
-                with open(_ruta_plan(a["target"]), "r", encoding="utf-8") as f:
-                    sub = json.load(f)
-                _nivel_datos[0] += 1
-                for r in generar_datos(sub, base_path, n_rows=n_rows, seed=seed, sobrescribir=sobrescribir):
-                    rep.append({**r, "paso": f"{s['id']}/{r['paso']}"})
-            except (OSError, ValueError) as e:
-                rep.append({"paso": s["id"], "ruta": a["target"], "estado": "error", "motivo": str(e)})
-            finally:
-                _nivel_datos[0] = max(0, _nivel_datos[0] - 1)
+    cache = {}
+    for j, var, ruta, resuelto, origen in _clasificar_entradas(_jobs_del_plan(o, seleccion)):
+        item = {"paso": j["paso"], "ruta": ruta}
+        if not resuelto:
+            rep.append({**item, "estado": "omitido",
+                        "motivo": "parametro sin valor; defina la variable de entorno"})
             continue
-        if s["id"] not in on or a["type"] != "graph" or not a.get("target") or a["status"] != "ok":
+        if origen is not None:
+            rep.append({**item, "estado": "omitido",
+                        "motivo": ("llega por un enlace" if origen[0] == "enlace"
+                                   else f"intermedio: lo produce el paso {origen[1]}")})
             continue
-        try:
-            with open(a["target"], "r", encoding="utf-8", errors="replace") as f:
-                code = f.read()
-        except OSError as e:
-            rep.append({"paso": s["id"], "ruta": a["target"], "estado": "error", "motivo": str(e)})
+        if ruta in hechos:
             continue
-        defaults = {m.group(1): (m.group(2) if m.group(2) is not None else m.group(3))
-                    for m in _PARAM_DEF.finditer(code)}
-        esquema = {x["node"].lower(): x["columns"] for x in infer_input_schema(code)}
-        # Completar con las columnas que el job usa aguas abajo de cada fuente
-        lecturas = [mm.group(1) for mm in _READ_VAR.finditer(code)]
-        marcas = {}
-        linaje = _columnas_por_fuente(code, lecturas, marcas)
-        for fuente, cols in linaje.items():
-            base_cols = {c["name"].lower(): c for c in esquema.get(fuente, [])}
-            # col1..col3 son el relleno de infer_input_schema cuando no detecta nada: se
-            # descartan si el codigo SI usa columnas (y no las cita).
-            if cols and all(re.fullmatch(r"col[1-3]", k) for k in base_cols) \
-                    and not any(re.search(rf'["\']{k}["\']', code) for k in base_cols):
-                base_cols = {}
-            for nombre_c, tipo_c in cols.items():
-                prev = base_cols.get(nombre_c.lower())
-                if prev is None:
-                    base_cols[nombre_c.lower()] = {"name": nombre_c, "type": tipo_c}
-                elif tipo_c != "string":
-                    prev["type"] = tipo_c
-            esquema[fuente] = list(base_cols.values())
-        for m in _READ_VAR.finditer(code):
-            var, crudo = m.group(1), m.group(2)
-            nombre, resuelto = _resolver_nombre(crudo, defaults)
-            ruta = "raw/" + nombre.lstrip("/")
-            item = {"paso": s["id"], "ruta": ruta}
-            if not resuelto:
-                rep.append({**item, "estado": "omitido",
-                            "motivo": "parametro sin valor; defina la variable de entorno"})
-                continue
-            if (s["id"], ruta) in por_enlace:
-                rep.append({**item, "estado": "omitido",
-                            "motivo": f"llega por el enlace {por_enlace[(s['id'], ruta)]}"})
-                continue
-            if ruta in hechos:
-                continue
-            dest = os.path.realpath(os.path.join(base, ruta))
-            if not dest.startswith(base + os.sep):
-                rep.append({**item, "estado": "omitido", "motivo": "la ruta sale de base_path"})
-                continue
-            if os.path.exists(dest) and not sobrescribir:
-                rep.append({**item, "estado": "existe", "motivo": "ya existe (use sobrescribir)"})
-                hechos.add(ruta)
-                continue
-            cols = esquema.get(var.lower()) or []
-            nota = None
-            if not cols:
-                cols, nota = [{"name": "id", "type": "string"}], "sin columnas detectadas: se uso 'id'"
-            gen = build_synthetic_data(cols, n_rows=n_rows, fmt="json", seed=seed)
-            nombres = [c["name"] for c in gen["columns"]]
-            hdr_trl = marcas.get(var.lower()) or {}
-            for cn, (ini, largo, vals) in hdr_trl.items():
-                # filas HDR/TRL (primera/ultima) + filas de datos: el filtro tiene efecto
-                n_f = len(gen["rows"])
-                for i, row in enumerate(gen["rows"]):
-                    if cn in row:
-                        row[cn] = _valor_hdr_trl(i, n_f, ini, largo, vals, row[cn])
-            if os.path.isdir(dest):
-                shutil.rmtree(dest)
-            elif os.path.exists(dest):
-                os.remove(dest)
-            try:
-                motor = escribir_parquet(dest, nombres, gen["rows"])
-            except Exception as e:   # un dataset que falla no debe tumbar la respuesta
-                rep.append({**item, "estado": "error",
-                            "motivo": f"{type(e).__name__}: {str(e)[:300]}"})
-                continue
+        dest = os.path.realpath(os.path.join(base, ruta))
+        if not dest.startswith(base + os.sep):
+            rep.append({**item, "estado": "omitido", "motivo": "la ruta sale de base_path"})
+            continue
+        if os.path.exists(dest) and not sobrescribir:
+            rep.append({**item, "estado": "existe", "motivo": "ya existe (use sobrescribir)"})
             hechos.add(ruta)
-            rep.append({**item, "estado": "generado", "filas": len(gen["rows"]), "motor": motor,
-                        "columnas": [f"{c['name']}:{c['type']}" for c in gen["columns"]],
-                        **({"motivo": nota} if nota else {})})
+            continue
+        code, a = j["code"], j["step"]["action"]
+        if j["paso"] not in cache:
+            lecturas = [v for v, _r, _ok in j["lee"]]
+            marcas, filtros = {}, {}
+            linaje = _columnas_por_fuente(code, lecturas, marcas, filtros)
+            alias = _alias_creados(code)
+            for lit in _STR_LIT.findall(code):
+                alias |= set(re.findall(r"`?\b([A-Za-z_]\w*)`?\s*\.\s*`?[A-Za-z_]", lit))
+            try:
+                infer = {x["node"].lower(): x["columns"] for x in infer_input_schema(code)}
+            except Exception:
+                infer = {}
+            cache[j["paso"]] = (marcas, filtros, linaje, alias, infer, _dml_de_entradas(a))
+        marcas, filtros, linaje, alias, infer, dml = cache[j["paso"]]
+        cols, nota = _columnas_de_fuente(var, ruta, dml, linaje.get(var.lower(), {}),
+                                         infer.get(var.lower(), []), alias)
+        gen = build_synthetic_data(cols, n_rows=n_rows, fmt="json", seed=seed)
+        nombres = [c["name"] for c in gen["columns"]]
+        hdr_trl = marcas.get(var.lower()) or {}
+        for cn, (ini, largo, vals) in hdr_trl.items():
+            # filas HDR/TRL (primera/ultima) + filas de datos: el filtro tiene efecto
+            n_f = len(gen["rows"])
+            for i, row in enumerate(gen["rows"]):
+                if cn in row:
+                    row[cn] = _valor_hdr_trl(i, n_f, ini, largo, vals, row[cn])
+        _aplicar_filtros(gen["rows"], gen["columns"], filtros.get(var.lower(), {}), hdr_trl)
+        if os.path.isdir(dest):
+            shutil.rmtree(dest)
+        elif os.path.exists(dest):
+            os.remove(dest)
+        try:
+            motor = escribir_parquet(dest, nombres, gen["rows"])
+        except Exception as e:   # un dataset que falla no debe tumbar la respuesta
+            rep.append({**item, "estado": "error",
+                        "motivo": f"{type(e).__name__}: {str(e)[:300]}"})
+            continue
+        hechos.add(ruta)
+        rep.append({**item, "estado": "generado", "filas": len(gen["rows"]), "motor": motor,
+                    "columnas": [f"{c['name']}:{c['type']}" for c in gen["columns"]],
+                    **({"motivo": nota} if nota else {})})
     return rep
 
 
