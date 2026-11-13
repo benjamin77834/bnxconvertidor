@@ -3618,7 +3618,7 @@ def _fetch_mlops_deps(serie_dir, extra_steps):
     for plat in _LINUX_PLATFORMS:
         try:
             _sp.run(
-                [_sys.executable, "-m", "pip", "download",
+                [*_vc.pip_cmd(), "download",
                  "--only-binary=:all:",
                  "--python-version", pyver,
                  "--implementation", "cp",
@@ -3635,7 +3635,7 @@ def _fetch_mlops_deps(serie_dir, extra_steps):
         # Ultimo recurso: descarga para este host (puede no servir en el servidor;
         # mejor que nada para entornos de prueba locales).
         try:
-            _sp.run([_sys.executable, "-m", "pip", "download", "-d", cache, *deps],
+            _sp.run([*_vc.pip_cmd(), "download", "-d", cache, *deps],
                     check=True, capture_output=True, timeout=600)
         except Exception:
             pass
@@ -3791,7 +3791,12 @@ def _seleccionar_wheels(serie_dir, req_lineas, extra_steps=False, incluir_spark=
                 continue
             rep = os.path.join(tmp, f"r{v}.json")
             abi = "cp" + v.replace(".", "")
-            cmd = [_sys.executable, "-m", "pip", "install", "--dry-run", "--ignore-installed",
+            try:
+                _pip = _vc.pip_cmd()
+            except _vc.PipViejo as e:
+                faltan[v] = str(e)
+                continue
+            cmd = [*_pip, "install", "--dry-run", "--ignore-installed",
                    "--quiet", "--no-index", "--find-links", links, "--only-binary=:all:",
                    "--python-version", v, "--implementation", "cp",
                    "--abi", abi, "--abi", "abi3", "--abi", "none",
@@ -3805,8 +3810,14 @@ def _seleccionar_wheels(serie_dir, req_lineas, extra_steps=False, incluir_spark=
                 faltan[v] = str(e)[:200]
                 continue
             if r.returncode != 0 or not os.path.isfile(rep):
-                err = [ln for ln in (r.stderr or "").splitlines() if "ERROR" in ln]
-                faltan[v] = (err[0] if err else (r.stderr or "fallo pip")[-200:]).replace("ERROR: ", "")
+                # Nombres de los requisitos directos que no tienen wheel en el pool (pip se
+                # detiene en el primer faltante); el mensaje nunca lleva el texto de uso de pip.
+                en_pool = {_wheel_dist(f) for f in pool}
+                sin = sorted({_re.split(r"[<>=!~ ;\[]", q, maxsplit=1)[0].strip() for q in reqs
+                              if _re.split(r"[<>=!~ ;\[]", q, maxsplit=1)[0].strip().lower().replace("-", "_")
+                              not in en_pool}, key=str.lower)
+                msg = _vc.limpiar_stderr_pip(r.stderr or "fallo pip")
+                faltan[v] = ("sin wheel en el cache: " + ", ".join(sin)) if sin and "no such" not in msg.lower() else msg
                 continue
             with open(rep, encoding="utf-8") as fh:
                 for item in _json.load(fh).get("install", []):
@@ -3842,7 +3853,7 @@ def _seleccionar_wheels(serie_dir, req_lineas, extra_steps=False, incluir_spark=
             if _lgbm:
                 reqs = [r_ for r_ in reqs if r_ not in _lgbm]
                 try:
-                    _sp.run([_sys.executable, "-m", "pip", "download", "--quiet", "--no-deps",
+                    _sp.run([*_vc.pip_cmd(), "download", "--quiet", "--no-deps",
                              "--retries", "1", "--timeout", "15", "--only-binary=:all:",
                              "--python-version", v, "--implementation", "cp",
                              "--abi", abi, "--abi", "abi3", "--abi", "none",
@@ -3863,7 +3874,7 @@ def _seleccionar_wheels(serie_dir, req_lineas, extra_steps=False, incluir_spark=
             _grupos = [[p_] for p_ in _plats]
             for grupo in _grupos:
                 try:
-                    r = _sp.run([_sys.executable, "-m", "pip", "download", "--quiet",
+                    r = _sp.run([*_vc.pip_cmd(), "download", "--quiet",
                                  "--retries", "1", "--timeout", "15", "--only-binary=:all:",
                                  "--python-version", v, "--implementation", "cp",
                                  "--abi", abi, "--abi", "abi3", "--abi", "none",
@@ -4656,7 +4667,7 @@ def _verify_resolve_linux(pkg_root, py_target, _log, steps, timeout):
             tmp = _tf.mkdtemp(prefix="bnx_res_")
             try:
                 rep = os.path.join(tmp, "r.json")
-                p = _sp.run([_sys.executable, "-m", "pip", "install", "--dry-run", "--ignore-installed",
+                p = _sp.run([*_vc.pip_cmd(), "install", "--dry-run", "--ignore-installed",
                              "--quiet", "--target", os.path.join(tmp, "t"), "--report", rep]
                             + base_cmd + reqs, capture_output=True, text=True, timeout=timeout)
                 if p.returncode == 0 and os.path.isfile(rep):
@@ -4669,14 +4680,16 @@ def _verify_resolve_linux(pkg_root, py_target, _log, steps, timeout):
                                           p.stderr or "")
                     for req in reqs:
                         d = os.path.join(tmp, "d")
-                        q = _sp.run([_sys.executable, "-m", "pip", "download", "--no-deps",
+                        q = _sp.run([*_vc.pip_cmd(), "download", "--no-deps",
                                      "--quiet", "-d", d] + base_cmd + [req],
                                     capture_output=True, text=True, timeout=timeout)
                         if q.returncode != 0:
                             faltan.append(_re.split(r"[<>=!~ ;\[]", req, maxsplit=1)[0].strip())
                     if not faltan:
                         faltan.append("(conflicto de versiones: " +
-                                      ((p.stderr or "").strip().splitlines() or ["?"])[-1][:120] + ")")
+                                      _vc.limpiar_stderr_pip(p.stderr, maximo=120) + ")")
+            except _vc.PipViejo as e:
+                faltan.append("(%s)" % e)
             except Exception as e:
                 faltan.append("(error al simular: %s)" % str(e)[:120])
             finally:

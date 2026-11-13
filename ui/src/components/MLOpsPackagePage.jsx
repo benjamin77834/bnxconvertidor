@@ -486,9 +486,10 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                                     color: t.muted || '#94a3b8', whiteSpace: 'pre-wrap' }}>{vendorJob.log}</pre>
                     )}
                     {vendorJob && !vendorJob.running && vendorJob.started && (
-                      <div>{vendorJob.returncode === 0
-                        ? '✅ Listo: ya puedes generar de nuevo.'
-                        : 'Terminó con avisos (revisa el log). Las mex-lib del banco no se bajan de PyPI: impórtalas por ZIP o en “Librerías del banco”.'}</div>
+                      vendorJob.returncode === 0
+                        ? <div>✅ Terminó bien (código 0){est && !est.ok ? ' (el cache de esta versión sigue incompleto: revisa el aviso de arriba)' : ': ya puedes generar de nuevo.'}</div>
+                        : <div style={{ color: '#fca5a5' }}>❌ Falló (código {String(vendorJob.returncode)}): {vendorJob.motivo || 'revisa el log'}.
+                          {' '}Las mex-lib del banco no se bajan de PyPI: impórtalas por ZIP o en “Librerías del banco”.</div>
                     )}
                   </div>
                 )
@@ -585,7 +586,7 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                                         border: '1px solid #f59e0b55' }}>
                             ⚠ En estas versiones de Python NO se podrá instalar todo offline (faltan wheels en el cache del
                             generador); ahí setup.sh intentará bajar lo que falte por internet. Si tu servidor usa otra versión, no te afecta:
-                            {filas.map(x => <div key={x.s + x.v}>· Python {x.v} ({x.s}): {String(x.e).slice(0, 120)}</div>)}
+                            {filas.map(x => <div key={x.s + x.v}>· Python {x.v} ({x.s}): {String(x.e).slice(0, 240)}</div>)}
                           </div>
                         )
                       })()}

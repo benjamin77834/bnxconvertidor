@@ -159,6 +159,27 @@ def estado_banco(cache=None):
             "bytes": _dir_bytes(os.path.join(cache, "bank_libs")) if os.path.isdir(os.path.join(cache, "bank_libs")) else 0}
 
 
+def _falta_deps(mensajes):
+    """Entradas de 'falta' a partir de los mensajes de resolucion: nombres de paquete cuando se
+    pueden extraer; si es un problema del pip (viejo/ausente) o de otra cosa, el mensaje ya
+    saneado (una linea, nunca el texto de uso de pip)."""
+    nombres, otros = set(), []
+    for m in mensajes:
+        m = limpiar_stderr_pip(m, maximo=2000)
+        lista = re.match(r"sin wheel en el cache:\s*(.+)", m)
+        hallados = ([x.strip() for x in lista.group(1).split(",") if x.strip()] if lista else
+                    re.findall(r"(?:No matching distribution found for|requirement)\s+([A-Za-z0-9_.\-]+)", m))
+        if hallados:
+            nombres.update(hallados)
+        else:
+            otros.append(m[:220])
+    out = []
+    if nombres:
+        out.append("dependencias open source: " + ", ".join(sorted(nombres, key=str.lower)))
+    out += sorted(set(otros))
+    return out
+
+
 def estado_version(version, cache=None, extra=False):
     """Que hay/falta para UNA version de Python. 'ok' = todo lo bajable esta
     (PySpark+py4j+deps open source del framework; las de pasos extra solo con extra=True).
@@ -190,7 +211,7 @@ def estado_version(version, cache=None, extra=False):
         deps_faltan.append("no se pudo resolver: %s" % str(e)[:160])
     deps_faltan = sorted(set(deps_faltan))
     if deps_faltan:
-        falta.append("dependencias open source (%s)" % deps_faltan[0][:100])
+        falta += _falta_deps(deps_faltan)
     bank = estado_banco(cache)
     bank_falta = bank["sdists_faltan"] + bank["pkgcode_faltan"]
     return {"version": v, "serie": serie, "ok": not falta, "falta": falta,
@@ -242,27 +263,189 @@ def hay_internet(timeout=8):
         return False
 
 
+# ------------------------------------------------------------- pip moderno
+# `pip install --dry-run --report` (resolver sin instalar) existe desde pip 22.2. Con un pip
+# viejo (p.ej. el de un Miniconda antiguo) pip responde "no such option" + todo su texto de
+# uso, y eso acababa pegado en los avisos de la UI. pip_cmd() entrega SIEMPRE un pip que sirve
+# (el del interprete, o el wheel de pip que viaja en el cache, que Python ejecuta directo:
+# `python pip-X.whl/pip ...`) o lanza PipViejo con un mensaje claro de una linea.
+PIP_MIN = (22, 2)
+_PIP_VER = {}
+_PIP_CMD = {}
+
+
+class PipViejo(RuntimeError):
+    """El pip del interprete no sirve (viejo o ausente) y no hay un pip moderno disponible."""
+
+
+def _ver_tuple(s):
+    m = re.match(r"\s*(\d+)(?:\.(\d+))?(?:\.(\d+))?", str(s or ""))
+    return tuple(int(x or 0) for x in m.groups()) if m else None
+
+
+def pip_version(py=None):
+    """(major, minor, patch) del pip de `python -m pip`, o None si no hay pip."""
+    py = py or sys.executable
+    if py not in _PIP_VER:
+        try:
+            r = subprocess.run([py, "-m", "pip", "--version"], capture_output=True, text=True, timeout=60)
+            m = re.match(r"pip (\d+(?:\.\d+)*)", (r.stdout or "").strip()) if r.returncode == 0 else None
+            _PIP_VER[py] = _ver_tuple(m.group(1)) if m else None
+        except Exception:
+            _PIP_VER[py] = None
+    return _PIP_VER[py]
+
+
+def _fmt_ver(v):
+    return ".".join(str(x) for x in v) if v else "?"
+
+
+def _requires_python_ok(spec, pyver=None):
+    """Evalua un Requires-Python simple ('>=3.10', '>=3.8,<4') contra el Python en curso."""
+    pyver = tuple(pyver or sys.version_info[:2])
+    ops = {">=": lambda a, b: a >= b, ">": lambda a, b: a > b, "<=": lambda a, b: a <= b,
+           "<": lambda a, b: a < b, "==": lambda a, b: a[:len(b)] == b, "!=": lambda a, b: a[:len(b)] != b}
+    for part in str(spec or "").split(","):
+        m = re.match(r"\s*(>=|<=|==|!=|>|<)\s*(\d+(?:\.\d+)*)", part)
+        if m:
+            b = tuple(int(x) for x in m.group(2).split("."))
+            if not ops[m.group(1)](pyver[:max(len(b), 2)], b):
+                return False
+    return True
+
+
+def _wheel_requires_python(whl):
+    try:
+        with zipfile.ZipFile(whl) as z:
+            for n in z.namelist():
+                if n.endswith(".dist-info/METADATA"):
+                    for ln in z.read(n).decode("utf-8", "replace").splitlines():
+                        if ln.lower().startswith("requires-python:"):
+                            return ln.split(":", 1)[1].strip()
+                    break
+    except (OSError, zipfile.BadZipFile, KeyError):
+        pass
+    return ""
+
+
+def _prueba_pip(cmd):
+    """Ejecuta `<cmd> --version`; devuelve la version (tupla) o None."""
+    try:
+        r = subprocess.run(cmd + ["--version"], capture_output=True, text=True, timeout=60)
+        m = re.match(r"pip (\d+(?:\.\d+)*)", (r.stdout or "").strip()) if r.returncode == 0 else None
+        return _ver_tuple(m.group(1)) if m else None
+    except Exception:
+        return None
+
+
+def pip_wheels_cache(cache=None):
+    """Wheels de pip que viajan en el cache (<cache>/*/pip-*.whl), la mas nueva primero."""
+    cache = cache or cache_dir()
+    ws = glob.glob(os.path.join(cache, "*", "pip-*.whl")) + glob.glob(os.path.join(cache, "*", "*", "pip-*.whl"))
+    ws = [w for w in ws if re.match(r"pip-\d", os.path.basename(w))]
+    return sorted(ws, key=lambda w: _ver_tuple(os.path.basename(w)[4:]) or (0,), reverse=True)
+
+
+def _mensaje_pip_viejo(py, ver):
+    if ver is None:
+        return ("Este Python (%s) no tiene pip. Instalalo: %s -m ensurepip --upgrade" % (py, py))
+    return ("El pip de este Python (%s) es muy viejo (%s < %s); actualiza: %s -m pip install --upgrade pip"
+            % (py, _fmt_ver(ver), _fmt_ver(PIP_MIN), py))
+
+
+def pip_cmd(py=None, cache=None, log=None, descargar=True):
+    """Prefijo de comando para ejecutar un pip >= 22.2 (lista de args, sin shell):
+      1. `python -m pip` si su pip ya es moderno;
+      2. el wheel de pip del cache compatible con este Python (`python <whl>/pip`);
+      3. <cache>/_pip_moderno (pip instalado con --target; si hay internet se crea con el pip
+         viejo: `pip install --target`, que sirve en cualquier version);
+      4. PipViejo con un mensaje claro. No instala nada global."""
+    py = py or sys.executable
+    cache = cache or cache_dir()
+    clave = (py, os.path.realpath(cache))
+    if clave in _PIP_CMD:
+        return list(_PIP_CMD[clave])
+    log = log or (lambda *_a: None)
+    ver = pip_version(py)
+    if ver and ver >= PIP_MIN:
+        _PIP_CMD[clave] = [py, "-m", "pip"]
+        return list(_PIP_CMD[clave])
+    log("[pip] el pip de %s es %s (< %s): busco un pip moderno" % (py, _fmt_ver(ver) if ver else "inexistente",
+                                                                   _fmt_ver(PIP_MIN)))
+    for w in pip_wheels_cache(cache):
+        if not _requires_python_ok(_wheel_requires_python(w)):
+            continue
+        cmd = [py, w + os.sep + "pip"]
+        v = _prueba_pip(cmd)
+        if v and v >= PIP_MIN:
+            log("[pip] uso el pip %s del cache (%s)" % (_fmt_ver(v), os.path.basename(w)))
+            _PIP_CMD[clave] = cmd
+            return list(cmd)
+    alt = os.path.join(cache, "_pip_moderno")
+    cmd = [py, os.path.join(alt, "pip")]
+    if os.path.isdir(os.path.join(alt, "pip")):
+        v = _prueba_pip(cmd)
+        if v and v >= PIP_MIN:
+            _PIP_CMD[clave] = cmd
+            return list(cmd)
+    if descargar and ver and hay_internet(timeout=8):
+        log("[pip] instalando un pip moderno en %s (no toca el pip global) ..." % alt)
+        try:
+            r = subprocess.run([py, "-m", "pip", "install", "--quiet", "--disable-pip-version-check",
+                                "--upgrade", "--target", alt, "pip>=%s" % _fmt_ver(PIP_MIN)],
+                               capture_output=True, text=True, timeout=600)
+            v = _prueba_pip(cmd) if r.returncode == 0 else None
+            if v and v >= PIP_MIN:
+                _PIP_CMD[clave] = cmd
+                return list(cmd)
+            log("[pip] no pude instalarlo: " + limpiar_stderr_pip(r.stderr, ver))
+        except Exception as e:
+            log("[pip] no pude instalarlo: %s" % str(e)[:150])
+    raise PipViejo(_mensaje_pip_viejo(py, ver))
+
+
+def limpiar_stderr_pip(texto, ver=None, maximo=200):
+    """UNA linea legible a partir del stderr de pip. Si es el texto de uso ('Usage:' / 'no such
+    option', tipico de un pip viejo) NO se pega: se deja la linea de error y el hint de version."""
+    lineas = [l.strip() for l in str(texto or "").splitlines() if l.strip()]
+    if not lineas:
+        return "pip fallo sin mensaje"
+    uso = any(l.startswith("Usage:") or l.lower().startswith("no such option")
+              or l.lower().startswith("no such command") for l in lineas)
+    if uso:
+        err = next((l for l in lineas if l.lower().startswith(("no such", "error:"))), "pip no entendio las opciones")
+        hint = ""
+        if ver is None:
+            ver = pip_version()
+        if ver and ver < PIP_MIN:
+            hint = " (pip %s es muy viejo, se necesita >= %s: python -m pip install --upgrade pip)" % (
+                _fmt_ver(ver), _fmt_ver(PIP_MIN))
+        return (err.replace("ERROR: ", "") + hint)[:maximo]
+    err = [l for l in lineas if "ERROR" in l]
+    return (err[0] if err else lineas[-1]).replace("ERROR: ", "")[:maximo]
+
+
 def _run(cmd, log, timeout):
     log("   $ " + " ".join(cmd[2:] if cmd[1:2] == ["-m"] else cmd))
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if r.returncode != 0:
-        err = [l for l in (r.stderr or "").splitlines() if l.strip()]
-        log("   ERROR: " + (err[-1] if err else "fallo (codigo %d)" % r.returncode))
+        log("   ERROR: " + (limpiar_stderr_pip(r.stderr) if (r.stderr or "").strip()
+                            else "fallo (codigo %d)" % r.returncode))
     return r.returncode == 0
 
 
 def cmd_pyspark_download(serie, destino):
-    return [sys.executable, "-m", "pip", "download", "--no-deps", "--no-binary", ":all:",
-            "pyspark==%s" % SERIES[serie]["pyspark"], "-d", destino]
+    return pip_cmd() + ["download", "--no-deps", "--no-binary", ":all:",
+                        "pyspark==%s" % SERIES[serie]["pyspark"], "-d", destino]
 
 
 def cmd_pyspark_wheel(sdist, destino):
-    return [sys.executable, "-m", "pip", "wheel", "--no-deps", sdist, "-w", destino]
+    return pip_cmd() + ["wheel", "--no-deps", sdist, "-w", destino]
 
 
 def cmd_py4j(serie, destino):
-    return [sys.executable, "-m", "pip", "download", "--no-deps", "--only-binary", ":all:",
-            "py4j==%s" % SERIES[serie]["py4j"], "-d", destino]
+    return pip_cmd() + ["download", "--no-deps", "--only-binary", ":all:",
+                        "py4j==%s" % SERIES[serie]["py4j"], "-d", destino]
 
 
 def preparar_version(version, log=print, cache=None, extra=False):
@@ -276,6 +459,14 @@ def preparar_version(version, log=print, cache=None, extra=False):
     os.makedirs(sdir, exist_ok=True)
     info = SERIES[serie]
     log("== Python %s (serie %s) ==" % (v, serie))
+    try:
+        pip_cmd(cache=cache, log=log)
+    except PipViejo as e:
+        log("ERROR: %s" % e)
+        log("       Alternativa sin pip: preparar_vendor.py --desde-github --python %s" % v)
+        est = estado_version(v, cache, extra=extra)
+        log("Resultado Python %s: INCOMPLETO (serie %s en cache: %s)" % (v, serie, _mb(est["bytes"])))
+        return est
     # (a) PySpark + py4j
     if _wheel_exacta(sdir, "py4j", info["py4j"]):
         log("[py4j] ya esta (%s)" % info["py4j"])
@@ -441,8 +632,11 @@ def desde_github(version, tag=GH_TAG, log=print, cache=None):
                 pass
     except ValueError as e:
         log("[github] ERROR al importar: %s" % e)
-    except Exception as e:  # red, 404, etc.
-        log("[github] no pude bajar del Release (%s)." % e)
+    except Exception as e:  # red, proxy, 404, etc.
+        motivo = getattr(e, "reason", None) or e
+        log("[github] no pude conectar a github.com: %s; descarga el ZIP en otra maquina "
+            "(%s) y usa preparar_vendor.py --zip <archivo>. Si hay proxy corporativo define "
+            "HTTPS_PROXY/HTTP_PROXY." % (str(motivo)[:150], _gh_url(tag, nombre)))
     return False
 # ----------------------------------------------------- minimo indispensable / podar
 def minimo(versiones, extra=False):

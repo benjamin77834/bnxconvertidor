@@ -102,9 +102,15 @@ def main(argv=None):
                 return False
             return input("¿Borrar estos archivos? [s/N] ").strip().lower() in ("s", "si", "sí", "y", "yes")
         aplicar = not args.mostrar
-        borrados, _ = vc.podar(versiones, extra=args.extra, aplicar=aplicar,
-                               confirmar=_confirmar if aplicar else None)
-        return 0
+        hubo_error = []
+
+        def _log(msg):
+            print(msg)
+            if str(msg).startswith("ERROR"):
+                hubo_error.append(msg)
+        vc.podar(versiones, extra=args.extra, aplicar=aplicar,
+                 confirmar=_confirmar if aplicar else None, log=_log)
+        return 1 if hubo_error else 0     # que la UI no diga "Listo" si no se pudo podar
     # Cuanto falta realmente; si todo esta, no se necesita red.
     pendientes = [v for v in versiones if not vc.estado_version(v, extra=args.extra)["ok"]]
     if pendientes and not args.sin_github:
@@ -124,9 +130,9 @@ def main(argv=None):
     else:
         versiones_pip = versiones
     if pendientes and not vc.hay_internet():
-        print("ERROR: no hay internet (no se alcanza pypi.org). Alternativa: en una maquina con el cache lleno")
-        print("       corre `python exportar_vendor.py --python %s` y aqui:" % pendientes[0])
-        print("       .venv/bin/python preparar_vendor.py --zip <bnx_vendor_*.zip>")
+        print("ERROR: no hay internet (no se alcanza pypi.org; si hay proxy corporativo define HTTPS_PROXY/HTTP_PROXY).")
+        print("       Alternativa: en una maquina con el cache lleno corre `python exportar_vendor.py --python %s`" % pendientes[0])
+        print("       y aqui: python preparar_vendor.py --zip <bnx_vendor_*.zip>")
         return 1
     rc = 0
     for v in versiones_pip:

@@ -156,6 +156,15 @@ def _vendor_job_info(with_log=False):
         except OSError:
             pass
         info["log"] = txt
+    if info["started"] and not info["running"] and info["returncode"] not in (0, None):
+        # Motivo real del fallo (ultima linea de error del log), para que la UI no diga "Listo".
+        try:
+            with open(_VENDOR_JOB.get("log") or "", encoding="utf-8", errors="replace") as fh:
+                lineas = [l.strip() for l in fh.read()[-20000:].splitlines()]
+            malas = [l for l in lineas if l.startswith("ERROR") or "no pude" in l or " - falta " in l or l.startswith("- falta")]
+            info["motivo"] = (malas[-1] if malas else "fallo (codigo %s)" % info["returncode"])[:400]
+        except OSError:
+            info["motivo"] = "fallo (codigo %s)" % info["returncode"]
     return info
 class BNXHandler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
@@ -5149,6 +5158,28 @@ if __name__ == "__main__":
             print("[!] No se pudo sincronizar grafos con S3 al arrancar (ver mensajes arriba).")
     _threading.Thread(target=_library_bidirectional_sync, daemon=True).start()
     _threading.Thread(target=_library_periodic_sync, daemon=True).start()
+
+    # Chequeo del cache de vendor al arrancar en Windows (en Mac/Linux lo hace start_server.sh).
+    # Solo informa, en un hilo aparte, sin prompts: no retrasa ni bloquea el server.
+    def _vendor_check_arranque():
+        try:
+            from src import vendor_cache as _vc
+            print("[vendor] Revisando el cache de vendor (%s)..." % _vc.cache_dir())
+            est = _vc.estado(["3.8", "3.12"])
+            print(_vc.formatear_estado(est))
+            if not all(e["ok"] for e in est["versiones"].values()):
+                print("[vendor] AVISO: falta cache de vendor. Baja con el boton 'Bajar/generar cache' de la UI o:")
+                print('         "%s" preparar_vendor.py --desde-github --python 3.12   (usa --python 3.8 para 3.8;' % sys.executable)
+                print("         sin internet: descarga el ZIP en otra maquina y usa preparar_vendor.py --zip <archivo>)")
+            pv = _vc.pip_version()
+            if pv is None or pv < _vc.PIP_MIN:
+                print("[vendor] AVISO: el pip de este Python es viejo o no existe (%s < %s). Se usara el pip del cache; "
+                      "para actualizarlo: \"%s\" -m pip install --upgrade pip"
+                      % (".".join(map(str, pv)) if pv else "?", ".".join(map(str, _vc.PIP_MIN)), sys.executable))
+        except Exception as _e:
+            print("[vendor] no pude revisar el cache: %s" % str(_e)[:200])
+    if os.name == "nt" and os.environ.get("BNX_VENDOR_CHECK", "1") != "0":
+        _threading.Thread(target=_vendor_check_arranque, daemon=True).start()
 
     import socket as _socket
 
