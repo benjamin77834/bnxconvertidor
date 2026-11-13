@@ -132,12 +132,27 @@ const textoACampo = (f, v) => {
   return t
 }
 
+// Colores del estado de ejecucion de cada nodo (en vivo)
+const RUN_COLOR = {
+  corriendo: '#3b82f6', ok: '#22c55e', fallo: '#ef4444', omitido: '#94a3b8', cancelado: '#f59e0b',
+}
+const RUN_LABEL = { corriendo: 'corriendo', ok: 'ok', fallo: 'falló', omitido: 'omitido', cancelado: 'cancelado' }
+const NIVEL = { ok: { icon: '✔', color: '#22c55e' }, warn: { icon: '⚠', color: '#f59e0b' }, error: { icon: '✖', color: '#ef4444' } }
+
 async function post(path, body) {
-  const r = await fetch(`${ORQUESTADOR_URL}/${path}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body || {}),
-  })
-  const d = await r.json().catch(() => ({}))
+  let r
+  try {
+    r = await fetch(`${ORQUESTADOR_URL}/${path}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    })
+  } catch {
+    // 'Failed to fetch' = la conexion se corto o el server no respondio
+    throw Object.assign(new Error('El servidor no respondió (¿se cayó? revisa la terminal de start_server)'), { data: {} })
+  }
+  const txt = await r.text()
+  let d = {}
+  try { d = txt ? JSON.parse(txt) : {} } catch { d = { error: txt.slice(0, 300) } }
   if (!r.ok) throw Object.assign(new Error(d.error || `HTTP ${r.status}`), { data: d })
   return d
 }
@@ -198,11 +213,13 @@ function StepNode({ data }) {
   const tgt = s.action?.target ? s.action.target.split(/[\\/]/).pop() : (s.action?.source || '')
   const nuevo = s.action?.type in TIPOS_UI && s.action.type !== 'graph'
   const u = s.action?.type === 'plan' ? null : UBIC[ubicDe(s.action)]
+  const rc = data.run ? RUN_COLOR[data.run] : null
   return (
     <div style={{
       width: 230, padding: '8px 10px', borderRadius: 8,
       background: data.theme.card || '#1e2433', color: data.theme.text || '#e2e8f0',
-      border: `2px ${s.solo_en_fallo ? 'dashed' : 'solid'} ${data.selected ? '#38bdf8' : color}`,
+      border: `${rc ? 3 : 2}px ${s.solo_en_fallo ? 'dashed' : 'solid'} ${data.selected ? '#38bdf8' : (rc || color)}`,
+      ...(rc ? { background: `${rc}22` } : {}),
       boxShadow: u ? `inset 6px 0 0 ${u.color}` : undefined,
       opacity: s.enabled ? 1 : 0.45, fontSize: 12,
     }}>
@@ -221,6 +238,7 @@ function StepNode({ data }) {
         <span style={{ color }}>● {s.action?.status === 'sin_convertir' ? 'sin convertir' : s.action?.status}</span>
         {s.solo_en_fallo && <span style={{ color: '#fb923c' }}> · solo en fallo</span>}
         {!s.enabled && <span> · deshabilitado</span>}
+        {data.run && <span style={{ color: rc, fontWeight: 700 }}> · {data.run === 'corriendo' ? '⏳' : '●'} {RUN_LABEL[data.run]}</span>}
       </div>
       <Handle type="source" position={Position.Right} />
     </div>
@@ -267,7 +285,8 @@ function EjecucionPanel({ t, btn, ej, setEj, plan, nameOf, sugerir, addEnlace, t
         <input value={ej.base_path || ''} onChange={e => setEj('base_path', e.target.value)}
           placeholder="/ruta/local o s3://bucket/prefijo" style={input} /></label>
       <div style={{ fontSize: 10, color: t.muted }}>
-        Se usa en la ejecución real (terminal) y en el DAG de Airflow. Desde aquí solo hay dry-run.
+        Se usa en la ejecución real (botón "Ejecutar plan (real)", terminal o Airflow) y en "Datos sintéticos".
+        En Windows: <code>C:\Users\usuario\bnx</code> o <code>C:/Users/usuario/bnx</code> (carpeta local, sin comillas).
       </div>
 
       <div style={{ fontWeight: 700, marginTop: 10 }}>Enlaces de datos</div>
@@ -322,11 +341,10 @@ const PASOS = [
   { n: 4, titulo: 'Acomodar el orden (si hace falta)', tab: 'orq', ir: 'Ir a Orquestación',
     texto: 'Arrastra del punto derecho de un paso al izquierdo de otro: el segundo corre después. Para quitar una dependencia, selecciona la flecha y pulsa Supr. En el panel derecho: deshabilitar, "solo si falla", "continuar si falla". "Invertir flechas" si el orden salió al revés. Pulsa "Guardar" (un ciclo se rechaza). Para encadenar VARIOS planes (uno después de otro): "🧩 Plan de planes", marca los planes en orden y pulsa Crear; luego se acomoda igual.' },
   { n: 5, titulo: 'Preparar la ejecución', tab: 'orq', ir: 'Ir a Orquestación',
-    texto: 'Sin ningún paso seleccionado, el panel derecho muestra "Ejecución": elige python o spark-submit. Si un job usa la salida de otro, en "Enlaces de datos" pulsa "Sugerir" o créalos. "Datos sintéticos" genera entradas de prueba y deja el base_path listo. "Dry-run" muestra qué correría y en qué orden, sin ejecutar nada.' },
-  { n: 6, titulo: 'Ejecutar o llevar a producción', tab: null,
-    texto: 'Desde la pantalla solo hay dry-run (por seguridad). Para ejecutar de verdad, en la terminal:', cmd:
-      '.venv/bin/python -m src.orquestador ejecutar output/<proyecto>/orquestacion_<plan>.json --ejecutar',
-    extra: 'Para Airflow: "DAG Airflow" y descarga el .py del DAG.' },
+    texto: 'Sin ningún paso seleccionado, el panel derecho muestra "Ejecución": elige python o spark-submit y escribe el Base path (carpeta local absoluta, ej. C:\\Users\\tu_usuario\\bnx, o s3://bucket/prefijo). Si un job usa la salida de otro, en "Enlaces de datos" pulsa "Sugerir" o créalos. "Datos sintéticos" genera entradas de prueba en <base>/raw (con ese Base path). "Dry-run" muestra qué correría y en qué orden, sin ejecutar nada.' },
+  { n: 6, titulo: 'Ejecutar de verdad desde aquí', tab: null,
+    texto: '"▶▶ Ejecutar plan (real)" corre el plan completo (o el plan de planes); al seleccionar un paso, "Ejecutar este paso" corre solo ese y "Desde aquí" corre ese y los que dependen de él. Antes se muestra el dry-run y un chequeo previo (pyspark, Java, en Windows winutils/HADOOP_HOME, datos en <base>/raw) y debes confirmar. Los pasos remotos/nube (ssh, http, Glue, EMR, Lambda, S3) se omiten salvo que marques "permitir pasos remotos/nube". Verás el log en vivo, el estado de cada cuadro (azul corriendo, verde ok, rojo falló, gris omitido) y puedes Cancelar. Al terminar se listan las salidas en <base>/output.',
+    extra: 'Por terminal sigue disponible: .venv/bin/python -m src.orquestador ejecutar output/<proyecto>/orquestacion_<plan>.json --ejecutar --base-path <carpeta> [--paso ID | --desde ID]. Para Airflow: "DAG Airflow" y descarga el .py.' },
 ]
 
 // Crear un "plan de planes": elegir 2+ orquestaciones del proyecto en el orden en que corren.
@@ -342,12 +360,7 @@ function ComponerPanel({ t, btn, card, planes, actual, onCreado, onError }) {
     if (!/^[A-Za-z0-9][\w.-]{0,80}$/.test(nombre.trim())) { onError('Escribe un nombre (letras, números, . _ -).'); return }
     setBusy(true)
     try {
-      const r = await fetch(`${ORQUESTADOR_URL}/componer`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ planes: orden, nombre: nombre.trim(), cadena }),
-      })
-      const d = await r.json().catch(() => ({}))
-      if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`)
+      const d = await post('componer', { planes: orden, nombre: nombre.trim(), cadena })
       onCreado(d.file)
     } catch (e) { onError(`No se creó: ${e.message}`) }
     setBusy(false)
@@ -571,6 +584,11 @@ export default function OrquestadorPage({ theme }) {
   const [form, setForm] = useState(null)                  // formulario de paso: {id?} (manual)
   const [nodes, setNodes, onNodesChange] = useNodesState([])
   const [edges, setEdges, onEdgesChange] = useEdgesState([])
+  // ---- ejecucion REAL ----
+  const [permitirRem, setPermitirRem] = useState(false)     // permitir pasos remotos/nube
+  const [confirmar, setConfirmar] = useState(null)          // modal {body, alcance, dry_run, checks, bloqueado, error}
+  const [run, setRun] = useState(null)                      // {id, plan, alcance, estado, pasos, log, offset, activa, ...}
+  const logRef = useRef(null)
 
   const card = { background: t.card || '#1e2433', border: `1px solid ${t.border || '#334155'}`, borderRadius: 10, padding: 12 }
   const btn = (primary) => ({
@@ -580,6 +598,9 @@ export default function OrquestadorPage({ theme }) {
     border: `1px solid ${primary ? (t.accent || '#1a73e8') : (t.border || '#334155')}`,
   })
   const flash = (kind, text) => { setMsg({ kind, text }); setTimeout(() => setMsg(null), 6000) }
+  // estado en vivo de cada paso del plan que se esta viendo (si la ejecucion es de este plan)
+  const runPasos = run && run.plan === file ? run.pasos : null
+  const corriendo = !!run && run.estado === 'corriendo'
 
   // ---- carga ----
   const loadList = useCallback(async () => {
@@ -590,7 +611,16 @@ export default function OrquestadorPage({ theme }) {
       setProjects((await post('projects')).projects || [])
     } catch (e) { flash('err', `No se pudo listar: ${e.message}`) }
   }, [file])
-  useEffect(() => { loadList() }, [])  // eslint-disable-line
+  useEffect(() => {
+    // al abrir la pagina: si hay una ejecucion en curso en el servidor, retomar su avance
+    loadList().then(() => post('activo').then(d => {
+      if (d.run) {
+        setRun({ id: d.run, plan: d.plan, alcance: 'en curso', estado: 'corriendo', pasos: {}, subpasos: {},
+          log: '', offset: 0, activa: true })
+        if (d.plan) setFile(d.plan)
+      }
+    }).catch(() => {}))
+  }, [])  // eslint-disable-line
 
   const loadPlan = useCallback(async (f) => {
     if (!f) return
@@ -613,9 +643,9 @@ export default function OrquestadorPage({ theme }) {
     const pos = layout(p.steps)
     setNodes(p.steps.map(s => ({
       id: s.id, type: 'step', position: pos[s.id] || { x: 0, y: 0 },
-      data: { step: s, theme: t, selected: false },
+      data: { step: s, theme: t, selected: false, run: runPasos?.[s.id] },
     })))
-  }, [setNodes, t])
+  }, [setNodes, t])   // eslint-disable-line
 
   useEffect(() => { if (plan) relayout(plan) }, [file, plan?.plan])  // eslint-disable-line
 
@@ -646,7 +676,7 @@ export default function OrquestadorPage({ theme }) {
       const have = new Set(prev.map(n => n.id))
       if (plan.steps.length !== prev.length || plan.steps.some(s => !have.has(s.id))) return prev
       const byId = Object.fromEntries(plan.steps.map(s => [s.id, s]))
-      return prev.map(n => ({ ...n, data: { step: byId[n.id], theme: t, selected: n.id === selId } }))
+      return prev.map(n => ({ ...n, data: { step: byId[n.id], theme: t, selected: n.id === selId, run: runPasos?.[n.id] } }))
     })
     setEdges(plan.steps.flatMap(s => s.depends_on.map(d => {
       const fl = s.dep_flags?.[d]
@@ -663,7 +693,7 @@ export default function OrquestadorPage({ theme }) {
       label: `📦 ${e.salida.split('/').pop()}`, animated: true,
       style: { stroke: '#a855f7', strokeDasharray: '4 3' }, labelStyle: { fontSize: 10, fill: '#a855f7' },
     }))))
-  }, [plan, selId, t, setNodes, setEdges])
+  }, [plan, selId, t, setNodes, setEdges, runPasos])
 
   // Quitar una dependencia puede dejar enlaces invalidos: tambien se limpian
   const limpiarEnlaces = (p) => {
@@ -744,20 +774,27 @@ export default function OrquestadorPage({ theme }) {
     setBusy(true)
     try {
       if (dirty) { await post('save', { file, plan }); setDirty(false) }
-      let d = await post('datos', { file, filas })
+      const bp = (ej.base_path || '').trim()
+      const baseReq = bp && !bp.startsWith('s3://') ? { base_path: bp } : {}   // sin base: carpeta del plan
+      let d = await post('datos', { file, filas, ...baseReq })
       if (d.reporte.some(r => r.estado === 'existe') &&
           window.confirm('Algunos datasets ya existen. ¿Regenerarlos (se sobrescriben)?')) {
-        d = await post('datos', { file, filas, sobrescribir: true })
+        d = await post('datos', { file, filas, sobrescribir: true, ...baseReq })
       }
       const icon = { generado: '✔', existe: '•', omitido: '–', error: '✖' }
       const lineas = d.reporte.map(r => `${icon[r.estado] || '?'} [${r.estado}] ${r.paso} ${r.ruta}` +
         (r.filas ? ` · ${r.filas} filas · ${r.columnas.join(', ')}` : '') + (r.motivo ? ` · ${r.motivo}` : ''))
       setDry({ ok: d.reporte.every(r => r.estado !== 'error'),
-        output: `Datos sintéticos en ${d.base_path}\n(base_path del plan actualizado)\n\n` +
+        output: `Datos sintéticos en ${d.base_path}\n(base_path del plan actualizado)\n` +
+          `Motor parquet: ${(d.motores || []).join(', ') || '(ninguno nuevo)'}` +
+          `${(d.motores || []).includes('python-puro') ? ' (sin pyarrow: escritor Python puro; Spark lo lee igual)' : ''}\n\n` +
           (lineas.join('\n') || 'Ningún paso con job convertido: no hay entradas que generar.') })
       await loadPlan(file)
       flash('ok', `${d.reporte.filter(r => r.estado === 'generado').length} dataset(s) generados`)
-    } catch (e) { flash('err', `Datos sintéticos: ${e.message}`) }
+    } catch (e) {
+      flash('err', `Datos sintéticos: ${e.message}`)
+      if (e.data?.traceback) setDry({ ok: false, output: `${e.message}\n\n${e.data.traceback}` })
+    }
     setBusy(false)
   }
 
@@ -794,6 +831,93 @@ export default function OrquestadorPage({ theme }) {
     } catch (e) { flash('err', e.message) }
     setBusy(false)
   }
+
+  // ---- ejecucion REAL (subproceso en el servidor; log y estado por polling) ----
+  const cuerpoEjecucion = (alcance) => ({
+    plan_json: file, modo: ej.modo || 'python', base_path: (ej.base_path || '').trim(),
+    spark_args: ej.spark_args || [], permitir_remotos: permitirRem, real: true,
+    ...(alcance.paso ? { paso: alcance.paso } : {}), ...(alcance.desde_paso ? { desde_paso: alcance.desde_paso } : {}),
+  })
+  const prepararEjecucion = async (alcance = {}) => {
+    if (corriendo) { flash('err', 'Ya hay una ejecución en curso: espera o cancélala.'); return }
+    if (!(ej.base_path || '').trim()) {
+      setSelId(null)
+      flash('err', 'Indica el Base path (panel Ejecución, sin paso seleccionado): carpeta local absoluta o s3://…')
+      return
+    }
+    setBusy(true)
+    try {
+      if (dirty) { await post('save', { file, plan }); setDirty(false) }
+      const body = cuerpoEjecucion(alcance)
+      const d = await post('preflight', body)
+      const etiqueta = alcance.paso ? `solo el paso ${nameOf(alcance.paso)} (${alcance.paso})`
+        : alcance.desde_paso ? `desde el paso ${nameOf(alcance.desde_paso)} (${alcance.desde_paso}) y lo que depende de él`
+        : plan.tipo === 'plan_de_planes' ? 'el plan de planes completo' : 'el plan completo'
+      setConfirmar({ body: { ...body, base_path: d.params.base_path }, etiqueta, dry_run: d.dry_run, dry_ok: d.dry_ok,
+        checks: d.checks, bloqueado: d.bloqueado, error: null, enviando: false })
+    } catch (e) { flash('err', `No se pudo preparar la ejecución: ${e.message}`) }
+    setBusy(false)
+  }
+  const lanzarEjecucion = async () => {
+    const c = confirmar
+    if (!c || c.enviando) return
+    setConfirmar({ ...c, enviando: true, error: null })
+    try {
+      const d = await post('ejecutar', { ...c.body, confirmado: true })
+      setConfirmar(null)
+      setRun({ id: d.run, plan: file, alcance: c.etiqueta, estado: 'corriendo', pasos: {}, subpasos: {},
+        log: '', offset: 0, activa: true, base_path: c.body.base_path })
+    } catch (e) {
+      if (e.data?.run) {      // 409: ya corre -> mostrar su avance
+        setConfirmar(null)
+        flash('err', `${e.message}: mostrando su avance`)
+        setRun({ id: e.data.run, plan: file, alcance: 'en curso', estado: 'corriendo', pasos: {}, subpasos: {},
+          log: '', offset: 0, activa: true })
+      } else {
+        setConfirmar({ ...c, enviando: false, error: e.message, checks: e.data?.checks || c.checks,
+          bloqueado: (e.data?.checks || c.checks).some(x => x.nivel === 'error') })
+      }
+    }
+  }
+  const cancelarEjecucion = async () => {
+    if (!run || !window.confirm('¿Cancelar la ejecución? Se detiene el proceso y los jobs que haya lanzado.')) return
+    try { await post('cancelar', { run: run.id }) } catch (e) { flash('err', `No se pudo cancelar: ${e.message}`) }
+  }
+  // polling del estado + log incremental mientras la ejecucion esta activa
+  useEffect(() => {
+    if (!run?.id || !run.activa) return undefined
+    let stop = false, off = run.offset || 0, ocupado = false
+    const tick = async () => {
+      if (ocupado) return
+      ocupado = true
+      try {
+        const d = await post('estado', { run: run.id, offset: off })
+        if (stop) return
+        off = d.offset
+        setRun(prev => (prev && prev.id === d.run ? {
+          ...prev, estado: d.estado, pasos: d.pasos, subpasos: d.subpasos, rc: d.rc, segundos: d.segundos,
+          log: (prev.log + d.log).slice(-200000), offset: d.offset, base_path: d.base_path || prev.base_path,
+          salidas: d.salidas, salidas_dir: d.salidas_dir,
+          activa: !(d.estado !== 'corriendo' && d.salidas),
+        } : prev))
+      } catch (e) {
+        if (!stop) {
+          setRun(prev => (prev ? { ...prev, activa: false, errorPoll: e.message } : prev))
+          flash('err', `Se perdió el seguimiento: ${e.message}`)
+        }
+      } finally { ocupado = false }
+    }
+    const iv = setInterval(tick, 1000)
+    tick()
+    return () => { stop = true; clearInterval(iv) }
+  }, [run?.id, run?.activa])  // eslint-disable-line
+  useEffect(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight }, [run?.log])
+  useEffect(() => {
+    if (!confirmar) return undefined
+    const k = (e) => { if (e.key === 'Escape' && !confirmar.enviando) setConfirmar(null) }
+    window.addEventListener('keydown', k)
+    return () => window.removeEventListener('keydown', k)
+  }, [confirmar])
 
   const descargar = () => {
     const a = document.createElement('a')
@@ -944,6 +1068,14 @@ export default function OrquestadorPage({ theme }) {
               <button style={btn(false)} onClick={invertir} disabled={!plan}>⇅ Invertir flechas</button>
               <button style={btn(false)} onClick={() => { if (!dirty || window.confirm('¿Descartar cambios?')) loadPlan(file) }} disabled={!dirty}>↺ Descartar</button>
               <button style={btn(false)} onClick={dryRun} disabled={!plan || busy}>▶ Dry-run</button>
+              <button style={{ ...btn(true), background: '#16a34a', borderColor: '#16a34a' }} onClick={() => prepararEjecucion({})}
+                disabled={!plan || busy || corriendo}
+                title="Ejecuta DE VERDAD el plan completo (en segundo plano). Pide confirmación mostrando el dry-run.">
+                ▶▶ Ejecutar {plan?.tipo === 'plan_de_planes' ? 'plan de planes' : 'plan'} (real)</button>
+              <label style={{ fontSize: 11, display: 'flex', gap: 4, alignItems: 'center' }}
+                title="Sin marcar, los pasos ssh/http/Glue/EMR/Lambda/S3 se omiten en la ejecución real">
+                <input type="checkbox" checked={permitirRem} onChange={e => setPermitirRem(e.target.checked)} />
+                permitir pasos remotos/nube</label>
               <button style={btn(false)} onClick={verAirflow} disabled={!plan || busy}>🌀 DAG Airflow</button>
               <button style={btn(false)} onClick={datosSinteticos} disabled={!plan || busy}
                 title="Genera parquet de entrada en <carpeta del plan>/datos_sinteticos/raw y deja el base_path apuntando ahí">🧪 Datos sintéticos</button>
@@ -1004,7 +1136,7 @@ export default function OrquestadorPage({ theme }) {
             )}
             <div style={{ fontSize: 11, color: t.muted, padding: '0 12px 6px' }}>
               Arrastra del punto derecho de un paso al izquierdo de otro para añadir una dependencia (el primero corre antes).
-              Selecciona una flecha y pulsa Supr para quitarla. La ejecución real no está disponible desde la GUI.
+              Selecciona una flecha y pulsa Supr para quitarla. “▶▶ Ejecutar plan (real)” ejecuta de verdad (pide confirmación).
             </div>
             <div ref={lienzoRef} style={{ flex: 1, minHeight: 360 }}>
               <ReactFlow
@@ -1050,6 +1182,40 @@ export default function OrquestadorPage({ theme }) {
                 </pre>
               </div>
             )}
+            {run && (
+              <div style={{ ...card, margin: 10 }} role="region" aria-label="Ejecución real">
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 6, fontSize: 12 }}>
+                  <strong>Ejecución real</strong>
+                  <span style={{ color: RUN_COLOR[run.estado] || t.muted, fontWeight: 700 }}>
+                    {run.estado === 'corriendo' ? '⏳ corriendo…' : `● ${RUN_LABEL[run.estado] || run.estado}${run.rc != null ? ` (código ${run.rc})` : ''}`}</span>
+                  <span style={{ color: t.muted }}>{run.alcance}{run.segundos != null ? ` · ${run.segundos}s` : ''}
+                    {run.plan !== file ? ` · plan ${run.plan?.split('/').pop()}` : ''}</span>
+                  <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+                    {run.estado === 'corriendo' && <button style={{ ...btn(false), borderColor: '#ef4444', color: '#ef4444' }}
+                      onClick={cancelarEjecucion}>⏹ Cancelar</button>}
+                    {run.estado !== 'corriendo' && <button style={btn(false)} onClick={() => setRun(null)} aria-label="Cerrar la consola">✕</button>}
+                  </span>
+                </div>
+                {Object.keys(run.subpasos || {}).length > 0 && (
+                  <div style={{ fontSize: 11, color: t.muted, marginBottom: 4, wordBreak: 'break-word' }}>
+                    Sub-pasos: {Object.entries(run.subpasos).map(([k, v]) => (
+                      <span key={k} style={{ marginRight: 8, color: RUN_COLOR[v] }}>{k}:{RUN_LABEL[v] || v}</span>))}
+                  </div>)}
+                <pre ref={logRef} style={{ margin: 0, maxHeight: 260, overflow: 'auto', fontSize: 11, whiteSpace: 'pre-wrap',
+                  background: t.codeBg || '#0b1220', padding: 8, borderRadius: 6 }}>{run.log || '(esperando salida…)'}</pre>
+                {run.errorPoll && <div style={{ color: '#f87171', fontSize: 12, marginTop: 4 }}>{run.errorPoll}</div>}
+                {run.estado !== 'corriendo' && run.salidas_dir && (
+                  <div style={{ fontSize: 12, marginTop: 6 }}>
+                    <b>Salidas</b> en <code style={{ wordBreak: 'break-all' }}>{run.salidas_dir}</code>{' '}
+                    <button style={{ ...btn(false), padding: '0 6px' }} onClick={() => navigator.clipboard?.writeText(run.salidas_dir)}>Copiar ruta</button>
+                    {(run.salidas || []).length === 0
+                      ? <div style={{ color: t.muted }}>(sin archivos en output/)</div>
+                      : <ul style={{ margin: '4px 0 0', paddingLeft: 18, maxHeight: 120, overflow: 'auto' }}>
+                          {run.salidas.map(x => <li key={x.ruta}><code>{x.ruta}</code> <span style={{ color: t.muted }}>{x.bytes} B</span></li>)}
+                        </ul>}
+                  </div>)}
+              </div>
+            )}
           </div>
 
           <div style={{ width: 290, borderLeft: `1px solid ${t.border}`, padding: 12, overflowY: 'auto' }}>
@@ -1090,6 +1256,16 @@ export default function OrquestadorPage({ theme }) {
                     <button style={btn(false)} onClick={() => setForm({})}>+ Paso</button>
                   </div>)}
                 {sel.action?.target && <div style={{ wordBreak: 'break-all', color: t.muted }}>{sel.action.target}</div>}
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  <button style={{ ...btn(true), background: '#16a34a', borderColor: '#16a34a' }} disabled={busy || corriendo || !sel.enabled}
+                    onClick={() => prepararEjecucion({ paso: sel.id })}
+                    title="Ejecuta de verdad solo este paso (usa los datos que ya existan en el base path)">▶ Ejecutar este paso</button>
+                  <button style={btn(false)} disabled={busy || corriendo || !sel.enabled}
+                    onClick={() => prepararEjecucion({ desde_paso: sel.id })}
+                    title="Ejecuta este paso y todos los que dependen de él">⏭ Desde aquí</button>
+                </div>
+                {runPasos?.[sel.id] && <div style={{ color: RUN_COLOR[runPasos[sel.id]], fontWeight: 700 }}>
+                  Última ejecución: {RUN_LABEL[runPasos[sel.id]]}</div>}
                 {sel.action?.type === 'graph' && sel.action?.target &&
                   <button style={btn(true)} onClick={() => verCodigo(sel.action.target)}>👁 Ver código PySpark</button>}
                 {sel.action?.type === 'plan' && sel.action?.target &&
@@ -1244,6 +1420,40 @@ export default function OrquestadorPage({ theme }) {
             {procLog && (
               <pre style={{ marginTop: 8, maxHeight: 260, overflow: 'auto', fontSize: 11, whiteSpace: 'pre-wrap',
                 border: `1px solid ${procLog.ok ? '#22c55e' : '#ef4444'}`, borderRadius: 6, padding: 8 }}>{procLog.log}</pre>)}
+          </div>
+        </div>
+      )}
+      {confirmar && (
+        <div role="dialog" aria-modal="true" aria-labelledby="orq-confirm-t"
+          style={{ position: 'fixed', inset: 0, background: '#000a', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }}>
+          <div style={{ ...card, width: 'min(880px, 94vw)', maxHeight: '88vh', display: 'flex', flexDirection: 'column', gap: 8,
+            background: t.bg || '#0a1628' }}>
+            <h3 id="orq-confirm-t" style={{ margin: 0, fontSize: 15 }}>Ejecutar de verdad: {confirmar.etiqueta}</h3>
+            <div style={{ fontSize: 12, color: t.muted }}>
+              Modo <b>{confirmar.body.modo}</b> · Base path <code>{confirmar.body.base_path}</code>
+              {confirmar.body.permitir_remotos ? ' · pasos remotos/nube PERMITIDOS' : ' · pasos remotos/nube se omiten'}
+            </div>
+            <div style={{ fontSize: 12 }}>
+              {confirmar.checks.map(c => (
+                <div key={c.id} style={{ color: NIVEL[c.nivel].color, marginBottom: 2 }}>
+                  {NIVEL[c.nivel].icon} <span style={{ color: t.text }}>{c.msg}</span>
+                  {c.ayuda && <div style={{ color: t.muted, marginLeft: 16 }}>→ {c.ayuda}</div>}
+                </div>))}
+            </div>
+            <div style={{ fontSize: 12, fontWeight: 600 }}>Esto es lo que se va a ejecutar (dry-run):</div>
+            <pre style={{ margin: 0, flex: 1, minHeight: 80, overflow: 'auto', fontSize: 11, whiteSpace: 'pre-wrap',
+              background: t.codeBg || '#0b1220', padding: 8, borderRadius: 6 }}>{confirmar.dry_run}</pre>
+            {!confirmar.dry_ok && <div style={{ color: '#f59e0b', fontSize: 12 }}>
+              El dry-run reporta archivos faltantes: esos pasos fallarán.</div>}
+            {confirmar.error && <div style={{ color: '#f87171', fontSize: 12 }}>✖ {confirmar.error}</div>}
+            {confirmar.checks.some(c => c.nivel === 'warn') && !confirmar.bloqueado &&
+              <div style={{ fontSize: 12, color: '#f59e0b' }}>Hay avisos (⚠): puedes continuar bajo tu responsabilidad.</div>}
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button style={btn(false)} onClick={() => setConfirmar(null)} disabled={confirmar.enviando}>Cancelar</button>
+              <button style={{ ...btn(true), background: '#16a34a', borderColor: '#16a34a', opacity: confirmar.bloqueado ? 0.5 : 1 }}
+                onClick={lanzarEjecucion} disabled={confirmar.bloqueado || confirmar.enviando}>
+                {confirmar.enviando ? 'Lanzando…' : confirmar.checks.some(c => c.nivel === 'warn') ? 'Continuar y ejecutar' : 'Ejecutar'}</button>
+            </div>
           </div>
         </div>
       )}

@@ -12,5 +12,5 @@ export const PIPELINE_LOGS_URL = `${DATALAB_API}/pipeline/logs`
 // asi que la biblioteca de grafos se guarda/sirve desde el server local.
 export const LIBRARY_URL = `${API_URL}/library`
 
-// Orquestador de planes Ab Initio (solo dry-run desde la GUI)
+// Orquestador de planes Ab Initio (dry-run y ejecución real en segundo plano)
 export const ORQUESTADOR_URL = `${API_URL}/orquestador`

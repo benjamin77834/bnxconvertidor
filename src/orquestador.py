@@ -651,22 +651,97 @@ def fusionar_edicion(almacenado, entrante):
     return nuevo
 
 
-def _ej(o, modo=None, base_path=None):
+_WIN_ABS = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\|//[^/])")   # C:\x  C:/x  \\srv\share  //srv/share
+
+
+def normalizar_base_path(bp):
+    """Deja el base_path en una forma unica, sin separador final.
+
+    - s3://bucket/prefijo/ -> s3://bucket/prefijo
+    - Windows ('C:\\Users\\X\\', 'C:/Users/X/', '"C:\\Users\\X"') -> 'C:/Users/X' (barras
+      normales: las entienden Windows, Python y Spark y no se rompen al escapar JSON/f-strings)
+    - POSIX -> os.path.normpath
+    Funciona igual en Mac que en Windows (usa ntpath explicito para rutas de Windows)."""
+    import ntpath
+    bp = (bp or "").strip().strip('"').strip("'").strip()
+    if not bp:
+        return ""
+    if "://" in bp:
+        return bp.rstrip("/")
+    if _WIN_ABS.match(bp):
+        n = ntpath.normpath(bp).replace("\\", "/")
+        return n if len(n) <= 3 and n.endswith(":/") else n.rstrip("/")
+    return os.path.normpath(os.path.expanduser(bp))
+
+
+def validar_base_path(bp, crear=True, windows=None):
+    """Valida el base_path de una ejecucion REAL. Devuelve (ruta_normalizada, error|None).
+
+    Debe ser s3://bucket[/prefijo] o una ruta local ABSOLUTA de este sistema (no la raiz).
+    Local: se crea si no existe (crear=True) y se comprueba que se pueda escribir.
+    `windows` fuerza el sistema (por defecto os.name == 'nt'); sirve para pruebas."""
+    windows = (os.name == "nt") if windows is None else windows
+    n = normalizar_base_path(bp)
+    if not n:
+        return "", "indica el base_path (ruta local absoluta o s3://bucket/prefijo)"
+    if any(c in n for c in "\x00\r\n"):
+        return n, "el base_path tiene caracteres de control"
+    if "://" in n:
+        return (n, None) if _S3_URL.match(n) else (n, "base_path s3:// invalido (use s3://bucket/prefijo)")
+    es_win = bool(_WIN_ABS.match(n))
+    if es_win != windows:
+        return n, ("la ruta es de Windows pero el servidor no corre en Windows"
+                   if es_win else "ruta absoluta de Windows requerida (ej. C:/Users/usuario/bnx)")
+    if not es_win and not os.path.isabs(n):
+        return n, "el base_path debe ser una ruta absoluta (no relativa)"
+    if n in ("/", "") or (es_win and re.fullmatch(r"[A-Za-z]:/?", n)):
+        return n, "el base_path no puede ser la raiz del disco"
+    if crear:
+        try:
+            os.makedirs(n, exist_ok=True)
+        except OSError as e:
+            return n, f"no se pudo crear {n}: {e}"
+    if os.path.isdir(n) and not os.access(n, os.W_OK):
+        return n, f"sin permiso de escritura en {n}"
+    return n, None
+
+
+def _ej(o, modo=None, base_path=None, spark_args=None):
     """Configuracion de ejecucion efectiva (defecto + JSON + overrides de CLI)."""
     ej = {**EJECUCION_DEFECTO, **(o.get("ejecucion") or {})}
     if modo:
         ej["modo"] = modo
     if base_path is not None:  # "" limpia el valor
         ej["base_path"] = base_path
+    if spark_args is not None:
+        ej["spark_args"] = list(spark_args)
     return ej
 
 
 def _spark_submit_bin(ej):
+    """spark-submit: el configurado / del PATH (en Windows spark-submit.cmd), el del venv o
+    Anaconda, el del paquete pyspark (pyspark/bin) o SPARK_HOME."""
     exe = ej.get("spark_submit") or "spark-submit"
-    if shutil.which(exe):
+    w = shutil.which(exe)
+    if w:
         return exe
-    cand = os.path.join(os.path.dirname(sys.executable), os.path.basename(exe))  # venv
-    return cand if os.path.exists(cand) else exe
+    nombres = [os.path.basename(exe)] + ([os.path.basename(exe) + ".cmd"] if os.name == "nt" else [])
+    dirs = [os.path.dirname(sys.executable), os.path.join(os.path.dirname(sys.executable), "Scripts")]
+    try:
+        import importlib.util as _iu
+        spec = _iu.find_spec("pyspark")
+        if spec and spec.origin:
+            dirs.append(os.path.join(os.path.dirname(spec.origin), "bin"))
+    except (ImportError, ValueError):
+        pass
+    if os.environ.get("SPARK_HOME"):
+        dirs.append(os.path.join(os.environ["SPARK_HOME"], "bin"))
+    for d in dirs:
+        for n in nombres:
+            cand = os.path.join(d, n)
+            if os.path.exists(cand):
+                return cand
+    return exe
 
 
 # ---------------------------------------------------------------------------
@@ -1189,16 +1264,40 @@ def _job_env(ej):
     env = dict(os.environ)
     env.update({str(k): str(v) for k, v in (ej.get("env") or {}).items()})
     if ej.get("base_path"):
-        env["BNX_BASE_PATH"] = ej["base_path"]
+        env["BNX_BASE_PATH"] = _base_efectiva(ej)
+    # Los jobs (y los workers de Spark) deben usar el MISMO Python que el orquestador
+    # (en Windows, el python de Anaconda; si no, Spark busca "python3" y no lo encuentra)
+    if os.name == "nt":
+        env["PYSPARK_PYTHON"] = env["PYSPARK_DRIVER_PYTHON"] = sys.executable
+    else:
+        env.setdefault("PYSPARK_PYTHON", sys.executable)
+        env.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
+    env.setdefault("PYTHONIOENCODING", "utf-8")   # consola cp1252: print('→') no debe reventar
+    env.setdefault("PYTHONUTF8", "1")
     return env
 
 
 def _base_efectiva(ej):
-    return (ej.get("base_path") or "").rstrip("/")
+    return normalizar_base_path(ej.get("base_path") or "")
 
 
-def materializar_enlace(link, ej, real):
-    """Copia <base>/<salida> a <base>/<entrada>. Devuelve True si ok (o dry-run)."""
+def _resolver_script(cmd):
+    """['ksh', x.ksh] -> argv ejecutable en este equipo: ksh, o bash (Git Bash/WSL).
+    None si no hay ninguno (p.ej. Windows sin Git Bash): el paso se omite en la ejecucion real."""
+    if cmd and cmd[0] == "ksh":
+        for sh in ("ksh", "bash"):
+            if shutil.which(sh):
+                return [sh, *cmd[1:]]
+        return None
+    if cmd and cmd[0] == "bash" and not shutil.which("bash"):
+        return None
+    return cmd
+
+
+def materializar_enlace(link, ej, real, tolerante=False):
+    """Copia <base>/<salida> a <base>/<entrada>. Devuelve True si ok (o dry-run).
+    tolerante=True (origen fuera de la seleccion --paso/--desde): si la salida no existe
+    se avisa y se sigue (la entrada puede venir de una corrida anterior o de datos sinteticos)."""
     base = _base_efectiva(ej)
     shown = base or "${BNX_BASE_PATH}"
     src, dst = f"{shown}/{link['salida']}", f"{shown}/{link['entrada']}"
@@ -1213,6 +1312,10 @@ def materializar_enlace(link, ej, real):
     if remoto:
         return subprocess.run(["aws", "s3", "sync", src, dst, "--delete"]).returncode == 0
     if not os.path.isdir(src):
+        if tolerante:
+            print(f"[!] la salida {src} no existe (el paso origen no corre ahora); "
+                  f"se usa {dst} tal como esta" + ("" if os.path.isdir(dst) else " (¡tampoco existe!)"))
+            return True
         print(f"[x] la salida {src} no existe (el job origen no la produjo)")
         return False
     if os.path.isdir(dst):
@@ -1295,13 +1398,47 @@ def invertir(o):
 # Ejecucion
 # ---------------------------------------------------------------------------
 
-def ejecutar(o, real=False, modo=None, base_path=None, _nivel=0, _pila=()):
+def _evento(ruta, estado):
+    """Linea maquina-legible para la GUI (solo si BNX_EVENTOS=1): estado de cada paso."""
+    if os.environ.get("BNX_EVENTOS") == "1":
+        print("##BNX " + json.dumps({"ruta": ruta, "estado": estado}), flush=True)
+
+
+def seleccion_pasos(o, solo=None, desde=None):
+    """Conjunto de ids a correr: {solo}, {desde y todo lo que depende de el} o None (todos)."""
+    ids = {s["id"] for s in o["steps"]}
+    for x in (solo, desde):
+        if x is not None and x not in ids:
+            raise ValueError(f"paso inexistente: {x!r}")
+    if solo is not None:
+        return {solo}
+    if desde is not None:
+        sel, cambio = {desde}, True
+        while cambio:
+            cambio = False
+            for s in o["steps"]:
+                if s["id"] not in sel and any(d in sel for d in s["depends_on"]):
+                    sel.add(s["id"])
+                    cambio = True
+        return sel
+    return None
+
+
+def ejecutar(o, real=False, modo=None, base_path=None, _nivel=0, _pila=(),
+             solo=None, desde=None, permitir_remotos=True, spark_args=None, _prefijo=""):
+    """solo / desde: ejecutar un unico paso, o ese paso y sus descendientes (el resto se da por
+    hecho). permitir_remotos=False: los pasos remotos/nube se OMITEN en la ejecucion real."""
     validar_plan(o)
-    ej = _ej(o, modo, base_path)
+    ej = _ej(o, modo, base_path, spark_args)
     order = topo_order(o["steps"])
     by_id = {s["id"]: s for s in o["steps"]}
     enlaces = [e for e in (o.get("enlaces") or []) if e.get("habilitado", True)]
-    done, failed, faltantes = set(), set(), []
+    done, failed, faltantes, omitidos = set(), set(), [], []
+    try:
+        seleccion = seleccion_pasos(o, solo, desde)
+    except ValueError as e:
+        print(f"[x] {e}")
+        return False
     es_planes = o.get("tipo") == "plan_de_planes"
     sangria = ""   # el sangrado de los sub-planes lo hace quien los llama
     print(f"{sangria}[*] {'Plan de planes' if es_planes else 'Plan'} {o['plan']}"
@@ -1317,18 +1454,26 @@ def ejecutar(o, real=False, modo=None, base_path=None, _nivel=0, _pila=()):
     for sid in order:
         s = by_id[sid]
         a = s["action"]
+        ruta_ev = _prefijo + sid
+        if seleccion is not None and sid not in seleccion:
+            print(f"[-] {sid} {s['name']}: fuera de la seleccion (no se ejecuta)")
+            done.add(sid)  # se da por hecho para los dependientes
+            continue
         if not s["enabled"]:
             print(f"[-] {sid} {s['name']}: deshabilitado")
+            _evento(ruta_ev, "omitido")
             done.add(sid)  # no bloquea a los dependientes
             continue
         fallo_previo = [d for d in s["depends_on"] if d in failed]
         if s.get("solo_en_fallo"):
             if not fallo_previo:
                 print(f"[-] {sid} {s['name']}: omitido (solo corre si algo falla)")
+                _evento(ruta_ev, "omitido")
                 done.add(sid)
                 continue
         elif fallo_previo:
             print(f"[x] {sid} {s['name']}: omitido, fallo previo {fallo_previo}")
+            _evento(ruta_ev, "omitido")
             failed.add(sid)
             continue
         if a["type"] == "noop" or (not a.get("target") and a["type"] not in TIPOS_NUEVOS):
@@ -1337,17 +1482,30 @@ def ejecutar(o, real=False, modo=None, base_path=None, _nivel=0, _pila=()):
             if a["status"] in ("faltante", "sin_convertir"):
                 faltantes.append(f"{sid} {s['name']} -> {a.get('source')}")
                 if real and not s["continue_on_error"]:
+                    _evento(ruta_ev, "fallo")
                     failed.add(sid)
                     continue
+            _evento(ruta_ev, "omitido")
+            done.add(sid)
+            continue
+        # Pasos remotos / nube: solo con permiso explicito (si no, se omiten)
+        if real and not permitir_remotos and (
+                a["type"] in TIPOS_NUEVOS and ubicacion_de(a) != "local"):
+            print(f"[-] {sid} {s['name']}: omitido ({ubicacion_de(a)}/{a['type']} sin permiso: "
+                  f"marque 'permitir pasos remotos/nube' o quite --sin-remotos)")
+            omitidos.append(f"{sid} {s['name']} ({ubicacion_de(a)})")
+            _evento(ruta_ev, "omitido")
             done.add(sid)
             continue
         # Enlaces hacia este paso: se materializan antes de ejecutarlo
         enlace_ok = True
         for e in enlaces:
             if e["hacia"] == sid and e["desde"] in done and e["desde"] not in failed:
-                enlace_ok = materializar_enlace(e, ej, real) and enlace_ok
+                fuera = seleccion is not None and e["desde"] not in seleccion
+                enlace_ok = materializar_enlace(e, ej, real, tolerante=fuera) and enlace_ok
         if not enlace_ok and not s["continue_on_error"]:
             print(f"[x] {sid} {s['name']}: fallo el enlace de entrada, no se ejecuta")
+            _evento(ruta_ev, "fallo")
             failed.add(sid)
             continue
         if a["type"] == "plan":
@@ -1358,13 +1516,17 @@ def ejecutar(o, real=False, modo=None, base_path=None, _nivel=0, _pila=()):
             print(f"{sangria}[>] {sid} {s['name']}: plan {a['target']}")
             if os.path.realpath(fp) in _pila or _nivel >= 3:
                 print(f"{sangria}[x] {sid}: plan anidado en ciclo o demasiado profundo")
+                _evento(ruta_ev, "fallo")
                 failed.add(sid)
                 continue
+            _evento(ruta_ev, "corriendo")
             try:
                 with open(fp, "r", encoding="utf-8") as f:
                     sub = json.load(f)
                 kw = dict(real=real, modo=modo, base_path=(_base_efectiva(ej) or None),
-                          _nivel=_nivel + 1, _pila=_pila + (os.path.realpath(fp),))
+                          _nivel=_nivel + 1, _pila=_pila + (os.path.realpath(fp),),
+                          permitir_remotos=permitir_remotos, spark_args=spark_args,
+                          _prefijo=ruta_ev + "/")
                 if real:
                     ok_sub = ejecutar(sub, **kw)          # logs en vivo
                 else:
@@ -1380,6 +1542,7 @@ def ejecutar(o, real=False, modo=None, base_path=None, _nivel=0, _pila=()):
                 print(f"{sangria}[x] {sid}: no se pudo leer/validar el plan: {e}")
                 ok_sub = False
             if ok_sub:
+                _evento(ruta_ev, "ok")
                 done.add(sid)
             elif not real:
                 # dry-run: avisar y seguir, para ver tambien el detalle de los siguientes
@@ -1388,6 +1551,7 @@ def ejecutar(o, real=False, modo=None, base_path=None, _nivel=0, _pila=()):
                 done.add(sid)
             else:
                 print(f"{sangria}[x] {sid} {s['name']}: el plan termino con fallos o faltantes")
+                _evento(ruta_ev, "fallo")
                 if not s["continue_on_error"]:
                     failed.add(sid)
                 else:
@@ -1400,14 +1564,25 @@ def ejecutar(o, real=False, modo=None, base_path=None, _nivel=0, _pila=()):
                 entrada = stdin_de(s) if real else None
             except ValueError as e:
                 print(f"[x] {sid} {s['name']}: {e}")
+                _evento(ruta_ev, "fallo")
                 failed.add(sid)
                 continue
+            if real:
+                cmd = _resolver_script(cmd)
+                if cmd is None:
+                    print(f"[-] {sid} {s['name']}: omitido (no hay ksh ni bash en este equipo; "
+                          f"instale Git Bash/WSL para correr scripts .ksh/.sh)")
+                    omitidos.append(f"{sid} {s['name']} (sin ksh/bash)")
+                    _evento(ruta_ev, "omitido")
+                    done.add(sid)
+                    continue
             print(f"[>] {sid} {s['name']} [{ubicacion_de(a)}/{a['type']}]: {shlex.join(cmd)}")
             if a["type"] == "http" and a.get("token_env"):
                 print(f"    (header Authorization desde ${a['token_env']}, por stdin)")
             if not real:
                 done.add(sid)
                 continue
+            _evento(ruta_ev, "corriendo")
             try:
                 rc = subprocess.run(cmd, env=_job_env(ej), input=entrada, text=entrada is not None,
                                     cwd=_ROOT if a["type"] == "esperar_archivo" else None).returncode
@@ -1415,9 +1590,11 @@ def ejecutar(o, real=False, modo=None, base_path=None, _nivel=0, _pila=()):
                 print(f"[x] {sid}: no se pudo lanzar {cmd[0]}: {e}")
                 rc = 127
             if rc == 0:
+                _evento(ruta_ev, "ok")
                 done.add(sid)
             else:
                 print(f"[x] {sid} termino con codigo {rc}")
+                _evento(ruta_ev, "fallo")
                 if not s["continue_on_error"]:
                     failed.add(sid)
             continue
@@ -1427,21 +1604,42 @@ def ejecutar(o, real=False, modo=None, base_path=None, _nivel=0, _pila=()):
             faltantes.append(f"{sid} {s['name']} -> {a.get('source')}")
             if real and not s["continue_on_error"]:
                 print(f"[x] {sid}: archivo faltante, no se ejecuta")
+                _evento(ruta_ev, "fallo")
                 failed.add(sid)
                 continue
         if not real:
             done.add(sid)
             continue
-        rc = subprocess.run(cmd, env=_job_env(ej)).returncode
+        if a["type"] != "graph":      # script .ksh de Ab Initio: ksh, o bash (Git Bash/WSL)
+            cmd = _resolver_script(cmd)
+            if cmd is None:
+                print(f"[-] {sid} {s['name']}: omitido (no hay ksh ni bash en este equipo; "
+                      f"instale Git Bash/WSL para correr scripts .ksh)")
+                omitidos.append(f"{sid} {s['name']} (sin ksh/bash)")
+                _evento(ruta_ev, "omitido")
+                done.add(sid)
+                continue
+        _evento(ruta_ev, "corriendo")
+        try:
+            rc = subprocess.run(cmd, env=_job_env(ej)).returncode
+        except OSError as e:
+            print(f"[x] {sid}: no se pudo lanzar {cmd[0]}: {e}")
+            rc = 127
         if rc == 0:
+            _evento(ruta_ev, "ok")
             done.add(sid)
         else:
             print(f"[x] {sid} termino con codigo {rc}")
+            _evento(ruta_ev, "fallo")
             if not s["continue_on_error"]:
                 failed.add(sid)
     if faltantes:
         print("[!] Archivos faltantes (no se pueden ejecutar):")
         for f in faltantes:
+            print("    -", f)
+    if omitidos:
+        print("[!] Pasos omitidos en la ejecucion real:")
+        for f in omitidos:
             print("    -", f)
     print(f"[ok] completados={len(done)} fallidos/omitidos={len(failed)} faltantes={len(faltantes)}")
     return not failed and not faltantes
@@ -1543,65 +1741,71 @@ def _columnas_por_fuente(code, fuentes):
 
 
 _nivel_datos = [0]   # profundidad de recursion (plan de planes) en generar_datos
-_spark_datos = [None]  # SparkSession reutilizada si no hay pyarrow/fastparquet
-
-
 def escribir_parquet(dest, columnas, filas):
     """Escribe un dataset parquet (carpeta con part-00000.parquet) con el primer motor
-    disponible: pyarrow -> fastparquet -> PySpark local. Antes solo pyarrow, y en
-    servidores sin pyarrow fallaba con "No module named 'pyarrow'".
-    Devuelve el nombre del motor usado; RuntimeError si no hay ninguno."""
+    disponible: pyarrow -> fastparquet -> escritor puro-python (src.parquet_puro).
+    NUNCA usa PySpark dentro del proceso del servidor: sin Java/winutils (Windows) Py4J
+    se cuelga o tumba la conexion ("Failed to fetch" en la GUI).
+    Devuelve el nombre del motor usado."""
     datos = {c: [r.get(c) for r in filas] for c in columnas}
+    os.makedirs(dest, exist_ok=True)
+    out = os.path.join(dest, "part-00000.parquet")
     try:
         import pyarrow as pa
         import pyarrow.parquet as pq
-        os.makedirs(dest, exist_ok=True)
-        pq.write_table(pa.table(datos), os.path.join(dest, "part-00000.parquet"))
+        pq.write_table(pa.table(datos), out)
         return "pyarrow"
     except ImportError:
         pass
     try:
         import pandas as pd
         import fastparquet  # noqa: F401  (solo para saber si esta)
-        os.makedirs(dest, exist_ok=True)
-        pd.DataFrame(datos, columns=columnas).to_parquet(
-            os.path.join(dest, "part-00000.parquet"), engine="fastparquet", index=False)
+        pd.DataFrame(datos, columns=columnas).to_parquet(out, engine="fastparquet", index=False)
         return "fastparquet"
     except ImportError:
         pass
-    try:
-        from pyspark.sql import SparkSession
-        from pyspark.sql.types import StructType, StructField, StringType, LongType, DoubleType
-    except ImportError:
-        raise RuntimeError("no hay como escribir parquet: instala pyarrow "
-                           "(pip install pyarrow) o pyspark en el servidor del portal")
-    if _spark_datos[0] is None:
-        _spark_datos[0] = (SparkSession.builder.master("local[1]").appName("bnx_datos_sinteticos")
-                           .config("spark.ui.enabled", "false").getOrCreate())
-    spark = _spark_datos[0]
+    from src import parquet_puro
+    parquet_puro.escribir(out, columnas, filas)
+    return "python-puro"
 
-    def _tipo(vals):
-        vs = [v for v in vals if v is not None]
-        if vs and all(isinstance(v, bool) for v in vs):
-            return StringType()
-        if vs and all(isinstance(v, int) for v in vs):
-            return LongType()
-        if vs and all(isinstance(v, (int, float)) for v in vs):
-            return DoubleType()
-        return StringType()
-    esquema = StructType([StructField(c, _tipo(datos[c]), True) for c in columnas])
-    conv = []
-    for r in filas:
-        fila = []
-        for c, f in zip(columnas, esquema.fields):
-            v = r.get(c)
-            if v is not None:
-                v = (float(v) if isinstance(f.dataType, DoubleType) else
-                     int(v) if isinstance(f.dataType, LongType) else str(v))
-            fila.append(v)
-        conv.append(tuple(fila))
-    spark.createDataFrame(conv, esquema).coalesce(1).write.mode("overwrite").parquet(dest)
-    return "pyspark"
+
+def entradas_faltantes(o, base_path, seleccion=None, _nivel=0):
+    """Datasets <base>/raw/... que los jobs del plan leen y NO existen (ni llegan por un enlace).
+    seleccion: ids a considerar en este plan (None = todos). Incluye los sub-planes."""
+    base = normalizar_base_path(base_path)
+    on = {s["id"] for s in o["steps"] if s["enabled"] and (seleccion is None or s["id"] in seleccion)}
+    por_enlace = {(e["hacia"], e["entrada"]) for e in (o.get("enlaces") or [])
+                  if e.get("habilitado", True) and e["desde"] in {
+                      s["id"] for s in o["steps"] if s["enabled"] and (seleccion is None or s["id"] in seleccion)}}
+    falt = []
+    for s in o["steps"]:
+        a = s["action"]
+        if s["id"] not in on:
+            continue
+        if a["type"] == "plan" and _nivel < 3:
+            try:
+                with open(_ruta_plan(a["target"]), "r", encoding="utf-8") as f:
+                    falt += entradas_faltantes(json.load(f), base, None, _nivel + 1)
+            except (OSError, ValueError, KeyError):
+                pass
+            continue
+        if a["type"] != "graph" or not a.get("target") or a.get("status") != "ok":
+            continue
+        try:
+            with open(a["target"], "r", encoding="utf-8", errors="replace") as f:
+                code = f.read()
+        except OSError:
+            continue
+        defaults = {m.group(1): (m.group(2) if m.group(2) is not None else m.group(3))
+                    for m in _PARAM_DEF.finditer(code)}
+        for m in _READ_VAR.finditer(code):
+            nombre, resuelto = _resolver_nombre(m.group(2), defaults)
+            ruta = "raw/" + nombre.lstrip("/")
+            if not resuelto or (s["id"], ruta) in por_enlace:
+                continue
+            if not os.path.exists(os.path.join(base, *ruta.split("/"))) and ruta not in falt:
+                falt.append(ruta)
+    return falt
 
 
 def generar_datos(o, base_path, n_rows=20, seed=42, sobrescribir=False):
@@ -1622,7 +1826,7 @@ def generar_datos(o, base_path, n_rows=20, seed=42, sobrescribir=False):
     validar_plan(o)
     if not base_path or "://" in base_path:
         raise ValueError("generar datos requiere un base_path local (no s3://)")
-    base = os.path.realpath(base_path)
+    base = os.path.realpath(normalizar_base_path(base_path))
     on = {s["id"] for s in o["steps"] if s["enabled"]}
     por_enlace = {(e["hacia"], e["entrada"]): e["id"] for e in (o.get("enlaces") or [])
                   if e.get("habilitado", True) and e["desde"] in on}
@@ -1701,8 +1905,9 @@ def generar_datos(o, base_path, n_rows=20, seed=42, sobrescribir=False):
                 os.remove(dest)
             try:
                 motor = escribir_parquet(dest, nombres, gen["rows"])
-            except RuntimeError as e:
-                rep.append({**item, "estado": "error", "motivo": str(e)})
+            except Exception as e:   # un dataset que falla no debe tumbar la respuesta
+                rep.append({**item, "estado": "error",
+                            "motivo": f"{type(e).__name__}: {str(e)[:300]}"})
                 continue
             hechos.add(ruta)
             rep.append({**item, "estado": "generado", "filas": len(gen["rows"]), "motor": motor,
@@ -1867,6 +2072,12 @@ def main(argv=None):
             p.add_argument("--ejecutar", action="store_true", help="ejecutar de verdad (default: dry-run)")
             p.add_argument("--modo", choices=["python", "spark-submit"], default=None)
             p.add_argument("--base-path", default=None)
+            p.add_argument("--paso", default=None, help="ejecutar SOLO este paso (id)")
+            p.add_argument("--desde", default=None, help="ejecutar este paso y todos los que dependen de el")
+            p.add_argument("--sin-remotos", action="store_true",
+                           help="omitir pasos remotos/nube (ssh, http, glue, emr, lambda, s3) en la ejecucion real")
+            p.add_argument("--spark-args-json", default=None,
+                           help="lista JSON de args de spark-submit (reemplaza ejecucion.spark_args)")
     for c in ("dep-add", "dep-rm"):
         p = sub.add_parser(c)
         p.add_argument("json")
@@ -1962,7 +2173,20 @@ def _run(a):
         mostrar(o)
         return 0
     if a.cmd == "ejecutar":
-        return 0 if ejecutar(o, real=a.ejecutar, modo=a.modo, base_path=a.base_path) else 1
+        if a.paso and a.desde:
+            raise SystemExit("[x] use --paso o --desde, no ambos")
+        sa = None
+        if a.spark_args_json is not None:
+            try:
+                sa = json.loads(a.spark_args_json)
+            except ValueError:
+                sa = None
+            if not isinstance(sa, list) or not all(isinstance(x, str) for x in sa):
+                raise SystemExit("[x] --spark-args-json debe ser una lista JSON de strings")
+        return 0 if ejecutar(o, real=a.ejecutar, modo=a.modo,
+                             base_path=(normalizar_base_path(a.base_path) if a.base_path else a.base_path),
+                             solo=a.paso, desde=a.desde, permitir_remotos=not a.sin_remotos,
+                             spark_args=sa) else 1
     if a.cmd == "datos":
         base = a.base_path if a.base_path is not None else _ej(o)["base_path"]
         rep = generar_datos(o, base, n_rows=max(1, min(a.filas, 100000)), seed=a.seed,

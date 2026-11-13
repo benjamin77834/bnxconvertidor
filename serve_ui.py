@@ -173,7 +173,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         path = urlparse(self.path).path
 
         if path.startswith("/orquestador/") or path.startswith("/api/orquestador/"):
-            self._handle_orquestador(path)
+            self._orquestador_seguro(path)
         elif path in ("/mlops/package/orden", "/api/mlops/package/orden"):
             self._handle_mlops_package_orden()
         elif path in ("/vendor/prepare", "/api/vendor/prepare"):
@@ -255,6 +255,10 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         path = urlparse(self.path).path
+        # Estado/log incremental de una ejecucion del orquestador (?run=ID&offset=N)
+        if path in ("/orquestador/estado", "/api/orquestador/estado"):
+            self._orquestador_seguro(path)
+            return
 
         # API health check (incluye la version de Python que corre el server, para
         # que la GUI avise que bundle offline conviene segun el Python del destino).
@@ -3560,8 +3564,9 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         self._json_response(200, {"reports": items})
 
     # ------------------------------------------------------------------
-    # Orquestador de planes Ab Initio (GUI). Solo DRY-RUN desde aqui: el server
-    # tiene CORS abierto, asi que no se expone ejecucion real de procesos.
+    # Orquestador de planes Ab Initio (GUI). Dry-run y ejecucion real en SEGUNDO PLANO
+    # (src/orq_runner.py: subproceso + log + cancelar), esta ultima solo desde localhost
+    # (el server tiene CORS abierto), con confirmacion y solo para planes de output/ o abinitio/.
     # Rutas restringidas a output/ (orquestacion_*.json, *_spark.py) y abinitio/.
     # ------------------------------------------------------------------
     def _orq_safe(self, rel, base_dir, name_re):
@@ -3577,6 +3582,44 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             return None
         return p
 
+    def _orquestador_seguro(self, path):
+        """TODO handler del orquestador responde JSON: una excepcion no capturada cortaria la
+        conexion y el navegador solo diria 'Failed to fetch'."""
+        try:
+            self._handle_orquestador(path)
+        except (BrokenPipeError, ConnectionResetError):
+            raise
+        except Exception as e:  # noqa: BLE001
+            import traceback as _tb
+            tb = _tb.format_exc()
+            print(f"[!] Error en {path}:\n{tb}")
+            try:
+                self._json_response(500, {
+                    "ok": False, "error": f"{type(e).__name__}: {str(e)[:500]}",
+                    "traceback": tb[-1500:]})
+            except Exception:  # la respuesta ya estaba a medias
+                pass
+
+    def _orq_local_only(self):
+        """Ejecutar/cancelar/escribir en rutas del usuario: solo desde esta misma maquina.
+        El server escucha en todas las interfaces ('::') y tiene CORS abierto, asi que se exige
+        cliente 127.0.0.1/::1 y, si el navegador manda Origin, que sea localhost.
+        BNX_PERMITIR_EJECUCION_REMOTA=1 lo desactiva. Devuelve texto de error o None."""
+        if os.environ.get("BNX_PERMITIR_EJECUCION_REMOTA") == "1":
+            return None
+        ip = str(self.client_address[0]).lower()
+        if ip.startswith("::ffff:"):
+            ip = ip[7:]
+        if ip not in ("127.0.0.1", "::1"):
+            return (f"la ejecucion real solo se acepta desde esta maquina (cliente {ip}); "
+                    "defina BNX_PERMITIR_EJECUCION_REMOTA=1 para permitir otros")
+        origin = self.headers.get("Origin")
+        if origin:
+            host = (urlparse(origin).hostname or "").lower()
+            if host not in ("localhost", "127.0.0.1", "::1"):
+                return f"origen no permitido para ejecutar: {origin}"
+        return None
+
     def _handle_orquestador(self, path):
         import glob as _glob
         import io as _io
@@ -3591,6 +3634,9 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             data = {}
         if not isinstance(data, dict):
             data = {}
+        if self.command == "GET":
+            from urllib.parse import parse_qs as _pqs
+            data = {k: v[0] for k, v in _pqs(urlparse(self.path).query).items()}
         root = os.path.dirname(os.path.abspath(__file__))
         action = path.rstrip("/").rsplit("/", 1)[-1]
         orq_re = r"orquestacion_[\w.\-]+\.json"
@@ -3801,6 +3847,60 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._json_response(200, {"jobs": jobs})
             return
 
+        # ---- Ejecucion REAL en segundo plano (solo desde esta maquina) ----
+        if action in ("preflight", "ejecutar", "estado", "cancelar", "activo"):
+            from src import orq_runner as _rn
+            bloqueo = self._orq_local_only()
+            if bloqueo:
+                self._json_response(403, {"ok": False, "error": bloqueo})
+                return
+            try:
+                if action == "estado":
+                    self._json_response(200, _rn.estado(str(data.get("run") or ""), data.get("offset", 0)))
+                    return
+                if action == "cancelar":
+                    self._json_response(200, _rn.cancelar(str(data.get("run") or "")))
+                    return
+                if action == "activo":
+                    r = _rn.activo()
+                    self._json_response(200, {"ok": True, "run": r.id if r else None,
+                                              "plan": os.path.relpath(r.plan, root) if r else None})
+                    return
+                rel = data.get("plan_json") or data.get("file")
+                pf = (self._orq_safe(rel, "output", orq_re) or self._orq_safe(rel, "abinitio", orq_re))
+                if not pf or not os.path.isfile(pf):
+                    self._json_response(400, {"ok": False, "error": "plan invalido (debe ser un "
+                                              "orquestacion_*.json dentro de output/ o abinitio/)"})
+                    return
+                with open(pf, "r", encoding="utf-8") as f:
+                    plan = json.load(f)
+                _orq.validar_plan(plan)
+                if action == "preflight":
+                    p = _rn.validar_solicitud(plan, data, crear_base=False)
+                    ok_dry, dry = _rn.dry_run(plan, p)
+                    checks = _rn.preflight(plan, p)
+                    self._json_response(200, {
+                        "ok": True, "params": p, "dry_run": dry, "dry_ok": ok_dry, "checks": checks,
+                        "bloqueado": any(c["nivel"] == "error" for c in checks)})
+                    return
+                # ejecutar: exige confirmacion explicita (la GUI la pide tras mostrar el dry-run)
+                if data.get("confirmado") is not True:
+                    self._json_response(400, {"ok": False, "error": "falta la confirmacion (confirmado: true)"})
+                    return
+                p = _rn.validar_solicitud(plan, data, crear_base=True)
+                checks = _rn.preflight(plan, p)
+                if any(c["nivel"] == "error" for c in checks):
+                    self._json_response(412, {"ok": False, "checks": checks, "error": next(
+                        c["msg"] for c in checks if c["nivel"] == "error")})
+                    return
+                run = _rn.iniciar(pf, p)
+                self._json_response(200, {"ok": True, "run": run.id, "params": p, "checks": checks})
+            except _rn.RunError as e:
+                self._json_response(e.status, {"ok": False, "error": str(e), **e.extra})
+            except (ValueError, KeyError, TypeError) as e:
+                self._json_response(400, {"ok": False, "error": str(e)})
+            return
+
         fp = self._orq_safe(data.get("file"), "output", orq_re)
         if not fp:
             self._json_response(400, {"error": "archivo invalido (debe ser output/**/orquestacion_*.json)"})
@@ -3853,21 +3953,33 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             with open(fp, "r", encoding="utf-8") as f:
                 plan = json.load(f)
             base = os.path.join(os.path.dirname(fp), "datos_sinteticos")
+            if str(data.get("base_path") or "").strip():
+                # base_path elegido por el usuario (para ejecutar de verdad con esos datos):
+                # solo desde esta maquina, ruta local absoluta (Windows: C:\\x\\, C:/x/ ...)
+                bloqueo = self._orq_local_only()
+                if bloqueo:
+                    self._json_response(403, {"ok": False, "error": bloqueo})
+                    return
+                base, err = _orq.validar_base_path(str(data["base_path"]), crear=True)
+                if err or "://" in base:
+                    self._json_response(400, {"ok": False, "error": f"base_path: {err or 'datos sinteticos requiere una ruta local'}"})
+                    return
             try:
                 n_rows = max(1, min(int(data.get("filas", 20)), 10000))
                 rep = _orq.generar_datos(plan, base, n_rows=n_rows, seed=42,
                                          sobrescribir=bool(data.get("sobrescribir")))
             except (ValueError, KeyError, TypeError) as e:
-                self._json_response(400, {"error": str(e)})
+                self._json_response(400, {"ok": False, "error": str(e)})
                 return
             except ImportError as e:
-                self._json_response(500, {"error": f"falta dependencia: {e}"})
+                self._json_response(500, {"ok": False, "error": f"falta dependencia: {e}"})
                 return
             # Deja el plan apuntando a esos datos para la ejecucion real / Airflow
             plan.setdefault("ejecucion", {})["base_path"] = base
             with open(fp, "w", encoding="utf-8") as f:
                 json.dump(plan, f, indent=2, ensure_ascii=False)
-            self._json_response(200, {"base_path": base, "reporte": rep})
+            motores = sorted({r["motor"] for r in rep if r.get("motor")})
+            self._json_response(200, {"ok": True, "base_path": base, "reporte": rep, "motores": motores})
             return
 
         if action == "airflow":
@@ -3887,7 +3999,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         if action == "run":
-            # DRY-RUN siempre: no se ejecuta ningun proceso desde la GUI.
+            # DRY-RUN: no ejecuta nada (la ejecucion real es la accion 'ejecutar').
             if not os.path.isfile(fp):
                 self._json_response(404, {"error": "no existe"})
                 return
