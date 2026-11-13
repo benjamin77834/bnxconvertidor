@@ -1103,7 +1103,9 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         code_files = state.get("code_files") or {}
         router = next((v for k, v in code_files.items()
                        if k.endswith("aggregates/router.py")), "")
-        m = re.search(r"REGISTRY\s*=\s*\{(.*?)\}", router, re.S)
+        # Router perezoso: _FUENTES = {...}; routers viejos: REGISTRY = {...}
+        m = re.search(r"(?:_FUENTES|REGISTRY)\s*=\s*\{(.*?)\n\}", router, re.S) or \
+            re.search(r"REGISTRY\s*=\s*\{(.*?)\}", router, re.S)
         fuentes = re.findall(r'["\'](\w+)["\']\s*:', m.group(1)) if m else []
         actual = {}
         try:

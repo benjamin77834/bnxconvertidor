@@ -179,6 +179,8 @@ def _is_untranslatable(mapped):
         return True
     if re.search(r'\bcase\s+\'', low):        # "case 'VAL' :" estilo Ab Initio (no CASE WHEN)
         return True
+    if re.search(r'\beval\s*\(', low):       # eval([record in in1], campo): reflexion DML, sin equivalente SQL
+        return True
     if re.search(r'\bis_null\.', low):        # is_null.campo malformado
         return True
     if re.search(r'\b(is_defined|is_blank|is_valid)\.', low):
@@ -218,6 +220,65 @@ def _one_line(text, limit=200):
     if limit and len(flat) > limit:
         flat = flat[:limit]
     return flat
+
+
+def _sql_syntax_problem(sql):
+    """Chequeo BARATO (sin Spark/Java) de que un fragmento SQL no esta truncado.
+
+    Devuelve None si parece valido o un texto con el motivo. Detecta: vacio,
+    parentesis/corchetes desbalanceados (o cierre antes de abrir), comillas sin
+    cerrar, empezar con ')' ',' o con else/then/end/when, terminar en operador o
+    palabra clave colgante (and/or/not/then/else/when/case), y CASE sin END.
+    No valida semantica; solo atrapa fragmentos rotos (p.ej. '3) else 0').
+    """
+    if sql is None or not sql.strip():
+        return "vacia"
+    s = sql.strip()
+    depth = 0
+    quote = None
+    plain = []          # texto fuera de literales (para los chequeos de palabras)
+    i = 0
+    while i < len(s):
+        ch = s[i]
+        if quote:
+            if ch == '\\':
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"', '`'):
+            quote = ch
+            plain.append(' ')
+            i += 1
+            continue
+        if ch in '([':
+            depth += 1
+        elif ch in ')]':
+            depth -= 1
+            if depth < 0:
+                return "cierre antes de abrir"
+        plain.append(ch)
+        i += 1
+    if quote:
+        return "comillas sin cerrar"
+    if depth != 0:
+        return "parentesis desbalanceados"
+    p = "".join(plain).strip()
+    if not p:
+        return None  # solo literal(es): valido
+    if p[0] in ')],':
+        return f"empieza con '{p[0]}'"
+    if re.match(r'(?i)(else|then|end|when)\b', p):
+        return "empieza con palabra clave de CASE"
+    if re.search(r'[+\-*/%=<>,&|^!~]\s*$', p) and p != '*' and not p.endswith('.*'):
+        return "termina en operador"
+    if re.search(r'(?i)\b(and|or|not|then|else|when|case|is|like|between)\s*$', p):
+        return "termina en palabra clave"
+    if len(re.findall(r'(?i)\bcase\b', p)) != len(re.findall(r'(?i)\bend\b', p)):
+        return "CASE sin END"
+    return None
 
 
 def _sql_arg(expr):
@@ -422,13 +483,13 @@ def _split_call_args(inner):
         elif ch in ('"', "'"):
             quote = ch
             buf.append(ch)
-        elif ch == '(':
+        elif ch in '([{':
             depth += 1
             buf.append(ch)
-        elif ch == ')':
+        elif ch in ')]}':
             depth -= 1
             buf.append(ch)
-        elif ch == ',' and depth == 0:
+        elif ch == ',' and depth <= 0:
             args.append("".join(buf).strip())
             buf = []
         else:
@@ -606,14 +667,20 @@ def _map_string_functions(expr):
     expr = re.sub(r'\bmath_max\(', 'greatest(', expr)
     expr = re.sub(r'\bmath_min\(', 'least(', expr)
     # decimal_lpad(x, n[, c]) → lpad(CAST(x AS STRING), n, c)  (Ab Initio; c por defecto '0')
-    def _rewrite_decimal_lpad(inner):
-        args = _split_call_args(inner)
-        if len(args) >= 3:
-            return f"lpad(CAST({args[0]} AS STRING), {args[1].strip()}, {args[2].strip()})"
-        if len(args) == 2:
-            return f"lpad(CAST({args[0]} AS STRING), {args[1].strip()}, '0')"
-        return f"CAST({inner} AS STRING)"
-    expr = _replace_balanced_call(expr, "decimal_lpad", _rewrite_decimal_lpad)
+    def _mk_decimal_pad(sql_fn):
+        def _rw(inner):
+            args = _split_call_args(inner)
+            if len(args) >= 3:
+                return f"{sql_fn}(CAST({args[0]} AS STRING), {args[1].strip()}, {args[2].strip()})"
+            if len(args) == 2:
+                return f"{sql_fn}(CAST({args[0]} AS STRING), {args[1].strip()}, '0')"
+            return f"CAST({inner} AS STRING)"
+        return _rw
+    # decimal_lrepad/decimal_lpad -> lpad ; decimal_rrepad/decimal_rpad -> rpad
+    # (c por defecto '0'; el argumento x puede ser una llamada anidada).
+    for _fn, _sql in (("decimal_lpad", "lpad"), ("decimal_lrepad", "lpad"),
+                      ("decimal_rpad", "rpad"), ("decimal_rrepad", "rpad")):
+        expr = _replace_balanced_call(expr, _fn, _mk_decimal_pad(_sql))
     # decimal_strip(x) → CAST(x AS DECIMAL) (quita relleno; en la prueba basta el cast)
     expr = _replace_balanced_call(expr, "decimal_strip", lambda inner: f"CAST({inner} AS DECIMAL(18,2))")
     # datetime_add_months(d, n) → add_months(d, n)
@@ -954,7 +1021,7 @@ def _emit_join_body_columns(var_id, raw_transform, aliases=None):
     # siguiente). NO son columnas distintas. Capturamos (campo, prioridad, expr)
     # y mas abajo agrupamos por campo. Sin esto, 'out.x :1: a; out.x :2: b;'
     # emitia dos columnas 'x' -> AMBIGUOUS_REFERENCE.
-    _assign_re = re.findall(r'out\.(\w+|\*)\s*:(\d*):\s*(.+?);', raw_transform, re.DOTALL)
+    _assign_re = re.findall(r'out\.(\w+|\*)\s*:(\d*):\s*(.+?);', _strip_dml_comments(raw_transform), re.DOTALL)
     # Agrupar por campo preservando el orden de primera aparicion. Cada entrada:
     # field -> lista de (prioridad, expr). prioridad '' (::) = 0.
     from collections import OrderedDict as _OD
@@ -1814,7 +1881,7 @@ def _build_transform(var_id, src_df, rule):
             lines.append(f'# Original Ab Initio DML contains: {"loops" if has_loops else ""} {"vector ops" if has_vector_ops else ""} {"complex logic" if has_let_complex else ""}')
             
             # Still extract simple assignments that don't reference local variables
-            field_assigns = re.findall(r'out\.(\w+)\s*:(?:\d+)?:\s*([^;]+);', raw_transform)
+            field_assigns = re.findall(r'out\.(\w+)\s*:(?:\d+)?:\s*([^;]+);', _strip_dml_comments(raw_transform))
             simple_assigns = []
             for field_name, expression in field_assigns:
                 if field_name in ("newline", "*", "V_FILLER"):
@@ -1850,7 +1917,7 @@ def _build_transform(var_id, src_df, rule):
                 lines.append(f'{var_id}_df = {var_id}_df.withColumn("{field_name}", expr("{mapped_escaped}"))')
         else:
             # Simple DML — extract all field assignments
-            field_assigns = re.findall(r'out\.(\w+)\s*:(?:\d+)?:\s*([^;]+);', raw_transform)
+            field_assigns = re.findall(r'out\.(\w+)\s*:(?:\d+)?:\s*([^;]+);', _strip_dml_comments(raw_transform))
             for field_name, expression in field_assigns:
                 if field_name in ("newline", "*", "V_FILLER"):
                     continue
@@ -1994,7 +2061,7 @@ def _build_transform(var_id, src_df, rule):
         keys = ", ".join(f'"{k}"' for k in group_by)
         group_set = set(group_by)
         agg_exprs = []
-        for col in select.split(","):
+        for col in _split_call_args(select):
             col = col.strip()
             m = re.match(r"(\w+)\((\w+)\)\s+as\s+(\w+)", col, re.I)
             if m:
@@ -2025,32 +2092,48 @@ def _build_transform(var_id, src_df, rule):
 
     # Check if this is a reformat (column transformations that keep other columns)
     # Pattern: "expr as field, expr as field" where fields are being replaced/transformed
-    cols_raw = [c.strip() for c in select.split(",")]
+    # Division por comas de NIVEL SUPERIOR (respeta parentesis/comillas/llaves): una
+    # regla como `if (c) f(x,12)+g(y,3) else 0 as campo` NO debe partirse en las
+    # comas de las llamadas (dejaba el fragmento '3) else 0' como si fuera una regla).
+    cols_raw = [c.strip() for c in _split_call_args(select)]
     has_as = any(" as " in c.lower() for c in cols_raw)
     
     if has_as:
         # Reformat: use withColumn for each transformed field to preserve all other columns
         lines = []
         lines.append(f'{var_id}_df = {src_df}')
+        # Reglas multiples para el MISMO campo (out.x :: a; out.x :: b; / :1: :2:):
+        # semantica Ab Initio = primera regla que produce valor no-NULL -> coalesce
+        # (igual que _emit_join_body_columns). Sin esto, dos withColumn del mismo
+        # campo hacian que ganara la ULTIMA.
+        _grp = {}
+        _order = []
         for c in cols_raw:
-            m = re.match(r'(.+?)\s+as\s+(\w+)', c.strip(), re.I)
+            m = re.match(r'(.+?)\s+as\s+(\w+)\s*$', c.strip(), re.I | re.S)
             if m:
-                raw_expr, alias = m.group(1).strip(), m.group(2)
-                # Apply DML→Spark translation
-                translated = _translate_dml_expr(raw_expr)
-                # Expresion vacia (p.ej. asignacion comentada //...): omitir el campo.
-                if not translated or translated.strip() in ("", "...", "."):
-                    lines.append(f'# {alias}: expresion vacia/comentada — omitida')
-                    continue
-                if _is_untranslatable(translated):
-                    lines.append(f'{var_id}_df = {var_id}_df.withColumn("{alias}", lit(None))  # TODO: Ab Initio no traducible (lookup/switch/case): {_one_line(raw_expr, 80)}')
-                    continue
-                translated = _wrap_agg_for_withcolumn(translated)
-                translated_escaped = _sql_arg(translated)
-                lines.append(f'{var_id}_df = {var_id}_df.withColumn("{alias}", expr("{translated_escaped}"))')
+                _a = m.group(2)
+                if _a not in _grp:
+                    _grp[_a] = []
+                    _order.append(_a)
+                _grp[_a].append(m.group(1).strip())
+        for alias in _order:
+            _exprs = _grp[alias]
+            if len(_exprs) == 1:
+                raw_expr = _exprs[0]
             else:
-                # plain column reference, skip (already exists)
-                pass
+                raw_expr = "first_defined(" + ", ".join(_exprs) + ")"
+            # Apply DML→Spark translation
+            translated = _translate_dml_expr(raw_expr)
+            # Expresion vacia (p.ej. asignacion comentada //...): omitir el campo.
+            if not translated or translated.strip() in ("", "...", "."):
+                lines.append(f'# {alias}: expresion vacia/comentada — omitida')
+                continue
+            if _is_untranslatable(translated):
+                lines.append(f'{var_id}_df = {var_id}_df.withColumn("{alias}", lit(None))  # TODO: Ab Initio no traducible (lookup/switch/case): {_one_line(raw_expr, 80)}')
+                continue
+            translated = _wrap_agg_for_withcolumn(translated)
+            translated_escaped = _sql_arg(translated)
+            lines.append(f'{var_id}_df = {var_id}_df.withColumn("{alias}", expr("{translated_escaped}"))')
         code = "\n".join(lines)
     else:
         cols = [f'"{c.strip()}"' for c in cols_raw]
@@ -3096,6 +3179,8 @@ def _sanitize_generated_file(output_path):
     # en ese punto (p.ej. tras un LOOKUP que no la produjo), la salida queda NULL
     # en vez de romper con UNRESOLVED_COLUMN. Portable a Glue.
     out = _wrap_reformat_safe_col(out)
+    # --- GUARDARRAIL: SQL truncado/invalido en cualquier expr/selectExpr/where ---
+    out = _guard_invalid_sql(out)
     out = _define_missing_params(out)
 
     if changed or True:
@@ -3116,6 +3201,83 @@ def _emit_shell_literal(cmd_clean):
     if cmd_clean is None:
         return ""
     return cmd_clean.replace("\\", "\\\\").replace('"', '\\"')
+
+
+_PYSTR = r'"((?:[^"\\]|\\.)*)"'
+
+
+def _short_sql(sql, limit=60):
+    """Texto corto y seguro (una linea, sin comillas/backslash) para comentarios y prints."""
+    flat = re.sub(r'\s+', ' ', sql or '').strip()
+    flat = flat.replace('"', "'").replace('\\', '')
+    return flat[:limit]
+
+
+def _guard_invalid_sql(lines):
+    """GUARDARRAIL generico: valida (barato, sin Spark) cada SQL que el codegen
+    pasa a expr("..."), _bnx_safe_col(df, col, "..."), .where/.filter("...") y
+    .selectExpr("..."). Si esta truncado/invalido (ver _sql_syntax_problem) lo
+    neutraliza en vez de romper el job con ParseException:
+      expr("bad")              -> lit(None)
+      _bnx_safe_col(d,"c","x") -> d.withColumn("c", lit(None))
+      .where("bad")            -> .where("true")   (pass-through)
+      .selectExpr(.., "bad")   -> .selectExpr(.., "NULL")
+    y deja `# [BNX] expresion truncada/invalida (<texto>): revisar` + un print de
+    warning (una vez, en runtime) tras la sentencia.
+    """
+    safe_re = re.compile(r'_bnx_safe_col\(\s*([^,()]+?)\s*,\s*"([^"]+)"\s*,\s*' + _PYSTR + r'\s*\)')
+    expr_re = re.compile(r'(?<![\w.])expr\(' + _PYSTR + r'\)')
+    where_re = re.compile(r'\.(where|filter)\(' + _PYSTR + r'\)')
+    selx_re = re.compile(r'\.selectExpr\(((?:\s*"(?:[^"\\]|\\.)*"\s*,?)+)\)')
+    out = []
+    for ln in lines:
+        body = ln.rstrip("\n")
+        if body.lstrip().startswith("#") or ('expr(' not in body and '_bnx_safe_col(' not in body
+                                               and '.where(' not in body and '.filter(' not in body
+                                               and 'selectExpr(' not in body):
+            out.append(ln)
+            continue
+        bad = []
+
+        def _chk(sql):
+            why = _sql_syntax_problem(sql)
+            if why:
+                bad.append(_short_sql(sql))
+            return why
+
+        def _safe(m):
+            if _chk(m.group(3)):
+                return f'{m.group(1)}.withColumn("{m.group(2)}", lit(None))'
+            return m.group(0)
+
+        def _ex(m):
+            return "lit(None)" if _chk(m.group(1)) else m.group(0)
+
+        def _wh(m):
+            return f'.{m.group(1)}("true")' if _chk(m.group(2)) else m.group(0)
+
+        def _sx(m):
+            def _one(sm):
+                return '"NULL"' if _chk(sm.group(1)) else sm.group(0)
+            return ".selectExpr(" + re.sub(_PYSTR, _one, m.group(1)) + ")"
+
+        new = safe_re.sub(_safe, body)
+        new = expr_re.sub(_ex, new)
+        new = where_re.sub(_wh, new)
+        new = selx_re.sub(_sx, new)
+        if not bad:
+            out.append(ln)
+            continue
+        short = bad[0]
+        if not new.rstrip().endswith("\\"):
+            new += f"  # [BNX] expresion truncada/invalida ({short}): revisar"
+        out.append(new + "\n")
+        indent = body[:len(body) - len(body.lstrip())]
+        is_stmt = (re.match(r'^\s*[\w.\[\]"\']+\s*=\s*\S', body) and not body.rstrip().endswith((":", ",", "\\"))
+                   and body.count("(") == body.count(")"))
+        if is_stmt:
+            out.append(f'{indent}print("[!] BNX: expresion truncada/invalida omitida ({short}): revisar")\n')
+    return out
 
 
 def _wrap_reformat_safe_col(lines):
@@ -3144,6 +3306,12 @@ def _wrap_reformat_safe_col(lines):
         # ejecutar -> neutralizar a lit(None) en vez de emitir un ParseException.
         if sql.count("'") % 2 != 0:
             out.append(f'{indent}{lhs} = {src}.withColumn("{col}", lit(None))  # [BNX] expr con comillas desbalanceadas (truncada), columna en NULL\n')
+            continue
+        # Guardarrail generico: fragmento truncado/invalido (parentesis, ')' inicial,
+        # else/then colgante, operador final...) -> lit(None) + warning en runtime.
+        if _sql_syntax_problem(sql):
+            out.append(f'{indent}{lhs} = {src}.withColumn("{col}", lit(None))  # [BNX] expresion truncada/invalida ({_short_sql(sql)}): revisar\n')
+            out.append(f'{indent}print("[!] BNX: expresion truncada/invalida omitida ({_short_sql(sql)}): revisar")\n')
             continue
         # ¿El SQL referencia alguna COLUMNA? Un identificador que no sea funcion
         # conocida ni palabra clave. Si es solo literales ('S500', numeros), no

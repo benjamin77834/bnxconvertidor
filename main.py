@@ -17,7 +17,7 @@ from src.xfr_parser import parse_xfr
 from src.dml_parser import parse_dml
 from src.plan_parser import parse_pset
 from src.codegen.glue_codegen import generate_glue
-from src.codegen.spark_codegen import generate_spark
+from src.codegen.spark_codegen import generate_spark, _strip_dml_comments
 from src.codegen.flink_codegen import generate_flink
 from src.validator.semantic import validate
 from src.accuracy import compute_accuracy
@@ -1661,7 +1661,8 @@ def _extract_embedded_transforms(content):
         # Extract field assignments: out.field :: expression;
         # Soporta tambien el operador de prioridad Ab Initio out.field :N: expr;
         # (p.ej. out.nom_cte :1: string_lrtrim(in.nom_cte);)
-        field_matches = re.findall(r'out\.(\w+)\s*:(?:\d+)?:\s*(.+?);', transform)
+        # Comentarios (// y /* */) fuera: una regla comentada NO debe generar columna.
+        field_matches = re.findall(r'out\.(\w+)\s*:(?:\d+)?:\s*(.+?);', _strip_dml_comments(transform))
         for field_name, expression in field_matches:
             expr = expression.strip()
             # Skip newline/record terminator fields

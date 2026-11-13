@@ -141,9 +141,9 @@ def test_registry_y_modulos_de_apoyo_exactos(tmp_path):
     ]
     z, files, rep = _build(tmp_path, fuentes, registry=["job_3", "JOB_4.py"])
     router = _read(z, files, "framework_mlops_v2/aggregates/router.py")
-    reg = ast.literal_eval(router.split("REGISTRY = ")[1].split("}")[0].replace(
-        "Job3Aggregate", "1").replace("Job4Aggregate", "1") + "}")
+    reg = ast.literal_eval(router.split("_FUENTES = ")[1].split("\n}")[0] + "\n}")
     assert set(reg) == {"job_3", "job_4"}                         # 5) solo los jobs elegidos
+    assert reg["job_4"] == (".job_4", "Job4Aggregate")            # registro perezoso
     # 4) apoyo: copia EXACTA. Los que otro archivo importa como toolbox.<x> van a su
     #    PAQUETE (bank_src/toolbox/), asi 'from toolbox.kernel import Kernel' funciona
     #    aunque el servidor no tenga toolbox en cache; el resto, sueltos en bank_src/.
@@ -238,3 +238,30 @@ def test_setup_sh_pyspark_online_y_respeta_cluster():
     assert "BNX_SPARK=cluster bash run.sh" in s                  # alternativa en el aviso
     assert 'PYSPARK_PYTHON="$PWD/.venv/bin/python"' in mp._RUN_SH
     assert 'PYSPARK_DRIVER_PYTHON="$PWD/.venv/bin/python"' in mp._RUN_SH
+
+
+def test_router_perezoso_un_job_roto_no_tumba_a_los_demas(tmp_path, monkeypatch):
+    """Caso gmendez (Mac): job_4 hace 'import xgboost' y xgboost no carga sin libomp.
+    Antes el router importaba TODOS los jobs al inicio y main.py moria aunque no se usara
+    job_4. Ahora cada job se importa al usarse y el error trae la pista de instalacion."""
+    import importlib
+    import sys
+    from src.mlops_pkg import _router_from_sources
+    pkg = tmp_path / "fwtest" / "aggregates"
+    pkg.mkdir(parents=True)
+    (tmp_path / "fwtest" / "__init__.py").write_text("")
+    (pkg / "__init__.py").write_text("")
+    (pkg / "router.py").write_text(_router_from_sources(["job_3", "job_4"]))
+    (pkg / "job_3.py").write_text("class Job3Aggregate:\n    ok = True\n")
+    (pkg / "job_4.py").write_text(
+        "raise OSError('XGBoost Library (libxgboost.dylib) could not be loaded. "
+        "Library not loaded: @rpath/libomp.dylib')\nclass Job4Aggregate: pass\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    for m in [m for m in sys.modules if m.startswith("fwtest")]:
+        del sys.modules[m]
+    router = importlib.import_module("fwtest.aggregates.router")   # no importa jobs aun
+    assert sorted(router.REGISTRY) == ["job_3", "job_4"] and "job_4" in router.REGISTRY
+    assert router.REGISTRY["job_3"].ok is True
+    with pytest.raises(ImportError) as ei:
+        router.REGISTRY["job_4"]
+    assert "job_4" in str(ei.value) and ("libomp" in str(ei.value) or "libgomp" in str(ei.value))

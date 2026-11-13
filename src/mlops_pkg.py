@@ -2516,8 +2516,16 @@ def _probar_jobs():
             importlib.import_module(mod)
         except Exception as e:   # ImportError o error al cargar el modulo
             ultimo = traceback.extract_tb(e.__traceback__)[-1]
-            errores.append((fn[:-3], "%s: %s (en %s:%s)" % (
-                type(e).__name__, e, os.path.basename(ultimo.filename), ultimo.lineno)))
+            txt = str(e)
+            primera = txt.strip().splitlines()[0] if txt.strip() else ""
+            pista = ""
+            if "libomp" in txt or "OpenMP" in txt or "XGBoost Library" in txt:
+                import platform
+                pista = {"Darwin": " -> en Mac instala OpenMP:  brew install libomp",
+                         "Windows": " -> instala Microsoft Visual C++ Redistributable (vcomp140.dll)",
+                         }.get(platform.system(), " -> instala libgomp del sistema (yum/apt install libgomp)")
+            errores.append((fn[:-3], "%s: %s (en %s:%s)%s" % (
+                type(e).__name__, primera, os.path.basename(ultimo.filename), ultimo.lineno, pista)))
     return errores
 
 
@@ -2858,18 +2866,65 @@ class {cls}(BaseAggregate):
 
 
 def _router_from_sources(sources):
-    """Genera el router con todas las fuentes del usuario registradas."""
-    imports = "\n".join(
-        f"from .{s} import {_class_name(s)}" for s in sources)
-    registry = "\n".join(
-        f'    "{s}": {_class_name(s)},' for s in sources)
-    return f'''# framework_mlops_v2/aggregates/router.py
-"""Router de agregaciones generado por BNX. Una entrada por fuente del negocio."""
-{imports}
+    """Genera el router con todas las fuentes del usuario registradas.
 
-REGISTRY = {{
+    El registro es PEREZOSO: cada job se importa al usarse. Asi una libreria nativa que
+    no carga en esta maquina (p.ej. xgboost sin libomp en Mac) solo afecta a los jobs
+    que la usan, no a todo el framework, y el error dice como resolverlo."""
+    registry = "\n".join(
+        f'    "{s}": (".{s}", "{_class_name(s)}"),' for s in sources)
+    return f'''# framework_mlops_v2/aggregates/router.py
+"""Router de agregaciones generado por BNX. Una entrada por fuente del negocio.
+Los jobs se importan al usarse (registro perezoso)."""
+import importlib
+import platform
+from collections.abc import Mapping
+
+_FUENTES = {{
 {registry}
 }}
+
+
+def _ayuda_import(e):
+    msg = str(e)
+    if "libomp" in msg or "OpenMP" in msg or "XGBoost Library" in msg:
+        if platform.system() == "Darwin":
+            return "xgboost necesita OpenMP en Mac: instala 'brew install libomp' y vuelve a correr."
+        if platform.system() == "Windows":
+            return "xgboost necesita vcomp140.dll: instala 'Microsoft Visual C++ Redistributable'."
+        return "xgboost necesita libgomp: instala el paquete del sistema (p.ej. 'yum install libgomp')."
+    return "revisa que la libreria este instalada en el venv (bash setup.sh)."
+
+
+class _RegistroPerezoso(Mapping):
+    def __init__(self, fuentes):
+        self._fuentes = dict(fuentes)
+        self._cache = {{}}
+
+    def __getitem__(self, source):
+        if source not in self._fuentes:
+            raise KeyError(source)
+        if source not in self._cache:
+            mod, cls = self._fuentes[source]
+            try:
+                self._cache[source] = getattr(importlib.import_module(mod, __package__), cls)
+            except Exception as e:  # noqa: BLE001 - mensaje claro para el usuario
+                raise ImportError("No se pudo cargar el job %r (%s): %s: %s -> %s" % (
+                    source, mod, type(e).__name__, str(e).splitlines()[0] if str(e) else "",
+                    _ayuda_import(e))) from e
+        return self._cache[source]
+
+    def __contains__(self, source):  # sin importar el job (Mapping lo haria via __getitem__)
+        return source in self._fuentes
+
+    def __iter__(self):
+        return iter(self._fuentes)
+
+    def __len__(self):
+        return len(self._fuentes)
+
+
+REGISTRY = _RegistroPerezoso(_FUENTES)
 
 
 class GroupBy:
