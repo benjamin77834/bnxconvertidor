@@ -28,17 +28,22 @@ _AVISADO = set()
 SERIES = {
     "py38-311": {"pyspark": "3.5.6", "py4j": "0.10.9.7"},
     "py312plus": {"pyspark": "4.0.0", "py4j": "0.10.9.9"},
+    # PySpark 4.1.x declara oficialmente Python 3.10-3.14 (classifiers del wheel 4.1.2); 4.0.x llega a 3.13.
+    "py314": {"pyspark": "4.1.2", "py4j": "0.10.9.9"},
 }
+# Versiones objetivo por defecto (3.8 y 3.12 siguen aceptadas como legado via --python).
+VERSIONES_DEFAULT = ("3.11", "3.14")
 STACK_BANCO = ["cytoolz", "toolz", "Unidecode", "cloudpickle", "joblib"]
 
 
 def serie_de(version):
-    """'3.8' -> 'py38-311'; '3.12' -> 'py312plus'."""
+    """'3.11' -> 'py38-311'; '3.12'/'3.13' -> 'py312plus'; '3.14' -> 'py314' (3.8..3.11 -> py38-311)."""
     v = str(version).lower().replace("py", "").strip()
     m = re.fullmatch(r"3\.(\d{1,2})", v)
     if not m:
-        raise ValueError("Version de Python no valida: %r (usa 3.8 o 3.12)" % version)
-    return "py312plus" if int(m.group(1)) >= 12 else "py38-311"
+        raise ValueError("Version de Python no valida: %r (usa 3.11 o 3.14; 3.8 y 3.12 son legado)" % version)
+    n = int(m.group(1))
+    return "py314" if n >= 14 else ("py312plus" if n >= 12 else "py38-311")
 
 
 def norm_version(version):
@@ -79,6 +84,26 @@ def cache_dir():
     return nuevo
 
 
+def banco_dir(cache=None):
+    """Carpeta de las librerias del banco: <cache>/banco (layout nuevo) si existe; si no la vieja
+    <cache>/bank_libs si existe; en un cache vacio, la nueva."""
+    cache = cache or cache_dir()
+    nuevo, viejo = os.path.join(cache, "banco"), os.path.join(cache, "bank_libs")
+    if os.path.isdir(nuevo) or not os.path.isdir(viejo):
+        return nuevo
+    return viejo
+
+
+def wheels_exactas_viejas(cache, version):
+    """pyspark/py4j exactos de la serie, en el layout viejo (<serie>/) o nuevo (pyspark/<serie>/)."""
+    serie = serie_de(version)
+    info = SERIES[serie]
+    out = []
+    for d in (os.path.join(cache, "pyspark", serie), os.path.join(cache, serie)):
+        out += _wheel_exacta(d, "pyspark", info["pyspark"]) + _wheel_exacta(d, "py4j", info["py4j"])
+    return out
+
+
 def _mb(n):
     return "%.1f MB" % (n / 1048576.0)
 
@@ -111,7 +136,7 @@ def _bank_requires(cache=None):
     para bajar sus dependencias open source. Los que no declaran nada (caso actual) usan
     el stack STACK_BANCO. Ignora las que son otras mex-lib (internas)."""
     import tarfile
-    whl = os.path.join(cache or cache_dir(), "bank_libs", "wheels")
+    whl = os.path.join(banco_dir(cache), "wheels")
     out = []
     if not os.path.isdir(whl):
         return out
@@ -143,20 +168,23 @@ def estado_banco(cache=None):
     'mex_lib_cs' no es un paquete: BNX lo genera como shim."""
     from src import mlops_pkg as mp
     cache = cache or cache_dir()
-    whl = os.path.join(cache, "bank_libs", "wheels")
-    code = os.path.join(cache, "bank_libs", "pkgcode")
+    bdir = banco_dir(cache)
+    whl = os.path.join(bdir, "wheels")
+    code = os.path.join(bdir, "pkgcode")
     archivos = os.listdir(whl) if os.path.isdir(whl) else []
     sd_ok, sd_falta = [], []
+    norm_ = lambda n: n.lower().replace("_", "-")          # mex_libextract-2.2.0.whl == mex-libextract
     for pkg in sorted(set(mp._BANK_MODULE_TO_PKG.values())):
-        hay = any(f.lower().startswith(pkg.lower() + "-") and f.endswith((".tar.gz", ".whl"))
+        hay = any(norm_(f).startswith(norm_(pkg) + "-") and f.endswith((".tar.gz", ".whl"))
                   for f in archivos)
         (sd_ok if hay else sd_falta).append(pkg)
     mods = sorted(m for m in mp._BANK_PATH_MODULES if m != "mex_lib_cs")
-    pc_ok = [m for m in mods if os.path.isdir(os.path.join(code, m))
-             and any(f.endswith(".py") for _r, _d, fs in os.walk(os.path.join(code, m)) for f in fs)]
+    from src import vendor_banco
+    en_wheel = vendor_banco.modulos_pkgcode(bdir)           # carpeta pkgcode/ o wheel bnx_bank_pkgcode
+    pc_ok = [m for m in mods if m in en_wheel]
     return {"sdists": sd_ok, "sdists_faltan": sd_falta,
             "pkgcode": pc_ok, "pkgcode_faltan": [m for m in mods if m not in pc_ok],
-            "bytes": _dir_bytes(os.path.join(cache, "bank_libs")) if os.path.isdir(os.path.join(cache, "bank_libs")) else 0}
+            "bytes": _dir_bytes(bdir) if os.path.isdir(bdir) else 0}
 
 
 def _falta_deps(mensajes):
@@ -191,8 +219,9 @@ def estado_version(version, cache=None, extra=False):
     sdir = os.path.join(cache, serie)
     info = SERIES[serie]
     falta = []
-    spark = _wheel_exacta(sdir, "pyspark", info["pyspark"])
-    py4j = _wheel_exacta(sdir, "py4j", info["py4j"])
+    _ws = wheels_exactas_viejas(cache, v)       # layout viejo (<serie>/) o nuevo (pyspark/<serie>/)
+    spark = [w for w in _ws if os.path.basename(w).startswith("pyspark-")]
+    py4j = [w for w in _ws if os.path.basename(w).startswith("py4j-")]
     if not spark:
         falta.append("pyspark==%s" % info["pyspark"])
     if not py4j:
@@ -216,11 +245,11 @@ def estado_version(version, cache=None, extra=False):
     bank_falta = bank["sdists_faltan"] + bank["pkgcode_faltan"]
     return {"version": v, "serie": serie, "ok": not falta, "falta": falta,
             "pyspark": bool(spark), "py4j": bool(py4j), "deps_faltan": deps_faltan,
-            "bytes": _dir_bytes(sdir) if os.path.isdir(sdir) else 0,
+            "bytes": sum(os.path.getsize(w) for w in _ws) or (_dir_bytes(sdir) if os.path.isdir(sdir) else 0),
             "bank_falta": bank_falta}
 
 
-def estado(versiones=("3.8", "3.12"), extra=False):
+def estado(versiones=VERSIONES_DEFAULT, extra=False):
     cache = cache_dir()
     return {"cache_dir": cache, "existe": os.path.isdir(cache),
             "legacy": os.path.isdir(legacy_dir()) and os.path.realpath(cache) != os.path.realpath(legacy_dir()),
@@ -512,7 +541,7 @@ def preparar_version(version, log=print, cache=None, extra=False):
         log("   - falta %s" % f)
     if est["bank_falta"]:
         log("   - librerias del banco que faltan: %s. NO estan en PyPI: usa --bank-libs <carpeta|zip> "
-            "(o --zip) o copialas a %s" % (", ".join(est["bank_falta"]), os.path.join(cache, "bank_libs")))
+            "(o --zip) o copialas a %s" % (", ".join(est["bank_falta"]), banco_dir(cache)))
     return est
 
 
@@ -663,9 +692,8 @@ def minimo(versiones, extra=False):
                 for ver, msg in f.items():
                     faltan[ver] = str(msg)
             info = SERIES[serie]
-            sdir = os.path.join(cache_dir(), serie)
             for n in ("pyspark", "py4j"):
-                w = _wheel_exacta(sdir, n, info[n])
+                w = [x for x in wheels_exactas_viejas(cache_dir(), v) if os.path.basename(x).startswith(n + "-")]
                 if not w:
                     faltan.setdefault(v, "falta %s==%s" % (n, info[n]))
                 keep.update(os.path.realpath(x) for x in w)
@@ -683,6 +711,7 @@ def sobrantes(versiones, extra=False, cache=None):
     cache = os.path.realpath(cache or cache_dir())
     keep, faltan = minimo(versiones, extra)
     banco = os.path.join(cache, "bank_libs")
+    banco_nuevo = os.path.join(cache, "banco")
     out = []
     for r, ds, fs in os.walk(cache):
         ds[:] = [d for d in ds if d != "__pycache__"]
@@ -693,6 +722,10 @@ def sobrantes(versiones, extra=False, cache=None):
             real = os.path.realpath(full)
             if real in keep:
                 continue
+            if os.path.relpath(full, cache).split(os.sep)[0] in ("ciencia", "pyspark", "_layout_viejo"):
+                continue                      # layout nuevo: se poda por piezas (vendor_modular.podar_piezas)
+            if full.startswith(banco_nuevo + os.sep):
+                continue                      # layout nuevo del banco: intocable
             if full.startswith(banco + os.sep) and (f.endswith(".tar.gz") or
                                                     os.path.relpath(full, banco).startswith("pkgcode")):
                 continue                      # sdists del banco y pkgcode: intocables
@@ -780,8 +813,8 @@ def importar_bank_libs(origen, log=print, cache=None):
     else:
         raise ValueError("no existe la carpeta o ZIP %s" % origen)
     try:
-        wh = os.path.join(cache, "bank_libs", "wheels")
-        pc = os.path.join(cache, "bank_libs", "pkgcode")
+        wh = os.path.join(banco_dir(cache), "wheels")
+        pc = os.path.join(banco_dir(cache), "pkgcode")
         sd, mods = [], []
         for r, ds, fs in os.walk(raiz):
             ds[:] = [d for d in ds if d not in ("__pycache__", ".git")]
@@ -803,4 +836,41 @@ def importar_bank_libs(origen, log=print, cache=None):
             shutil.rmtree(tmp, ignore_errors=True)
     log("OK: librerias del banco importadas: %d sdist/wheel (%s), %d modulo(s) de path (%s)"
         % (len(sd), ", ".join(sorted(sd)) or "-", len(mods), ", ".join(sorted(mods)) or "-"))
+    try:                      # el paquete lleva SOLO wheels: se arman aqui (el sdist/carpeta se conserva)
+        convertir_banco_a_wheels(cache, log=log)
+    except Exception as e:
+        log("AVISO: no pude convertir a wheels (%s)" % str(e)[:120])
     return sd, mods
+
+
+def convertir_banco_a_wheels(cache=None, log=print):
+    """Arma en <banco>/wheels los wheels que falten: mex-lib*.tar.gz -> py3-none-any.whl y la carpeta
+    pkgcode/ -> bnx_bank_pkgcode-*.whl. Idempotente. Devuelve {'wheels', 'fallos'}."""
+    from src import vendor_banco as vb
+    bdir = banco_dir(cache or cache_dir())
+    wh = os.path.join(bdir, "wheels")
+    out = {"wheels": [], "fallos": {}}
+    if os.path.isdir(wh):
+        for f in sorted(os.listdir(wh)):
+            if f.lower().startswith(("mex-lib", "mex_lib")) and f.endswith(".tar.gz"):
+                base = f[:-7].lower().replace("-", "_")
+                if glob.glob(os.path.join(wh, base + "-*.whl")) or glob.glob(os.path.join(wh, base.rsplit("_", 1)[0] + "-*.whl")):
+                    continue
+                w, err = vb._pip_wheel(os.path.join(wh, f), wh, cache)
+                if w:
+                    out["wheels"].append(os.path.basename(w))
+                else:
+                    out["fallos"][f] = err
+    pc = os.path.join(bdir, "pkgcode")
+    if os.path.isdir(pc) and not glob.glob(os.path.join(wh, vb.PKGCODE_WHEEL + "-*.whl")):
+        os.makedirs(wh, exist_ok=True)
+        w, err = vb.pkgcode_a_wheel(pc, wh, cache)
+        if w:
+            out["wheels"].append(os.path.basename(w))
+        else:
+            out["fallos"]["pkgcode"] = err
+    for k, e in out["fallos"].items():
+        log("AVISO: sin wheel para %s: %s" % (k, e))
+    if out["wheels"]:
+        log("OK: wheels del banco: %s" % ", ".join(out["wheels"]))
+    return out

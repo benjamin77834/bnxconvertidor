@@ -964,11 +964,18 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             include_monitoring = bool(data.get("include_monitoring", False))
             separate_monitoring = bool(data.get("separate_monitoring", False))
             full_env = bool(data.get("full_env", False))
-            py_target = data.get("py_target") or "py3.8"
+            # Modo de PySpark: 'incluido' (wheel en vendor/) | 'servidor' (usa el Spark del servidor;
+            # setup.sh pregunta la ruta). Sin indicar: lo decide full_env (compatibilidad).
+            spark_modo = data.get("spark_modo") if data.get("spark_modo") in ("incluido", "servidor") else None
+            if spark_modo:
+                full_env = spark_modo == "incluido"
+            # Plataformas EXTRA para correr offline ahi (linux siempre va): macos / windows.
+            plataformas = ["linux"] + [p for p in ("macos", "windows") if p in (data.get("plataformas") or [])]
+            py_target = data.get("py_target") or "py3.11"
             # Version EXACTA de Python del servidor (py3.8, py3.12: lo mas ligero) o serie.
-            if py_target not in ("all", "py38-311", "py312plus") and \
-                    not re.fullmatch(r"py3\.(8|9|10|11|12|13)", str(py_target)):
-                py_target = "py3.8"
+            if py_target not in ("all", "py38-311", "py312plus", "py314") and \
+                    not re.fullmatch(r"py3\.(8|9|10|11|12|13|14)", str(py_target)):
+                py_target = "py3.11"
             # Jobs a registrar en el REGISTRY (el resto = modulos de apoyo copiados
             # exactos a bank_src/). Ausente o null = todos registrados (como antes).
             registry = data.get("registry")
@@ -990,6 +997,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 extra_steps=extra_steps, include_monitoring=include_monitoring,
                 separate_monitoring=separate_monitoring, full_env=full_env,
                 py_target=py_target, out_path=zip_path, registry=registry,
+                plataformas=plataformas, spark_modo=spark_modo,
                 ciencia=ciencia)
             # Separar el meta (trae los archivos de codigo editables, grandes).
             meta = next((r for r in report if r.get("_meta")), {})
@@ -1010,7 +1018,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             os.makedirs(editdir, exist_ok=True)
             with open(os.path.join(editdir, token + ".json"), "w", encoding="utf-8") as fh:
                 json.dump({"code_files": code_files, "sep_files": sep_files,
-                           "full_env": full_env, "py_target": py_target}, fh)
+                           "full_env": full_env, "py_target": py_target,
+                           "plataformas": plataformas, "spark_modo": spark_modo}, fh)
             self._json_response(200, {
                 "ok": True, "token": token, "filename": filename,
                 "size": zip_size, "report": report,
@@ -1276,6 +1285,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             _out, filename, vendor_list = zip_from_files(
                 state.get("code_files") or {}, state.get("sep_files") or {},
                 full_env=bool(state.get("full_env")), py_target=state.get("py_target", "all"),
+                plataformas=state.get("plataformas") or ["linux"], spark_modo=state.get("spark_modo"),
                 out_path=zip_path)
             zip_size = os.path.getsize(zip_path)
             with open(os.path.join(tmpdir, token + ".name"), "w", encoding="utf-8") as fh:
@@ -1328,7 +1338,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 self._json_response(200, {"ok": True, "series": mp.vendor_cache_status()})
             elif action == "export_vendor":
                 serie = data.get("serie", "py38-311")
-                if serie not in ("all", "py38-311", "py312plus"):
+                if serie not in ("all", "py38-311", "py312plus", "py314"):
                     serie = "py38-311"
                 import uuid as _uuid
                 tmpdir = os.path.join(tempfile.gettempdir(), "bnx_bundles")
@@ -1392,8 +1402,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             # Paquete armado para una version EXACTA: se simula esa. Si se armo para una
             # serie / 'all', la que pida el usuario (default 3.8, la del banco).
             if emulate_linux and not re.fullmatch(r"py3\.\d+", str(pyt)):
-                pedida = str(data.get("serie") or "py3.8")
-                pyt = pedida if re.fullmatch(r"py3\.\d+|py38-311|py312plus", pedida) else "py3.8"
+                pedida = str(data.get("serie") or "py3.11")
+                pyt = pedida if re.fullmatch(r"py3\.\d+|py38-311|py312plus|py314", pedida) else "py3.11"
             result = verify_package_env(
                 state.get("code_files") or {},
                 full_env=bool(state.get("full_env")),
@@ -4664,19 +4674,26 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         """GET: que falta en el cache de vendor por version de Python (3.8 / 3.12)."""
         try:
             from src import vendor_cache as vc
-            est = vc.estado(["3.8", "3.12"])
+            from src import vendor_modular as vm
+            est = vc.estado(list(vc.VERSIONES_DEFAULT))
+            host = vm.host_plataforma()
+            est["host"] = {"plataforma": host, "python": vm.host_python()[0]}
+            # piezas por version, con tamano (real si esta; si no, del manifiesto local/estimado)
+            piezas = vm.seleccion(list(vc.VERSIONES_DEFAULT), [host, "linux"] if host != "linux" else ["linux"])
+            est["piezas"] = vm.estado_piezas(vc.cache_dir(), piezas)
             est["job"] = _vendor_job_info()
             self._json_response(200, {"ok": True, **est})
         except Exception as e:
             self._json_response(500, {"ok": False, "error": str(e)})
     def _handle_vendor_prepare(self):
-        """POST {versions: ["3.8"|"3.12"]}: lanza preparar_vendor.py en background."""
+        """POST {versions: ["3.11"|"3.14"], piezas: {pyspark, ciencia_host, ciencia_linux}}: lanza
+        preparar_vendor.py en background (funciona sin bash: es el boton de la UI, tambien en Windows)."""
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length) if content_length else b""
         try:
             data = json.loads(body.decode("utf-8", errors="replace")) if body else {}
             from src import vendor_cache as vc
-            versions = [vc.norm_version(v) for v in (data.get("versions") or ["3.8"])]
+            versions = [vc.norm_version(v) for v in (data.get("versions") or ["3.11"])]
         except Exception as e:
             self._json_response(400, {"ok": False, "error": str(e)})
             return
@@ -4694,6 +4711,18 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 cmd += ["--python", v]
             if data.get("extra"):
                 cmd.append("--extra")
+            pz = data.get("piezas")
+            if isinstance(pz, dict):
+                from src import vendor_modular as _vm
+                if not pz.get("pyspark", True):
+                    cmd.append("--sin-pyspark")
+                plats = ([_vm.host_plataforma()] if pz.get("ciencia_host", True) else []) + (
+                    ["linux"] if pz.get("ciencia_linux", True) else [])
+                plats = list(dict.fromkeys(plats))
+                if plats:
+                    cmd += ["--plataformas", ",".join(plats)]
+                else:
+                    cmd.append("--sin-ciencia")
             if data.get("podar") in ("mostrar", "si"):   # quitar del cache lo que no sea el minimo
                 cmd += ["--podar", "--mostrar"] if data["podar"] == "mostrar" else ["--podar", "--si"]
             logf = open(log_path, "w", encoding="utf-8")
@@ -5165,11 +5194,11 @@ if __name__ == "__main__":
         try:
             from src import vendor_cache as _vc
             print("[vendor] Revisando el cache de vendor (%s)..." % _vc.cache_dir())
-            est = _vc.estado(["3.8", "3.12"])
+            est = _vc.estado(list(_vc.VERSIONES_DEFAULT))
             print(_vc.formatear_estado(est))
             if not all(e["ok"] for e in est["versiones"].values()):
                 print("[vendor] AVISO: falta cache de vendor. Baja con el boton 'Bajar/generar cache' de la UI o:")
-                print('         "%s" preparar_vendor.py --desde-github --python 3.12   (usa --python 3.8 para 3.8;' % sys.executable)
+                print('         "%s" preparar_vendor.py --desde-github --python 3.14   (usa --python 3.11 para 3.11;' % sys.executable)
                 print("         sin internet: descarga el ZIP en otra maquina y usa preparar_vendor.py --zip <archivo>)")
             pv = _vc.pip_version()
             if pv is None or pv < _vc.PIP_MIN:

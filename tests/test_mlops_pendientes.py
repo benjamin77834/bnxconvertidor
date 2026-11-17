@@ -209,7 +209,9 @@ def test_versiones_target():
     assert mp._versiones_target("py3.8") == {"py38-311": ["3.8"]}
     assert mp._versiones_target("py3.12") == {"py312plus": ["3.12"]}
     assert mp._versiones_target("py38-311") == {"py38-311": ["3.8", "3.9", "3.10", "3.11"]}
-    assert set(mp._versiones_target("all")) == {"py38-311", "py312plus"}
+    assert mp._versiones_target("py3.11") == {"py38-311": ["3.11"]}
+    assert mp._versiones_target("py3.14") == {"py314": ["3.14"]}
+    assert set(mp._versiones_target("all")) == {"py38-311", "py312plus", "py314"}
 
 
 @pytest.mark.skipif(not os.path.isdir(CACHE_WHEELS), reason="sin cache de wheels del banco")
@@ -285,7 +287,7 @@ def vendor_falso(monkeypatch, tmp_path):
     """_vendor_ligero falso: registra los requisitos y devuelve wheels falsas por requisito."""
     visto = {}
 
-    def fake(py_target, extra_steps, req_lineas, incluir_spark=False):
+    def fake(py_target, extra_steps, req_lineas, incluir_spark=False, plataformas=None):
         visto["reqs"] = list(req_lineas)
         d = tmp_path / "whl"
         d.mkdir(exist_ok=True)

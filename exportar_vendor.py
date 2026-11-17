@@ -10,17 +10,17 @@ GitHub). Este script genera UN ZIP que copias al portal UNA vez y descomprimes c
 importar_vendor.py. Asi el Framework MLOps v2 arma los paquetes offline.
 
 USO (en tu Mac, donde SI tienes el cache lleno):
-    python exportar_vendor.py --python 3.8                 # RECOMENDADO: solo lo que
-                                                           # usa Python 3.8 en Linux
-    python exportar_vendor.py --python 3.8 --python 3.12   # ademas Python 3.12
-    python exportar_vendor.py --python 3.8 --extra         # + xgboost/scikit-learn (pasos extra)
+    python exportar_vendor.py --python 3.11                # RECOMENDADO: solo lo que
+                                                           # usa Python 3.11 en Linux
+    python exportar_vendor.py --python 3.11 --python 3.14   # ademas Python 3.14
+    python exportar_vendor.py --python 3.11 --extra        # + xgboost/scikit-learn (pasos extra)
 Siempre lleva TODAS las librerias del banco (bank_libs) + solo el minimo (PySpark+deps).
     python exportar_vendor.py --serie all                  # (antiguo) cache entero, pesado
     python exportar_vendor.py -o /ruta/salida.zip
-    python exportar_vendor.py --python 3.12 --sin-banco    # SIN librerias del banco (publicable)
+    python exportar_vendor.py --python 3.14 --sin-banco    # SIN librerias del banco (publicable)
 
-Produce 'bnx_vendor_py3.8.zip' (o bnx_vendor_<serie>.zip). En el portal:
-    python importar_vendor.py bnx_vendor_py3.8.zip
+Produce 'bnx_vendor_py3.11.zip' (o bnx_vendor_<serie>.zip). En el portal:
+    python importar_vendor.py bnx_vendor_py3.11.zip
 """
 import argparse
 import os
@@ -34,9 +34,9 @@ from src.vendor_cache import cache_dir  # noqa: E402
 CACHE = cache_dir()   # <venv>/bnx_vendor_cache (o BNX_VENDOR_CACHE / cache viejo)
 
 # Series de PySpark por version de Python del DESTINO.
-SERIES = {"py38-311", "py312plus"}
+SERIES = {"py38-311", "py312plus", "py314"}
 # Carpetas que SIEMPRE se incluyen (no dependen de la serie).
-ALWAYS = ["bank_libs"]
+ALWAYS = ["bank_libs", "banco"]
 
 
 def _es_interno(ruta):
@@ -46,7 +46,7 @@ def _es_interno(ruta):
     r = ruta.replace(os.sep, "/").lower()
     partes = r.split("/")
     base = partes[-1]
-    return (r.startswith("bank_libs/pkgcode") or base.startswith(("mex-lib", "mex_lib"))
+    return (r.startswith(("bank_libs/pkgcode", "banco/")) or base.startswith(("mex-lib", "mex_lib", "bnx_bank_pkgcode"))
             or any(p in ("bnmxverse", "toolbox") for p in partes))
 
 
@@ -70,12 +70,14 @@ def _dirs_for(serie):
     """(antiguo) Carpetas del cache a incluir segun la serie ('all' = todo)."""
     dirs = list(ALWAYS)
     if serie == "all":
-        dirs += ["py38-311", "py312plus", "mlops_deps"]
+        dirs += ["py38-311", "py312plus", "py314", "mlops_deps", "pyspark", "ciencia"]
     elif serie == "py38-311":
         dirs += ["py38-311"]
         dirs += [os.path.join("mlops_deps", "py38-311"),
                  os.path.join("mlops_deps", "py38-311_extra"),
                  os.path.join("mlops_deps", "py38-311_dl")]
+    elif serie == "py314":
+        dirs += ["py314", os.path.join("pyspark", "py314"), os.path.join("ciencia", "3.14")]
     elif serie == "py312plus":
         dirs += ["py312plus"]
         dirs += [os.path.join("mlops_deps", "py312plus"),
@@ -99,14 +101,16 @@ def _files_for_python(versiones, extra=False, sin_banco=False):
     if sin_banco:
         files = {f for f in files if not _es_interno(os.path.relpath(os.path.realpath(f), os.path.realpath(CACHE)))}
         return sorted(files), faltan
-    bank = os.path.join(CACHE, "bank_libs")
+    from src.vendor_cache import banco_dir
+    bank = banco_dir(CACHE)
     for root, subdirs, fns in os.walk(os.path.join(bank, "pkgcode")):
         subdirs[:] = [s for s in subdirs if s != "__pycache__"]
         files.update(os.path.join(root, f) for f in fns
                      if not f.endswith((".pyc", ".pyo")) and f != ".DS_Store")
     wh = os.path.join(bank, "wheels")
     if os.path.isdir(wh):          # TODAS las librerias del banco (los 8 sdist mex-lib*)
-        files.update(os.path.join(wh, f) for f in os.listdir(wh) if f.lower().startswith("mex"))
+        files.update(os.path.join(wh, f) for f in os.listdir(wh)
+                     if f.lower().startswith(("mex", "bnx_bank_pkgcode")))   # sdists y WHEELS del banco
     return sorted(files), faltan
 
 
@@ -114,8 +118,8 @@ def main():
     ap = argparse.ArgumentParser(description="Empaqueta el vendor para un server aislado.")
     ap.add_argument("--python", action="append", default=None, metavar="3.X",
                     help="RECOMENDADO: solo lo que necesitan los paquetes para esa version "
-                         "exacta de Python (repetible: --python 3.8 --python 3.12).")
-    ap.add_argument("--serie", default="all", choices=["all", "py38-311", "py312plus"],
+                         "exacta de Python (repetible: --python 3.11 --python 3.14).")
+    ap.add_argument("--serie", default="all", choices=["all", "py38-311", "py312plus", "py314"],
                     help="(antiguo) cache completo de la serie: mucho mas pesado.")
     ap.add_argument("--extra", "--ciencia", dest="extra", action="store_true",
                     help="Incluir tambien las deps de los pasos extra. La pila de ciencia de datos "

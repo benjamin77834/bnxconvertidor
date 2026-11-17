@@ -594,6 +594,8 @@ _ML_PIP = ("xgboost", "lightgbm", "scikit-learn", "scipy", "statsmodels", "matpl
 # Linea de requirements.txt de cada una (las transitivas -numpy, patsy, contourpy,
 # pillow...- las resuelve pip al armar vendor/).
 _ML_REQ = {
+    # Linux/Windows: xgboost-cpu (mismo `import xgboost`, sin CUDA/nvidia-nccl: ~5 MB en vez de
+    # 60-430 MB). macOS: xgboost (ya es solo CPU). --xgboost-gpu / BNX_XGBOOST_GPU=1: xgboost normal.
     "xgboost": "xgboost>=1.7  # pila de ciencia de datos (offline en vendor/)",
     # lightgbm 3.3.5 (ultima con wheel manylinux2014) no es compatible con scikit-learn/numpy
     # recientes de Python 3.12: ahi se pide 4.x (wheel manylinux_2_28, glibc >= 2.28).
@@ -607,6 +609,18 @@ _ML_REQ = {
     "joblib": "joblib>=1.1  # pila de ciencia de datos",
     "threadpoolctl": "threadpoolctl>=3.0  # pila de ciencia de datos",
 }
+
+
+def _requisito_xgboost(linea):
+    """requirements.txt del paquete: xgboost-cpu en Linux/Windows y xgboost en macOS (con markers,
+    para que el mismo archivo sirva en cualquier SO). Con --xgboost-gpu: 'xgboost' sin markers."""
+    if not linea.lower().startswith("xgboost") or _vm.xgboost_gpu():
+        return linea
+    cuerpo, _, com = linea.partition("#")
+    cuerpo = cuerpo.strip()
+    com = ("  #" + com) if com else ""
+    return ('%s ; sys_platform != "darwin"%s\n%s ; sys_platform == "darwin"'
+            % (cuerpo.replace("xgboost", "xgboost-cpu", 1), com + " (CPU, sin CUDA)", cuerpo))
 
 
 def _ml_libs_detectadas(extra_pkgs, ciencia=False):
@@ -641,7 +655,8 @@ def _requirements(include_bank_libs, extra_steps=False, bank_libs=None, ml_libs=
         "# Python 3.8-3.11; 4.0.x soporta 3.9+ y es el unico compatible con 3.12+",
         "# (PySpark 3.5 usa distutils, eliminado en Python 3.12).",
         'pyspark>=3.5,<3.6 ; python_version < "3.12"',
-        'pyspark>=4.0,<4.1 ; python_version >= "3.12"',
+        'pyspark>=4.0,<4.1 ; python_version >= "3.12" and python_version < "3.14"',
+        'pyspark>=4.1,<4.2 ; python_version >= "3.14"',
         "pandas>=1.3",
         "numpy>=1.21",
         "pytest>=7.0",
@@ -650,13 +665,13 @@ def _requirements(include_bank_libs, extra_steps=False, bank_libs=None, ml_libs=
     ml = list(ml_libs or [])
     if extra_steps:
         base += [
-            "xgboost>=1.7  # scoring (paso extra)",
+            _requisito_xgboost("xgboost>=1.7  # scoring (paso extra)"),
             "scikit-learn>=1.1  # metricas/preparacion (paso extra)",
         ]
         ml = [m for m in ml if m not in ("xgboost", "scikit-learn")]
     # Librerias de ML que importa el codigo subido (offline en vendor/, como pandas).
     for _m in ml:
-        base.append(_ML_REQ.get(_m, _m))
+        base.append(_requisito_xgboost(_ML_REQ.get(_m, _m)))
     if ml:
         # Sin tope pip elegiria pandas 3.x (Python 3.12) al resolver la pila: cambia el
         # comportamiento del codigo pandas del usuario (copy-on-write, dtype string).
@@ -844,6 +859,18 @@ _SETUP_SH = '''#!/usr/bin/env bash
 #       bash setup.sh --test     (monta y ademas corre pytest)
 set -e
 
+@@SPARKCFG@@
+BNX_RUN_TEST=0
+for _a in "$@"; do
+  case "$_a" in
+    --test) BNX_RUN_TEST=1 ;;
+    --reconfigurar-spark) BNX_SPARK_RECONFIG=1; export BNX_SPARK_RECONFIG ;;
+  esac
+done
+# Modo de PySpark del paquete: 'incluido' (wheel en vendor/) o 'servidor' (usa el Spark ya instalado).
+BNX_PYSPARK_MODO=""
+if [ -f vendor/PYSPARK_MODE ]; then BNX_PYSPARK_MODO="$(tr -d '[:space:]' < vendor/PYSPARK_MODE)"; fi
+
 # Basura de macOS (si el ZIP se comprimio/re-comprimio en Finder): la carpeta
 # __MACOSX y los archivos ._* (resource forks) rompen pytest con PermissionError.
 rm -rf __MACOSX 2>/dev/null || true
@@ -873,12 +900,18 @@ if [ -f vendor/PYTHON_TARGET ]; then
   fi
 fi
 VENDOR_DIR=""
-if [ "$PYMINOR" -ge 12 ] 2>/dev/null && [ -d "vendor/py312plus" ]; then
+if [ "$PYMINOR" -ge 14 ] 2>/dev/null && [ -d "vendor/py314" ]; then
+  VENDOR_DIR="vendor/py314"
+elif [ "$PYMINOR" -ge 12 ] 2>/dev/null && [ -d "vendor/py312plus" ]; then
+  VENDOR_DIR="vendor/py312plus"
+elif [ "$PYMINOR" -lt 12 ] 2>/dev/null && [ -d "vendor/py38-311" ]; then
+  VENDOR_DIR="vendor/py38-311"
+elif [ -d "vendor/py314" ]; then
+  VENDOR_DIR="vendor/py314"
+elif [ -d "vendor/py312plus" ]; then
   VENDOR_DIR="vendor/py312plus"
 elif [ -d "vendor/py38-311" ]; then
   VENDOR_DIR="vendor/py38-311"
-elif [ -d "vendor/py312plus" ]; then
-  VENDOR_DIR="vendor/py312plus"
 fi
 
 # vendor/bank tambien aporta wheels de deps PINNEADAS por el banco (p.ej. pandas
@@ -904,13 +937,16 @@ if [ -n "$VENDOR_DIR" ] && ls "$VENDOR_DIR"/*.whl >/dev/null 2>&1; then
       echo "      [!] Falto alguna wheel en vendor/: intento completar por internet (PyPI/PIP_INDEX_URL) ..."
       python -m pip install --find-links "$VENDOR_DIR" $BANK_LINKS -r .bnx_tmp/requirements-sin-spark.txt
     }
+    # PySpark del SERVIDOR (modo B): pregunta/valida la ruta y enlaza el venv a ese Spark.
+    if [ "$BNX_PYSPARK_MODO" = "servidor" ]; then
+      bnx_spark_modo_b
     # PySpark: con BNX_SPARK=cluster se usa el del cluster (no se instala). Si no,
     # se intenta por internet (PyPI o PIP_INDEX_URL) la serie acorde al Python:
     # 3.5.6 para 3.8-3.11 y 4.0.0 para 3.12+. Si falla NO se rompe el resto.
-    if [ "${BNX_SPARK:-}" = "cluster" ]; then
+    elif [ "${BNX_SPARK:-}" = "cluster" ]; then
       echo "      BNX_SPARK=cluster: PySpark NO se instala (se usa el Spark del cluster)."
     else
-      if [ "$PYMINOR" -ge 12 ] 2>/dev/null; then SPARK_PIN="pyspark==4.0.0"; else SPARK_PIN="pyspark==3.5.6"; fi
+      if [ "$PYMINOR" -ge 14 ] 2>/dev/null; then SPARK_PIN="pyspark==4.1.2"; elif [ "$PYMINOR" -ge 12 ] 2>/dev/null; then SPARK_PIN="pyspark==4.0.0"; else SPARK_PIN="pyspark==3.5.6"; fi
       echo "      PySpark no viene en el paquete: instalando $SPARK_PIN + py4j por internet ..."
       if python -m pip install --retries 1 --timeout 30 "$SPARK_PIN" py4j >.bnx_tmp/pyspark-online.log 2>&1; then
         echo "      PySpark ($SPARK_PIN) instalado por internet."
@@ -931,8 +967,16 @@ else
   # Si estas en la red del banco, descomenta --index-url con tu Artifactory:
   # pip install -r requirements.txt --index-url https://<artifactory-interno>/simple
   # BANK_LINKS deja que pip use pandas 1.3.1 cp38 del banco si corre en Python 3.8.
-  python -m pip install $BANK_LINKS -r requirements.txt
-  python -m pip install -e .
+  if [ "$BNX_PYSPARK_MODO" = "servidor" ]; then
+    mkdir -p .bnx_tmp
+    grep -viE '^[[:space:]]*(pyspark|py4j)([^a-z0-9_-]|$)' requirements.txt > .bnx_tmp/requirements-sin-spark.txt
+    python -m pip install $BANK_LINKS -r .bnx_tmp/requirements-sin-spark.txt
+    python -m pip install -e .
+    bnx_spark_modo_b
+  else
+    python -m pip install $BANK_LINKS -r requirements.txt
+    python -m pip install -e .
+  fi
 fi
 
 # Librerias OPEN SOURCE extra que importa el codigo (cytoolz, unidecode, ...).
@@ -960,7 +1004,7 @@ if [ -f requirements-bank.txt ]; then
     # Las deps de las mex-lib (pandas, ...) estan en vendor/<serie>/, no en vendor/bank/.
     VLINKS=""; if [ -n "$VENDOR_DIR" ]; then VLINKS="--find-links $VENDOR_DIR"; fi
     python -m pip install --no-index --find-links vendor/bank $VLINKS -r requirements-bank.txt || \\
-      python -m pip install --no-index --find-links vendor/bank $VLINKS vendor/bank/*.tar.gz || \\
+      python -m pip install --no-index --find-links vendor/bank $VLINKS $(ls vendor/bank/mex*.whl vendor/bank/*.tar.gz 2>/dev/null) || \\
       echo "      [!]  Fallo la instalacion offline de libs del banco. Revisa vendor/bank/."
   else
     echo "      Instalando librerias internas del banco (Artifactory privado) ..."
@@ -970,7 +1014,13 @@ if [ -f requirements-bank.txt ]; then
       echo "      [!]  No se pudieron instalar las libs del banco (sin acceso al Artifactory)."
   fi
 fi
-# Modulos de path del banco (toolbox, bnmxverse, utils): no son pip, van en PYTHONPATH.
+# toolbox / bnmxverse / utils del banco como WHEEL (bnx-bank-pkgcode): se instala con pip como el resto.
+if ls vendor/bank/bnx_bank_pkgcode-*.whl >/dev/null 2>&1; then
+  python -m pip install --no-index --no-deps vendor/bank/bnx_bank_pkgcode-*.whl >/dev/null 2>&1 \\
+    && echo "      Modulos del banco (toolbox, bnmxverse, utils) instalados como wheel." \\
+    || echo "      [!]  No se pudo instalar vendor/bank/bnx_bank_pkgcode (revisa vendor/bank/)."
+fi
+# Paquetes viejos (sin wheel): modulos de path del banco (toolbox, bnmxverse, utils) en PYTHONPATH.
 if [ -d vendor/bank/pkgcode ]; then
   mkdir -p bank_pkg
   cp -R vendor/bank/pkgcode/* bank_pkg/ 2>/dev/null || true
@@ -982,7 +1032,7 @@ fi
 # dejan los scripts de pyspark/bin sin permiso de ejecucion, y spark-submit falla
 # con 'Permission denied'. Les restauramos el bit +x.
 PYSPARK_HOME="$(python -c 'import os, pyspark; print(os.path.dirname(pyspark.__file__))' 2>/dev/null || true)"
-if [ -n "$PYSPARK_HOME" ]; then
+if [ -n "$PYSPARK_HOME" ] && [ "$BNX_PYSPARK_MODO" != "servidor" ]; then
   echo "      Ajustando permisos de ejecucion en $PYSPARK_HOME/bin y /sbin ..."
   chmod -R +x "$PYSPARK_HOME/bin" 2>/dev/null || true
   chmod -R +x "$PYSPARK_HOME/sbin" 2>/dev/null || true
@@ -1073,7 +1123,7 @@ echo "[3/4] Verificando dependencias (check_env.py) ..."
 # Avisa si falta alguna libreria que el codigo importa (no aborta el montaje).
 python check_env.py || echo "  [!]  Faltan librerias (ver arriba). Instalalas antes de produccion."
 
-if [ "${1:-}" = "--test" ]; then
+if [ "$BNX_RUN_TEST" = "1" ]; then
   echo "[4/4] Ejecutando pruebas (pytest) ..."
   pytest -q || echo "  (pytest requiere pyspark + Java; revisa el entorno)"
 else
@@ -1097,13 +1147,20 @@ if [ ! -f .venv/bin/activate ]; then
   echo "[ERROR] No existe .venv. Monta el entorno primero:  bash setup.sh" >&2
   exit 1
 fi
+# PySpark del SERVIDOR (modo B): setup.sh guardo la ruta en .bnx_spark.env.
+BNX_SPARK_SERVIDOR=0
+if [ -f .bnx_spark.env ]; then
+  . ./.bnx_spark.env
+  export SPARK_HOME
+  BNX_SPARK_SERVIDOR=1
+fi
 # Spark del CLUSTER (opcional): BNX_SPARK=cluster bash run.sh ...
 # Usa el spark-submit del nodo (el mismo metastore que Hue/beeline/pyspark del
 # cluster) con el Python del venv para las librerias. Se busca ANTES de activar el
 # venv para no tomar el spark-submit que trae el pyspark de pip.
 CLUSTER_SUBMIT=""
 if [ "${BNX_SPARK:-}" = "cluster" ]; then
-  CLUSTER_SUBMIT="${BNX_SPARK_SUBMIT:-$(command -v spark3-submit || command -v spark-submit || true)}"
+  CLUSTER_SUBMIT="${BNX_SPARK_SUBMIT:-${BNX_SPARK_SUBMIT_CFG:-$(command -v spark3-submit || command -v spark-submit || true)}}"
   if [ -z "$CLUSTER_SUBMIT" ]; then
     echo "[ERROR] BNX_SPARK=cluster pero no hay spark-submit del cluster en el PATH." >&2
     echo "   Indica la ruta: BNX_SPARK_SUBMIT=/ruta/spark-submit BNX_SPARK=cluster bash run.sh ..." >&2
@@ -1111,6 +1168,11 @@ if [ "${BNX_SPARK:-}" = "cluster" ]; then
   fi
 fi
 . .venv/bin/activate
+if [ "$BNX_SPARK_SERVIDOR" = "1" ]; then
+  # `import pyspark` en el venv usa el Spark del servidor (symlink/.pth de setup.sh + PYTHONPATH)
+  if [ -n "${BNX_SPARK_PYPATH:-}" ]; then export PYTHONPATH="$BNX_SPARK_PYPATH:${PYTHONPATH:-}"; fi
+  echo "[run.sh] PySpark del SERVIDOR: SPARK_HOME=$SPARK_HOME (Spark ${BNX_SPARK_VERSION:-?})"
+fi
 
 @@LIBOMP@@
 bnx_libomp_fix
@@ -1122,7 +1184,7 @@ if [ -d bank_pkg ]; then export PYTHONPATH="$PWD/bank_pkg:${PYTHONPATH:-}"; fi
 # crea un metastore LOCAL vacio (las tablas del banco "no existen"). Si el nodo
 # tiene la config de Spark/Hive del cluster (Cloudera/edge node), la usamos.
 if [ -z "${SPARK_CONF_DIR:-}" ]; then
-  for d in /etc/spark/conf /etc/spark3/conf /etc/spark2/conf /opt/cloudera/parcels/CDH/lib/spark/conf; do
+  for d in "${SPARK_HOME:+$SPARK_HOME/conf}" /etc/spark/conf /etc/spark3/conf /etc/spark2/conf /opt/cloudera/parcels/CDH/lib/spark/conf; do
     if [ -f "$d/hive-site.xml" ]; then export SPARK_CONF_DIR="$d"; break; fi
   done
   if [ -z "${SPARK_CONF_DIR:-}" ] && [ -f /etc/hive/conf/hive-site.xml ]; then
@@ -1185,6 +1247,8 @@ export PYSPARK_DRIVER_PYTHON="$PWD/.venv/bin/python"
 exec python main.py "$@"
 '''
 
+from src.spark_server_sh import SPARK_CFG_SH as _SPARK_CFG_SH
+_SETUP_SH = _SETUP_SH.replace("@@SPARKCFG@@", _SPARK_CFG_SH)
 _SETUP_SH = _SETUP_SH.replace("@@LIBOMP@@", _LIBOMP_SH)
 _RUN_SH = _RUN_SH.replace("@@LIBOMP@@", _LIBOMP_SH)
 
@@ -2706,6 +2770,21 @@ def _probar_jobs():
     return errores
 
 
+def _spark_servidor():
+    """Config de PySpark del servidor (.bnx_spark.env) o {} si el paquete no la usa."""
+    ruta = os.path.join(_project_root(), ".bnx_spark.env")
+    out = {}
+    try:
+        for ln in open(ruta, encoding="utf-8"):
+            ln = ln.strip()
+            if ln and not ln.startswith("#") and "=" in ln:
+                k, v = ln.split("=", 1)
+                out[k.strip()] = v.strip().strip("'")
+    except OSError:
+        return {}
+    return out
+
+
 def main():
     quiet = "--quiet" in sys.argv
     mods = sorted(_top_level_imports())
@@ -2714,8 +2793,13 @@ def main():
         if _is_stdlib(mod) or mod in _IGNORAR:
             continue  # stdlib o modulo ignorado (no se usa en el despliegue)
         (ok if _can_import(mod) else faltan).append(mod)
+    cfg = _spark_servidor()
+    if cfg:
+        print("[i] PySpark del SERVIDOR: Spark %s en %s (config .bnx_spark.env)" % (cfg.get("BNX_SPARK_VERSION") or "?", cfg.get("SPARK_HOME")))
+        if "pyspark" in faltan:
+            print("[!] pyspark no se puede importar con la ruta guardada: revisa .bnx_spark.env o corre bash setup.sh --reconfigurar-spark")
     # Paquete LIGERO: PySpark no viene a proposito (se usa el del cluster). No es un faltante.
-    if "pyspark" in faltan and not glob.glob(os.path.join(_project_root(), "vendor", "*", "pyspark-*.whl")):
+    if "pyspark" in faltan and not cfg and not glob.glob(os.path.join(_project_root(), "vendor", "*", "pyspark-*.whl")):
         faltan.remove("pyspark")
         print("[i] PySpark no esta en este entorno: paquete LIGERO (normal). Corre con el Spark "
               "del cluster:  BNX_SPARK=cluster bash run.sh ...")
@@ -2780,7 +2864,8 @@ setup(
     install_requires=[
         # PySpark segun version de Python (3.5 usa distutils, roto en 3.12+).
         'pyspark>=3.5,<3.6 ; python_version < "3.12"',
-        'pyspark>=4.0,<4.1 ; python_version >= "3.12"',
+        'pyspark>=4.0,<4.1 ; python_version >= "3.12" and python_version < "3.14"',
+        'pyspark>=4.1,<4.2 ; python_version >= "3.14"',
         "pandas>=1.3", "numpy>=1.21",
     ],
 )
@@ -3203,7 +3288,8 @@ setup(
     python_requires=">=3.9",
     install_requires=[
         'pyspark>=3.5,<3.6 ; python_version < "3.12"',
-        'pyspark>=4.0,<4.1 ; python_version >= "3.12"',
+        'pyspark>=4.0,<4.1 ; python_version >= "3.12" and python_version < "3.14"',
+        'pyspark>=4.1,<4.2 ; python_version >= "3.14"',
         "pandas>=1.3",
     ],
 )
@@ -3288,7 +3374,7 @@ ULTIMO_VENDOR = {}   # {"pyspark": bool, "mb": float} del ultimo vendor empaquet
 
 
 def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all",
-                   out_path=None):
+                   out_path=None, plataformas=("linux",), spark_modo=None):
     """Empaqueta un ZIP a partir de dicts de archivos YA LISTOS (texto). Reusable
     para re-empaquetar tras EDITAR los archivos generados.
 
@@ -3305,6 +3391,12 @@ def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all",
         no los bytes.
     Devuelve (zip_bytes_o_ruta, filename, vendor_series_list)."""
     extra_steps = any("scoring/scorer.py" in p for p in (code_files or {}))
+    # Modo de PySpark: 'incluido' (wheel en vendor/) | 'servidor' (usa el Spark del servidor; setup.sh
+    # pregunta la ruta). Sin indicar: lo decide full_env (compatibilidad con 'ambiente completo').
+    if spark_modo in ("incluido", "servidor"):
+        full_env = spark_modo == "incluido"
+    else:
+        spark_modo = "incluido" if full_env else "servidor"
     # Requisitos open source del paquete (los de requirements-bank.txt son mex-lib*:
     # van como sdist aparte en vendor/bank/).
     req_lineas = []
@@ -3322,12 +3414,12 @@ def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all",
         except Exception:
             pass
         vendor_series, faltan_offline = _vendor_ligero(py_target, extra_steps, req_lineas,
-                                                       incluir_spark=True)
+                                                       incluir_spark=True, plataformas=plataformas)
     else:
         # Ligero: TODAS las librerias offline MENOS PySpark (~300-400 MB): en el
         # cluster se usa su Spark (BNX_SPARK=cluster). Antes no llevaba ninguna.
         vendor_series, faltan_offline = _vendor_ligero(py_target, extra_steps, req_lineas,
-                                                       incluir_spark=False)
+                                                       incluir_spark=False, plataformas=plataformas)
     ULTIMO_FALTAN_OFFLINE.clear()
     ULTIMO_FALTAN_OFFLINE.update(faltan_offline)
     _todos = [f for fs in (vendor_series or {}).values() for f in fs]
@@ -3353,7 +3445,7 @@ def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all",
         # vendor/bank/ SOLO lleva las mex-lib* del banco. Las deps open source del
         # stack (cytoolz/unidecode/pandas cp38/...) ya van en vendor/<serie>/ con
         # solo lo que pip resolvio (antes se metian TODAS: ~350 MB).
-        bank_sdists = [p for p in bank_sdists if os.path.basename(p).lower().startswith("mex")]
+        bank_sdists = [p for p in bank_sdists if os.path.basename(p).lower().startswith(("mex", "bnx_bank_pkgcode"))]
         # Ademas de los sdist (que pip instala), extraemos las mex-lib verificadas
         # como CODIGO en pkgcode/ para que funcionen por PYTHONPATH sin pip/build
         # (fallback a prueba de fallos en Windows/Python 3.8).
@@ -3398,6 +3490,7 @@ def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all",
         for path, content in (code_files or {}).items():
             _put_str(z, "framework_mlops_v2_pkg/" + path, content)
         _vts = [v for vs in _versiones_target(py_target).values() for v in vs]
+        _put_str(z, "framework_mlops_v2_pkg/vendor/PYSPARK_MODE", spark_modo + "\n")
         if len(_vts) == 1:   # version exacta: setup.sh avisa si el servidor tiene otra
             _put_str(z, "framework_mlops_v2_pkg/vendor/PYTHON_TARGET", _vts[0] + "\n")
         if faltan_offline:
@@ -3478,7 +3571,9 @@ _MLOPS_VENDOR_CACHE = os.path.join(_vc.cache_dir(), "mlops_deps")
 # utils como codigo de path). Son Python puro, sirven para cualquier plataforma/
 # version. Vive fuera de git. 'wheels/' = sdist pip-instalables; 'pkgcode/' =
 # modulos que el codigo espera en el PYTHONPATH (toolbox, etc.).
-_BANK_LIBS_CACHE = os.path.join(_vc.cache_dir(), "bank_libs")
+from src import vendor_modular as _vm   # piezas modulares: pyspark / ciencia / banco
+# 'banco/' (layout nuevo) o 'bank_libs/' (viejo): vendor_cache.banco_dir elige el que exista.
+_BANK_LIBS_CACHE = _vc.banco_dir()
 
 
 def _bank_vendor_files():
@@ -3490,14 +3585,20 @@ def _bank_vendor_files():
     code_dir = os.path.join(_BANK_LIBS_CACHE, "pkgcode")
     sdists = []
     if os.path.isdir(whl_dir):
-        for f in sorted(os.listdir(whl_dir)):
+        _todos = sorted(os.listdir(whl_dir))
+        _con_whl = {f.split("-2.")[0].replace("_", "-").lower() for f in _todos
+                    if f.lower().startswith("mex") and f.endswith(".whl")}
+        for f in _todos:
             if not f.endswith((".tar.gz", ".whl")):
                 continue
             low = f.lower()
+            if f.endswith(".tar.gz") and low.startswith("mex") and \
+                    f.split("-2.")[0].replace("_", "-").lower() in _con_whl:
+                continue          # ya hay wheel de esta mex-lib: el paquete lleva solo wheels
             # mex-lib* del banco: solo las VERIFICADAS (las incompletas en origen
             # se omiten del vendor porque les falta codigo).
             if low.startswith("mex"):
-                pkg = f.split("-2.")[0] if "-2." in f else f.rsplit("-", 1)[0]
+                pkg = (f.split("-2.")[0] if "-2." in f else f.rsplit("-", 1)[0]).replace("_", "-")
                 if pkg in _BANK_PKG_VERIFIED:
                     sdists.append(os.path.join(whl_dir, f))
                 continue
@@ -3506,7 +3607,9 @@ def _bank_vendor_files():
             # Se incluyen TODAS: asi nada queda faltante al montar offline.
             sdists.append(os.path.join(whl_dir, f))
     pkgcode = {}
-    if os.path.isdir(code_dir):
+    # Con wheel bnx_bank_pkgcode (toolbox/bnmxverse/utils) el codigo ya viaja ahi: no se copia a bank_pkg/.
+    _pk_whl = bool(glob.glob(os.path.join(whl_dir, "bnx_bank_pkgcode-*.whl")))
+    if os.path.isdir(code_dir) and not _pk_whl:
         for root, dirs, files in os.walk(code_dir):
             # No empaquetar artefactos de compilacion ni basura.
             dirs[:] = [d for d in dirs if d != "__pycache__"]
@@ -3530,12 +3633,13 @@ def _bank_extracted_pkgs():
     out = {}
     if not os.path.isdir(whl_dir):
         return out
+    _wh = {x.split("-2.")[0].replace("_", "-").lower() for x in os.listdir(whl_dir) if x.endswith(".whl")}
     for f in sorted(os.listdir(whl_dir)):
         if not f.endswith(".tar.gz"):
             continue
-        pkg = f.split("-2.")[0] if "-2." in f else f.rsplit("-", 1)[0]
-        if pkg not in _BANK_PKG_VERIFIED:
-            continue
+        pkg = (f.split("-2.")[0] if "-2." in f else f.rsplit("-", 1)[0]).replace("_", "-")
+        if pkg not in _BANK_PKG_VERIFIED or pkg.lower() in _wh:
+            continue          # con wheel instalable no hace falta el codigo extraido (fallback)
         # Modulo importable esperado (lib_extract, etc.) via el mapeo conocido.
         top = None
         for mod, p2 in _BANK_MODULE_TO_PKG.items():
@@ -3582,10 +3686,10 @@ _MLOPS_EXTRA_DEPS = ["xgboost>=1.7", "scikit-learn>=1.1"]
 
 # Python objetivo por serie (para 'pip download --python-version'): las wheels de
 # pandas/numpy SI son especificas de version de Python.
-_SERIE_PYVER = {"py38-311": "3.11", "py312plus": "3.12"}
+_SERIE_PYVER = {"py38-311": "3.11", "py312plus": "3.12", "py314": "3.14"}
 # ABI de CPython por serie. pandas/numpy traen wheels BINARIAS con ABI concreta
 # (cp311, cp312); no existe wheel 'none/any' para ellas, por eso hay que pedirla.
-_SERIE_ABI = {"py38-311": "cp311", "py312plus": "cp312"}
+_SERIE_ABI = {"py38-311": "cp311", "py312plus": "cp312", "py314": "cp314"}
 # Plataformas Linux objetivo (el servidor del banco es Linux, normalmente x86_64).
 # Bajamos ambas arquitecturas comunes para no asumir. manylinux2014 = glibc 2.17+,
 # compatible con RHEL7+/la mayoria de servidores empresariales.
@@ -3603,7 +3707,8 @@ def _fetch_mlops_deps(serie_dir, extra_steps):
     abi = _SERIE_ABI.get(serie_dir, "cp311")
     cache = os.path.join(_MLOPS_VENDOR_CACHE, serie_dir + ("_extra" if extra_steps else ""))
     os.makedirs(cache, exist_ok=True)
-    deps = list(_MLOPS_BASE_DEPS) + (list(_MLOPS_EXTRA_DEPS) if extra_steps else [])
+    deps = list(_MLOPS_BASE_DEPS) + ([_vm.mapear_requisito(d, "linux") for d in _MLOPS_EXTRA_DEPS]
+                                     if extra_steps else [])
     # Si ya hay wheels en cache, reusar sin re-descargar.
     existing = [os.path.join(cache, f) for f in os.listdir(cache) if f.endswith(".whl")]
     if existing:
@@ -3664,7 +3769,7 @@ def _vendor_files_for_pkg(py_target="all", extra_steps=False):
 
 # Versiones de Python que cubre cada serie de vendor/ (las wheels binarias de
 # pandas/numpy/cytoolz son por version: hay que resolver para cada una).
-_SERIE_VERSIONES = {"py38-311": ["3.8", "3.9", "3.10", "3.11"], "py312plus": ["3.12", "3.13"]}
+_SERIE_VERSIONES = {"py38-311": ["3.8", "3.9", "3.10", "3.11"], "py312plus": ["3.12", "3.13"], "py314": ["3.14"]}
 _SPARK_DISTS = ("pyspark", "py4j")
 _BOOTSTRAP = ("pip", "setuptools", "wheel")
 _seleccion_cache = {}
@@ -3675,18 +3780,20 @@ def _wheel_dist(fname):
     return _re.split(r"-\d", os.path.basename(fname), maxsplit=1)[0].lower().replace("-", "_")
 
 
-def _pool_wheels(serie_dir, extra_steps, incluir_spark, ml=False):
+def _pool_wheels(serie_dir, extra_steps, incluir_spark, ml=False, plataforma="linux", versiones=None):
     """Wheels disponibles en cache para una serie: deps del framework, deps del stack
-    del banco (cp38, cytoolz, ...) y, si incluir_spark, PySpark/py4j."""
+    del banco (cp38, cytoolz, ...) y, si incluir_spark, PySpark/py4j.
+    Lee el layout NUEVO (ciencia/<py>/<plataforma>/, pyspark/<serie>/) y, solo para linux, el
+    VIEJO (mlops_deps/*, bank_libs/wheels, <serie>/: eran wheels manylinux)."""
     raiz = os.path.dirname(_MLOPS_VENDOR_CACHE)
-    dirs = [os.path.join(_MLOPS_VENDOR_CACHE, serie_dir),
-            os.path.join(_MLOPS_VENDOR_CACHE, serie_dir + "_extra") if (extra_steps or ml) else None,
-            os.path.join(_MLOPS_VENDOR_CACHE, serie_dir + "_dl"),   # bajadas automaticas
-            # pila de ciencia de datos: aparte, para no cambiar lo que resuelven los
-            # paquetes que NO la usan (pandas/numpy mas nuevos, glibc, ...)
-            os.path.join(_MLOPS_VENDOR_CACHE, serie_dir + "_ciencia") if ml else None,
-            os.path.join(_BANK_LIBS_CACHE, "wheels"),
-            os.path.join(raiz, serie_dir)]
+    nuevos = [os.path.join(raiz, "ciencia", v, plataforma)
+              for v in (versiones or _SERIE_VERSIONES.get(serie_dir, []))]
+    if incluir_spark:
+        nuevos.append(os.path.join(raiz, "pyspark", serie_dir))
+    if plataforma != "linux":
+        dirs = nuevos
+    else:
+        dirs = nuevos + _pool_dirs_viejos(raiz, serie_dir, extra_steps, ml)
     pool = {}
     for d in dirs:
         if not d or not os.path.isdir(d):
@@ -3701,16 +3808,26 @@ def _pool_wheels(serie_dir, extra_steps, incluir_spark, ml=False):
     return pool
 
 
-def _reqs_para(version, lineas, incluir_spark):
-    """Requisitos (sin markers) que aplican a una version de Python destino en Linux."""
+def _pool_dirs_viejos(raiz, serie_dir, extra_steps, ml):
+    dirs = [os.path.join(_MLOPS_VENDOR_CACHE, serie_dir),
+            os.path.join(_MLOPS_VENDOR_CACHE, serie_dir + "_extra") if (extra_steps or ml) else None,
+            os.path.join(_MLOPS_VENDOR_CACHE, serie_dir + "_dl"),   # bajadas automaticas
+            # pila de ciencia de datos: aparte, para no cambiar lo que resuelven los
+            # paquetes que NO la usan (pandas/numpy mas nuevos, glibc, ...)
+            os.path.join(_MLOPS_VENDOR_CACHE, serie_dir + "_ciencia") if ml else None,
+            os.path.join(_BANK_LIBS_CACHE, "wheels"),
+            os.path.join(raiz, serie_dir)]
+    return dirs
+
+
+def _reqs_para(version, lineas, incluir_spark, plataforma="linux"):
+    """Requisitos (sin markers) que aplican a una version de Python destino en la plataforma
+    (linux por defecto; tambien windows / macos)."""
     try:
         from packaging.requirements import Requirement
     except ImportError:          # pip trae packaging vendorizado
         from pip._vendor.packaging.requirements import Requirement
-    env = {"python_version": version, "python_full_version": version + ".0",
-           "sys_platform": "linux", "platform_system": "Linux", "os_name": "posix",
-           "implementation_name": "cpython", "platform_python_implementation": "CPython",
-           "platform_machine": "x86_64"}
+    env = _vm.env_destino(version, plataforma)
     out = []
     for ln in lineas:
         ln = ln.split("#")[0].strip()
@@ -3725,7 +3842,9 @@ def _reqs_para(version, lineas, incluir_spark):
         if not incluir_spark and r.name.lower() in _SPARK_DISTS:
             continue
         r.marker = None
-        out.append(str(r))
+        r.name = _vm.dist_para(r.name, plataforma)     # xgboost -> xgboost-cpu (linux/windows)
+        if str(r) not in out:
+            out.append(str(r))
     return out
 
 
@@ -3761,7 +3880,7 @@ def _fijar_pandas_numpy(serie_dir, extra_steps, incluir_spark, v, dl):
 
 
 def _seleccionar_wheels(serie_dir, req_lineas, extra_steps=False, incluir_spark=True,
-                        _descargar=True, versiones=None):
+                        _descargar=True, versiones=None, plataforma="linux"):
     """Resuelve con pip (sin instalar) que wheels hacen falta para TODAS las versiones
     de Python de la serie, usando solo el cache local. Devuelve ([rutas], {version:
     error}). Asi el paquete lleva lo necesario (no los 350 MB del cache del banco) y
@@ -3769,10 +3888,10 @@ def _seleccionar_wheels(serie_dir, req_lineas, extra_steps=False, incluir_spark=
     import json as _json
     import tempfile as _tf
     ml = any(_re.match(r"\s*(xgboost|lightgbm|scikit[-_]learn|scipy|statsmodels|matplotlib|seaborn)\b", ln, _re.I) for ln in req_lineas)
-    pool = _pool_wheels(serie_dir, extra_steps, incluir_spark, ml)
     versiones = list(versiones or _SERIE_VERSIONES.get(serie_dir, []))
+    pool = _pool_wheels(serie_dir, extra_steps, incluir_spark, ml, plataforma, versiones)
     clave = (serie_dir, tuple(req_lineas), extra_steps, incluir_spark, tuple(versiones),
-             tuple(sorted(pool)))
+             tuple(sorted(pool)), plataforma)
     if clave in _seleccion_cache:
         return _seleccion_cache[clave]
     elegidas = {f for f in pool if _wheel_dist(f) in _BOOTSTRAP}
@@ -3786,7 +3905,7 @@ def _seleccionar_wheels(serie_dir, req_lineas, extra_steps=False, incluir_spark=
             except OSError:
                 shutil.copy2(full, os.path.join(links, f))
         for v in versiones:
-            reqs = _reqs_para(v, req_lineas, incluir_spark)
+            reqs = _reqs_para(v, req_lineas, incluir_spark, plataforma)
             if not reqs:
                 continue
             rep = os.path.join(tmp, f"r{v}.json")
@@ -3800,8 +3919,7 @@ def _seleccionar_wheels(serie_dir, req_lineas, extra_steps=False, incluir_spark=
                    "--quiet", "--no-index", "--find-links", links, "--only-binary=:all:",
                    "--python-version", v, "--implementation", "cp",
                    "--abi", abi, "--abi", "abi3", "--abi", "none",
-                   "--platform", "manylinux2014_x86_64", "--platform", "manylinux_2_17_x86_64",
-                   "--platform", "manylinux_2_28_x86_64", "--platform", "linux_x86_64",
+                   *[x for t_ in _vm.PLATAFORMAS[plataforma]["tags"] for x in ("--platform", t_)],
                    "--platform", "any", "--target", os.path.join(tmp, "t"),
                    "--report", rep, *reqs]
             try:
@@ -3825,14 +3943,18 @@ def _seleccionar_wheels(serie_dir, req_lineas, extra_steps=False, incluir_spark=
                     name = os.path.basename(url.split("?")[0])
                     if name in pool:
                         elegidas.add(name)
-    if faltan and _descargar and os.environ.get("BNX_NO_DOWNLOAD") != "1":
+    if faltan and _descargar and plataforma == "linux" and os.environ.get("BNX_NO_DOWNLOAD") != "1":
         # Al cache le faltan wheels (p.ej. el servidor del portal no tiene cytoolz /
         # unidecode): bajarlas UNA vez, para Linux y esa version de Python, y resolver
         # de nuevo. Sin internet falla rapido y queda el aviso.
+        _legacy = os.path.isdir(_MLOPS_VENDOR_CACHE)      # sin layout viejo: baja al nuevo
         dl = os.path.join(_MLOPS_VENDOR_CACHE, serie_dir + ("_ciencia" if ml else "_dl"))
         os.makedirs(dl, exist_ok=True)
         bajo_algo = False
         for v in list(faltan):
+            if not _legacy:
+                dl = os.path.join(os.path.dirname(_MLOPS_VENDOR_CACHE), "ciencia", v, "linux")
+                os.makedirs(dl, exist_ok=True)
             # Sin pyspark/py4j: en PyPI pyspark es sdist (no hay wheel binaria) y con
             # --only-binary tumbaria toda la bajada; su wheel ya viene en el cache.
             reqs = _reqs_para(v, req_lineas, incluir_spark=False)
@@ -3842,7 +3964,8 @@ def _seleccionar_wheels(serie_dir, req_lineas, extra_steps=False, incluir_spark=
             _descarga_fallida.add(intento)
             abi = "cp" + v.replace(".", "")
             _plats = ["manylinux2014_x86_64", "manylinux_2_17_x86_64", "manylinux_2_28_x86_64"]
-            _cf = _fijar_pandas_numpy(serie_dir, extra_steps, incluir_spark, v, dl)
+            _cf = _fijar_pandas_numpy(serie_dir, extra_steps, incluir_spark, v,
+                                      dl if _legacy else _tf.mkdtemp(prefix="bnx_cons_"))
             _cons = ["-c", _cf] if _cf else []
             # Todo se baja preferentemente manylinux2014 (glibc 2.17), una plataforma por
             # vez. Excepcion Python >= 3.12: lightgbm 4.x solo existe en manylinux_2_28; se
@@ -3901,23 +4024,30 @@ def _versiones_target(py_target):
     m = _re.fullmatch(r"(?:py)?3\.(\d{1,2})", str(py_target or "").strip())
     if m:
         v = "3." + m.group(1)
-        return {("py312plus" if int(m.group(1)) >= 12 else "py38-311"): [v]}
+        return {_vc.serie_de(v): [v]}
     if py_target in _SERIE_VERSIONES:
         return {py_target: list(_SERIE_VERSIONES[py_target])}
     return {s: list(vs) for s, vs in _SERIE_VERSIONES.items()}
 
 
-def _vendor_ligero(py_target, extra_steps, req_lineas, incluir_spark=False):
+def _vendor_ligero(py_target, extra_steps, req_lineas, incluir_spark=False, plataformas=("linux",)):
     """vendor/ por serie con SOLO lo necesario (sin PySpark si incluir_spark=False).
+    plataformas: linux (servidor del banco; default) + opcionalmente windows / macos para
+    correr TAMBIEN offline ahi; pip --no-index --find-links elige solo las compatibles, asi
+    que mezclarlas en vendor/<serie>/ no cambia setup.sh. PySpark es el mismo wheel en todas.
     Devuelve ({serie_dir: [rutas]}, {serie_dir: {version: error}})."""
     out, faltan = {}, {}
+    plats = ["linux"] + [p for p in (plataformas or ()) if p != "linux"]
     for s, versiones in _versiones_target(py_target).items():
-        files, f = _seleccionar_wheels(s, req_lineas, extra_steps, incluir_spark,
-                                       versiones=versiones)
-        if files:
-            out[s] = files
-        if f:
-            faltan[s] = f
+        for plat in plats:
+            files, f = _seleccionar_wheels(s, req_lineas, extra_steps, incluir_spark,
+                                           versiones=versiones, plataforma=plat)
+            if files:
+                lst = out.setdefault(s, [])
+                lst += [x for x in files if x not in lst]
+            if f:
+                for v, e in f.items():
+                    faltan.setdefault(s, {}).setdefault(v, e if plat == "linux" else "[%s] %s" % (plat, e))
     return out, faltan
 
 
@@ -3926,7 +4056,7 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
                                extra_steps=False, include_monitoring=False,
                                separate_monitoring=False, full_env=False,
                                py_target="all", out_path=None, registry=None,
-                               ciencia=False):
+                               ciencia=False, plataformas=("linux",), spark_modo=None):
     """Arma el Framework v2 EMPAQUETADO con la logica del usuario dentro.
     ciencia: si True agrega la PILA DE CIENCIA DE DATOS (xgboost, lightgbm, scikit-learn,
         scipy, statsmodels, matplotlib, seaborn, joblib, threadpoolctl + transitivas) a
@@ -4126,7 +4256,8 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     sep_files = _monitoring_files("separate") if (include_monitoring and separate_monitoring) else {}
 
     zip_result, _fn, vendor_list = zip_from_files(
-        files, sep_files, full_env=full_env, py_target=py_target, out_path=out_path)
+        files, sep_files, full_env=full_env, py_target=py_target, out_path=out_path,
+        plataformas=plataformas, spark_modo=spark_modo)
 
     # Clasificar libs del banco para el reporte (verificadas vs incompletas).
     bank_verified, bank_incomplete = [], []
@@ -4160,8 +4291,12 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
                 continue   # no es un paquete del banco/de lo subido (p.ej. libreria pip)
             en_subido = (f"bank_src/{pkg}/{mod}.py" in files
                          or any(p.startswith(f"bank_src/{pkg}/{mod}/") for p in files))
+            from src import vendor_banco as _vb
+            _en_whl = _vb.archivos_pkgcode_en_wheel(_BANK_LIBS_CACHE)
             en_cache = (bool(bank_libs) and (os.path.isfile(os.path.join(_cache_code, pkg, mod + ".py"))
-                        or os.path.isdir(os.path.join(_cache_code, pkg, mod))))
+                        or os.path.isdir(os.path.join(_cache_code, pkg, mod))
+                        or (pkg + "/" + mod + ".py") in _en_whl
+                        or any(n.startswith(pkg + "/" + mod + "/") for n in _en_whl)))
             if not en_subido and not en_cache:
                 modulos_faltantes.setdefault(pkg, set()).add(mod)
     modulos_faltantes = {k: sorted(v) for k, v in sorted(modulos_faltantes.items())}
@@ -4515,8 +4650,8 @@ def verify_package_env(code_files, full_env=False, py_target="all", timeout=900,
         vendor_dir = None
         if os.path.isdir(vendor_root):
             minor = _sys.version_info[1]
-            cand = "py312plus" if minor >= 12 else "py38-311"
-            for d in (cand, "py38-311", "py312plus"):
+            cand = _vc.serie_de("3.%d" % minor)
+            for d in (cand, "py38-311", "py312plus", "py314"):
                 if os.path.isdir(os.path.join(vendor_root, d)):
                     vendor_dir = os.path.join(vendor_root, d)
                     break
@@ -4657,7 +4792,9 @@ def _verify_resolve_linux(pkg_root, py_target, _log, steps, timeout):
                  "del cluster: BNX_SPARK=cluster bash run.sh)." % serie)
         for pyver in destino[serie]:
             abi = "cp" + pyver.replace(".", "")
-            reqs = _reqs_para(pyver, core + extra + [b for b in bank if not b.lower().startswith("mex")],
+            _pkw = ["bnx-bank-pkgcode"] if (os.path.isdir(bank_dir) and any(
+                f.startswith("bnx_bank_pkgcode-") for f in os.listdir(bank_dir))) else []
+            reqs = _reqs_para(pyver, core + extra + [b for b in bank if not b.lower().startswith("mex")] + _pkw,
                               incluir_spark=not ligero)
             base_cmd = (["--no-index", "--only-binary=:all:"] + links
                         + ["--python-version", pyver, "--implementation", "cp",
@@ -4719,7 +4856,7 @@ def _verify_resolve_linux(pkg_root, py_target, _log, steps, timeout):
         _log("     `.venv/bin/python preparar_vendor.py --python 3.X` (o el boton 'Bajar/generar cache'")
         _log("     de la pagina), o importa un ZIP hecho en otra maquina con")
         _log("     `exportar_vendor.py --python 3.X` (aqui: preparar_vendor.py --zip <zip>).")
-        if any(f.lower().split("[")[0] in _ML_PIP
+        if any(_vm.nombre_logico(f.lower().split("[")[0]) in _ML_PIP
                for f in faltantes):
             _log("     pila de ciencia de datos: corre `.venv/bin/python preparar_vendor.py --extra --python 3.X`.")
         _log("     Las mex-lib del banco no estan en PyPI: cargalas en 'Librerias del banco' o por ZIP.")
@@ -4751,7 +4888,7 @@ def bank_libs_list():
                     status, reason = "incompleta", _BANK_PKG_INCOMPLETE[pkg]
                 else:
                     status, reason = "desconocida", "sin verificar (usa 'Verificar')"
-            elif low.startswith(("pandas-", "numpy-", "xgboost-", "scikit_learn-",
+            elif low.startswith(("pandas-", "numpy-", "xgboost-", "xgboost_cpu-", "scikit_learn-",
                                  "scikit-learn-", "scipy-")):
                 kind, status, reason = "dep", "incluida", ""
             else:

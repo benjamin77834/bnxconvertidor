@@ -11,8 +11,8 @@
 # .venv/bnx_vendor_cache. Al arrancar se revisa; si falta algo se ofrece bajarlo/generarlo.
 # Bajar = primero el GitHub Release publico (vendor-linux-v2, o BNX_VENDOR_TAG: rapido, sin libs del banco),
 # si falla cae a pip. Las libs del banco: preparar_vendor.py --bank-libs <carpeta|zip>.
-#   BNX_VENDOR_AUTO=3.8|3.12|ambas  sin tty: baja automatico sin preguntar
-#   BNX_VENDOR_PODAR=3.8|3.12|ambas  quita del cache lo que no sea el minimo (sin preguntar)
+#   BNX_VENDOR_AUTO=3.11|3.14|ambas  sin tty: baja automatico sin preguntar
+#   BNX_VENDOR_PODAR=3.11|3.14|ambas  quita del cache lo que no sea el minimo (sin preguntar)
 #   BNX_VENDOR_CHECK=0              omite el chequeo
 #   BNX_ONLY_CHECK=1                solo hace el chequeo y sale (no mata ni arranca el server)
 
@@ -46,9 +46,9 @@ vendor_check() {
   "$VPY" -B preparar_vendor.py --estado || rc=$?
   if [ -n "${BNX_VENDOR_PODAR:-}" ]; then
     case "$BNX_VENDOR_PODAR" in
-      3.8)   "$VPY" -B preparar_vendor.py --podar --si --python 3.8 || true ;;
-      3.12)  "$VPY" -B preparar_vendor.py --podar --si --python 3.12 || true ;;
-      ambas) "$VPY" -B preparar_vendor.py --podar --si --python 3.8 --python 3.12 || true ;;
+      3.11)  "$VPY" -B preparar_vendor.py --podar --si --python 3.11 || true ;;
+      3.14)  "$VPY" -B preparar_vendor.py --podar --si --python 3.14 || true ;;
+      ambas) "$VPY" -B preparar_vendor.py --podar --si --python 3.11 --python 3.14 || true ;;
     esac
   fi
   [ "$rc" = "0" ] && return 0
@@ -58,30 +58,31 @@ vendor_check() {
   fi
   if [ "$interactivo" = "0" ]; then
     case "${BNX_VENDOR_AUTO:-}" in
-      3.8)   "$VPY" -B preparar_vendor.py --python 3.8 || true ;;
-      3.12)  "$VPY" -B preparar_vendor.py --python 3.12 || true ;;
-      ambas) "$VPY" -B preparar_vendor.py --python 3.8 --python 3.12 || true ;;
-      *) echo "[vendor] AVISO: falta cache de vendor. Corre: .venv/bin/python preparar_vendor.py --python 3.8"
-         echo "         (o arranca con BNX_VENDOR_AUTO=3.8|3.12|ambas, o usa el boton 'Bajar/generar cache' en la UI)." ;;
+      3.11)  "$VPY" -B preparar_vendor.py --python 3.11 || true ;;
+      3.14)  "$VPY" -B preparar_vendor.py --python 3.14 || true ;;
+      ambas) "$VPY" -B preparar_vendor.py --python 3.11 --python 3.14 || true ;;
+      *) echo "[vendor] AVISO: falta cache de vendor. Corre: .venv/bin/python preparar_vendor.py --python 3.11"
+         echo "         (o arranca con BNX_VENDOR_AUTO=3.11|3.14|ambas, o usa el boton 'Bajar/generar cache' en la UI)." ;;
     esac
     return 0
   fi
   echo ""
   echo "Falta el cache de vendor para armar paquetes Linux offline. ¿Qué hago?"
-  echo "  [1] Bajar (GitHub Release; si falla, pip) para Python 3.8"
-  echo "  [2] Bajar (GitHub Release; si falla, pip) para Python 3.12"
-  echo "  [3] Ambas"
-  echo "  [4] Importar desde ZIP"
-  echo "  [5] Podar: quitar del cache lo que no sea el mínimo (3.8 y 3.12; muestra y pregunta)"
-  echo "  [6] Ahora no"
+  echo "Piezas independientes (PySpark ~300-440 MB, Ciencia de datos del equipo, Ciencia Linux, Banco por ZIP):"
+  echo "  [1] Bajar para Python 3.11 (PySpark 3.5 + ciencia del equipo + ciencia Linux)"
+  echo "  [2] Bajar para Python 3.14 (PySpark 4.1 + ciencia del equipo + ciencia Linux)"
+  echo "  [3] Ambas versiones"
+  echo "  [4] Importar desde ZIP (pieza del release, o banco.zip de las librerias del banco)"
+  echo "  [5] Podar: conservar solo las piezas elegidas (3.11 y 3.14; muestra y pregunta)"
+  echo "  [6] Ahora no   (sin PySpark: preparar_vendor.py --python 3.11 --sin-pyspark)"
   printf "Opción [6]: "
   read -r op || op=6
   case "${op:-6}" in
-    1) "$VPY" -B preparar_vendor.py --python 3.8 || true ;;
-    2) "$VPY" -B preparar_vendor.py --python 3.12 || true ;;
-    3) "$VPY" -B preparar_vendor.py --python 3.8 --python 3.12 || true ;;
+    1) "$VPY" -B preparar_vendor.py --python 3.11 || true ;;
+    2) "$VPY" -B preparar_vendor.py --python 3.14 || true ;;
+    3) "$VPY" -B preparar_vendor.py --python 3.11 --python 3.14 || true ;;
     4)
-      zips=(~/Downloads/bnx_vendor_*.zip(N.om))
+      zips=(~/Downloads/(ciencia|pyspark|banco|bnx_vendor)*.zip(N.om))
       z=""
       if [ ${#zips} -gt 0 ]; then
         printf "Ruta del ZIP [%s]: " "${zips[1]}"
@@ -93,7 +94,7 @@ vendor_check() {
       fi
       z="${z/#\~/$HOME}"
       if [ -n "$z" ]; then "$VPY" -B preparar_vendor.py --zip "$z" || true; fi ;;
-    5) "$VPY" -B preparar_vendor.py --podar --python 3.8 --python 3.12 || true ;;
+    5) "$VPY" -B preparar_vendor.py --podar --python 3.11 --python 3.14 || true ;;
     *) echo "[vendor] Ok, sin cache por ahora (puedes usar el boton 'Bajar/generar cache' en la UI)." ;;
   esac
   return 0

@@ -21,9 +21,13 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
   const [ciencia, setCiencia] = useState(true)
   const [monitoring, setMonitoring] = useState(false)
   const [separateMon, setSeparateMon] = useState(false)
-  const [fullEnv, setFullEnv] = useState(false)
+  const [fullEnv, setFullEnv] = useState(false)   // true = 'PySpark incluido' (modo A); false = 'PySpark del servidor' (modo B)
+  // También correr offline en otras plataformas (el servidor Linux siempre va)
+  const [platExtra, setPlatExtra] = useState({ macos: false, windows: false })
+  // Piezas del cache a bajar (tamaño real/estimado en vendorStatus.piezas)
+  const [piezasSel, setPiezasSel] = useState({ pyspark: true, ciencia_host: true, ciencia_linux: true })
   // Version EXACTA de Python del servidor Linux (una wheel por libreria = lo mas ligero).
-  const [pyTarget, setPyTarget] = useState('py3.8')  // py3.8 (banco) | py3.12
+  const [pyTarget, setPyTarget] = useState('py3.11')  // py3.11 | py3.14
   const [loading, setLoading] = useState(true)
 
   // Entrada del usuario: codigo pegado + archivos de carpeta.
@@ -44,7 +48,7 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
   const [verifyLog, setVerifyLog] = useState('')
   const [verifyResult, setVerifyResult] = useState(null)  // {ok_env, checks, steps}
   const [runPytest, setRunPytest] = useState(false)
-  const [verifySerie, setVerifySerie] = useState('py3.8')  // target Linux a emular
+  const [verifySerie, setVerifySerie] = useState('py3.11')  // target Linux a emular
   // Firma / despliegue del paquete.
   const [signing, setSigning] = useState(false)
   const [signResult, setSignResult] = useState(null)  // {manifest, verify, public_key_pem, private_key_pem}
@@ -80,7 +84,7 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
     try {
       const res = await fetch(VENDOR_PREPARE_URL, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ versions: [ver], ...(podar ? { podar } : {}) }),
+        body: JSON.stringify({ versions: [ver], piezas: piezasSel, ...(podar ? { podar } : {}) }),
       })
       const d = await res.json()
       if (!d.ok && res.status !== 409) { setVendorErr(d.error || 'No se pudo iniciar'); return }
@@ -151,7 +155,9 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
         body: JSON.stringify({
           sources, include_bank_libs: bankLibs, optimize: true, extra_steps: extraSteps, ciencia,
           include_monitoring: monitoring, separate_monitoring: monitoring && separateMon,
-          full_env: fullEnv, py_target: pyTarget, registry,
+          full_env: fullEnv, spark_modo: fullEnv ? 'incluido' : 'servidor',
+          plataformas: Object.keys(platExtra).filter(k => platExtra[k]),
+          py_target: pyTarget, registry,
         }),
       })
       const data = await res.json()
@@ -413,10 +419,17 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
             <input type="checkbox" checked={bankLibs} onChange={e => setBankLibs(e.target.checked)} />
             Incluir libs internas del banco en requirements.txt
           </label>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: t.text || '#e2e8f0', cursor: 'pointer' }}>
-            <input type="checkbox" checked={fullEnv} onChange={e => setFullEnv(e.target.checked)} />
-            <span>Incluir <b>ambiente completo</b> (también PySpark offline en <code>vendor/</code>). Sin marcar: todas las librerías offline y PySpark se instala por internet en el servidor (o usas el Spark del cluster con <code>BNX_SPARK=cluster</code>)</span>
-          </label>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12.5, color: t.text || '#e2e8f0' }}>
+            <b>PySpark</b>
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer' }}>
+              <input type="radio" name="sparkModo" checked={!fullEnv} onChange={() => setFullEnv(false)} />
+              <span><b>PySpark del servidor</b> (default, paquete ligero): no se empaqueta; <code>setup.sh</code> detecta y <b>pregunta la ruta</b> del Spark/PySpark ya instalado, la valida y la guarda en <code>.bnx_spark.env</code> (cambiarla: <code>bash setup.sh --reconfigurar-spark</code>; sin terminal: <code>BNX_SPARK_HOME=/ruta</code>).</span>
+            </label>
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer' }}>
+              <input type="radio" name="sparkModo" checked={fullEnv} onChange={() => setFullEnv(true)} />
+              <span><b>PySpark incluido</b> (offline, {pyTarget === 'py3.14' ? '+~435 MB, PySpark 4.1' : '+~300 MB, PySpark 3.5'}): el wheel va en <code>vendor/</code> y se instala en el <code>.venv</code> del paquete (ambiente completo).</span>
+            </label>
+          </div>
           {(
             <div style={{ marginLeft: 24, display: 'flex', flexDirection: 'column', gap: 6 }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: t.text || '#e2e8f0' }}>
@@ -427,15 +440,21 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                     background: t.codeBg || '#081220', color: t.text || '#e2e8f0',
                     border: `1px solid ${t.border || '#334155'}`, outline: 'none', cursor: 'pointer',
                   }}>
-                  <option value="py3.8">Linux · Python 3.8 (servidor del banco){fullEnv ? ' — ~340 MB (con PySpark 3.5)' : ' — ~35 MB'}</option>
-                  <option value="py3.12">Linux · Python 3.12{fullEnv ? ' — ~450 MB (con PySpark 4.0)' : ' — ~36 MB'}</option>
+                  <option value="py3.11">Linux · Python 3.11 (PySpark 3.5){fullEnv ? ' — ~420 MB (con PySpark)' : ' — ~120 MB'}</option>
+                  <option value="py3.14">Linux · Python 3.14 (PySpark 4.1){fullEnv ? ' — ~560 MB (con PySpark)' : ' — ~125 MB'}</option>
                 </select>
               </label>
               <div style={{ fontSize: 11, color: t.muted || '#94a3b8' }}>
                 {fullEnv
-                  ? 'Completo: TODO offline, incluido PySpark. Elige la versión de los nodos del banco para bajar el tamaño.'
-                  : 'Sin PySpark: TODAS las librerías offline (pandas, numpy, pytest, las del banco…); setup.sh instala PySpark por internet (PyPI o PIP_INDEX_URL). Sin internet: BNX_SPARK=cluster bash run.sh usa el Spark del cluster.'}
+                  ? 'PySpark incluido: TODO offline, incluido PySpark. Elige la versión de los nodos del banco para bajar el tamaño.'
+                  : 'PySpark del servidor: todas las librerías van offline (pandas, numpy, pytest, las del banco…) y el paquete usa el Spark que ya tiene el servidor (setup.sh pregunta la ruta).'}
                 {' '}Usa tu Python y Java del sistema; esos no se empaquetan.
+              </div>
+              <div style={{ fontSize: 12, color: t.text || '#e2e8f0', display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span>También correr offline en:</span>
+                <label style={{ cursor: 'pointer' }}><input type="checkbox" checked={platExtra.macos} onChange={e => setPlatExtra({ ...platExtra, macos: e.target.checked })} /> macOS</label>
+                <label style={{ cursor: 'pointer' }}><input type="checkbox" checked={platExtra.windows} onChange={e => setPlatExtra({ ...platExtra, windows: e.target.checked })} /> Windows</label>
+                <span style={{ fontSize: 11, color: t.muted || '#94a3b8' }}>(Linux siempre va. +80-220 MB por plataforma. En Windows usa Git Bash/WSL para <code>setup.sh</code> o el modo online; no hay setup.ps1.)</span>
               </div>
               {(() => {
                 const ver = pyTarget.replace('py', '')
@@ -458,6 +477,23 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                         {(vendorStatus.banco.sdists_faltan.length + vendorStatus.banco.pkgcode_faltan.length) > 0 &&
                           <> · faltan: {[...vendorStatus.banco.sdists_faltan, ...vendorStatus.banco.pkgcode_faltan].join(', ')}</>}
                       </div>)}
+                    {(() => {
+                      const pz = (vendorStatus?.piezas || []).filter(x => x.python === ver)
+                      const mb = x => x ? Math.round((x.presente ? x.bytes : (x.bytes_descarga || 0)) / 1048576) : '?'
+                      const host = vendorStatus?.host?.plataforma
+                      const fila = (clave, texto, x) => (
+                        <label key={clave} style={{ display: 'block', cursor: 'pointer' }}>
+                          <input type="checkbox" checked={!!piezasSel[clave]} onChange={e => setPiezasSel({ ...piezasSel, [clave]: e.target.checked })} />
+                          {' '}{texto} ({mb(x)} MB){x?.presente ? ' ✅' : ''}
+                        </label>)
+                      return (
+                        <div style={{ margin: '6px 0' }}>
+                          {fila('pyspark', 'PySpark', pz.find(x => x.pieza === 'pyspark'))}
+                          {fila('ciencia_host', `Ciencia de datos (${host || 'este equipo'})`, pz.find(x => x.pieza === 'ciencia' && x.plataforma === host))}
+                          {host !== 'linux' && fila('ciencia_linux', 'Ciencia Linux (para paquetes del servidor)', pz.find(x => x.pieza === 'ciencia' && x.plataforma === 'linux'))}
+                          <div>Banco (interno, ZIP): <code>preparar_vendor.py --zip banco.zip</code> o <code>--bank-libs &lt;carpeta|zip&gt;</code> (se convierten a wheels).</div>
+                        </div>)
+                    })()}
                     <button onClick={() => startVendorPrepare(ver)} disabled={corriendo}
                       style={{ marginTop: 6, padding: '6px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600,
                                cursor: corriendo ? 'wait' : 'pointer', background: t.accent || '#6366f1',
@@ -733,8 +769,8 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                   <select value={verifySerie} onChange={e => setVerifySerie(e.target.value)} disabled={runPytest}
                     style={{ padding: '4px 8px', borderRadius: 6, fontSize: 11.5, background: t.codeBg || '#081220',
                              border: `1px solid ${t.border || '#334155'}`, color: t.text || '#e2e8f0' }}>
-                    <option value="py3.8">Linux · Python 3.8 (cp38)</option>
-                    <option value="py3.12">Linux · Python 3.12 (cp312)</option>
+                    <option value="py3.11">Linux · Python 3.11 (cp311)</option>
+                    <option value="py3.14">Linux · Python 3.14 (cp314)</option>
                   </select>
                 </label>
                 <label style={{ fontSize: 11.5, color: t.muted || '#94a3b8', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
@@ -976,7 +1012,7 @@ function RunInstructions({ theme }) {
       {open && (
         <div style={{ marginTop: 6 }}>
           <p style={{ margin: 0, fontSize: 12, color: t.muted || '#94a3b8' }}>
-            Tras descargar y descomprimir el ZIP. <b>Requisitos</b>: Python 3.8+ y Java (JDK) para Spark
+            Tras descargar y descomprimir el ZIP. <b>Requisitos</b>: Python 3.11+ y Java (JDK) para Spark
             (ninguno se empaqueta; deben estar en la máquina). Estas mismas instrucciones van en el <code>README.md</code> del paquete.
           </p>
 

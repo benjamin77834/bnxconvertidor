@@ -6,7 +6,7 @@ en el cache local (src/vendor_cache.cache_dir(): .venv/bnx_vendor_cache/).
 Las entradas '.bnx_vendor_cache/<rel>' del ZIP se extraen a <cache>/<rel>.
 
 USO (en el servidor, en la raiz del proyecto bnxconvertidor):
-    python importar_vendor.py bnx_vendor_py3.8.zip
+    python importar_vendor.py bnx_vendor_py3.11.zip
 Es idempotente. (Equivale a: preparar_vendor.py --zip <zip>)
 """
 import os

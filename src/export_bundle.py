@@ -348,6 +348,10 @@ def _build_series(cache_dir, serie):
     PySpark (sdist->wheel), py4j y setuptools/wheel/pip. Idempotente (reusa cache).
     Devuelve la lista de .whl de esa serie (o [] si falla)."""
     import subprocess, sys, glob
+    # Layout modular nuevo (pyspark/<serie>/): si ya esta ahi no se reconstruye en la carpeta vieja.
+    _nuevo = os.path.join(cache_dir, "pyspark", serie["dir"])
+    if glob.glob(os.path.join(_nuevo, "pyspark-*.whl")) and not os.path.isdir(os.path.join(cache_dir, serie["dir"])):
+        return sorted(glob.glob(os.path.join(_nuevo, "*.whl")))
     sdir = os.path.join(cache_dir, serie["dir"])
     os.makedirs(sdir, exist_ok=True)
     dpy = serie["download_py"]
