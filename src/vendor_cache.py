@@ -819,7 +819,11 @@ def importar_bank_libs(origen, log=print, cache=None):
         for r, ds, fs in os.walk(raiz):
             ds[:] = [d for d in ds if d not in ("__pycache__", ".git")]
             for f in fs:
-                if f.lower().startswith(("mex-lib", "mex_lib")) and f.endswith((".tar.gz", ".whl")):
+                es_mexlib = f.lower().startswith(("mex-lib", "mex_lib")) and f.endswith((".tar.gz", ".whl"))
+                # wheel con toolbox/bnmxverse/utils (repo bnx-banco, banco.zip): antes se ignoraba y
+                # --estado decia 'modulos de path 0/3' aunque viniera en la carpeta.
+                es_pkgcode = f.lower().startswith(("bnx_bank_pkgcode-", "bnx-bank-pkgcode-")) and f.endswith(".whl")
+                if es_mexlib or es_pkgcode:
                     os.makedirs(wh, exist_ok=True)
                     shutil.copy2(os.path.join(r, f), os.path.join(wh, f))
                     sd.append(f)

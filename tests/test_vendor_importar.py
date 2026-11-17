@@ -394,3 +394,24 @@ def test_setup_sh_rhel8_python_exacto_y_pistas():
     assert "java-17-openjdk-headless" in s and "sudo dnf install libgomp" in s
     i, j = s.index('if [ "$PY_T" != "$PY_V" ]'), s.index('"$PY" -m venv .venv')
     assert i < j and "exit 1" in s[i:j]          # version distinta = ERROR antes de crear el venv
+
+
+def test_bank_libs_carpeta_de_wheels_incluye_pkgcode(tmp_path, monkeypatch):
+    """Repo bnx-banco: carpeta wheels/ con mex_lib*.whl + bnx_bank_pkgcode-*.whl. Antes el wheel
+    pkgcode se ignoraba y --estado decia 'modulos de path 0/3'."""
+    import zipfile
+    from src import vendor_cache as vc
+    src = tmp_path / "bnx-banco" / "wheels"
+    src.mkdir(parents=True)
+    with zipfile.ZipFile(src / "bnx_bank_pkgcode-1.0.0-py3-none-any.whl", "w") as z:
+        for m in ("toolbox", "bnmxverse", "utils"):
+            z.writestr(m + "/__init__.py", "")
+    with zipfile.ZipFile(src / "mex_libextract-2.2.0-py3-none-any.whl", "w") as z:
+        z.writestr("mex_libextract/__init__.py", "")
+    cache = tmp_path / "cache"
+    monkeypatch.setenv("BNX_VENDOR_CACHE", str(cache))
+    monkeypatch.setattr(vc, "convertir_banco_a_wheels", lambda *a, **k: {"wheels": [], "fallos": {}})
+    vc.importar_bank_libs(str(src), log=lambda *a: None, cache=str(cache))
+    est = vc.estado_banco(str(cache))
+    assert sorted(est["pkgcode"]) == ["bnmxverse", "toolbox", "utils"]
+    assert "mex-libextract" in est["sdists"]

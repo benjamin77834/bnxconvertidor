@@ -66,7 +66,8 @@ def test_ligero_trae_lo_necesario_y_no_todo_el_cache(tmp_path):
     assert not any(os.path.basename(f).startswith(("xgboost-", "scipy-", "scikit_learn-")) for f in vend)
     # Python 3.8 (el del banco): pandas/numpy cp38 desde el cache del banco
     assert any("pandas-1.3.1-cp38" in f for f in vend)
-    assert all(os.path.basename(f).lower().startswith("mex") for f in vend
+    # banco: mex-lib* y el wheel con toolbox/bnmxverse/utils (bnx_bank_pkgcode) si el cache lo tiene
+    assert all(os.path.basename(f).lower().startswith(("mex", "bnx_bank_pkgcode")) for f in vend
                if f.startswith("vendor/bank/") and f.endswith((".whl", ".tar.gz")))
     meta = [r for r in mp.build_package_from_sources(
         [{"name": "job_1.py", "code": code}], convert_fn=_convert, py_target="py38-311",
