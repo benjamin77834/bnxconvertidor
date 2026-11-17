@@ -187,6 +187,14 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_mlops_package_orden()
         elif path in ("/vendor/prepare", "/api/vendor/prepare"):
             self._handle_vendor_prepare()
+        elif path in ("/vendor/import", "/api/vendor/import"):
+            self._handle_vendor_import()
+        elif path in ("/vendor/upload", "/api/vendor/upload"):
+            self._handle_vendor_upload()
+        elif path in ("/vendor/upload/import", "/api/vendor/upload/import"):
+            self._handle_vendor_upload_import()
+        elif path in ("/vendor/upload/cancel", "/api/vendor/upload/cancel"):
+            self._handle_vendor_upload_cancel()
         elif "/library" in path:
             # Biblioteca de grafos LOCAL (no depende del bucket S3 de DataLab,
             # que esta bloqueado por una SCP). Se guarda en ./bnx_library/.
@@ -967,6 +975,11 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             # Modo de PySpark: 'incluido' (wheel en vendor/) | 'servidor' (usa el Spark del servidor;
             # setup.sh pregunta la ruta). Sin indicar: lo decide full_env (compatibilidad).
             spark_modo = data.get("spark_modo") if data.get("spark_modo") in ("incluido", "servidor") else None
+            # 'ambas' (default de la UI): dos ZIP en una corrida, mismo codigo y distinto vendor/:
+            # framework_mlops_v2_con_pyspark.zip (PySpark offline) y ..._sin_pyspark.zip (usa el del servidor).
+            ambas = data.get("variantes") == "ambas" or data.get("spark_modo") == "ambas"
+            if ambas:
+                spark_modo = "incluido"
             if spark_modo:
                 full_env = spark_modo == "incluido"
             # Plataformas EXTRA para correr offline ahi (linux siempre va): macos / windows.
@@ -999,6 +1012,26 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 py_target=py_target, out_path=zip_path, registry=registry,
                 plataformas=plataformas, spark_modo=spark_modo,
                 ciencia=ciencia)
+            # Entorno Linux INCOMPLETO (faltan wheels de deps/ciencia/banco/PySpark incluido): NO se entrega
+            # en silencio un paquete sin librerias. Se bloquea salvo confirmacion explicita.
+            _m0 = next((r for r in report if r.get("_meta")), {})
+            _faltan = list(_m0.get("entorno_faltan") or [])
+            _sin_offline = bool(data.get("generar_sin_offline"))
+            # Con 'ambas' PySpark solo es obligatorio en la variante 'con': si es lo UNICO que falta se
+            # entrega la variante 'sin' y la 'con' se reporta como no generada.
+            _solo_spark = bool(ambas and _faltan and all(f.startswith(("pyspark", "py4j")) for f in _faltan))
+            if _faltan and not _sin_offline and not _solo_spark:
+                try:
+                    os.remove(zip_path)
+                except OSError:
+                    pass
+                self._json_response(409, {
+                    "ok": False, "bloqueado": True, "entorno_faltan": _faltan,
+                    "error": ("El paquete NO trae las librerias (faltan %d): importa las piezas (boton Importar / "
+                              "pestana Librerias) o baja el cache. Para generarlo igual marca 'generar sin "
+                              "librerias offline (se instalaran por internet en el servidor)'." % len(_faltan)),
+                    "vendor_mb": _m0.get("vendor_mb"), "py_target": py_target})
+                return
             # Separar el meta (trae los archivos de codigo editables, grandes).
             meta = next((r for r in report if r.get("_meta")), {})
             code_files = meta.pop("_code_files", {}) if meta else {}
@@ -1020,11 +1053,48 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 json.dump({"code_files": code_files, "sep_files": sep_files,
                            "full_env": full_env, "py_target": py_target,
                            "plataformas": plataformas, "spark_modo": spark_modo}, fh)
+            variantes = None
+            if ambas:
+                from src.mlops_pkg import zip_from_files as _zff, faltantes_entorno as _fe
+                from src.mlops_pkg import ULTIMO_FALTAN_OFFLINE as _UFO, ULTIMO_VENDOR as _UV
+                variantes = []
+                con_ok = not (_solo_spark and not _sin_offline)
+                if con_ok:
+                    filename = "framework_mlops_v2_con_pyspark.zip"
+                    with open(os.path.join(tmpdir, token + ".name"), "w", encoding="utf-8") as fh:
+                        fh.write(filename)
+                    variantes.append({"modo": "incluido", "filename": filename, "size": zip_size, "token": token,
+                                      "download_url": f"/export/download?token={token}",
+                                      "vendor_mb": meta.get("vendor_mb"), "entorno_faltan": _faltan})
+                else:
+                    variantes.append({"modo": "incluido", "filename": "framework_mlops_v2_con_pyspark.zip",
+                                      "error": "no generado: falta PySpark en el cache (" + ", ".join(_faltan) + ")",
+                                      "entorno_faltan": _faltan})
+                t2 = _uuid.uuid4().hex
+                z2 = os.path.join(tmpdir, t2 + ".zip")
+                _zff(code_files, sep_files, full_env=False, py_target=py_target, out_path=z2,
+                     plataformas=plataformas, spark_modo="servidor")
+                f2 = _fe(_UFO, False, _UV.get("bank_faltan"))
+                fn2 = "framework_mlops_v2_sin_pyspark.zip"
+                with open(os.path.join(tmpdir, t2 + ".name"), "w", encoding="utf-8") as fh:
+                    fh.write(fn2)
+                with open(os.path.join(editdir, t2 + ".json"), "w", encoding="utf-8") as fh:
+                    json.dump({"code_files": code_files, "sep_files": sep_files, "full_env": False,
+                               "py_target": py_target, "plataformas": plataformas, "spark_modo": "servidor"}, fh)
+                variantes.append({"modo": "servidor", "filename": fn2, "size": os.path.getsize(z2), "token": t2,
+                                  "download_url": f"/export/download?token={t2}",
+                                  "vendor_mb": _UV.get("mb"), "entorno_faltan": f2})
+                if not con_ok:          # el token principal (editar/verificar) pasa a la variante 'sin'
+                    try:
+                        os.remove(zip_path)
+                    except OSError:
+                        pass
+                    token, filename, zip_size = t2, fn2, os.path.getsize(z2)
             self._json_response(200, {
                 "ok": True, "token": token, "filename": filename,
                 "size": zip_size, "report": report,
                 "download_url": f"/export/download?token={token}",
-                "edit_token": token,
+                "edit_token": token, "variantes": variantes,
             })
         except Exception as e:
             import traceback
@@ -4730,6 +4800,189 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                                                   stdin=_sp.DEVNULL),
                                 "log": log_path, "versions": versions, "logf": logf})
         self._json_response(200, {"ok": True, "job": _vendor_job_info()})
+    # ---------------------------------------------------------- importar / subir piezas del vendor
+    def _vendor_job_lanzar(self, cmd, versions):
+        """Lanza preparar_vendor.py en background (mismo job/log que 'Bajar/generar cache').
+        Devuelve (status_http, payload)."""
+        with _VENDOR_JOB["lock"]:
+            proc = _VENDOR_JOB.get("proc")
+            if proc is not None and proc.poll() is None:
+                return 409, {"ok": False, "error": "Ya hay una preparacion/importacion en curso.",
+                             "job": _vendor_job_info()}
+            import subprocess as _sp
+            log_path = os.path.join(tempfile.gettempdir(), "bnx_vendor_prepare.log")
+            logf = open(log_path, "w", encoding="utf-8")
+            _VENDOR_JOB.update({"proc": _sp.Popen(cmd, stdout=logf, stderr=_sp.STDOUT, stdin=_sp.DEVNULL),
+                                "log": log_path, "versions": versions, "logf": logf})
+        return 200, {"ok": True, "job": _vendor_job_info()}
+    def _vendor_cmd_importar(self, ruta, data, borrar=False):
+        from src import vendor_cache as vc
+        version = vc.norm_version(data.get("version") or "3.11")
+        cmd = [sys.executable, "-B", os.path.join(os.path.dirname(os.path.abspath(__file__)), "preparar_vendor.py"),
+               "--importar", ruta, "--python", version]
+        pz = data.get("piezas") if isinstance(data.get("piezas"), dict) else {}
+        if not pz.get("pyspark", True):
+            cmd.append("--sin-pyspark")
+        # Por defecto SOLO la ciencia Linux (el paquete es para el servidor RHEL 8); host si se pide.
+        from src import vendor_modular as _vm
+        plats = (["linux"] if pz.get("ciencia_linux", True) else []) + (
+            [_vm.host_plataforma()] if pz.get("ciencia_host", False) else [])
+        plats = list(dict.fromkeys(plats))
+        cmd += ["--plataformas", ",".join(plats)] if plats else ["--sin-ciencia"]
+        if borrar:
+            cmd.append("--borrar-origen")
+        return cmd, [version]
+    def _vendor_leer_json(self):
+        n = int(self.headers.get("Content-Length", 0) or 0)
+        if n > 1 << 20:
+            raise ValueError("cuerpo demasiado grande")
+        body = self.rfile.read(n) if n else b""
+        return json.loads(body.decode("utf-8", errors="replace")) if body else {}
+    def _handle_vendor_import(self):
+        """POST {path, version, piezas}: importa piezas desde una RUTA LOCAL del servidor (el portal corre
+        en la misma maquina): carpeta de release, ZIP de pieza, banco.zip / carpeta mex-lib, o la carpeta
+        BNX_interno. Solo lectura de la ruta; solo desde localhost."""
+        bloqueo = self._orq_local_only()
+        if bloqueo:
+            self._json_response(403, {"ok": False, "error": bloqueo})
+            return
+        try:
+            data = self._vendor_leer_json()
+            ruta = str(data.get("path") or "").strip().strip('"')
+            if not ruta or "\x00" in ruta:
+                raise ValueError("indica la ruta (carpeta o ZIP)")
+            ruta = os.path.expanduser(ruta)
+            if not os.path.isabs(ruta):
+                raise ValueError("la ruta debe ser ABSOLUTA (p.ej. C:\\Users\\yo\\Downloads\\BNX_interno_v3)")
+            ruta = os.path.realpath(ruta)
+            if not os.path.exists(ruta):
+                raise ValueError("no existe: %s" % ruta)
+            if not (os.path.isdir(ruta) or ruta.lower().endswith((".zip", ".tar.gz", ".whl"))):
+                raise ValueError("debe ser una carpeta, un .zip o un mex-lib .tar.gz/.whl")
+            if not os.access(ruta, os.R_OK):
+                raise ValueError("sin permiso de lectura: %s" % ruta)
+            cmd, versions = self._vendor_cmd_importar(ruta, data)
+        except Exception as e:
+            self._json_response(400, {"ok": False, "error": str(e)})
+            return
+        st, payload = self._vendor_job_lanzar(cmd, versions)
+        self._json_response(st, payload)
+    def _vendor_subidas_dir(self, lote):
+        from src import vendor_cache as vc
+        if not re.fullmatch(r"[0-9a-f]{8,64}", str(lote or "")):
+            raise ValueError("lote invalido")
+        return os.path.join(vc.cache_dir(), "_subidas", lote)
+    def _handle_vendor_upload(self):
+        """POST /vendor/upload?lote=<hex>&name=<archivo> con el CUERPO CRUDO del archivo (no multipart):
+        se escribe por bloques de 4 MB a <cache>/_subidas/<lote>/<archivo>.part y se renombra al terminar.
+        Limite BNX_UPLOAD_MAX_MB (default 2048). Solo desde localhost."""
+        bloqueo = self._orq_local_only()
+        if bloqueo:
+            self._json_response(403, {"ok": False, "error": bloqueo})
+            return
+        from urllib.parse import parse_qs as _pq
+        from src import vendor_importar as _vi
+        q = _pq(urlparse(self.path).query)
+        nombre = (q.get("name") or [""])[0]
+        lote = (q.get("lote") or [""])[0]
+        try:
+            total = int(self.headers.get("Content-Length") or -1)
+        except ValueError:
+            total = -1
+        limite = int(float(os.environ.get("BNX_UPLOAD_MAX_MB") or 2048) * 1048576)
+        error = None
+        if not _vi.nombre_valido(nombre):
+            error = (400, "nombre de archivo no valido: %r (solo .zip .whl .tar.gz .json o SHA256SUMS, sin rutas)" % nombre)
+        elif total < 0:
+            error = (411, "falta Content-Length")
+        elif total > limite:
+            error = (413, "el archivo pesa %.0f MB y el limite es %.0f MB (BNX_UPLOAD_MAX_MB)" % (total / 1048576.0, limite / 1048576.0))
+        if error is None:
+            try:
+                destdir = self._vendor_subidas_dir(lote)
+            except ValueError as e:
+                error = (400, str(e))
+        if error:
+            # Cuerpos chicos se descartan (el cliente alcanza a leer el error); los enormes no se leen.
+            if 0 < total <= 64 << 20:
+                quedan = total
+                while quedan > 0:
+                    ch = self.rfile.read(min(4 << 20, quedan))
+                    if not ch:
+                        break
+                    quedan -= len(ch)
+            self.close_connection = True
+            self._json_response(error[0], {"ok": False, "error": error[1]})
+            return
+        import hashlib as _hl
+        os.makedirs(destdir, exist_ok=True)
+        final = os.path.join(destdir, nombre)
+        parcial = final + ".part"
+        h, leido = _hl.sha256(), 0
+        try:
+            with open(parcial, "wb") as out:
+                while leido < total:
+                    chunk = self.rfile.read(min(4 << 20, total - leido))
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    h.update(chunk)
+                    leido += len(chunk)
+            if leido != total:
+                raise IOError("subida incompleta (%d de %d bytes)" % (leido, total))
+            os.replace(parcial, final)
+        except Exception as e:
+            try:
+                os.remove(parcial)
+            except OSError:
+                pass
+            self.close_connection = True
+            try:
+                self._json_response(400, {"ok": False, "error": str(e)[:300]})
+            except Exception:
+                pass
+            return
+        self._json_response(200, {"ok": True, "name": nombre, "bytes": leido, "sha256": h.hexdigest()})
+    def _handle_vendor_upload_import(self):
+        """POST {lote, version, piezas}: verifica sha256 (SHA256SUMS / manifiesto, si vinieron) e importa lo
+        subido con la misma logica que --importar; borra las subidas al terminar."""
+        bloqueo = self._orq_local_only()
+        if bloqueo:
+            self._json_response(403, {"ok": False, "error": bloqueo})
+            return
+        try:
+            from src import vendor_importar as _vi
+            data = self._vendor_leer_json()
+            d = self._vendor_subidas_dir(data.get("lote"))
+            if not os.path.isdir(d) or not [f for f in os.listdir(d) if not f.endswith(".part")]:
+                raise ValueError("no hay archivos subidos en ese lote")
+            malos = {k: v for k, v in _vi.verificar_sha(d).items() if v != "ok"}
+            if malos:
+                import shutil as _sh
+                _sh.rmtree(d, ignore_errors=True)
+                self._json_response(400, {"ok": False, "error": "sha256 no coincide: " + ", ".join(sorted(malos))
+                                          + ". No se importo nada; vuelve a subir esos archivos.",
+                                          "sha_malos": sorted(malos)})
+                return
+            cmd, versions = self._vendor_cmd_importar(d, data, borrar=True)
+        except Exception as e:
+            self._json_response(400, {"ok": False, "error": str(e)})
+            return
+        st, payload = self._vendor_job_lanzar(cmd, versions)
+        self._json_response(st, payload)
+    def _handle_vendor_upload_cancel(self):
+        bloqueo = self._orq_local_only()
+        if bloqueo:
+            self._json_response(403, {"ok": False, "error": bloqueo})
+            return
+        try:
+            d = self._vendor_subidas_dir(self._vendor_leer_json().get("lote"))
+        except Exception as e:
+            self._json_response(400, {"ok": False, "error": str(e)})
+            return
+        import shutil as _sh
+        _sh.rmtree(d, ignore_errors=True)
+        self._json_response(200, {"ok": True})
     def _handle_vendor_prepare_log(self):
         self._json_response(200, {"ok": True, "job": _vendor_job_info(with_log=True)})
     def _json_response(self, status, data):

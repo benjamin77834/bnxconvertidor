@@ -46,7 +46,9 @@ def entorno(tmp_path):
     (jb / "java").chmod(0o755)
     (tmp_path / "funcs.sh").write_text(SPARK_CFG_SH)
     env = dict(os.environ, PATH="%s:%s:%s" % (tmp_path / "pkg" / ".venv" / "bin", jb, os.environ["PATH"]),
-               BNX_SYSTEM_PYTHON=sys.executable, PYMINOR="11", TMPDIR=str(tmp_path))
+               # python "del sistema" SIN pyspark (el del .venv lo trae y se autodetectaria)
+               BNX_SYSTEM_PYTHON=shutil.which("false") or "/usr/bin/false",
+               PYMINOR="11", TMPDIR=str(tmp_path))
     for k in ("SPARK_HOME", "BNX_SPARK_HOME", "BNX_SPARK_RECONFIG", "JAVA_HOME"):
         env.pop(k, None)
     return tmp_path, env
@@ -190,12 +192,33 @@ def _con_tty(entorno, entradas, extra_env=None):
     return p.returncode, salida.decode("utf-8", "replace")
 
 
-def test_con_tty_enter_toma_el_candidato_1(entorno):
+def test_con_tty_un_candidato_valido_se_autodetecta_sin_preguntar(entorno):
     tmp, _ = entorno
     h = _spark_home(tmp)
-    rc, out = _con_tty(entorno, [""], {"SPARK_HOME": str(h)})
+    rc, out = _con_tty(entorno, [], {"SPARK_HOME": str(h)})
     assert rc == 0, out
-    assert "candidatos encontrados" in out and "[1]" in out and "Ruta de SPARK_HOME" in out
+    assert "AUTODETECTADO" in out and "Ruta de SPARK_HOME" not in out
+    assert "spark-3.5.6" in (tmp / "pkg" / ".bnx_spark.env").read_text()
+
+
+def test_sin_tty_un_candidato_valido_se_autodetecta(entorno):
+    tmp, _ = entorno
+    h = _spark_home(tmp)
+    r = _bash(entorno, "bnx_spark_configurar", {"SPARK_HOME": str(h)}, stdin=subprocess.DEVNULL)
+    assert r.returncode == 0 and "AUTODETECTADO" in r.stdout, r.stdout + r.stderr
+
+
+def test_con_tty_varios_candidatos_pregunta_y_enter_toma_el_1(entorno):
+    tmp, _ = entorno
+    h1, h2 = _spark_home(tmp, "3.5.6"), _spark_home(tmp, "3.5.5")
+    bindir = tmp / "binspark"
+    bindir.mkdir()
+    (h2 / "bin" / "spark-submit").chmod(0o755)
+    os.symlink(str(h2 / "bin" / "spark-submit"), str(bindir / "spark-submit"))
+    env = {"SPARK_HOME": str(h1), "PATH": "%s:%s" % (bindir, entorno[1]["PATH"])}
+    rc, out = _con_tty(entorno, [""], env)
+    assert rc == 0, out
+    assert "candidatos encontrados" in out and "[1]" in out and "[2]" in out and "Ruta de SPARK_HOME" in out
     assert "spark-3.5.6" in (tmp / "pkg" / ".bnx_spark.env").read_text()
 
 

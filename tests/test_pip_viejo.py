@@ -111,7 +111,9 @@ def test_estado_version_con_pip_viejo_no_pega_usage(monkeypatch, tmp_path):
     texto = " | ".join(est["falta"])
     assert "pyspark==4.0.0" in texto and "py4j==0.10.9.9" in texto
     assert "Usage" not in texto and "<local project path>" not in texto
-    assert "pip de este Python" in texto and "21.3.1" in texto
+    # Con pip viejo (host Python 3.8 + pip 21) la resolucion offline ya no necesita pip: se usa la
+    # resolucion interna (etiquetas + Requires-Dist) y no aparece "no se pudo resolver".
+    assert "no se pudo resolver" not in texto and "no such option" not in texto.lower()
 
 
 def test_podar_con_faltantes_devuelve_error_y_no_borra(monkeypatch, tmp_path):

@@ -35,7 +35,37 @@ PY_VERSIONES = vc.VERSIONES_DEFAULT          # 3.11 y 3.14 (3.8/3.12 = legado, s
 BOOTSTRAP_NECESARIO = ("setuptools", "wheel")   # setup.sh hace 'pip install --no-build-isolation -e .'
 GH_TAG_MODULAR = os.environ.get("BNX_VENDOR_TAG_MODULAR") or "vendor-v3"
 
-_LINUX_TAGS = ["manylinux2014_x86_64", "manylinux_2_17_x86_64", "manylinux_2_28_x86_64", "linux_x86_64"]
+# Servidor del banco: RHEL 8 x86_64 (glibc 2.28). Solo wheels manylinux con glibc <= 2.28; NUNCA
+# manylinux_2_31/2_34+ ni musllinux (pip con --platform explicito solo acepta estas etiquetas).
+GLIBC_MAX_LINUX = (2, 28)
+_LINUX_TAGS = ["manylinux_2_28_x86_64", "manylinux_2_27_x86_64", "manylinux_2_24_x86_64",
+               "manylinux_2_17_x86_64", "manylinux2014_x86_64", "manylinux2010_x86_64", "manylinux1_x86_64"]
+_GLIBC_LEGADO = {"manylinux1": (2, 5), "manylinux2010": (2, 12), "manylinux2014": (2, 17)}
+def glibc_minima_wheel(nombre):
+    """glibc minima que pide una wheel Linux (la menor de sus etiquetas manylinux; una wheel
+    'manylinux_2_17...manylinux_2_28' corre con glibc 2.17). None si no es manylinux (any/win/mac);
+    (99, 0) si es musllinux o linux_x86_64 (no portable: no sirve en RHEL 8)."""
+    base = os.path.basename(nombre)
+    if not base.endswith(".whl"):
+        return None
+    plat = base[:-4].split("-")[-1]
+    mins = []
+    for t in plat.split("."):
+        m = re.match(r"manylinux_(\d+)_(\d+)_", t)
+        if m:
+            mins.append((int(m.group(1)), int(m.group(2))))
+        elif t.split("_")[0] in _GLIBC_LEGADO:
+            mins.append(_GLIBC_LEGADO[t.split("_")[0]])
+        elif t.startswith(("musllinux", "linux_")):
+            mins.append((99, 0))
+    return min(mins) if mins else None
+def glibc_max(archivos):
+    """'2.28' = la glibc mas alta que exige alguna wheel del conjunto (None si ninguna es Linux)."""
+    gs = [g for g in (glibc_minima_wheel(f) for f in archivos) if g]
+    return ("%d.%d" % max(gs)) if gs else None
+def wheels_glibc_incompatibles(archivos, maximo=GLIBC_MAX_LINUX):
+    return sorted(os.path.basename(f) for f in archivos
+                  if (glibc_minima_wheel(f) or (0, 0)) > tuple(maximo))
 PLATAFORMAS = {
     "linux": {"etiqueta": "Linux x86_64", "tags": _LINUX_TAGS,
               "env": {"sys_platform": "linux", "platform_system": "Linux", "os_name": "posix",
@@ -50,10 +80,18 @@ PLATAFORMAS = {
                     "env": {"sys_platform": "darwin", "platform_system": "Darwin", "os_name": "posix",
                             "platform_machine": "x86_64"}},
 }
-# Tamanos aproximados (MB) para mostrar en la UI antes de bajar; el manifiesto real manda.
+# Tamanos conocidos (MB) de las piezas de vendor-v3 para mostrar en la UI aunque no haya red ni
+# manifiesto; el manifiesto (local o del origen) manda cuando existe.
 MB_ESTIMADO = {
-    ("pyspark", "3.11", "any"): 307, ("pyspark", "3.14", "any"): 440,
+    ("pyspark", "3.11", "any"): 303, ("pyspark", "3.14", "any"): 435,
+    ("ciencia", "3.11", "linux"): 124, ("ciencia", "3.14", "linux"): 124,
+    ("ciencia", "3.11", "windows"): 105, ("ciencia", "3.14", "windows"): 107,
+    ("ciencia", "3.11", "macos"): 82, ("ciencia", "3.14", "macos"): 82,
+    ("ciencia", "3.11", "macos-intel"): 87, ("ciencia", "3.14", "macos-intel"): 88,
 }
+class ErrorRed(RuntimeError):
+    """No se pudo CONECTAR al origen (sin internet, DNS, proxy, timeout, HTTP 5xx...). Distinto de
+    un 404 (el manifiesto no existe): ante esto no tiene sentido probar otros releases."""
 
 
 def _log0(*_a):
@@ -273,8 +311,14 @@ def estado_piezas(cache, piezas, manifiesto=None):
             ok, layout, b = ciencia_presente(cache, v, plat)
         m = por_clave.get((tipo, v, plat))
         est = (m or {}).get("bytes") or (MB_ESTIMADO.get((tipo, v, plat), 0) * 1048576) or None
-        out.append({"pieza": tipo, "python": v, "plataforma": plat, "archivo": archivo_pieza(tipo, v, plat),
-                    "presente": ok, "layout": layout, "bytes": b, "bytes_descarga": est})
+        item = {"pieza": tipo, "python": v, "plataforma": plat, "archivo": archivo_pieza(tipo, v, plat),
+                "presente": ok, "layout": layout, "bytes": b, "bytes_descarga": est,
+                "glibc_max": (m or {}).get("glibc_max")}
+        if ok and plat in ("linux", "any"):
+            ws = wheels_pyspark(cache, v) if tipo == "pyspark" else _wheels(dir_pieza(cache, "ciencia", v, plat))
+            item["glibc_max"] = glibc_max(ws) or item["glibc_max"]
+            item["glibc_incompatibles"] = wheels_glibc_incompatibles(ws)
+        out.append(item)
     return out
 
 
@@ -336,12 +380,15 @@ def calcular_cierre(archivos, tops, v, plat):
     def elegir(n, spec):
         cands = por_nombre.get(n, [])
         buenos = []
-        for ver, f in cands:
-            try:
-                if not spec or Version(ver) in spec:
-                    buenos.append((Version(ver), f))
-            except Exception:
-                buenos.append((Version("0"), f))
+        for pre in (False, True):        # como pip: pre-releases solo si no hay una version final valida
+            for ver, f in cands:
+                try:
+                    if not spec or spec.contains(Version(ver), prereleases=pre or None):
+                        buenos.append((Version(ver), f))
+                except Exception:
+                    buenos.append((Version("0"), f))
+            if buenos:
+                break
         return max(buenos)[1] if buenos else None
 
     usados, faltan, vistos = set(), {}, set()
@@ -376,6 +423,29 @@ def calcular_cierre(archivos, tops, v, plat):
     return usados, faltan
 
 
+def wheel_compatible(nombre, v, plat):
+    """True si la wheel `nombre` instala en CPython `v` sobre `plat` (sin pip: para hosts con un
+    pip viejo, p.ej. Python 3.8 + pip 21, que no entiende --dry-run --report)."""
+    base = os.path.basename(nombre)
+    if not base.endswith(".whl"):
+        return False
+    p = base[:-4].split("-")
+    if len(p) < 5:
+        return False
+    pys, abis, plats = p[-3].split("."), p[-2].split("."), p[-1].split(".")
+    cp = abi_de(v)
+    menor = int(v.split(".")[1])
+    py_ok = any(t in ("py3", cp, "py3%d" % menor) or (t.startswith("cp3") and abis == ["abi3"]
+                and t[3:].isdigit() and int(t[3:]) <= menor) for t in pys)
+    abi_ok = any(a in (cp, "none", "abi3") for a in abis)
+    validas = set(PLATAFORMAS[plat]["tags"]) | {"any"}
+    plat_ok = any(t in validas for t in plats)
+    return py_ok and abi_ok and plat_ok
+def resolver_interno(archivos, reqs, v, plat):
+    """Resolucion offline SIN pip: filtra las wheels compatibles con el destino y calcula el cierre de
+    dependencias con calcular_cierre. Devuelve (usados:set de rutas, faltan:{nombre: requisito})."""
+    comp = [f for f in archivos if wheel_compatible(f, v, plat)]
+    return calcular_cierre(comp, [mapear_requisito(r, plat) for r in reqs], v, plat)
 # ------------------------------------------------------------------ pip download por plataforma
 def _flags_destino(v, plat):
     fl = ["--only-binary=:all:", "--python-version", v, "--implementation", "cp",
@@ -645,7 +715,8 @@ def construir_release(cache, outdir, versiones=PY_VERSIONES, plataformas=("linux
             b, sha = empaquetar_zip(os.path.join(outdir, arch), entradas)
             piezas.append(dict({"nombre": "pyspark", "python": v, "plataforma": "any", "archivo": arch,
                                 "bytes": b, "sha256": sha,
-                                "contenido": contenido_wheels([e[1] for e in entradas]), "huecos": []}, **extra))
+                                "contenido": contenido_wheels([e[1] for e in entradas]), "huecos": [],
+                                "glibc_max": glibc_max([e[1] for e in entradas])}, **extra))
             log("[pyspark py%s] %.1f MB" % (v, b / 1048576.0))
         else:
             log("[pyspark py%s] AVISO: no hay wheels de PySpark en el cache" % v)
@@ -666,7 +737,7 @@ def construir_release(cache, outdir, versiones=PY_VERSIONES, plataformas=("linux
             b, sha = empaquetar_zip(os.path.join(outdir, arch), entradas)
             piezas.append({"nombre": "ciencia", "python": v, "plataforma": plat, "archivo": arch,
                            "bytes": b, "sha256": sha, "contenido": contenido_wheels(res["wheels"]),
-                           "huecos": res["huecos"]})
+                           "huecos": res["huecos"], "glibc_max": glibc_max(res["wheels"])})
             log("[ciencia %s py%s] %.1f MB, %d wheels, %d huecos" % (plat, v, b / 1048576.0, len(res["wheels"]), len(res["huecos"])))
     man = {"formato": 3, "tag": GH_TAG_MODULAR, "generado": datetime.datetime.now().isoformat(timespec="seconds"),
            "nota": "Piezas publicas (sin librerias del banco).", "piezas": piezas}
@@ -697,13 +768,15 @@ def manifiesto_local(cache):
         ws = wheels_pyspark(cache, v)
         if ws:
             piezas.append({"nombre": "pyspark", "python": v, "plataforma": "any", "archivo": None,
-                           "bytes": _bytes(ws), "sha256": None, "contenido": contenido_wheels(ws), "huecos": []})
+                           "bytes": _bytes(ws), "sha256": None, "contenido": contenido_wheels(ws), "huecos": [],
+                           "glibc_max": glibc_max(ws)})
         for plat in PLATAFORMAS:
             d = dir_pieza(cache, "ciencia", v, plat)
             ws = _wheels(d)
             if ws:
                 piezas.append({"nombre": "ciencia", "python": v, "plataforma": plat, "archivo": None,
-                               "bytes": _bytes(ws), "sha256": None, "contenido": contenido_wheels(ws), "huecos": []})
+                               "bytes": _bytes(ws), "sha256": None, "contenido": contenido_wheels(ws), "huecos": [],
+                               "glibc_max": glibc_max(ws)})
     return {"formato": 3, "generado": datetime.datetime.now().isoformat(timespec="seconds"),
             "local": True, "piezas": piezas}
 
@@ -753,12 +826,32 @@ class OrigenGithub:
         return vc._http_get(vc._gh_url(self.tag, nombre), destino, log)
 
 
+def _motivo_red(e):
+    r = getattr(e, "reason", None) or e
+    return (str(r) or type(e).__name__)[:150]
 def leer_manifiesto(origen):
-    """Manifiesto del origen, verificado contra SHA256SUMS si este lo lista. None si no existe."""
+    """Manifiesto del origen, verificado contra SHA256SUMS si este lo lista.
+    None = el origen responde pero NO tiene manifiesto (404 / archivo ausente / JSON invalido).
+    Lanza ErrorRed si no se pudo conectar (URLError, DNS, timeout, proxy, HTTP != 404)."""
+    import socket
+    import urllib.error
     try:
         raw = origen.get_bytes(MANIFEST)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        raise ErrorRed("HTTP %s %s" % (e.code, e.reason))
+    except (urllib.error.URLError, socket.timeout, ConnectionError) as e:
+        raise ErrorRed(_motivo_red(e))
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        if isinstance(origen, OrigenGithub):       # getaddrinfo / SSL / reset: es de red
+            raise ErrorRed(_motivo_red(e))
+        return None
+    try:
         man = json.loads(raw.decode("utf-8"))
-    except Exception:
+    except ValueError:
         return None
     try:
         for ln in origen.get_bytes(SUMS).decode("utf-8", "replace").splitlines():

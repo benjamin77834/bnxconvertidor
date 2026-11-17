@@ -845,7 +845,7 @@ bnx_libgomp_check() {
   if [ "$BNX_BAD" = "0" ]; then return 0; fi
   if { ldconfig -p || /sbin/ldconfig -p; } 2>/dev/null | grep -q libgomp; then return 0; fi
   echo "      [AVISO] xgboost/lightgbm no cargan y el sistema no tiene libgomp (OpenMP). Instalalo (requiere root):"
-  echo "                yum install libgomp      (RHEL/CentOS)   |   apt-get install libgomp1   (Debian/Ubuntu)"
+  echo "                sudo dnf install libgomp   (RHEL 8)  |  yum install libgomp (CentOS 7)  |  apt-get install libgomp1 (Debian/Ubuntu)"
   echo "              El montaje continua; los jobs que usen xgboost fallaran hasta instalarlo."
   return 0
 }
@@ -877,7 +877,36 @@ rm -rf __MACOSX 2>/dev/null || true
 find . -name '._*' -not -path './.venv/*' -delete 2>/dev/null || true
 find . -name '.DS_Store' -not -path './.venv/*' -delete 2>/dev/null || true
 
-PY="${PYTHON:-python3}"
+# Python del servidor (RHEL 8: /usr/bin/python3.11, paquete python3.11 de AppStream). Con
+# vendor/PYTHON_TARGET se busca python<target> y luego python3, y la version debe ser EXACTA.
+PY_T=""
+if [ -f vendor/PYTHON_TARGET ]; then PY_T="$(tr -d '[:space:]' < vendor/PYTHON_TARGET)"; fi
+if [ -n "${PYTHON:-}" ]; then
+  PY="$PYTHON"
+elif [ -n "$PY_T" ] && command -v "python$PY_T" >/dev/null 2>&1; then
+  PY="python$PY_T"
+else
+  PY="python3"
+fi
+if ! command -v "$PY" >/dev/null 2>&1; then
+  echo "[ERROR] No encuentro '$PY'.${PY_T:+ Este paquete es para Python $PY_T: instalalo (RHEL 8:  sudo dnf install python$PY_T )}"
+  exit 1
+fi
+if [ -n "$PY_T" ]; then
+  PY_V="$("$PY" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+  if [ "$PY_T" != "$PY_V" ]; then
+    echo "[ERROR] Este paquete se armo para Python $PY_T y '$PY' es Python $PY_V: las librerias offline"
+    echo "        (wheels cp${PY_T/./}) no van a instalar. Instala Python $PY_T (RHEL 8:  sudo dnf install python$PY_T )"
+    echo "        y vuelve a correr (o:  PYTHON=/usr/bin/python$PY_T bash setup.sh ), o genera el paquete para Python $PY_V."
+    exit 1
+  fi
+fi
+if ! "$PY" -c 'import venv, ensurepip' >/dev/null 2>&1; then
+  echo "[!] '$PY' no trae venv/ensurepip: RHEL 8:  sudo dnf install python${PY_T:-3}-pip  (o python${PY_T:-3}-devel)"
+fi
+if ! command -v java >/dev/null 2>&1 && [ -z "${JAVA_HOME:-}" ]; then
+  echo "[!] No encuentro Java (PySpark lo necesita; 3.5 soporta Java 8/11/17). RHEL 8:  sudo dnf install java-17-openjdk-headless"
+fi
 echo "[1/4] Creando entorno virtual .venv ..."
 "$PY" -m venv .venv
 
@@ -889,16 +918,6 @@ python -m pip install --upgrade pip >/dev/null 2>&1 || true
 # instalamos TODO offline con --no-index. pandas/numpy/pyspark/py4j/pytest estan
 # ahi. Sin vendor/, caemos a internet (red del banco / Artifactory).
 PYMINOR="$(python -c 'import sys; print(sys.version_info[1])')"
-# Paquete armado para UNA version exacta de Python (lo mas ligero): avisar si no coincide.
-if [ -f vendor/PYTHON_TARGET ]; then
-  PY_T="$(cat vendor/PYTHON_TARGET | tr -d '[:space:]')"
-  PY_V="$(python -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
-  if [ "$PY_T" != "$PY_V" ]; then
-    echo "[!] Este paquete se armo para Python $PY_T y este servidor tiene Python $PY_V."
-    echo "    Las librerias offline no van a coincidir: genera el paquete para Python $PY_V"
-    echo "    (o corre con:  PYTHON=python$PY_T bash setup.sh )."
-  fi
-fi
 VENDOR_DIR=""
 if [ "$PYMINOR" -ge 14 ] 2>/dev/null && [ -d "vendor/py314" ]; then
   VENDOR_DIR="vendor/py314"
@@ -3373,6 +3392,24 @@ ULTIMO_FALTAN_OFFLINE = {}
 ULTIMO_VENDOR = {}   # {"pyspark": bool, "mb": float} del ultimo vendor empaquetado
 
 
+def faltantes_entorno(offline_faltan, vendor_missing=False, bank_faltan=None):
+    """Lista legible de lo que le falta al vendor/ para instalar el entorno Linux COMPLETO offline
+    (deps + ciencia + banco + PySpark si va incluido). [] = completo."""
+    out = []
+    for _s, vs in sorted((offline_faltan or {}).items()):
+        for v, e in sorted(vs.items()):
+            e = str(e)
+            m = _re.match(r"^(\[[a-z-]+\] )?sin wheel en el cache: (.*)$", e)
+            if m:
+                pref = (m.group(1) or "").strip()
+                out += ["%s%s (Python %s)" % (pref + " " if pref else "", n.strip(), v)
+                        for n in m.group(2).split(",") if n.strip()]
+            else:
+                out.append("Python %s: %s" % (v, e[:200]))
+    if vendor_missing:
+        out.append("pyspark + py4j (PySpark incluido)")
+    out += ["%s (libreria del banco)" % b for b in (bank_faltan or [])]
+    return list(dict.fromkeys(out))
 def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all",
                    out_path=None, plataformas=("linux",), spark_modo=None):
     """Empaqueta un ZIP a partir de dicts de archivos YA LISTOS (texto). Reusable
@@ -3450,6 +3487,13 @@ def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all",
         # como CODIGO en pkgcode/ para que funcionen por PYTHONPATH sin pip/build
         # (fallback a prueba de fallos en Windows/Python 3.8).
         bank_extracted = _bank_extracted_pkgs()
+    # mex-lib que pide requirements-bank.txt y que NO hay en el cache (no irian en vendor/bank/)
+    _bk = [_re.split(r"[<>=!~ ;\[]", ln.strip(), maxsplit=1)[0] for ln in
+           (code_files or {}).get("requirements-bank.txt", "").splitlines()
+           if ln.strip().lower().startswith("mex")]
+    _hay = [os.path.basename(p_).lower().replace("_", "-") for p_ in bank_sdists]
+    ULTIMO_VENDOR["bank_faltan"] = [b for b in _bk
+                                    if not any(h.startswith(b.lower().replace("_", "-") + "-") for h in _hay)]
     # Evitar escribir la MISMA ruta dos veces (en Python 3.8/Windows un ZipInfo
     # duplicado o un estado inconsistente puede dejar el stream en mal estado y
     # romper el cierre con 'I/O operation on closed file'). Deduplicamos por ruta.
@@ -3693,10 +3737,8 @@ _SERIE_ABI = {"py38-311": "cp311", "py312plus": "cp312", "py314": "cp314"}
 # Plataformas Linux objetivo (el servidor del banco es Linux, normalmente x86_64).
 # Bajamos ambas arquitecturas comunes para no asumir. manylinux2014 = glibc 2.17+,
 # compatible con RHEL7+/la mayoria de servidores empresariales.
-_LINUX_PLATFORMS = [
-    "manylinux2014_x86_64", "manylinux_2_17_x86_64",
-    "manylinux2014_aarch64", "manylinux_2_17_aarch64",
-]
+# Servidor del banco: RHEL 8 x86_64 (glibc 2.28): solo manylinux <= 2_28 (ver vendor_modular).
+_LINUX_PLATFORMS = list(_vm._LINUX_TAGS)
 
 
 def _fetch_mlops_deps(serie_dir, extra_steps):
@@ -3912,8 +3954,13 @@ def _seleccionar_wheels(serie_dir, req_lineas, extra_steps=False, incluir_spark=
             abi = "cp" + v.replace(".", "")
             try:
                 _pip = _vc.pip_cmd()
-            except _vc.PipViejo as e:
-                faltan[v] = str(e)
+            except _vc.PipViejo:
+                # pip del host viejo (Python 3.8 + pip 21) y sin pip moderno en el cache: resolucion
+                # interna (etiquetas + Requires-Dist), sin pip. Mismo resultado para un pool offline.
+                usados, sin = _vm.resolver_interno(list(pool.values()), reqs, v, plataforma)
+                elegidas.update(os.path.basename(u) for u in usados)
+                if sin:
+                    faltan[v] = "sin wheel en el cache: " + ", ".join(sorted(sin, key=str.lower))
                 continue
             cmd = [*_pip, "install", "--dry-run", "--ignore-installed",
                    "--quiet", "--no-index", "--find-links", links, "--only-binary=:all:",
@@ -3963,7 +4010,9 @@ def _seleccionar_wheels(serie_dir, req_lineas, extra_steps=False, incluir_spark=
                 continue          # ya fallo en este proceso (sin red): no reintentar
             _descarga_fallida.add(intento)
             abi = "cp" + v.replace(".", "")
-            _plats = ["manylinux2014_x86_64", "manylinux_2_17_x86_64", "manylinux_2_28_x86_64"]
+            # RHEL 8 (glibc 2.28): de la mas vieja a 2_28 (se prefiere la mas portable)
+            _plats = ["manylinux2014_x86_64", "manylinux_2_17_x86_64", "manylinux_2_24_x86_64",
+                      "manylinux_2_27_x86_64", "manylinux_2_28_x86_64"]
             _cf = _fijar_pandas_numpy(serie_dir, extra_steps, incluir_spark, v,
                                       dl if _legacy else _tf.mkdtemp(prefix="bnx_cons_"))
             _cons = ["-c", _cf] if _cf else []
@@ -4277,6 +4326,7 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     # PySpark, el ambiente completo salio SIN PySpark (ZIP chico, engañoso).
     # (El ligero ahora tambien trae series en vendor/, pero sin PySpark: se mira el wheel.)
     vendor_missing = bool(full_env) and not ULTIMO_VENDOR.get("pyspark")
+    entorno_faltan = faltantes_entorno(ULTIMO_FALTAN_OFFLINE, vendor_missing, ULTIMO_VENDOR.get("bank_faltan"))
 
     # Modulos de paquetes del banco que el codigo importa (toolbox.log, ...) y que NO
     # vienen ni en lo subido ni en el cache de este servidor: el job fallaria con
@@ -4305,6 +4355,7 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     report.append({"_meta": True, "full_env": bool(full_env),
                    "vendor_series": vendor_list,
                    "vendor_missing": vendor_missing,
+                   "entorno_faltan": entorno_faltan,
                    "offline_faltan": json.loads(json.dumps(ULTIMO_FALTAN_OFFLINE)),
                    "modulos_faltantes": modulos_faltantes,
                    "vendor_mb": ULTIMO_VENDOR.get("mb"),
@@ -4751,8 +4802,7 @@ def _verify_resolve_linux(pkg_root, py_target, _log, steps, timeout):
     # una dependencia transitiva que falte (python-dateutil de pandas, threadpoolctl...).
     destino = _versiones_target(py_target)
     series = list(destino)
-    plats = ["manylinux2014_x86_64", "manylinux_2_17_x86_64", "manylinux_2_28_x86_64",
-             "linux_x86_64"]
+    plats = list(_vm._LINUX_TAGS)   # RHEL 8 x86_64 (glibc 2.28): nunca manylinux_2_31+ ni musllinux
     bank_dir = os.path.join(pkg_root, "vendor", "bank")
 
     _log("== Verificacion emulando el SERVIDOR LINUX del banco ==")
@@ -4826,11 +4876,24 @@ def _verify_resolve_linux(pkg_root, py_target, _log, steps, timeout):
                         faltan.append("(conflicto de versiones: " +
                                       _vc.limpiar_stderr_pip(p.stderr, maximo=120) + ")")
             except _vc.PipViejo as e:
-                faltan.append("(%s)" % e)
+                # pip del host viejo (Python 3.8 + pip 21) sin pip moderno en el cache: se verifica con
+                # la resolucion interna (etiquetas manylinux<=2_28/cp + Requires-Dist), sin pip.
+                _ws = [os.path.join(d_, f_) for d_ in (vendor_dir, bank_dir) if os.path.isdir(d_)
+                       for f_ in os.listdir(d_) if f_.endswith(".whl")]
+                _us, _sin = _vm.resolver_interno(_ws, reqs, pyver, "linux")
+                instalaria = len(_us)
+                faltan += sorted(_sin)
+                _log("   (resolucion interna sin pip: %s)" % str(e)[:160])
             except Exception as e:
                 faltan.append("(error al simular: %s)" % str(e)[:120])
             finally:
                 _sh.rmtree(tmp, ignore_errors=True)
+            # RHEL 8 (glibc 2.28): ninguna wheel del vendor puede pedir una glibc mayor
+            _malas = _vm.wheels_glibc_incompatibles(
+                [f_ for d_ in (vendor_dir, bank_dir) if os.path.isdir(d_) for f_ in os.listdir(d_)])
+            if _malas:
+                _log("   glibc > 2.28 (no instalan en RHEL 8): " + ", ".join(_malas))
+                faltan += ["%s (glibc > 2.28)" % m_ for m_ in _malas]
             # mex-lib del banco: son sdist (.tar.gz), se comprueba que esten en vendor/bank
             faltan += [b for b in (_re.split(r"[<>=!~ ;]", x, maxsplit=1)[0].strip()
                                    for x in bank if x.lower().startswith("mex")) if not _mex_ok(b)]

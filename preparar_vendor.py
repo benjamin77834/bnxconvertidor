@@ -77,6 +77,12 @@ def main(argv=None):
     ap.add_argument("--sin-ciencia", dest="con_ciencia", action="store_false")
     ap.add_argument("--desde-dir", metavar="CARPETA",
                     help="Origen local con vendor-manifest.json + ZIPs (actua como el Release de GitHub).")
+    ap.add_argument("--importar", metavar="RUTA",
+                    help="Importa desde una ruta local (sin red ni pip): carpeta de release (manifiesto + ZIPs), "
+                         "ZIP de pieza, banco.zip / carpeta con mex-lib, o la carpeta/ZIP BNX_interno (usa "
+                         "3_vendor_py<X> de --python y 2_banco.zip). Respeta --plataformas / --sin-pyspark.")
+    ap.add_argument("--borrar-origen", action="store_true",
+                    help="Con --importar: borra la RUTA al terminar (subidas temporales del portal).")
     ap.add_argument("--migrar", action="store_true", help="Reorganiza el cache viejo al layout modular nuevo.")
     ap.add_argument("--quitar-viejo", action="store_true",
                     help="Con --migrar: mueve el layout viejo a _layout_viejo/ (no borra).")
@@ -147,6 +153,39 @@ def main(argv=None):
             for h in hs:
                 print("   [hueco py%s] %s" % (v, h))
         return 0
+    if args.importar:
+        from src import vendor_importar as vi
+        v_imp = versiones[0] if versiones else "3.11"
+        plats_imp = plats or ["linux"]     # el paquete es para el servidor Linux: solo ciencia linux
+        if not args.con_ciencia:
+            plats_imp = []
+        print("Importar desde %s (Python %s; ciencia: %s; pyspark: %s)" % (
+            args.importar, v_imp, ",".join(plats_imp) or "no", "si" if args.con_pyspark else "no"))
+        try:
+            res = vi.importar_ruta(args.importar, cache, v_imp, plats_imp, args.con_pyspark)
+        except Exception as e:   # ZIP corrupto, disco lleno, ...
+            print("ERROR: %s" % str(e)[:300])
+            res = {"importar": str(e)[:300]}
+        finally:
+            if args.borrar_origen:
+                import shutil
+                if os.path.isdir(args.importar):
+                    shutil.rmtree(args.importar, ignore_errors=True)
+        vm.guardar_manifiesto_local(cache)
+        malos = {k: m for k, m in res.items() if m != "ok"}
+        for k, m in malos.items():
+            print("ERROR: %s: %s" % (k, m))
+        print("")
+        print(vm.formatear_piezas(vm.estado_piezas(cache, vm.seleccion([v_imp], plats_imp or None,
+                                                                       args.con_pyspark, bool(plats_imp)))))
+        b = vc.estado_banco(cache)
+        print("Banco: mex-lib %d/%d, modulos de path %d/%d" % (
+            len(b["sdists"]), len(b["sdists"]) + len(b["sdists_faltan"]),
+            len(b["pkgcode"]), len(b["pkgcode"]) + len(b["pkgcode_faltan"])))
+        if not res:
+            print("ERROR: no se importo nada de %s" % args.importar)
+            return 1
+        return 1 if malos else 0
     if args.bank_libs:
         try:
             vc.importar_bank_libs(args.bank_libs)
@@ -205,16 +244,28 @@ def main(argv=None):
             origen = vm.OrigenDir(args.desde_dir)
         else:
             origen = vm.OrigenGithub(args.tag if args.tag != vc.GH_TAG else None)
+        sin_red = None
         try:
             res = vm.bajar_piezas(origen, faltan_p, cache)
+        except vm.ErrorRed as e:  # sin internet / DNS / proxy / timeout: NO es "falta el manifiesto"
+            sin_red = str(e)
+            res = None
         except ValueError as e:
             print("ERROR: %s" % e)
             res = {}
-        except Exception as e:  # red, proxy, 404 sin manifiesto
+        except Exception as e:
             print("[origen] no pude leer %s: %s" % (origen.nombre, str(getattr(e, "reason", None) or e)[:150]))
             res = None
         if res is None and args.desde_dir:
             print("ERROR: %s no tiene vendor-manifest.json" % args.desde_dir)
+            return 1
+        if sin_red is not None:
+            print("ERROR: No pude conectar a github.com: %s" % sin_red)
+            print("       Sin red no se puede bajar nada (tampoco por pip). Importa las piezas: boton 'Importar piezas'")
+            print("       de la pagina Framework MLOps v2 (subir los ZIP o indicar la carpeta), o")
+            print("       preparar_vendor.py --importar <carpeta BNX_interno | 3_vendor_py%s | pieza.zip>."
+                  % (versiones[0] if versiones else "3.11"))
+            print("       Si hay proxy corporativo define HTTPS_PROXY/HTTP_PROXY.")
             return 1
         if res is None:
             # Release modular aun no publicado: se usa el monolito anterior (linux + pyspark)

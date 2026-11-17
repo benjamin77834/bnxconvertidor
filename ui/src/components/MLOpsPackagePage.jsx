@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { COMPILE_URL } from '../config'
 import OrdenFuentesPanel from './OrdenFuentesPanel'
-
+import VendorLibrariesTab from './VendorLibrariesTab'
 // Seccion "Framework MLOps v2": genera un PAQUETE NUEVO y mejorado del framework
 // (sin tocar el del banco) y lo empaqueta en un ZIP con entorno virtual (run.sh
 // crea el venv + instala + prueba), ejemplos y pruebas reales.
@@ -21,11 +21,17 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
   const [ciencia, setCiencia] = useState(true)
   const [monitoring, setMonitoring] = useState(false)
   const [separateMon, setSeparateMon] = useState(false)
-  const [fullEnv, setFullEnv] = useState(false)   // true = 'PySpark incluido' (modo A); false = 'PySpark del servidor' (modo B)
+  // Entorno virtual del paquete: 'ambas' (default: dos ZIP, con y sin PySpark), 'incluido' (con PySpark
+  // offline) o 'servidor' (sin PySpark: usa el del servidor). base + ciencia + banco van SIEMPRE.
+  const [sparkVar, setSparkVar] = useState('ambas')
+  const fullEnv = sparkVar !== 'servidor'
+  const [tab, setTab] = useState('generar')          // 'generar' | 'vendor'
+  const [sinOffline, setSinOffline] = useState(false) // confirmacion: generar aunque falten librerias
+  const [buildBlocked, setBuildBlocked] = useState(null)
   // También correr offline en otras plataformas (el servidor Linux siempre va)
   const [platExtra, setPlatExtra] = useState({ macos: false, windows: false })
   // Piezas del cache a bajar (tamaño real/estimado en vendorStatus.piezas)
-  const [piezasSel, setPiezasSel] = useState({ pyspark: true, ciencia_host: true, ciencia_linux: true })
+  const [piezasSel, setPiezasSel] = useState({ pyspark: true, ciencia_host: false, ciencia_linux: true })
   // Version EXACTA de Python del servidor Linux (una wheel por libreria = lo mas ligero).
   const [pyTarget, setPyTarget] = useState('py3.11')  // py3.11 | py3.14
   const [loading, setLoading] = useState(true)
@@ -148,19 +154,21 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
     // Solo se manda 'registry' si hay algún módulo de apoyo (si no, todos son jobs: como antes).
     const jobs = sources.filter(s => esJob(s)).map(s => s.name)
     const registry = jobs.length === sources.length ? null : jobs
-    setBuilding(true); setBuildError(''); setBuildResult(null); setSignResult(null)
+    setBuilding(true); setBuildError(''); setBuildResult(null); setSignResult(null); setBuildBlocked(null)
     try {
       const res = await fetch(BUILD_URL, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           sources, include_bank_libs: bankLibs, optimize: true, extra_steps: extraSteps, ciencia,
           include_monitoring: monitoring, separate_monitoring: monitoring && separateMon,
-          full_env: fullEnv, spark_modo: fullEnv ? 'incluido' : 'servidor',
+          full_env: fullEnv, spark_modo: sparkVar, variantes: sparkVar === 'ambas' ? 'ambas' : undefined,
+          generar_sin_offline: sinOffline,
           plataformas: Object.keys(platExtra).filter(k => platExtra[k]),
           py_target: pyTarget, registry,
         }),
       })
       const data = await res.json()
+      if (res.status === 409 && data.bloqueado) { setBuildBlocked(data); return }
       if (!res.ok || data.error) { setBuildError(data.error || `HTTP ${res.status}`); return }
       setBuildResult(data)
       // Cargar los archivos editables del paquete recién generado.
@@ -291,6 +299,20 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
         </p>
       </div>
 
+      <div style={{ display: 'flex', gap: 6 }}>
+        {[['generar', '🚀 Generar'], ['vendor', '📚 Librerías / Vendor']].map(([k, txt]) => (
+          <button key={k} onClick={() => { setTab(k); if (k === 'vendor') loadVendorStatus() }}
+            style={{ padding: '7px 14px', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: 'pointer',
+                     background: tab === k ? (t.accent || '#6366f1') : 'transparent', color: tab === k ? '#fff' : (t.text || '#e2e8f0'),
+                     border: `1px solid ${t.accent || '#6366f1'}88` }}>{txt}</button>))}
+      </div>
+      {tab === 'vendor' && (
+        <div style={{ ...card }}>
+          <VendorLibrariesTab theme={t} apiBase={API_BASE} pyTarget={pyTarget} vendorStatus={vendorStatus}
+            vendorJob={vendorJob} setVendorJob={setVendorJob} piezasSel={piezasSel} setPiezasSel={setPiezasSel}
+            startVendorPrepare={startVendorPrepare} />
+        </div>)}
+      {tab === 'generar' && (<>
       {/* Instrucciones de ejecución (cómo correr el paquete descargado) */}
       <RunInstructions theme={t} />
 
@@ -420,14 +442,18 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
             Incluir libs internas del banco en requirements.txt
           </label>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12.5, color: t.text || '#e2e8f0' }}>
-            <b>PySpark</b>
+            <b>Entorno virtual del paquete</b> (base + ciencia de datos + librerías del banco van siempre, para Linux x86_64)
             <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer' }}>
-              <input type="radio" name="sparkModo" checked={!fullEnv} onChange={() => setFullEnv(false)} />
-              <span><b>PySpark del servidor</b> (default, paquete ligero): no se empaqueta; <code>setup.sh</code> detecta y <b>pregunta la ruta</b> del Spark/PySpark ya instalado, la valida y la guarda en <code>.bnx_spark.env</code> (cambiarla: <code>bash setup.sh --reconfigurar-spark</code>; sin terminal: <code>BNX_SPARK_HOME=/ruta</code>).</span>
+              <input type="radio" name="sparkModo" checked={sparkVar === 'ambas'} onChange={() => setSparkVar('ambas')} />
+              <span><b>Generar ambas variantes</b> (default): <code>framework_mlops_v2_con_pyspark.zip</code> y <code>framework_mlops_v2_sin_pyspark.zip</code>, mismo código y distinto <code>vendor/</code>.</span>
             </label>
             <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer' }}>
-              <input type="radio" name="sparkModo" checked={fullEnv} onChange={() => setFullEnv(true)} />
-              <span><b>PySpark incluido</b> (offline, {pyTarget === 'py3.14' ? '+~435 MB, PySpark 4.1' : '+~300 MB, PySpark 3.5'}): el wheel va en <code>vendor/</code> y se instala en el <code>.venv</code> del paquete (ambiente completo).</span>
+              <input type="radio" name="sparkModo" checked={sparkVar === 'servidor'} onChange={() => setSparkVar('servidor')} />
+              <span><b>Sin PySpark</b> (usa el del servidor): no se empaqueta; <code>setup.sh</code> lo <b>autodetecta</b> (python3.11 del sistema, SPARK_HOME, spark-submit) y solo pregunta si no lo encuentra o hay varios del Spark/PySpark ya instalado, la valida y la guarda en <code>.bnx_spark.env</code> (cambiarla: <code>bash setup.sh --reconfigurar-spark</code>; sin terminal: <code>BNX_SPARK_HOME=/ruta</code>).</span>
+            </label>
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer' }}>
+              <input type="radio" name="sparkModo" checked={sparkVar === 'incluido'} onChange={() => setSparkVar('incluido')} />
+              <span><b>Con PySpark</b> (offline) (offline, {pyTarget === 'py3.14' ? '+~435 MB, PySpark 4.1' : '+~300 MB, PySpark 3.5'}): el wheel va en <code>vendor/</code> y se instala en el <code>.venv</code> del paquete (ambiente completo).</span>
             </label>
           </div>
           {(
@@ -440,7 +466,7 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                     background: t.codeBg || '#081220', color: t.text || '#e2e8f0',
                     border: `1px solid ${t.border || '#334155'}`, outline: 'none', cursor: 'pointer',
                   }}>
-                  <option value="py3.11">Linux · Python 3.11 (PySpark 3.5){fullEnv ? ' — ~420 MB (con PySpark)' : ' — ~120 MB'}</option>
+                  <option value="py3.11">Linux · Python 3.11 (RHEL 8, servidor del banco · PySpark 3.5){fullEnv ? ' — ~420 MB (con PySpark)' : ' — ~120 MB'}</option>
                   <option value="py3.14">Linux · Python 3.14 (PySpark 4.1){fullEnv ? ' — ~560 MB (con PySpark)' : ' — ~125 MB'}</option>
                 </select>
               </label>
@@ -491,7 +517,7 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                           {fila('pyspark', 'PySpark', pz.find(x => x.pieza === 'pyspark'))}
                           {fila('ciencia_host', `Ciencia de datos (${host || 'este equipo'})`, pz.find(x => x.pieza === 'ciencia' && x.plataforma === host))}
                           {host !== 'linux' && fila('ciencia_linux', 'Ciencia Linux (para paquetes del servidor)', pz.find(x => x.pieza === 'ciencia' && x.plataforma === 'linux'))}
-                          <div>Banco (interno, ZIP): <code>preparar_vendor.py --zip banco.zip</code> o <code>--bank-libs &lt;carpeta|zip&gt;</code> (se convierten a wheels).</div>
+                          <div>Sin internet: <button onClick={() => setTab('vendor')} style={{ background: 'none', border: 'none', color: '#818cf8', textDecoration: 'underline', cursor: 'pointer', padding: 0, fontSize: 'inherit' }}>📥 Importar piezas (subir los ZIP o indicar la carpeta)</button> — banco incluido.</div>
                         </div>)
                     })()}
                     <button onClick={() => startVendorPrepare(ver)} disabled={corriendo}
@@ -563,6 +589,22 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
           {buildError && <span style={{ fontSize: 12, color: '#f87171' }}>⚠️ {buildError}</span>}
         </div>
 
+        {buildBlocked && (
+          <div style={{ marginTop: 10, padding: 12, borderRadius: 8, background: '#ef444422', border: '2px solid #ef4444',
+                        color: '#fecaca', fontSize: 12.5 }}>
+            <div style={{ fontSize: 14, fontWeight: 800, color: '#f87171' }}>
+              ⛔ El paquete NO trae las librerías (faltan {(buildBlocked.entorno_faltan || []).length}): importa las piezas (botón Importar) o baja el cache
+            </div>
+            <div style={{ margin: '6px 0', maxHeight: 140, overflow: 'auto' }}>
+              {(buildBlocked.entorno_faltan || []).map(x => <div key={x}>· {x}</div>)}
+            </div>
+            <button onClick={() => setTab('vendor')} style={{ padding: '6px 12px', borderRadius: 6, fontWeight: 700, cursor: 'pointer',
+              background: '#16a34a', color: '#fff', border: 'none' }}>📥 Importar piezas (Librerías / Vendor)</button>
+            <label style={{ display: 'block', marginTop: 8, cursor: 'pointer', color: '#fca5a5' }}>
+              <input type="checkbox" checked={sinOffline} onChange={e => setSinOffline(e.target.checked)} />
+              {' '}generar sin librerías offline (se instalarán por internet en el servidor) — luego pulsa otra vez “Generar mi framework”
+            </label>
+          </div>)}
         {/* Resultado de la generacion */}
         {buildResult && (
           <div style={{ marginTop: 12, padding: 12, borderRadius: 8, background: '#22c55e10', border: '1px solid #22c55e40' }}>
@@ -578,6 +620,32 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                   background: '#22c55e', color: '#000',
                 }}>📦 Descargar {buildResult.filename}</a>
             </div>
+            {(buildResult.variantes || []).length > 0 && (
+              <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12.5 }}>
+                {buildResult.variantes.map(v => (
+                  <div key={v.modo} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <b style={{ minWidth: 190 }}>{v.modo === 'incluido' ? '🟢 Con PySpark (offline)' : '🔵 Sin PySpark (usa el del servidor)'}</b>
+                    {v.download_url
+                      ? <a href={`${API_BASE}${v.download_url}`} download={v.filename} style={{ color: '#22c55e', fontWeight: 700 }}>
+                          📦 {v.filename}</a>
+                      : <span style={{ color: '#fca5a5' }}>{v.filename}: {v.error}</span>}
+                    {v.size ? <span>{(v.size / 1048576).toFixed(1)} MB</span> : null}
+                    {v.vendor_mb != null && <span style={{ color: t.muted || '#94a3b8' }}>(vendor/ {v.vendor_mb} MB)</span>}
+                    {(v.entorno_faltan || []).length > 0 && v.download_url &&
+                      <span style={{ color: '#f87171', fontWeight: 700 }}>⛔ sin {v.entorno_faltan.length} librería(s) offline</span>}
+                  </div>))}
+              </div>)}
+            {(() => {
+              const meta = (buildResult.report || []).find(r => r._meta)
+              const f = meta?.entorno_faltan || []
+              if (!f.length) return null
+              return (
+                <div style={{ marginTop: 8, padding: 10, borderRadius: 8, background: '#ef444422', border: '2px solid #ef4444', color: '#fecaca', fontSize: 12.5 }}>
+                  <b style={{ color: '#f87171' }}>⛔ El paquete NO trae las librerías (faltan {f.length}): importa las piezas (botón Importar) o baja el cache.</b>
+                  {' '}Se generó igual por tu confirmación: en el servidor se instalarán por internet.
+                  <div style={{ maxHeight: 120, overflow: 'auto', marginTop: 4 }}>{f.map(x => <div key={x}>· {x}</div>)}</div>
+                </div>)
+            })()}
             {(buildResult.report || []).length > 0 && (
               <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {(() => {
@@ -769,7 +837,7 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                   <select value={verifySerie} onChange={e => setVerifySerie(e.target.value)} disabled={runPytest}
                     style={{ padding: '4px 8px', borderRadius: 6, fontSize: 11.5, background: t.codeBg || '#081220',
                              border: `1px solid ${t.border || '#334155'}`, color: t.text || '#e2e8f0' }}>
-                    <option value="py3.11">Linux · Python 3.11 (cp311)</option>
+                    <option value="py3.11">Linux · Python 3.11 (RHEL 8, cp311)</option>
                     <option value="py3.14">Linux · Python 3.14 (cp314)</option>
                   </select>
                 </label>
@@ -976,10 +1044,10 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
           </div>
         </>
       )}
+      </>)}
     </div>
   )
 }
-
 function uploadBtn(t) {
   return {
     padding: '7px 12px', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer',

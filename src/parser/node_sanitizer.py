@@ -1,3 +1,4 @@
+from __future__ import annotations  # Python 3.8 (host del portal)
 import re
 
 def normalize_node(name: str) -> str | None:

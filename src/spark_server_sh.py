@@ -6,8 +6,12 @@ valida y guarda la ruta de Spark/PySpark del servidor. Se inserta en setup.sh de
 SPARK_CFG_SH = r'''
 # ---------------------------------------------------------------------------
 # PySpark del SERVIDOR (modo B): el paquete NO trae pyspark; se usa el Spark ya instalado.
-# Autodetecta candidatos, pregunta la ruta (con terminal) o lee BNX_SPARK_HOME (sin terminal),
-# la VALIDA y la guarda en .bnx_spark.env (run.sh la lee). Cambiarla:
+# AUTODETECTA sin preguntar (pyspark del python del sistema, SPARK_HOME, spark-submit del PATH, rutas
+# tipicas); solo PREGUNTA si no encuentra ninguno valido o hay varios (o lee BNX_SPARK_HOME), lo VALIDA
+# (java, py4j, version de Spark vs Python) y lo guarda en .bnx_spark.env (run.sh la lee).
+# El venv ve ese pyspark por un symlink pyspark/ (y py4j/ o un .pth al py4j-*-src.zip) en SU
+# site-packages: NO se usa --system-site-packages, para que no se mezclen las demas librerias del
+# sistema (pandas/numpy del RHEL) con las del vendor. Cambiarla:
 #   bash setup.sh --reconfigurar-spark      (o BNX_SPARK_RECONFIG=1)
 # ---------------------------------------------------------------------------
 bnx_spark_err() { echo "      [spark] $*" >&2; }
@@ -129,6 +133,11 @@ bnx_spark_candidatos() {
     fi
     return 0
   }
+  # 1) el PySpark que ya importa el python del SISTEMA (RHEL 8: /usr/bin/python3.11): es el que corre ahi
+  _sysp="${BNX_SYSTEM_PYTHON:-${PY:-python3}}"
+  _d="$("$_sysp" -c 'import os,pyspark;print(os.path.dirname(pyspark.__file__))' 2>/dev/null || true)"
+  bnx_spark_add "$_d"
+  # 2) SPARK_HOME, 3) spark-submit del PATH, 4) rutas tipicas
   bnx_spark_add "${SPARK_HOME:-}"
   for _s in spark3-submit spark-submit; do
     _b="$(command -v "$_s" 2>/dev/null || true)"
@@ -141,9 +150,6 @@ bnx_spark_candidatos() {
             /usr/hdp/current/spark*-client /opt/spark /usr/local/spark; do
     bnx_spark_add "$_d"
   done
-  _sysp="${BNX_SYSTEM_PYTHON:-${PY:-python3}}"
-  _d="$("$_sysp" -c 'import os,pyspark;print(os.path.dirname(pyspark.__file__))' 2>/dev/null || true)"
-  bnx_spark_add "$_d"
   _l="$("$_sysp" -m pip show pyspark 2>/dev/null | sed -n 's/^Location: //p' | head -1)"
   if [ -n "$_l" ]; then bnx_spark_add "$_l/pyspark"; fi
   return 0
@@ -195,6 +201,31 @@ bnx_spark_configurar() {
   fi
   _cand="$(mktemp "${TMPDIR:-/tmp}/bnx_spark.XXXXXX")"
   bnx_spark_candidatos "$_cand"
+  # AUTODETECCION sin preguntar: candidatos que validan (java ok, py4j, version compatible con este
+  # Python). Uno solo -> se usa. Varios -> el del python del sistema si esta; si no, se pregunta.
+  _okf="$(mktemp "${TMPDIR:-/tmp}/bnx_spark_ok.XXXXXX")"; : > "$_okf"
+  while read -r _c; do
+    if bnx_spark_normalizar "$_c"; then
+      case "$BS_AVISO" in INCOMPATIBLE*) continue ;; esac
+      grep -qxF "$BS_HOME" "$_okf" 2>/dev/null || echo "$BS_HOME" >> "$_okf"
+    fi
+  done < "$_cand"
+  _nok="$(grep -c . "$_okf" 2>/dev/null || true)"
+  _sysd="$("${BNX_SYSTEM_PYTHON:-${PY:-python3}}" -c 'import os,pyspark;print(os.path.realpath(os.path.dirname(pyspark.__file__)))' 2>/dev/null || true)"
+  _auto=""
+  if [ "$_nok" = "1" ]; then
+    _auto="$(sed -n 1p "$_okf")"
+  elif [ -n "$_sysd" ] && grep -qxF "$_sysd" "$_okf" 2>/dev/null; then
+    _auto="$_sysd"
+  elif [ "${_nok:-0}" -gt 1 ] 2>/dev/null && [ "$_tty" = "0" ]; then
+    _auto="$(sed -n 1p "$_okf")"
+    echo "      [spark] varios PySpark/Spark validos; sin terminal uso el primero. Otro: BNX_SPARK_HOME=/ruta bash setup.sh"
+  fi
+  rm -f "$_okf"
+  if [ -n "$_auto" ] && bnx_spark_normalizar "$_auto"; then
+    echo "      PySpark del servidor AUTODETECTADO: $BS_HOME"
+    rm -f "$_cand"; bnx_spark_guardar; return 0
+  fi
   if [ "$_tty" = "0" ]; then
     bnx_spark_err "no hay terminal para preguntar la ruta de PySpark/Spark del servidor."
     bnx_spark_err "Defínela y repite:  BNX_SPARK_HOME=/ruta/al/spark bash setup.sh"
