@@ -14,6 +14,7 @@ Prerequisitos:
 import os
 import sys
 import json
+import time
 import re
 import tempfile
 import http.server
@@ -143,7 +144,9 @@ if not os.path.isdir(UI_DIR):
 
 # Tarea en background de "Bajar/generar cache" (preparar_vendor.py).
 _VENDOR_JOB = {"lock": __import__("threading").Lock(), "proc": None, "log": None, "versions": []}
-def _vendor_job_info(with_log=False):
+_DESC_JOB = {"lock": __import__("threading").Lock(), "proc": None, "log": None, "versions": []}
+def _vendor_job_info(with_log=False, job=None):
+    _VENDOR_JOB = job or globals()["_VENDOR_JOB"]
     proc = _VENDOR_JOB.get("proc")
     info = {"started": proc is not None, "running": bool(proc is not None and proc.poll() is None),
             "returncode": (proc.poll() if proc is not None else None),
@@ -185,6 +188,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._orquestador_seguro(path)
         elif path in ("/mlops/package/orden", "/api/mlops/package/orden"):
             self._handle_mlops_package_orden()
+        elif path.startswith(("/vendor/descargas/", "/api/vendor/descargas/")):
+            self._handle_descargas_post(path)
         elif path in ("/vendor/prepare", "/api/vendor/prepare"):
             self._handle_vendor_prepare()
         elif path in ("/vendor/import", "/api/vendor/import"):
@@ -325,6 +330,10 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_export_download()
             return
 
+        # Descargas del vendor (codigo, ciencia, pyspark, banco) para colegas de la red interna.
+        if path.startswith(("/vendor/descargas/", "/api/vendor/descargas/")):
+            self._handle_descargas_get(path)
+            return
         # Estado del cache de vendor (.venv/bnx_vendor_cache) y log de la preparacion.
         if path in ("/vendor/status", "/api/vendor/status"):
             self._handle_vendor_status()
@@ -4985,6 +4994,196 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         self._json_response(200, {"ok": True})
     def _handle_vendor_prepare_log(self):
         self._json_response(200, {"ok": True, "job": _vendor_job_info(with_log=True)})
+    # ---------------------------------------------------------- descargas del vendor (red interna)
+    def _client_ip(self):
+        return self.client_address[0]
+    def _desc_admin(self):
+        """Gestion (compartir/revocar/preparar): solo desde localhost, con Host local y sin Origin ajeno
+        (evita que una pagina web cualquiera, o DNS rebinding, active el compartir)."""
+        from src import vendor_descargas as vd
+        host = (self.headers.get("Host") or "").strip().lower()
+        hn = host[1:host.index("]")] if host.startswith("[") and "]" in host else host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+        org = self.headers.get("Origin")
+        ok = vd.es_local(self._client_ip()) and hn in ("localhost", "127.0.0.1", "::1") and (
+            not org or urlparse(org).netloc.lower() == host)
+        if not ok:
+            try:       # vaciar el cuerpo: si no, al cerrar el socket el cliente recibe RST en vez del 403
+                self.rfile.read(min(int(self.headers.get("Content-Length", 0) or 0), 65536))
+            except (OSError, ValueError):
+                pass
+            self._json_response(403, {"ok": False, "error": "Solo se puede gestionar desde localhost del servidor."})
+        return ok
+    def _desc_log(self, msg):
+        print("  [DESCARGA] " + msg, flush=True)
+    def _desc_auth(self, clave):
+        """(status, motivo); responde el error si no es 200."""
+        from src import vendor_descargas as vd
+        st, motivo = vd.autorizar(self._client_ip(), clave)
+        if st != 200:
+            self._desc_log("denegado ip=%s motivo=%s" % (self._client_ip(), motivo))
+            msgs = {"desactivado": "Las descargas en red no estan activadas en este portal.",
+                    "expirada": "La clave de descarga expiro.", "ip_no_permitida": "Tu IP no esta permitida.",
+                    "demasiados_intentos": "Demasiados intentos fallidos; espera un minuto.",
+                    "clave_requerida": "Falta la clave de descarga.", "clave_incorrecta": "Clave incorrecta."}
+            self._json_response(st, {"ok": False, "motivo": motivo, "error": msgs.get(motivo, "Acceso denegado")})
+        return st, motivo
+    def _desc_body_json(self):
+        n = int(self.headers.get("Content-Length", 0) or 0)
+        if n > 65536:
+            raise ValueError("cuerpo demasiado grande")
+        raw = self.rfile.read(n) if n else b""
+        return json.loads(raw.decode("utf-8", errors="replace")) if raw else {}
+    def _handle_descargas_get(self, path):
+        from src import vendor_descargas as vd
+        from src import vendor_cache as vc
+        sub = path.split("/vendor/descargas/", 1)[1]
+        if sub.startswith("get/"):
+            from urllib.parse import unquote
+            self._desc_servir(unquote(sub[4:]), self.headers.get("X-BNX-Clave"))
+            return
+        if sub == "estado":
+            local = vd.es_local(self._client_ip())
+            if not local and self._desc_auth(self.headers.get("X-BNX-Clave"))[0] != 200:
+                return
+            try:
+                comp = vd.estado_compartir()
+                est = vd.estado_archivos(vc.cache_dir())
+                arch = est["archivos"]
+                if not local and not comp["incluir_banco"]:
+                    arch = [a for a in arch if a["tipo"] != "banco"]
+                out = {"ok": True, "local": local, "archivos": arch, "generado": est.get("generado"),
+                       "commit": est.get("commit"), "desactualizado": est["desactualizado"],
+                       "banco_habilitado": comp["incluir_banco"]}
+                if local:
+                    out["compartir"] = comp
+                    out["job"] = _vendor_job_info(job=_DESC_JOB)
+                    out["dir"] = vd.descargas_dir()
+                self._json_response(200, out)
+            except Exception as e:
+                self._json_response(500, {"ok": False, "error": str(e)})
+            return
+        if sub == "prepare/log":
+            if self._desc_admin():
+                self._json_response(200, {"ok": True, "job": _vendor_job_info(with_log=True, job=_DESC_JOB)})
+            return
+        self.send_error(404, "Not found")
+    def _handle_descargas_post(self, path):
+        from src import vendor_descargas as vd
+        sub = path.split("/vendor/descargas/", 1)[1]
+        if sub.startswith("get/"):               # formulario del navegador: la clave va en el CUERPO, no en la URL
+            from urllib.parse import unquote
+            n = min(int(self.headers.get("Content-Length", 0) or 0), 4096)
+            form = parse_qs((self.rfile.read(n) if n else b"").decode("utf-8", errors="replace"))
+            self._desc_servir(unquote(sub[4:]), (form.get("clave") or [""])[0] or self.headers.get("X-BNX-Clave"))
+            return
+        if not self._desc_admin():
+            return
+        try:
+            data = self._desc_body_json()
+            if sub == "compartir":
+                clave = vd.compartir(dias=data.get("dias") or vd.DIAS_DEFAULT, ips=data.get("ips"),
+                                     incluir_banco=bool(data.get("incluir_banco")))
+                self._desc_log("compartir activado (expira en %s dias)" % (data.get("dias") or vd.DIAS_DEFAULT))
+                self._json_response(200, {"ok": True, "clave": clave, "compartir": vd.estado_compartir()})
+            elif sub == "config":
+                vd.configurar(ips=data.get("ips"), incluir_banco=data.get("incluir_banco"), dias=data.get("dias"))
+                self._json_response(200, {"ok": True, "compartir": vd.estado_compartir()})
+            elif sub == "revocar":
+                vd.revocar()
+                self._desc_log("compartir revocado")
+                self._json_response(200, {"ok": True, "compartir": vd.estado_compartir()})
+            elif sub == "prepare":
+                self._descargas_prepare(bool(data.get("forzar")))
+            else:
+                self.send_error(404, "Not found")
+        except ValueError as e:
+            self._json_response(400, {"ok": False, "error": str(e)})
+        except Exception as e:
+            self._json_response(500, {"ok": False, "error": str(e)})
+    def _descargas_prepare(self, forzar):
+        import subprocess as _sp
+        with _DESC_JOB["lock"]:
+            proc = _DESC_JOB.get("proc")
+            if proc is not None and proc.poll() is None:
+                self._json_response(409, {"ok": False, "error": "Ya hay una preparacion en curso.",
+                                          "job": _vendor_job_info(job=_DESC_JOB)})
+                return
+            log_path = os.path.join(tempfile.gettempdir(), "bnx_descargas_prepare.log")
+            cmd = [sys.executable, "-B", os.path.join(os.path.dirname(os.path.abspath(__file__)), "exportar_vendor.py"),
+                   "--descargas"] + (["--forzar"] if forzar else [])
+            logf = open(log_path, "w", encoding="utf-8")
+            _DESC_JOB.update({"proc": _sp.Popen(cmd, stdout=logf, stderr=_sp.STDOUT, stdin=_sp.DEVNULL),
+                              "log": log_path, "logf": logf})
+        self._json_response(200, {"ok": True, "job": _vendor_job_info(job=_DESC_JOB)})
+    def _desc_servir(self, nombre, clave):
+        """Sirve UN archivo de la lista blanca por streaming (Content-Length, attachment, Range)."""
+        from src import vendor_descargas as vd
+        if not vd.nombre_permitido(nombre):
+            self._json_response(400, {"ok": False, "error": "Nombre de archivo no permitido."})
+            return
+        if self._desc_auth(clave)[0] != 200:
+            return
+        f, ent = vd.ruta_servible(nombre)
+        if not f:
+            self._json_response(404, {"ok": False, "error": "El archivo no esta generado. Usa 'Preparar archivos de descarga'."})
+            return
+        if ent["tipo"] == "banco" and not vd.es_local(self._client_ip()) and not vd.banco_habilitado():
+            self._desc_log("denegado ip=%s archivo=%s motivo=banco_no_habilitado" % (self._client_ip(), nombre))
+            self._json_response(403, {"ok": False, "motivo": "banco_no_habilitado",
+                                      "error": "Las librerias del banco no estan habilitadas para descarga en red."})
+            return
+        total = os.path.getsize(f)
+        ini, fin, code = 0, total - 1, 200
+        rng = self.headers.get("Range")
+        if rng:
+            m = re.fullmatch(r"bytes=(\d*)-(\d*)", rng.strip())
+            if not m or (not m.group(1) and not m.group(2)):
+                code = 200
+            else:
+                if m.group(1):
+                    ini = int(m.group(1))
+                    fin = min(int(m.group(2)), total - 1) if m.group(2) else total - 1
+                else:
+                    ini, fin = max(0, total - int(m.group(2))), total - 1
+                if ini >= total or ini > fin:
+                    self.send_response(416)
+                    self.send_header("Content-Range", "bytes */%d" % total)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                code = 206
+        largo = fin - ini + 1
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json" if nombre.endswith(".json") else
+                         ("text/plain; charset=utf-8" if nombre == "SHA256SUMS" else "application/zip"))
+        self.send_header("Content-Disposition", 'attachment; filename="%s"' % nombre)
+        self.send_header("Content-Length", str(largo))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "no-store")
+        if code == 206:
+            self.send_header("Content-Range", "bytes %d-%d/%d" % (ini, fin, total))
+        self.end_headers()
+        enviado = 0
+        try:
+            with open(f, "rb") as fh:
+                fh.seek(ini)
+                while enviado < largo:
+                    buf = fh.read(min(1 << 20, largo - enviado))
+                    if not buf:
+                        break
+                    try:
+                        self.wfile.write(buf)
+                    except BlockingIOError:
+                        time.sleep(0.01)
+                        fh.seek(ini + enviado)
+                        continue
+                    enviado += len(buf)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        self._desc_log("ip=%s archivo=%s bytes=%d/%d%s" % (self._client_ip(), nombre, enviado, largo,
+                                                          " (parcial)" if code == 206 else ""))
+        self.close_connection = True
     def _json_response(self, status, data):
         self.send_response(status)
         self._cors_headers()

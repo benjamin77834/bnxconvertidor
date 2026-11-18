@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react'
+import VendorDescargas from './VendorDescargas'
 // Pestaña "Librerías / Vendor" del Framework MLOps v2: estado del cache por pieza y 3 formas de
 // llenarlo sin línea de comandos: SUBIR los ZIP desde el navegador (streaming, por archivo),
 // indicar una RUTA local del servidor (carpeta BNX_interno, 3_vendor_pyX, pieza.zip, banco.zip) o
@@ -98,6 +99,7 @@ export default function VendorLibrariesTab({ theme, apiBase, pyTarget, vendorSta
     </label>)
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, fontSize: 12.5, color: t.text || '#e2e8f0' }}>
+      <VendorDescargas theme={t} apiBase={apiBase} />
       <div style={box}>
         <b>Estado del cache para Linux · Python {ver}</b>{' '}
         <span style={{ color: t.muted || '#94a3b8' }}>({vendorStatus?.cache_dir || '…'}; portal: {host || '?'}, Python {vendorStatus?.host?.python || '?'})</span>

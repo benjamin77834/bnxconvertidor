@@ -18,6 +18,7 @@ Siempre lleva TODAS las librerias del banco (bank_libs) + solo el minimo (PySpar
     python exportar_vendor.py --serie all                  # (antiguo) cache entero, pesado
     python exportar_vendor.py -o /ruta/salida.zip
     python exportar_vendor.py --python 3.14 --sin-banco    # SIN librerias del banco (publicable)
+    python exportar_vendor.py --descargas                  # archivos para bajar desde el portal
 
 Produce 'bnx_vendor_py3.11.zip' (o bnx_vendor_<serie>.zip). En el portal:
     python importar_vendor.py bnx_vendor_py3.11.zip
@@ -128,7 +129,23 @@ def main():
                     help="NO incluir bank_libs/ ni modulos internos (bnmxverse/toolbox/utils/mex-lib): "
                          "ZIP publicable (p.ej. GitHub Release). Requiere --python.")
     ap.add_argument("-o", "--output", default=None, help="Ruta del ZIP de salida.")
+    ap.add_argument("--descargas", action="store_true",
+                    help="Genera los archivos para DESCARGAR desde el portal (codigo, banco.zip, ciencia/pyspark por "
+                         "version en formato release, manifest, SHA256SUMS) en <cache>/_descargas o BNX_DESCARGAS_DIR.")
+    ap.add_argument("--forzar", action="store_true", help="Con --descargas: regenerar aunque no haya cambios.")
     args = ap.parse_args()
+
+    if args.descargas:
+        from src import vendor_descargas as vd
+        if not os.path.isdir(CACHE):
+            print("ERROR: no existe el cache %s" % CACHE)
+            return 1
+        try:
+            vd.preparar(CACHE, log=lambda m: print(m, flush=True), forzar=args.forzar)
+        except Exception as e:      # noqa: BLE001
+            print("ERROR: %s" % e)
+            return 1
+        return 0
 
     if not os.path.isdir(CACHE):
         print("ERROR: no existe el cache %s (genera un paquete 'ambiente completo' primero)." % CACHE)

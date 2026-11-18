@@ -73,3 +73,7 @@ drivers/*.jar
 # Kiro: configuracion, specs, hooks y steering del IDE (no versionar).
 # Siguen existiendo en local para Kiro; solo no se suben a GitHub.
 .kiro/
+
+# Descargas del vendor: clave hasheada y archivos generados (normalmente en <cache>/_descargas, fuera de git)
+_descargas/
+.bnx_descargas.json
