@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { COMPILE_URL } from '../config'
 import OrdenFuentesPanel from './OrdenFuentesPanel'
 import VendorLibrariesTab from './VendorLibrariesTab'
+import SimularPanel from './SimularPanel'
 // Seccion "Framework MLOps v2": genera un PAQUETE NUEVO y mejorado del framework
 // (sin tocar el del banco) y lo empaqueta en un ZIP con entorno virtual (run.sh
 // crea el venv + instala + prueba), ejemplos y pruebas reales.
@@ -35,6 +36,13 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
   // Version EXACTA de Python del servidor Linux (una wheel por libreria = lo mas ligero).
   const [pyTarget, setPyTarget] = useState('py3.11')  // py3.11 | py3.14
   const [loading, setLoading] = useState(true)
+  // El servidor del portal se arranco ANTES del ultimo cambio de codigo: generaria nombres viejos (job, job_2...).
+  const [servidorViejo, setServidorViejo] = useState(false)
+  useEffect(() => {
+    fetch(`${API_BASE}/api/health`).then(r => r.json()).then(d => setServidorViejo(!!d.codigo_desactualizado)).catch(() => {})
+  }, [])
+  // Archivos sueltos sin carpeta (job.py x8 se pisarian y perderian su ruta): aviso para subir la carpeta.
+  const [avisoRuta, setAvisoRuta] = useState('')
 
   // Entrada del usuario: codigo pegado + archivos de carpeta.
   const [pasted, setPasted] = useState('')
@@ -102,10 +110,16 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
     const arr = Array.from(fileList || []).filter(f => /\.(py|txt)$/i.test(f.name))
     const read = await Promise.all(arr.map(f => new Promise(resolve => {
       const r = new FileReader()
-      r.onload = () => resolve({ name: f.webkitRelativePath || f.name, code: String(r.result || '') })
+      r.onload = () => resolve({ name: f.webkitRelativePath || f.path || f.name, code: String(r.result || '') })
       r.onerror = () => resolve(null)
       r.readAsText(f)
     })))
+    const sinRuta = read.filter(x => x && !x.name.includes('/'))
+    const dup = sinRuta.filter((x, i) => sinRuta.findIndex(y => y.name === x.name) !== i).map(x => x.name)
+    setAvisoRuta(sinRuta.some(x => /^(job|main)\.py$/i.test(x.name)) || dup.length
+      ? 'Archivos sin carpeta: ' + (dup.length ? `hay nombres repetidos (${[...new Set(dup)].join(', ')}) y solo se conserva uno. ` : '') +
+        'Los jobs se nombran por su RUTA (rps_target, liabilities_pivot…): sube la carpeta completa con “📁 Carpeta completa”.'
+      : '')
     setFiles(prev => {
       const map = new Map(prev.map(x => [x.name, x]))
       for (const x of read) if (x) map.set(x.name, x)
@@ -290,6 +304,11 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
 
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: 20, display: 'flex', flexDirection: 'column', gap: 16, width: '100%', boxSizing: 'border-box' }}>
+      {servidorViejo && (
+        <div role="alert" style={{ padding: 10, borderRadius: 8, fontSize: 12.5, color: '#fecaca', background: '#ef444422', border: '2px solid #ef4444' }}>
+          ⛔ <b>El servidor del portal se arrancó antes del último cambio de código.</b> Genera paquetes con la lógica vieja
+          (jobs como <code>job</code>, <code>job_2</code>…, <code>main</code> como aggregate). Reinícialo (<code>python serve_ui.py</code>) y vuelve a generar.
+        </div>)}
       <div>
         <h2 style={{ margin: 0, fontSize: 22, color: t.text || '#e2e8f0' }}>📦 Framework MLOps v2 (mejorado)</h2>
         <p style={{ margin: '4px 0 0', fontSize: 13, color: t.muted || '#94a3b8', maxWidth: 900 }}>
@@ -387,6 +406,7 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                 }}>Quitar todos</button>
               )}
             </div>
+            {avisoRuta && <div role="alert" style={{ fontSize: 11.5, color: '#fbbf24', padding: 6, borderRadius: 6, border: '1px solid #f59e0b55' }}>⚠ {avisoRuta}</div>}
             <div style={{
               flex: 1, minHeight: 120, maxHeight: 180, overflow: 'auto', padding: 8, borderRadius: 8,
               background: t.codeBg || '#081220', border: `1px solid ${t.border || '#334155'}`,
@@ -675,6 +695,14 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                             <div key={p}>· <code>{p}</code>: {ms.map(m => `${m}.py`).join(', ')}</div>)}
                         </div>
                       )}
+                      {Object.keys(meta?.workers_python || {}).length > 0 && (
+                        <div style={{ fontSize: 11.5, color: '#fbbf24', marginBottom: 2, padding: 8, borderRadius: 6,
+                                      border: '1px solid #f59e0b55' }}>
+                          ⚠ {meta.workers_python_aviso || 'Este código ejecuta Python en los workers.'}
+                          {Object.entries(meta.workers_python).map(([f, hs]) =>
+                            <div key={f}>· <code>{f}</code>: {[...new Set(hs.map(h => `${h.patron} (l.${h.linea})`))].join(', ')}</div>)}
+                        </div>
+                      )}
                       {meta && (
                         <div style={{ fontSize: 11.5, color: t.muted || '#94a3b8', marginBottom: 2 }}>
                           📚 Librerías offline en <code>vendor/</code>: {meta.vendor_mb ?? '?'} MB
@@ -761,6 +789,8 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
               </div>
             )}
 
+            {/* SIMULAR los jobs del paquete (terminal en vivo; el pivote siempre primero) */}
+            {buildResult.edit_token && <SimularPanel t={t} apiBase={API_BASE} token={buildResult.edit_token} />}
             {/* FIRMA Y DESPLIEGUE: gobierno del paquete PySpark */}
             <div style={{ marginTop: 14, borderTop: `1px solid ${t.border || '#334155'}`, paddingTop: 12 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>

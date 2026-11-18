@@ -132,6 +132,19 @@ from src.test_runner import (
 from src.equivalence import compare_outputs, read_csv_rows
 
 PORT = int(os.environ.get("BNX_PORT", 8081))
+_ARRANQUE = time.time()
+
+
+def _codigo_desactualizado():
+    """True si serve_ui.py o src/mlops_*.py se modificaron despues de arrancar este servidor."""
+    try:
+        aqui = os.path.dirname(os.path.abspath(__file__))
+        fs = [os.path.join(aqui, "serve_ui.py")] + [
+            os.path.join(aqui, "src", f) for f in os.listdir(os.path.join(aqui, "src"))
+            if f.startswith("mlops_") and f.endswith(".py")]
+        return max(os.path.getmtime(f) for f in fs) > _ARRANQUE + 1
+    except OSError:
+        return False
 UI_DIR = os.path.join(os.path.dirname(__file__), "ui", "dist")
 
 # Check if UI is built
@@ -186,6 +199,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
 
         if path.startswith("/orquestador/") or path.startswith("/api/orquestador/"):
             self._orquestador_seguro(path)
+        elif path.startswith(("/mlops/simular/", "/api/mlops/simular/")):
+            self._handle_mlops_simular(path)
         elif path in ("/mlops/package/orden", "/api/mlops/package/orden"):
             self._handle_mlops_package_orden()
         elif path.startswith(("/vendor/descargas/", "/api/vendor/descargas/")):
@@ -282,6 +297,10 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._orquestador_seguro(path)
             return
 
+        # Simulacion de jobs del paquete (estado/log incremental, info): solo localhost.
+        if path.startswith(("/mlops/simular/", "/api/mlops/simular/")):
+            self._handle_mlops_simular(path)
+            return
         # API health check (incluye la version de Python que corre el server, para
         # que la GUI avise que bundle offline conviene segun el Python del destino).
         if path == "/api/health":
@@ -292,6 +311,9 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 "python_version": f"{vi.major}.{vi.minor}.{vi.micro}",
                 "python_minor": vi.minor,
                 "platform": _plat.system(),
+                # el codigo cambio en disco despues de arrancar este proceso: hay que reiniciarlo
+                # (un servidor viejo genera paquetes con la logica vieja: nombres 'job', 'job_2'...)
+                "codigo_desactualizado": _codigo_desactualizado(),
             })
             return
 
@@ -1447,6 +1469,67 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             import traceback
             traceback.print_exc()
             self._json_response(500, {"error": f"{type(e).__name__}: {e}"})
+
+    def _handle_mlops_simular(self, path):
+        """Simulacion de los jobs de un paquete generado (src/mlops_simular.py). Solo localhost.
+        POST iniciar {token, job|'todos', timeout?} | cancelar {run} | reiniciar {token} |
+        visor {token, action: datasets|leer_parquet, ...}; GET info?token= | estado?run=&offset=."""
+        from src import mlops_simular as _sim
+        bloqueo = self._orq_local_only()
+        if bloqueo:
+            self._json_response(403, {"ok": False, "error": bloqueo})
+            return
+        accion = path.rstrip("/").rsplit("/", 1)[-1]
+        qs = parse_qs(urlparse(self.path).query)
+        data = {}
+        if self.command == "POST":
+            n = int(self.headers.get("Content-Length", 0))
+            try:
+                data = json.loads(self.rfile.read(n).decode("utf-8", errors="replace")) if n else {}
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                self._json_response(400, {"ok": False, "error": "Invalid JSON body"})
+                return
+        else:
+            data = dict((k, v[0]) for k, v in qs.items())
+
+        def _zip_de(tok):
+            tok = str(tok or "").strip()
+            zp = os.path.join(tempfile.gettempdir(), "bnx_bundles", tok + ".zip") if re.fullmatch(r"[0-9a-fA-F]+", tok) else None
+            if not zp or not os.path.isfile(zp):
+                raise _sim.SimError("token no encontrado o expirado", 404)
+            return zp
+        try:
+            if accion == "info" and self.command == "GET":
+                self._json_response(200, _sim.info(_zip_de(data.get("token"))))
+            elif accion == "estado" and self.command == "GET":
+                self._json_response(200, _sim.estado(data.get("run"), data.get("offset", 0)))
+            elif accion == "iniciar" and self.command == "POST":
+                tok = data.get("token")
+                rid = _sim.iniciar(tok, _zip_de(tok), data.get("job"), data.get("timeout"), data.get("settings"))
+                self._json_response(200, {"ok": True, "run": rid})
+            elif accion == "cancelar" and self.command == "POST":
+                self._json_response(200, _sim.cancelar(data.get("run")))
+            elif accion == "reiniciar" and self.command == "POST":
+                self._json_response(200, _sim.reiniciar(_zip_de(data.get("token"))))
+            elif accion == "visor" and self.command == "POST":
+                from src import parquet_visor as _pv
+                base = _sim.base_visor(_zip_de(data.get("token")))
+                try:
+                    if data.get("action") == "datasets":
+                        self._json_response(200, _pv.listar(base))
+                    else:
+                        self._json_response(200, _pv.leer(base, "output", data.get("nombre"),
+                                                          data.get("limite", _pv.LIMITE_DEFECTO), data.get("offset", 0)))
+                except _pv.VisorError as e:
+                    self._json_response(400, {"ok": False, "error": str(e), "codigo": e.codigo})
+            else:
+                self._json_response(404, {"ok": False, "error": "accion desconocida: %s" % accion})
+        except _sim.SimError as e:
+            self._json_response(e.status, {"ok": False, "error": str(e), "windows": _sim.es_windows()})
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._json_response(500, {"ok": False, "error": "%s: %s" % (type(e).__name__, e)})
 
     def _handle_mlops_package_verify(self):
         """Monta el paquete en un venv real y lo PRUEBA: check_env.py + pytest.
