@@ -1250,10 +1250,39 @@ if [ -n "$CLUSTER_SUBMIT" ]; then
   if [ -z "${HADOOP_CONF_DIR:-}${YARN_CONF_DIR:-}" ]; then
     echo "[run.sh] AVISO: sin HADOOP_CONF_DIR/YARN_CONF_DIR spark-submit no encuentra YARN." >&2
   fi
-  exec "$CLUSTER_SUBMIT" --master "${BNX_MASTER:-yarn}" --deploy-mode client \\
-    --driver-java-options "$JOPTS" \\
-    --conf spark.io.compression.codec="${BNX_IO_CODEC:-lz4}" \\
-    --conf spark.shuffle.mapStatus.compression.codec="${BNX_IO_CODEC:-lz4}" \\
+  # Recursos de YARN (cola, executors, memoria, shuffle.partitions): del spark.json del
+  # banco (--settings/CONF_PATH; --env uat usa spark_queue_uat), o del cfg, o valores por
+  # defecto. spark.executor.* y spark.yarn.queue son de LANZAMIENTO: van como un --conf por
+  # clave (NO --properties-file: reemplazaria el spark-defaults.conf del cluster).
+  # Se pueden ajustar con BNX_SPARK_CONF="k=v;k2=v2" y BNX_DRIVER_MEMORY=8g.
+  CONF_ARGS=()
+  if [ -f bnx_sparkconf.py ]; then
+    python bnx_sparkconf.py --modo cluster --out .bnx_spark_conf.properties -- "$@" \
+      || echo "[run.sh] AVISO: no se pudo calcular la conf de recursos; se usa la del cluster." >&2
+    if [ -f .bnx_spark_conf.properties ]; then
+      while IFS= read -r _l || [ -n "$_l" ]; do
+        if [ -n "$_l" ]; then CONF_ARGS+=(--conf "$_l"); fi
+      done < .bnx_spark_conf.properties
+    fi
+  fi
+  # OPCIONAL (apagado): BNX_ENVIAR_VENV=1 empaqueta el .venv y lo envia a los executors.
+  # Aun asi los nodos necesitan python3.11 en la MISMA ruta. Solo para jobs con udf/rdd.
+  ARCH_ARGS=()
+  if [ "${BNX_ENVIAR_VENV:-0}" = "1" ]; then
+    if [ ! -f .bnx_venv.tar.gz ]; then
+      echo "[run.sh] BNX_ENVIAR_VENV=1: empaquetando .venv -> .bnx_venv.tar.gz (puede pesar cientos de MB)"
+      tar -czf .bnx_venv.tar.gz .venv
+    fi
+    ARCH_ARGS=(--archives ".bnx_venv.tar.gz#bnxenv" \
+      --conf "spark.pyspark.python=./bnxenv/.venv/bin/python" \
+      --conf "spark.pyspark.driver.python=$PWD/.venv/bin/python")
+  fi
+  exec "$CLUSTER_SUBMIT" --master "${BNX_MASTER:-yarn}" --deploy-mode client \
+    --driver-java-options "$JOPTS" \
+    ${CONF_ARGS[@]+"${CONF_ARGS[@]}"} \
+    ${ARCH_ARGS[@]+"${ARCH_ARGS[@]}"} \
+    --conf spark.io.compression.codec="${BNX_IO_CODEC:-lz4}" \
+    --conf spark.shuffle.mapStatus.compression.codec="${BNX_IO_CODEC:-lz4}" \
     main.py "$@"
 fi
 if ! python -c "import pyspark" >/dev/null 2>&1; then
@@ -1263,10 +1292,22 @@ if ! python -c "import pyspark" >/dev/null 2>&1; then
 fi
 export PYSPARK_PYTHON="$PWD/.venv/bin/python"
 export PYSPARK_DRIVER_PYTHON="$PWD/.venv/bin/python"
+# Datos REALES en un solo nodo (local[*]): spark.driver.memory solo vale al LANZAR la JVM,
+# por eso se pasa aqui con --driver-memory (BNX_DRIVER_MEMORY=16g para cambiarla).
+if [ -f bnx_sparkconf.py ]; then
+  python bnx_sparkconf.py --modo local --out .bnx_spark_conf.properties -- "$@" || true
+  _M=$(sed -n 's/^spark.driver.memory=//p' .bnx_spark_conf.properties 2>/dev/null | head -1)
+  if [ -n "$_M" ] && [ -z "${PYSPARK_SUBMIT_ARGS:-}" ]; then
+    export PYSPARK_SUBMIT_ARGS="--driver-memory $_M pyspark-shell"
+  fi
+fi
 exec python main.py "$@"
 '''
 
 from src.spark_server_sh import SPARK_CFG_SH as _SPARK_CFG_SH
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "bnx_sparkconf.py"), encoding="utf-8") as _fh:
+    _SPARKCONF_PY = _fh.read()   # viaja en la raiz del paquete (run.sh y main.py lo usan)
+from src import bnx_sparkconf as _bsc
 _SETUP_SH = _SETUP_SH.replace("@@SPARKCFG@@", _SPARK_CFG_SH)
 _SETUP_SH = _SETUP_SH.replace("@@LIBOMP@@", _LIBOMP_SH)
 _RUN_SH = _RUN_SH.replace("@@LIBOMP@@", _LIBOMP_SH)
@@ -1485,6 +1526,7 @@ import os
 import sys
 import shutil
 import tempfile
+import time
 
 # Modulos de PYTHONPATH del banco (toolbox, bnmxverse, utils): si el paquete se
 # monto con ambiente completo, setup.sh/run.sh los dejan en ./bank_pkg. Los
@@ -1515,6 +1557,10 @@ except Exception as e:
 
 from framework_mlops_v2.aggregates.router import REGISTRY, GroupBy
 from framework_mlops_v2.aggregates import router as _router
+import bnx_sparkconf as _bs   # conf de Spark, demo/real, tabla de tiempos (raiz del paquete)
+
+# Tiempos por fuente/job para la tabla final (etapa, nombre, seg, particiones, archivos, filas, estado).
+_TIEMPOS = []
 
 # Jobs del banco (def run(kernel)) y alias de los nombres viejos (job, job_2...) -> nombre por ruta.
 KERNEL = getattr(_router, "KERNEL", {})
@@ -1678,6 +1724,51 @@ def _err_text(e, n=700):
         pass
     msg = str(e).strip()
     return " ".join(msg.split("\\n")[0].split())[:n] if msg else type(e).__name__
+def _log_conf_efectiva(spark, cluster, real):
+    """Imprime la conf con la que quedo la sesion (para ver que recursos se estan usando)."""
+    sc = spark.sparkContext
+    try:
+        conf = dict(sc.getConf().getAll())
+        conf["spark.sql.shuffle.partitions"] = spark.conf.get("spark.sql.shuffle.partitions")
+    except Exception:
+        conf = {}
+    for l in _bs.resumen_conf(conf):
+        print("[spark]   " + l)
+    print("[spark]   paralelismo por defecto=%s" % sc.defaultParallelism)
+    if cluster:
+        _avisar_python_workers()
+    elif real and str(sc.master).startswith("local") and "spark.driver.memory" not in conf:
+        print("[spark] AVISO: en local la memoria del driver solo vale al lanzar. Usa 'bash run.sh' "
+              "(la pasa con --driver-memory) o export PYSPARK_SUBMIT_ARGS='--driver-memory 16g pyspark-shell'.")
+def _avisar_python_workers():
+    """En YARN los executors son JVM sin Python SALVO que el codigo use udf/rdd/pandas_udf...
+    Avisa de los archivos del paquete que lo hacen (analisis estatico)."""
+    hallados = {}
+    for base in ("bank_src", os.path.join("framework_mlops_v2", "aggregates")):
+        for fp in glob.glob(os.path.join(_here, base, "**", "*.py"), recursive=True):
+            try:
+                with open(fp, encoding="utf-8") as fh:
+                    hs = _bs.detectar_python_en_workers(fh.read())
+            except (OSError, UnicodeDecodeError):
+                continue
+            if hs:
+                hallados[os.path.relpath(fp, _here)] = hs
+    if hallados:
+        print("[spark] AVISO: %d archivo(s) ejecutan Python en los WORKERS (udf/rdd/pandas_udf...):" % len(hallados))
+        for fp, hs in sorted(hallados.items()):
+            print("          %s: %s" % (fp, ", ".join(sorted(set("%s (l.%d)" % (h["patron"], h["linea"]) for h in hs)))[:200]))
+        print("          " + _bs.AVISO_WORKERS)
+def _imprimir_tiempos(spark=None):
+    if not _TIEMPOS:
+        return
+    master = app = None
+    try:
+        sc = (spark or SparkSession.getActiveSession()).sparkContext
+        master, app = sc.master, sc.applicationId
+    except Exception:
+        pass
+    print("\\n" + _bs.tabla_tiempos(_TIEMPOS, master, app))
+    del _TIEMPOS[:]
 def _extract_sources(spark, fuentes, src_cfg, prev, cfg_dir, dry_run=False):
     """Ejecuta el query de cada fuente en la sesion de Spark y lo baja a parquet
     en <prev>/<table_name>. Devuelve las fuentes que fallaron al extraer.
@@ -1702,26 +1793,47 @@ def _extract_sources(spark, fuentes, src_cfg, prev, cfg_dir, dry_run=False):
         if dry_run:
             continue
         chk = scfg.get("_check")
-        if chk:
+        if chk and os.environ.get("BNX_PREFLIGHT", "1") != "0":
+            # Chequeo rapido: SOLO catalogo (existe la tabla / columnas), no lee datos.
+            # Se desactiva con BNX_PREFLIGHT=0.
+            _tp = time.time()
             problema = _preflight(spark, chk)
+            _TIEMPOS.append({"etapa": "preflight", "nombre": s, "seg": time.time() - _tp,
+                             "estado": "OK" if not problema else "AVISO"})
             if problema:
                 # Solo AVISO: con permisos restringidos (Ranger/Sentry) el catalogo
                 # puede no listar la base aunque el SELECT si funcione. Se intenta igual.
                 print("          [aviso preflight] %s -> se intenta el query de todos modos" % problema)
         else:
             problema = None
+        _t0 = time.time()
+        _parts = escritos = filas = None
         try:
             df = spark.sql(q)
+            try:   # particiones del plan (no ejecuta nada; None si no se puede saber)
+                _parts = int(df._jdf.queryExecution().toRdd().getNumPartitions())
+            except Exception:
+                _parts = None
             df.write.mode("overwrite").parquet(dest)
-            # Verificar de verdad que se escribio (archivos .parquet + conteo).
+            _seg = time.time() - _t0
+            # Verificar que se escribio: LISTA los .parquet (no relee los datos).
             escritos = _fs_parquet_files(spark, dest)
-            filas = spark.read.parquet(dest).count()
             if not escritos:
                 raise RuntimeError("el write no dejo archivos .parquet en %s" % _fs_uri(spark, dest))
-            print("          OK: %d filas, %d archivo(s) parquet en %s"
-                  % (filas, escritos, _fs_uri(spark, dest)))
+            # Contar filas = una pasada extra por todo lo escrito: solo con BNX_CONTAR_FILAS=1.
+            if os.environ.get("BNX_CONTAR_FILAS") == "1":
+                filas = spark.read.parquet(dest).count()
+            _sc = spark.sparkContext
+            print("          OK: query+write %.1f s | %s particion(es) del query | %d archivo(s) parquet%s en %s"
+                  % (_seg, "?" if _parts is None else _parts, escritos,
+                     "" if filas is None else " | %d filas" % filas, _fs_uri(spark, dest)))
+            print("          master=%s applicationId=%s" % (_sc.master, _sc.applicationId))
+            _TIEMPOS.append({"etapa": "extract", "nombre": s, "seg": _seg, "particiones": _parts,
+                             "archivos": escritos, "filas": filas, "estado": "OK"})
         except Exception as e:
             print("          ERROR extrayendo '%s': %s" % (s, _err_text(e)))
+            _TIEMPOS.append({"etapa": "extract", "nombre": s, "seg": time.time() - _t0,
+                             "particiones": _parts, "estado": "ERROR"})
             if problema:
                 print("          (pista: %s)" % problema)
             fallidas.append(s)
@@ -2482,6 +2594,9 @@ def _kernel_main(args, nombres):
     for n, est, dt, det in resumen:
         print("  %-8s %-28s %6.1f s  %s" % (est, n, dt, det))
     print("RESULTADO jobs del banco: %d OK, %d con error, %d saltados." % (ok, fail, skip))
+    for n, est, dt, det in resumen:
+        _TIEMPOS.append({"etapa": "kernel", "nombre": n, "seg": dt, "estado": est})
+    _imprimir_tiempos()
     if demo and _demo_mod() is not None:
         _demo_mod().reporte()
         _demo_mod().desactivar()
@@ -2550,9 +2665,17 @@ def main():
                   % scfg_spark["master"])
         print("[spark] modo CLUSTER (spark-submit del nodo)")
     else:
-        builder = (builder.master(scfg_spark.get("master", "local[1]"))
+        if _bs.es_demo(args.config, args.settings, args.demo):
+            # DEMO (datos sinteticos): chico a proposito.
+            _master, _shuf = scfg_spark.get("master", "local[1]"), "2"
+        else:
+            # DATOS REALES en un solo nodo: todos los nucleos y mas particiones.
+            # (cfg spark.master / spark.conf mandan sobre estos valores.)
+            _master = scfg_spark.get("master") or os.environ.get("BNX_MASTER") or "local[*]"
+            _shuf = str(_bs.shuffle_local(_bs.nucleos(_master)))
+        builder = (builder.master(_master)
                    .config("spark.ui.enabled", "false")
-                   .config("spark.sql.shuffle.partitions", "2")
+                   .config("spark.sql.shuffle.partitions", _shuf)
                    .config("spark.local.dir", work)
                    .config("spark.driver.extraJavaOptions", jopts))
     # Compresion INTERNA de Spark (shuffle/mapStatus): lz4 en vez de zstd. zstd-jni
@@ -2579,6 +2702,7 @@ def main():
     # Donde quedo REALMENTE la sesion (para verificar que se registro en YARN).
     _sc = spark.sparkContext
     print("[spark] master=%s | applicationId=%s" % (_sc.master, _sc.applicationId))
+    _log_conf_efectiva(spark, cluster, not _bs.es_demo(args.config, args.settings, args.demo))
     if cluster and not str(_sc.master).startswith("yarn") and not os.environ.get("BNX_MASTER"):
         print("[spark] AVISO: modo CLUSTER pero la sesion NO esta en YARN (master=%s). "
               "Revisa HADOOP_CONF_DIR/YARN_CONF_DIR (yarn-site.xml) y spark-defaults.conf "
@@ -2690,11 +2814,21 @@ def main():
                     fail += 1
                 continue
             # 2) Aggregate de ESTA fuente.
-            GroupBy(s, previous_path=prev, agg_dict=scfg,
-                    sqlContext=spark).aggregate()
+            _ta = time.time()
+            try:
+                GroupBy(s, previous_path=prev, agg_dict=scfg,
+                        sqlContext=spark).aggregate()
+            except Exception:
+                _TIEMPOS.append({"etapa": "aggregate", "nombre": s, "seg": time.time() - _ta, "estado": "ERROR"})
+                raise
+            _TIEMPOS.append({"etapa": "aggregate", "nombre": s, "seg": time.time() - _ta, "estado": "OK"})
             head, _ = os.path.split(prev)
+            _tc = time.time()
             out = spark.read.parquet(os.path.join(head, "groupby"))
-            print("  OK -> salida: %d filas, %d columnas" % (out.count(), len(out.columns)))
+            _nf = out.count()
+            _TIEMPOS.append({"etapa": "conteo", "nombre": s, "seg": time.time() - _tc,
+                             "filas": _nf, "estado": "OK"})
+            print("  OK -> salida: %d filas, %d columnas" % (_nf, len(out.columns)))
             if demo:
                 out.show(5, truncate=False)
             ok += 1
@@ -2712,14 +2846,17 @@ def main():
             print("  [skip] no corre el aggregate: fallo la extraccion de alguna tabla.")
         else:
             try:
+                _ta = time.time()
                 GroupBy(job_agg, previous_path=prev, agg_dict={"table_name": job_agg},
                         sqlContext=spark).aggregate()
+                _TIEMPOS.append({"etapa": "aggregate", "nombre": job_agg, "seg": time.time() - _ta, "estado": "OK"})
                 print("  OK -> aggregate de '%s' terminado" % job_agg)
                 ok += 1
             except Exception as e:
                 print("  ERROR:", type(e).__name__, "-", str(e)[:160])
                 fail += 1
 
+    _imprimir_tiempos(spark)
     print("\\n" + "=" * 64)
     print("RESULTADO: %d fuente(s) OK, %d con error." % (ok, fail))
     if demo:
@@ -2856,15 +2993,102 @@ La linea `[run.sh] tmp de la JVM: ...` confirma la ruta usada.
 - **Orden por dependencias (opcional):** `"depends_on": ["a"]` en la fuente del `cfg.json`
   o en `orden.json` (lo genera la pantalla "Orden de las fuentes" del portal). Esa fuente
   corre despues de `a` y se salta si `a` fallo. Sin `depends_on`, el orden es el de siempre.
+
+## 7) Ejecución en el cluster (YARN) sin instalar en otros nodos
+
+**Regla:** todo se instala **solo en el nodo desde donde lanzas** (edge node / master). Los
+workers del cluster **no se tocan**: no llevan venv, ni librerías, ni este paquete.
+
+### Dónde se instala y qué corre dónde
+| Pieza | Dónde vive / corre | Qué necesita |
+|---|---|---|
+| `setup.sh` (crea `.venv` con Python 3.11 y las librerías) | **solo el edge node** | nada en los workers |
+| **Driver** (`main.py`, tus jobs, pandas, xgboost, sklearn...) | el edge node (`--deploy-mode client`) | el `.venv` del edge node |
+| **Executors** | JVM de Spark en los workers (los arranca YARN) | solo Java/Spark del cluster, **sin Python** |
+
+Mientras el código use **SQL / DataFrame** (select, join, groupBy, agg, funciones de
+`pyspark.sql.functions`, `spark.sql(...)`, escribir/leer parquet), todo el trabajo pesado lo hace la
+JVM de los executors y **los workers no necesitan Python**. Python solo hace de "control remoto" en el driver.
+
+### Cómo lanzar
+```bash
+# una sola vez, en el edge node
+bash setup.sh
+
+# la consulta/job en YARN con los recursos del banco (cola, executors, memoria)
+BNX_SPARK=cluster bash run.sh --config pivot.json --settings /ruta/bin/settings --env uat --cohort 202501 --extract-only
+
+# jobs del banco (run(kernel)) con sus settings
+BNX_SPARK=cluster bash run.sh --settings /ruta/bin/settings --env uat --fid 170589
+```
+Al arrancar, `run.sh` imprime `[spark-conf]` con lo que va a pedir a YARN y `main.py` imprime
+`[spark] master=... applicationId=...` con lo que realmente quedó (cola, executors, memoria, particiones).
+
+### Cómo se aplican los recursos
+`run.sh` calcula la configuración de **lanzamiento** (`spark.executor.*`, `spark.yarn.queue`,
+`spark.dynamicAllocation.*`, `spark.driver.memory`...) y la pasa al `spark-submit` con un `--conf` por clave
+(se guarda en `.bnx_spark_conf.properties`; no se usa `--properties-file` para no perder el
+`spark-defaults.conf` del cluster). Orden de prioridad, de menor a mayor:
+1. Valores por defecto: asignación dinámica activada y `spark.sql.shuffle.partitions=200`, sin cola.
+2. `spark.conf` del cfg JSON del framework (`{"spark": {"conf": {...}}}`).
+3. `spark.json` del banco (`--settings <bin/settings>` o `CONF_PATH`): bloque `default` (o el de `spark_config`;
+   con `BNX_SPARK_MODELO=<modelo>` el `spark_config` de ese modelo). Con `--env uat` la cola es `spark_queue_uat`.
+4. `BNX_DRIVER_MEMORY=8g` (solo la memoria del driver).
+5. `BNX_SPARK_CONF="spark.executor.memory=20g;spark.executor.cores=4"` (pares separados por `;`): lo último que dices tú.
+
+Nunca se pisa el `--master` (usa `BNX_MASTER=...` si necesitas otro) ni se quitan `lz4` ni el tmp propio.
+Aviso: `spark.driver.memory` del banco puede ser grande (p.ej. 24g); el edge node debe tener esa RAM libre
+o baja la memoria con `BNX_DRIVER_MEMORY`.
+
+### Un solo nodo (sin YARN): `local[*]`
+Con datos reales (`--config` o `--settings`) y sin cluster, la sesión usa **todos los núcleos** del nodo
+(`local[*]`), `spark.sql.shuffle.partitions = max(8, 2 x núcleos)` y la memoria del driver
+(`BNX_DRIVER_MEMORY`, o el `spark.driver.memory` del cfg, o la mitad de la RAM hasta 32g).
+En local la memoria del driver solo vale **al lanzar**, por eso `run.sh` la pasa con `--driver-memory`
+(si corres `python main.py` a mano, exporta `PYSPARK_SUBMIT_ARGS="--driver-memory 16g pyspark-shell"`).
+El modo demo (sin `--config` ni `--settings`, o con `--demo`) sigue en `local[1]` con 2 particiones.
+```bash
+bash run.sh --config cfg.json --extract-only
+BNX_DRIVER_MEMORY=16g bash run.sh --config cfg.json
+```
+
+### Cómo leer la tabla de tiempos
+Al final de cada corrida sale `TABLA DE TIEMPOS` con `master` y `applicationId`, y una fila por etapa:
+`preflight` (consulta al catálogo, sin leer datos), `extract` (query + write a parquet, con particiones del
+query y archivos escritos), `aggregate`, `conteo` y `kernel` (jobs del banco). La última línea dice qué fue lo más
+lento. Pistas: pocas particiones con mucho tiempo = poco paralelismo (sube executors o `spark.sql.shuffle.partitions`);
+muchos archivos pequeños = demasiadas particiones; `preflight` lento = problema del metastore.
+Para contar filas escritas (una pasada extra, apagada por defecto): `BNX_CONTAR_FILAS=1`.
+Para saltar el chequeo previo del catálogo: `BNX_PREFLIGHT=0`.
+
+### Cuándo SÍ hace falta Python en los workers
+Estos patrones ejecutan Python **dentro de los executors** y fallan en YARN si los nodos no tienen
+Python 3.11 con las mismas librerías:
+- `udf`, `F.udf`, `@udf`, `pandas_udf`, `spark.udf.register(...)` con función Python
+- `applyInPandas`, `mapInPandas`, `applyInPandasWithState`, `mapInArrow`
+- `df.rdd`, `rdd.map / flatMap / filter / mapPartitions`, `foreach`, `foreachPartition`, `sparkContext.parallelize`
+- `pyspark.pandas` / `pandas_api()`
+- `xgboost.spark` / `SparkXGBClassifier`, `SparkXGBRegressor`
+- sklearn / xgboost / lightgbm usados dentro de una `udf`
+
+El portal los detecta al generar el paquete (aviso en el reporte, por archivo y línea) y `main.py` los
+vuelve a avisar al arrancar en modo cluster. Qué hacer:
+1. Reescribir con funciones de **Spark SQL / DataFrame** (`when`, `regexp_extract`, `expr`, ventanas...).
+2. O **agregar en Spark y calcular en el driver**: `toPandas()` sobre un resultado **pequeño** y ahí usar pandas/sklearn/xgboost.
+   Cuidado con la memoria: `toPandas()` trae todo al driver; agrega/filtra antes y ajusta `BNX_DRIVER_MEMORY`.
+3. Último recurso (apagado por defecto): `BNX_ENVIAR_VENV=1` empaqueta el `.venv` y lo manda con `--archives`.
+   Aun así los nodos necesitan `python3.11` en la misma ruta que el edge node. Solo para quien lo necesite.
+
+Ejemplo de ejecución local (para probar sin cluster): `bash run.sh --config cfg.json --extract-only`.
 '''
 
 _CFG_EXAMPLE = '''{
   "previous_path": "data/datapull",
   "spark": {
-    "master": "local[2]",
+    "master": "local[*]",
     "hive": true,
     "conf": {
-      "spark.sql.shuffle.partitions": "8"
+      "spark.sql.shuffle.partitions": "16"
     }
   },
   "sources": {
@@ -3470,6 +3694,17 @@ def _paquetes_importados(sources):
     return out
 
 
+def _nombre_con_ruta(item):
+    """Nombre de una fuente subida CON su ruta relativa si la trae: la UI manda la carpeta como
+    'name' = webkitRelativePath; otros clientes mandan 'path' / 'relative_path' / 'webkitRelativePath'
+    y en 'name' solo el archivo. Se prefiere el campo que lleva carpetas (los nombres por ruta,
+    liabilities_pivot / rps_target..., y la clasificacion de main.py/toolbox dependen de la ruta)."""
+    nombre = item.get("name") or "fuente.py"
+    for k in ("path", "webkitRelativePath", "relative_path", "relativePath"):
+        v = item.get(k)
+        if isinstance(v, str) and len(_partes_ruta(v)) > len(_partes_ruta(nombre)):
+            return v
+    return nombre
 def _partes_ruta(raw_name):
     """['dir', 'sub', 'archivo.py'] de un nombre subido (webkitRelativePath o solo el nombre)."""
     p = str(raw_name or "").replace("\\", "/")
@@ -4627,6 +4862,8 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
         ambiente completo (~700 MB) y servidores de 32 bits (Windows/Python 3.8).
     Devuelve (zip_bytes_o_ruta, filename, report) donde report describe cada fuente.
     """
+    # Cada fuente con su RUTA (si la trae en path/webkitRelativePath/...) antes de clasificar.
+    sources = [dict(it, name=_nombre_con_ruta(it)) if isinstance(it, dict) else it for it in sources or []]
     gen_sources = []       # nombres de modulo validos, unicos
     files = {}
     report = []
@@ -4640,7 +4877,7 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     _init_txt = "# BNX: paquete armado con los archivos subidos al portal.\n"
 
     for item in sources or []:
-        raw_name = item.get("name") or "fuente.py"
+        raw_name = _nombre_con_ruta(item)
         pandas_code = item.get("code") or ""
         if pandas_code.strip():
             original_codes.append(pandas_code)
@@ -4708,7 +4945,10 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
             report.append({"name": raw_name, "source": nombre, "ok": True, "role": "job",
                            "kind": "kernel", "verbatim": True, "job_kernel": True,
                            "file": _rel, "todos": [], "warnings": 0, "unsupported": 0,
-                           "modulo": modulo, "alias": legacy if legacy != nombre else None})
+                           "modulo": modulo, "alias": legacy if legacy != nombre else None,
+                           **({} if ids else {"aviso": "archivo suelto SIN ruta: el nombre del job sale del "
+                              "archivo (job, job_2...). Sube la carpeta completa (o con su ruta, p.ej. "
+                              "bin/jobs/rps/target/job.py) para nombrarlo por ruta (rps_target)."})})
             continue
         # ¿Otro archivo subido lo importa como 'paquete.este_modulo'? Entonces es un
         # modulo de ESE paquete (toolbox/kernel.py, utils/emails_full.py, ...): va
@@ -4861,6 +5101,7 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
         files["mex_lib_cs/__init__.py"] = _MEX_LIB_CS
     files["setup.sh"] = _SETUP_SH
     files["run.sh"] = _RUN_SH
+    files["bnx_sparkconf.py"] = _SPARKCONF_PY
     files["cfg.example.json"] = _CFG_EXAMPLE
     files["NOTAS_EJECUCION.md"] = _NOTAS_EJECUCION
     files["pytest.ini"] = _PYTEST_INI   # pytest solo en tests/, ignora __MACOSX/vendor
@@ -4919,8 +5160,22 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
                 modulos_faltantes.setdefault(pkg, set()).add(mod)
     modulos_faltantes = {k: sorted(v) for k, v in sorted(modulos_faltantes.items())}
 
+    # Python en los WORKERS (udf/rdd/pandas_udf...): aviso estatico por archivo.
+    workers_python = {}
+    for _p, _c in files.items():
+        if _p.endswith(".py") and (_p.startswith("bank_src/")
+                                   or (_p.startswith("framework_mlops_v2/aggregates/")
+                                       and not _p.endswith("router.py"))):
+            _h = _bsc.detectar_python_en_workers(_c if isinstance(_c, str) else "")
+            if _h:
+                workers_python[_p] = _h
+    for _r in report:
+        if _r.get("file") in workers_python:
+            _r["workers_python"] = len(workers_python[_r["file"]])
     # Meta: incluye los archivos de CODIGO (editables) para guardarlos por token.
     report.append({"_meta": True, "full_env": bool(full_env),
+                   "workers_python": workers_python,
+                   "workers_python_aviso": _bsc.AVISO_WORKERS if workers_python else "",
                    "vendor_series": vendor_list,
                    "vendor_missing": vendor_missing,
                    "entorno_faltan": entorno_faltan,
@@ -5120,6 +5375,7 @@ def build_mlops_package(include_bank_libs=True, extra_steps=False,
         "requirements.txt": _requirements(include_bank_libs, extra_steps),
         "setup.sh": _SETUP_SH,
         "run.sh": _RUN_SH,
+        "bnx_sparkconf.py": _SPARKCONF_PY,
         "cfg.example.json": _CFG_EXAMPLE,
         "NOTAS_EJECUCION.md": _NOTAS_EJECUCION,
         "pytest.ini": _PYTEST_INI,

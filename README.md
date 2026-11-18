@@ -217,6 +217,20 @@ cd app && git pull && sudo systemctl restart bnx
 El env que se baja (`preparar_vendor.py`, `start_server.sh`; tag del Release `vendor-linux-v2`, configurable con `--tag` o `BNX_VENDOR_TAG`) ya trae PySpark **y** la pila: xgboost, lightgbm, scikit-learn, scipy, statsmodels, matplotlib, seaborn, joblib, threadpoolctl (+ transitivas). En la pagina del paquete la opcion "Incluir pila de ciencia de datos" viene activada; si la desmarcas solo van las librerias que tu codigo importa (xgboost/sklearn/lightgbm/scipy/...), y un paquete sin ellas sigue ligero. `setup.sh` las instala offline desde `vendor/` y, si falta una wheel, completa por internet.
 OpenMP: en Mac, `setup.sh`/`run.sh` usan la `libomp` de scikit-learn (`DYLD_LIBRARY_PATH`) si no hay `brew install libomp`; en Linux hace falta `libgomp` (`yum install libgomp` / `apt-get install libgomp1`); en Windows el Visual C++ Redistributable.
 
+### Simular los jobs desde la UI (Framework MLOps v2, Mac/Linux + Java)
+En el reporte del paquete generado, el panel **🖥 Simular jobs** corre cada job (o todos) como un terminal en vivo:
+`python main.py --demo --source <job>` (todos: `--demo --continuar-si-falla`), Spark local con datos sinteticos. Muestra
+el log (autoscroll, colores `[OK]`/`[ERROR]`), estado, duracion, boton Cancelar (mata el arbol de procesos) y Copiar log;
+al terminar, resumen por job (estado, tiempo, filas escritas) y el visor de `demo_out/`.
+- **El PIVOTE corre siempre primero.** Todos: pivotes (`*_pivot`, ruta `.../pivot/` o `"pivot": true` en `orden.json`) y luego el
+  resto por `depends_on` (lo hace el runner de `main.py`, tambien fuera de la UI). Un job suelto que no es pivote corre antes el
+  pivote de su mismo modelo (`rps_target` -> `rps_pivot`) si su salida no esta ya en `demo_out/` de la sesion; `↺ Reiniciar demo_out` empieza limpio.
+- El paquete se monta en `<cache>/_simular/<hash del ZIP>/` y su `.venv` se crea UNA vez con `setup.sh` (offline desde `vendor/`; lo que no
+  sirva en esta maquina lo completa por internet) y se reutiliza mientras el ZIP no cambie. Python: el target del paquete si existe (`python3.11`), si no el del host con aviso.
+- Config de negocio: campo "Carpeta `bin/settings`" (ruta local; la UI solo sube `.py`). Sin ella los jobs que leen `model_name`/tablas fallan en el demo.
+- Un run a la vez por paquete (409); solo desde localhost; `BNX_SIMULAR_TIMEOUT` (s, default 1800), `BNX_SIMULAR_DIR` cambia la carpeta de trabajo. Windows: mensaje "requiere Mac/Linux (o WSL) y Java".
+- Nombres de jobs por ruta (`rps_target`...): suban la **carpeta completa** (o con su ruta); archivos sueltos sin ruta quedan `job`, `job_2`... con aviso.
+  Si el portal se arranco antes de actualizar el codigo, la pagina avisa (`/api/health` -> `codigo_desactualizado`): reinicialo.
 ### Cache de vendor (Framework MLOps v2, paquetes Linux offline)
 Los wheels que se empaquetan (PySpark 3.5.6/4.0.0, py4j, pandas/numpy manylinux, mex-lib del banco)
 viven **dentro del venv**: `.venv/bnx_vendor_cache/` (o `BNX_VENDOR_CACHE=/otra/ruta`). `./start_server.sh`
@@ -231,6 +245,92 @@ python exportar_vendor.py --python 3.8                   # en la maquina con cac
 Las mex-lib del banco no estan en PyPI: llegan por ZIP o desde la pagina "Librerias del banco".
 La pagina del Framework MLOps v2 tambien tiene el boton **Bajar/generar cache**.
 
+### Ejecución en el cluster (YARN) sin instalar en otros nodos
+
+**Regla:** todo se instala **solo en el nodo desde donde lanzas** (edge node / master). Los
+workers del cluster **no se tocan**: no llevan venv, ni librerías, ni este paquete.
+
+#### Dónde se instala y qué corre dónde
+| Pieza | Dónde vive / corre | Qué necesita |
+|---|---|---|
+| `setup.sh` (crea `.venv` con Python 3.11 y las librerías) | **solo el edge node** | nada en los workers |
+| **Driver** (`main.py`, tus jobs, pandas, xgboost, sklearn...) | el edge node (`--deploy-mode client`) | el `.venv` del edge node |
+| **Executors** | JVM de Spark en los workers (los arranca YARN) | solo Java/Spark del cluster, **sin Python** |
+
+Mientras el código use **SQL / DataFrame** (select, join, groupBy, agg, funciones de
+`pyspark.sql.functions`, `spark.sql(...)`, escribir/leer parquet), todo el trabajo pesado lo hace la
+JVM de los executors y **los workers no necesitan Python**. Python solo hace de "control remoto" en el driver.
+
+#### Cómo lanzar
+```bash
+# una sola vez, en el edge node
+bash setup.sh
+
+# la consulta/job en YARN con los recursos del banco (cola, executors, memoria)
+BNX_SPARK=cluster bash run.sh --config pivot.json --settings /ruta/bin/settings --env uat --cohort 202501 --extract-only
+
+# jobs del banco (run(kernel)) con sus settings
+BNX_SPARK=cluster bash run.sh --settings /ruta/bin/settings --env uat --fid 170589
+```
+Al arrancar, `run.sh` imprime `[spark-conf]` con lo que va a pedir a YARN y `main.py` imprime
+`[spark] master=... applicationId=...` con lo que realmente quedó (cola, executors, memoria, particiones).
+
+#### Cómo se aplican los recursos
+`run.sh` calcula la configuración de **lanzamiento** (`spark.executor.*`, `spark.yarn.queue`,
+`spark.dynamicAllocation.*`, `spark.driver.memory`...) y la pasa al `spark-submit` con un `--conf` por clave
+(se guarda en `.bnx_spark_conf.properties`; no se usa `--properties-file` para no perder el
+`spark-defaults.conf` del cluster). Orden de prioridad, de menor a mayor:
+1. Valores por defecto: asignación dinámica activada y `spark.sql.shuffle.partitions=200`, sin cola.
+2. `spark.conf` del cfg JSON del framework (`{"spark": {"conf": {...}}}`).
+3. `spark.json` del banco (`--settings <bin/settings>` o `CONF_PATH`): bloque `default` (o el de `spark_config`;
+   con `BNX_SPARK_MODELO=<modelo>` el `spark_config` de ese modelo). Con `--env uat` la cola es `spark_queue_uat`.
+4. `BNX_DRIVER_MEMORY=8g` (solo la memoria del driver).
+5. `BNX_SPARK_CONF="spark.executor.memory=20g;spark.executor.cores=4"` (pares separados por `;`): lo último que dices tú.
+
+Nunca se pisa el `--master` (usa `BNX_MASTER=...` si necesitas otro) ni se quitan `lz4` ni el tmp propio.
+Aviso: `spark.driver.memory` del banco puede ser grande (p.ej. 24g); el edge node debe tener esa RAM libre
+o baja la memoria con `BNX_DRIVER_MEMORY`.
+
+#### Un solo nodo (sin YARN): `local[*]`
+Con datos reales (`--config` o `--settings`) y sin cluster, la sesión usa **todos los núcleos** del nodo
+(`local[*]`), `spark.sql.shuffle.partitions = max(8, 2 x núcleos)` y la memoria del driver
+(`BNX_DRIVER_MEMORY`, o el `spark.driver.memory` del cfg, o la mitad de la RAM hasta 32g).
+En local la memoria del driver solo vale **al lanzar**, por eso `run.sh` la pasa con `--driver-memory`
+(si corres `python main.py` a mano, exporta `PYSPARK_SUBMIT_ARGS="--driver-memory 16g pyspark-shell"`).
+El modo demo (sin `--config` ni `--settings`, o con `--demo`) sigue en `local[1]` con 2 particiones.
+```bash
+bash run.sh --config cfg.json --extract-only
+BNX_DRIVER_MEMORY=16g bash run.sh --config cfg.json
+```
+
+#### Cómo leer la tabla de tiempos
+Al final de cada corrida sale `TABLA DE TIEMPOS` con `master` y `applicationId`, y una fila por etapa:
+`preflight` (consulta al catálogo, sin leer datos), `extract` (query + write a parquet, con particiones del
+query y archivos escritos), `aggregate`, `conteo` y `kernel` (jobs del banco). La última línea dice qué fue lo más
+lento. Pistas: pocas particiones con mucho tiempo = poco paralelismo (sube executors o `spark.sql.shuffle.partitions`);
+muchos archivos pequeños = demasiadas particiones; `preflight` lento = problema del metastore.
+Para contar filas escritas (una pasada extra, apagada por defecto): `BNX_CONTAR_FILAS=1`.
+Para saltar el chequeo previo del catálogo: `BNX_PREFLIGHT=0`.
+
+#### Cuándo SÍ hace falta Python en los workers
+Estos patrones ejecutan Python **dentro de los executors** y fallan en YARN si los nodos no tienen
+Python 3.11 con las mismas librerías:
+- `udf`, `F.udf`, `@udf`, `pandas_udf`, `spark.udf.register(...)` con función Python
+- `applyInPandas`, `mapInPandas`, `applyInPandasWithState`, `mapInArrow`
+- `df.rdd`, `rdd.map / flatMap / filter / mapPartitions`, `foreach`, `foreachPartition`, `sparkContext.parallelize`
+- `pyspark.pandas` / `pandas_api()`
+- `xgboost.spark` / `SparkXGBClassifier`, `SparkXGBRegressor`
+- sklearn / xgboost / lightgbm usados dentro de una `udf`
+
+El portal los detecta al generar el paquete (aviso en el reporte, por archivo y línea) y `main.py` los
+vuelve a avisar al arrancar en modo cluster. Qué hacer:
+1. Reescribir con funciones de **Spark SQL / DataFrame** (`when`, `regexp_extract`, `expr`, ventanas...).
+2. O **agregar en Spark y calcular en el driver**: `toPandas()` sobre un resultado **pequeño** y ahí usar pandas/sklearn/xgboost.
+   Cuidado con la memoria: `toPandas()` trae todo al driver; agrega/filtra antes y ajusta `BNX_DRIVER_MEMORY`.
+3. Último recurso (apagado por defecto): `BNX_ENVIAR_VENV=1` empaqueta el `.venv` y lo manda con `--archives`.
+   Aun así los nodos necesitan `python3.11` en la misma ruta que el edge node. Solo para quien lo necesite.
+
+Ejemplo de ejecución local (para probar sin cluster): `bash run.sh --config cfg.json --extract-only`.
 ---
 
 ## ⚡ API Endpoints
