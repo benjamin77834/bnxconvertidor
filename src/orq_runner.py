@@ -135,6 +135,22 @@ def _usa_jobs(plan, nivel=0):
     return False
 
 
+def _pasos_sql(plan, nivel=0):
+    """Pasos 'sql' habilitados (incluye sub-planes)."""
+    out = []
+    for s in plan.get("steps", []):
+        a = s.get("action") or {}
+        if not s.get("enabled", True):
+            continue
+        if a.get("type") == "sql":
+            out.append(s)
+        elif a.get("type") == "plan" and nivel < 3:
+            try:
+                with open(orq._ruta_plan(a["target"]), "r", encoding="utf-8") as f:
+                    out += _pasos_sql(json.load(f), nivel + 1)
+            except (OSError, ValueError, KeyError):
+                pass
+    return out
 def _tipos_pasos(plan, p, nivel=0, acc=None):
     """{'scripts': n, 'remotos': [..]} de los pasos que correrian (incluye sub-planes)."""
     acc = acc if acc is not None else {"scripts": 0, "remotos": []}
@@ -161,8 +177,20 @@ def preflight(plan, p):
     """Chequeos previos. nivel: ok | warn | error (error = no se puede ejecutar)."""
     out = []
     usa_jobs = _usa_jobs(plan)
+    sqls = _pasos_sql(plan)
+    usa_spark = usa_jobs or any((s["action"].get("motor") or "spark_sql") in ("spark_sql", "jdbc") for s in sqls)
     out.append(_chk("python", "ok", f"Python del servidor: {sys.executable}"))
-    if usa_jobs:
+    for s in sqls:
+        a = s["action"]
+        pe = a.get("password_env")
+        if pe and pe not in os.environ:
+            out.append(_chk("sql_clave_" + s["id"], "warn",
+                            f"Paso SQL {s['name']}: la variable de entorno {pe} (contrasena) no esta definida "
+                            f"en el servidor", f"Defina {pe} antes de iniciar el servidor; no se guarda en el JSON."))
+        mot = a.get("motor") or "spark_sql"
+        if mot in ("beeline", "bteq", "sqlplus") and not shutil.which({"beeline": "beeline", "bteq": "bteq", "sqlplus": "sqlplus"}[mot]):
+            out.append(_chk("sql_bin_" + s["id"], "warn", f"Paso SQL {s['name']}: no se encontro el comando {mot} en el PATH"))
+    if usa_spark:
         import importlib.util
         if importlib.util.find_spec("pyspark") is None:
             out.append(_chk("pyspark", "error", "pyspark no esta instalado en el Python del servidor",

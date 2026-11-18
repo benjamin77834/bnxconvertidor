@@ -313,6 +313,78 @@ def params_a_env(params):
     return env, pend
 
 
+_PSET_PARAM = re.compile(r"^(\w+)\|[^|]?\|{3}(.*)$|^(\w+)\|{4}(.*)$")
+def _buscar_archivo_ci(carpeta, nombre):
+    if not carpeta or not nombre or not os.path.isdir(carpeta):
+        return None
+    for f in os.listdir(carpeta):
+        if f.lower() == nombre.lower() or pm._norm_name(f).lower() == pm._norm_name(nombre).lower():
+            return os.path.join(carpeta, f)
+    return None
+def pset_de_paso(o, paso=None):
+    """Nombre del .pset al que pertenece el plan (paso=None) o un paso (accion.source / .pset)."""
+    if paso is None:
+        return o.get("pset")
+    a = _find_paso(o, paso).get("action") or {}
+    for k in ("source", "pset"):
+        if str(a.get(k) or "").lower().endswith(".pset"):
+            return a[k]
+    return None
+def _find_paso(o, sid):
+    for s in o["steps"]:
+        if s["id"] == sid:
+            return s
+    raise ValueError(f"paso inexistente: {sid!r}")
+def params_pset(o, ab_folder, paso=None):
+    """Parametros del pset del plan o de un paso, leidos (solo lectura) de la carpeta Ab Initio,
+    junto con los overrides guardados en la orquestacion. Devuelve
+    {pset, archivo, prototype, params, overrides}; params vacio si no hay pset."""
+    nombre = pset_de_paso(o, paso)
+    res = {"pset": nombre, "archivo": None, "prototype": None, "params": {}}
+    ej = o.get("ejecucion") or {}
+    res["overrides"] = dict((ej.get("params") if paso is None else _find_paso(o, paso).get("params")) or {})
+    f = _buscar_archivo_ci(ab_folder, nombre)
+    if f and os.path.isfile(f):
+        info = pm.parse_pset_file(f)
+        res.update(archivo=os.path.basename(f), prototype=info["prototype"], params=info["params"])
+    elif paso is None and ej.get("env"):
+        res["params"] = dict(ej["env"])      # sin la carpeta Ab Initio: lo aplicado al generar
+    return res
+def exportar_pset(o, ab_folder, out_dir, paso=None):
+    """Escribe una copia del .pset con los overrides aplicados (formato nativo: !prototype +
+    NOMBRE|F|||VALOR) en out_dir. Nunca toca el original. Devuelve (ruta, texto)."""
+    nombre = pset_de_paso(o, paso)
+    f = _buscar_archivo_ci(ab_folder, nombre)
+    if not f or not os.path.isfile(f):
+        raise ValueError(f"no se encontro el pset {nombre!r} en la carpeta Ab Initio del proyecto"
+                         if nombre else "este plan/paso no tiene pset")
+    ov = _validar_params(params_pset(o, ab_folder, paso)["overrides"], "params")
+    with open(f, "r", encoding="utf-8", errors="replace") as fh:
+        lineas = fh.read().splitlines()
+    vistos, res = set(), []
+    for ln in lineas:
+        m = _PSET_PARAM.match(ln.strip())
+        if m:
+            k = m.group(1) or m.group(3)
+            if k in ov:
+                i = m.start(2) if m.group(1) else m.start(4)
+                ln = ln.strip()[:i] + ov[k]
+                vistos.add(k)
+        res.append(ln)
+    for k, v in ov.items():
+        if k not in vistos:
+            res.append(f"{k}||||{v}")
+    texto = "\n".join(res) + "\n"
+    base = os.path.basename(f)
+    if not re.fullmatch(r"[\w.\-]+", base):
+        raise ValueError("nombre de pset invalido")
+    os.makedirs(out_dir, exist_ok=True)
+    destino = os.path.join(out_dir, base)
+    if os.path.realpath(destino) == os.path.realpath(f):
+        raise ValueError("el destino no puede ser el pset original")
+    with open(destino, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(texto)
+    return destino, texto
 def _ruta_plan(target):
     """Ruta absoluta de una sub-orquestacion (las rutas se guardan relativas al proyecto)."""
     return target if os.path.isabs(target) else os.path.join(_ROOT, target)
@@ -366,18 +438,22 @@ def save_all(orchs, out_dir):
 
 def refrescar_acciones(almacenado, nuevo):
     """Copia a `almacenado` la accion de cada paso de `nuevo` (mismo id y nombre),
-    conservando todo lo editado (dependencias, flags, enlaces, ejecucion). Solo planes
-    generados desde .plan; las orquestaciones manuales y planes de planes no se tocan."""
+    conservando todo lo editado (dependencias, flags, enlaces, ejecucion, parametros). Solo
+    planes generados desde .plan; las orquestaciones manuales y planes de planes no se tocan.
+    Un paso con accion EDITADA desde la GUI (editado=True) no se pisa: solo se actualiza su
+    accion_original (lo que daria Ab Initio hoy) para que 'Restaurar' devuelva lo vigente."""
     if almacenado.get("origen") == "manual" or almacenado.get("tipo") == "plan_de_planes":
         return almacenado
     por_id = {s["id"]: s for s in nuevo.get("steps", [])}
     for s in almacenado.get("steps", []):
         n = por_id.get(s["id"])
-        if n and n["name"] == s["name"] and s.get("action", {}).get("type") in ("graph", "script", "noop"):
+        if not n or n["name"] != s["name"]:
+            continue
+        if s.get("editado"):
+            s["accion_original"] = n["action"]
+        elif s.get("action", {}).get("type") in ("graph", "script", "noop"):
             s["action"] = n["action"]
     return almacenado
-
-
 def pendientes_de_convertir(ab_folder, converted_dir):
     """Archivos .mp presentes en la carpeta que aun no tienen <grafo>_<target>.py."""
     conv = _index_converted(converted_dir)
@@ -526,6 +602,19 @@ def _ruta_segura(r):
             and all(part for part in r.split("/")))
 
 
+def _validar_params(d, campo):
+    """Overrides de parametros {NOMBRE: valor}: nombre valido como variable de entorno, valor texto."""
+    if not isinstance(d, dict) or len(d) > 500:
+        raise ValueError(f"{campo} debe ser un objeto {{nombre: valor}}")
+    out = {}
+    for k, v in d.items():
+        if not isinstance(k, str) or not _ENV_NAME.match(k) or len(k) > 128:
+            raise ValueError(f"{campo}: nombre de parametro invalido {k!r} (letras, numeros, _)")
+        v = "" if v is None else (str(v) if isinstance(v, (int, float, bool)) else v)
+        if not isinstance(v, str) or len(v) > 4000 or any(c in v for c in "\x00\r\n"):
+            raise ValueError(f"{campo}.{k}: valor invalido (texto de una linea, max 4000)")
+        out[k] = v
+    return out
 def validar_plan(o):
     """Lanza ValueError si el plan es inconsistente (ids, dependencias, ciclos, enlaces, ejecucion)."""
     steps = o.get("steps")
@@ -543,6 +632,9 @@ def validar_plan(o):
                 normalizar_accion(act)
             except ValueError as e:
                 raise ValueError(f"{s['id']}: {e}")
+    for s in steps:
+        if s.get("params") is not None:
+            _validar_params(s["params"], f"{s['id']}.params")
     topo_order(steps)
     anc = _ancestros(steps)
     seen_ids = set()
@@ -569,6 +661,8 @@ def validar_plan(o):
             raise ValueError("ejecucion: caracteres de control no permitidos")
         if not isinstance(ej.get("env", {}), dict):
             raise ValueError("ejecucion.env debe ser objeto")
+        if ej.get("params") is not None:
+            _validar_params(ej["params"], "ejecucion.params")
         if ej.get("aws") is not None:
             aws = ej["aws"]
             if not isinstance(aws, dict) or set(aws) - {"profile", "region"}:
@@ -577,15 +671,31 @@ def validar_plan(o):
 
 
 def _fusionar_pasos_planes(almacenado, entrante):
+    """Pasos de un plan generado desde .plan. Editable: flags, dependencias, params del paso y la
+    ACCION (editado=True; se guarda la original en accion_original y editado=False la restaura).
+    Agregar/borrar pasos solo con entrante["estructura"] = True (lo manda la GUI)."""
     stored_ids = {s["id"] for s in almacenado["steps"]}
     inc = entrante.get("steps")
-    if (not isinstance(inc, list) or not all(isinstance(s, dict) for s in inc)
-            or len(inc) != len(stored_ids) or {s.get("id") for s in inc} != stored_ids):
+    if not isinstance(inc, list) or not all(isinstance(s, dict) for s in inc) or len(inc) > 300:
+        raise ValueError("los pasos no coinciden con el plan guardado")
+    inc_ids = [s.get("id") for s in inc]
+    if len(set(map(str, inc_ids))) != len(inc_ids):
+        raise ValueError("ids de pasos repetidos")
+    if set(inc_ids) != stored_ids and entrante.get("estructura") is not True:
         raise ValueError("los pasos no coinciden con el plan guardado")
     nuevo = json.loads(json.dumps(almacenado))
     byid = {s["id"]: s for s in nuevo["steps"]}
+    out = []
     for s in inc:
-        t = byid[s["id"]]
+        sid = s.get("id")
+        t = byid.get(sid)
+        if t is None:
+            if not isinstance(sid, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,30}", sid):
+                raise ValueError("id de paso invalido")
+            t = {"id": sid, "name": _txt(s.get("name"), f"{sid}.name", 120),
+                 "action": normalizar_accion(s.get("action"), estricto=True),
+                 "depends_on": [], "dep_flags": {}, "solo_en_fallo": False, "enabled": True,
+                 "continue_on_error": False, "agregado": True}
         for k in ("enabled", "solo_en_fallo", "continue_on_error"):
             if k in s:
                 if not isinstance(s[k], bool):
@@ -596,16 +706,44 @@ def _fusionar_pasos_planes(almacenado, entrante):
         if isinstance(s.get("dep_flags"), dict):
             t["dep_flags"] = {str(k): str(v) for k, v in s["dep_flags"].items()
                               if k in (t["depends_on"] or [])}
+        if "params" in s:
+            if s["params"]:
+                t["params"] = _validar_params(s["params"], f"{sid}.params")
+            else:
+                t.pop("params", None)
+        if sid in byid:
+            if isinstance(s.get("name"), str) and (t.get("agregado") or t.get("editado")) \
+                    and s["name"].strip():
+                t["name"] = _txt(s["name"], f"{sid}.name", 120)
+            _aplicar_edicion_accion(t, s)
+        out.append(t)
+    nuevo["steps"] = out
+    vivos = {s["id"] for s in out}
+    nuevo["enlaces"] = [e for e in (nuevo.get("enlaces") or [])
+                        if e.get("desde") in vivos and e.get("hacia") in vivos]
     return nuevo
-
-
+def _aplicar_edicion_accion(t, s):
+    """Edicion de la accion de un paso existente de un plan (ver _fusionar_pasos_planes)."""
+    if s.get("editado") is True and isinstance(s.get("action"), dict) and s["action"] != t["action"]:
+        nueva = normalizar_accion(s["action"], estricto=True)
+        if nueva["type"] != "graph":
+            nueva["status"] = "editado"
+        if not t.get("editado"):
+            t["accion_original"] = t["action"]
+        t["action"], t["editado"] = nueva, True
+    elif "editado" in s and s["editado"] is False and t.get("editado"):
+        if t.get("accion_original") is not None:
+            t["action"] = t.pop("accion_original")
+        t.pop("editado", None)
 def fusionar_edicion(almacenado, entrante):
     """Aplica a una copia del plan guardado SOLO lo editable desde la GUI.
 
     Editable: enabled / solo_en_fallo / continue_on_error / depends_on / dep_flags por paso,
-    direccion, ejecucion.{modo,base_path,spark_args} y enlaces. NO se aceptan cambios en
-    action (que decide que se ejecuta), ni pasos nuevos o eliminados, ni ejecucion.env /
-    ejecucion.spark_submit: quien edite el JSON a mano si necesita eso. Devuelve el plan
+    direccion, ejecucion.{modo,base_path,spark_args,params}, params por paso y enlaces. En un
+    plan de .plan tambien la accion de un paso (editado=True -> accion normalizada con lista
+    blanca; la original queda en accion_original; editado=False la restaura) y agregar/borrar
+    pasos (estructura=True). NO se acepta ejecucion.env / ejecucion.spark_submit: quien edite
+    el JSON a mano si necesita eso. Devuelve el plan
     validado o lanza ValueError.
     """
     if not isinstance(entrante, dict):
@@ -630,6 +768,11 @@ def fusionar_edicion(almacenado, entrante):
                 ej[k] = ej_in[k]
         if isinstance(ej_in.get("aws"), dict):
             ej["aws"] = {k: v for k, v in ej_in["aws"].items() if k in ("profile", "region") and v}
+        if "params" in ej_in:
+            if ej_in["params"]:
+                ej["params"] = _validar_params(ej_in["params"], "ejecucion.params")
+            else:
+                ej.pop("params", None)
     if "enlaces" in entrante:
         if not isinstance(entrante["enlaces"], list):
             raise ValueError("enlaces debe ser una lista")
@@ -639,6 +782,9 @@ def fusionar_edicion(almacenado, entrante):
             "origen": "manual" if e.get("origen") == "manual" else "sugerido",
             "habilitado": bool(e.get("habilitado", True))}
             for e in entrante["enlaces"] if isinstance(e, dict)]
+        if entrante.get("estructura") is True:      # pasos borrados: se van sus enlaces
+            vivos = {s["id"] for s in nuevo["steps"]}
+            nuevo["enlaces"] = [e for e in nuevo["enlaces"] if e["desde"] in vivos and e["hacia"] in vivos]
     validar_plan(nuevo)
     return nuevo
 
@@ -760,7 +906,14 @@ TIPOS_NUEVOS = {
                  "opt": ["args", "nombre", "action_on_failure", "profile", "region"]},
     "lambda": {"ubic": "nube", "req": ["function_name"], "opt": ["payload", "profile", "region"]},
     "s3_copy": {"ubic": "nube", "req": ["origen", "destino"], "opt": ["recursivo", "profile", "region"]},
+    # Base de datos: spark_sql corre local; jdbc/beeline/bteq/sqlplus hablan con una BD (remoto).
+    # La contrasena NUNCA se guarda: solo el nombre de la variable de entorno (password_env).
+    "sql": {"ubic": "local", "req": ["sentencia"],
+            "opt": ["motor", "url", "driver", "jar", "usuario", "password_env", "hivevar"]},
 }
+MOTORES_SQL = ("spark_sql", "jdbc", "beeline", "bteq", "sqlplus")
+_SECRETO_PARAM = re.compile(r"pass|pwd|secret|token|key|credential", re.I)
+_REF_PARAM = re.compile(r"\$\{([A-Za-z_]\w*)\}")
 _CTRL = re.compile(r"[\x00-\x1f\x7f]")
 _S3_URL = re.compile(r"^s3://[A-Za-z0-9][\w.\-]*(/[^\x00-\x20\x7f]*)?$")
 _HTTP_URL = re.compile(r"^https?://[^\s\x00-\x1f\x7f]+$")
@@ -777,6 +930,8 @@ def ubicacion_de(a):
     """'local' | 'remoto' | 'nube' de una accion."""
     if a.get("type") == "esperar_archivo" and str(a.get("ruta", "")).startswith("s3://"):
         return "nube"
+    if a.get("type") == "sql":
+        return "local" if (a.get("motor") or "spark_sql") == "spark_sql" else "remoto"
     return TIPOS_NUEVOS.get(a.get("type"), {}).get("ubic", "local")
 
 
@@ -995,6 +1150,55 @@ def normalizar_accion(a, estricto=False):
         if a.get("recursivo") is not None and not isinstance(a["recursivo"], bool):
             raise ValueError("recursivo debe ser booleano")
         out["recursivo"] = bool(a.get("recursivo"))
+    elif t == "sql":
+        m = a.get("motor") or "spark_sql"
+        if m not in MOTORES_SQL:
+            raise ValueError("motor debe ser " + ", ".join(MOTORES_SQL))
+        out["motor"] = m
+        sent = a.get("sentencia")
+        if not isinstance(sent, str) or not sent.strip():
+            raise ValueError("sentencia es requerida (texto SQL)")
+        if len(sent) > 50000 or "\x00" in sent:
+            raise ValueError("sentencia: demasiado larga o con caracteres nulos")
+        out["sentencia"] = sent
+        if m != "spark_sql":
+            u = _txt(a.get("url"), "url", 1000)
+            if m in ("jdbc", "beeline") and not re.match(r"^jdbc:[A-Za-z0-9]+:[^\s]+$", u):
+                raise ValueError("url debe ser una URL JDBC (jdbc:<motor>:...)")
+            if m in ("bteq", "sqlplus") and (u.startswith("-") or re.search(r"\s", u)):
+                raise ValueError("url/host invalido")
+            if re.search(r"(?i)(password|pwd)=", u):
+                raise ValueError("la url no debe llevar la contrasena: use password_env")
+            out["url"] = u
+        if m == "jdbc":
+            if a.get("driver"):
+                d = a["driver"]
+                if not isinstance(d, str) or not re.fullmatch(r"[A-Za-z_][\w.$]{0,200}", d):
+                    raise ValueError("driver invalido (clase Java, ej. oracle.jdbc.OracleDriver)")
+                out["driver"] = d
+            if a.get("jar"):
+                out["jar"] = _ruta_txt(a["jar"], "jar")
+        if a.get("usuario"):
+            if not isinstance(a["usuario"], str) or not re.fullmatch(r"[\w.\-@\\$]{1,128}", a["usuario"]):
+                raise ValueError("usuario invalido")
+            out["usuario"] = a["usuario"]
+        if a.get("password_env"):
+            if not isinstance(a["password_env"], str) or not _ENV_NAME.match(a["password_env"]):
+                raise ValueError("password_env debe ser el NOMBRE de una variable de entorno, nunca la contrasena")
+            out["password_env"] = a["password_env"]
+        elif m in ("bteq", "sqlplus"):
+            raise ValueError("password_env es requerido para " + m)
+        hv = a.get("hivevar") or {}
+        if hv:
+            if m != "beeline":
+                raise ValueError("hivevar solo aplica al motor beeline")
+            if not isinstance(hv, dict):
+                raise ValueError("hivevar debe ser objeto {nombre: valor}")
+            out["hivevar"] = {}
+            for k, v in hv.items():
+                if not isinstance(k, str) or not re.fullmatch(r"[A-Za-z_][\w.]{0,100}", k):
+                    raise ValueError(f"hivevar invalida: {k!r}")
+                out["hivevar"][k] = _txt(str(v), f"hivevar {k}", 2000)
     if t in ("esperar_archivo", "glue_job", "emr_step", "lambda", "s3_copy"):
         _perfil_region(a, out)
     out["ubicacion"] = ubicacion_de(out)
@@ -1021,6 +1225,9 @@ def resumen_accion(a):
         return a.get("function_name", "")
     if t == "s3_copy":
         return f"{a.get('origen', '')} -> {a.get('destino', '')}"
+    if t == "sql":
+        una = " ".join((a.get("sentencia") or "").split())
+        return f"[{a.get('motor', 'spark_sql')}] " + (una[:90] + ("..." if len(una) > 90 else ""))
     return ""
 
 
@@ -1035,10 +1242,42 @@ def _aws_argv(a, ej, *resto):
     return pre + list(resto)
 
 
-def _cmd_nuevo(a, ej, portable):
+def expandir_params(texto, params, ocultar_secretos=True, mascara=False):
+    """Expande ${NOMBRE} con `params`. Los nombres secretos (pass/pwd/secret/token/key) se dejan
+    como ${NOMBRE} (los resuelve el runner desde el entorno: nunca van al argv ni al DAG) o, con
+    mascara=True, salen como ****. Lo que no esta en params se deja igual."""
+    def r(m):
+        n = m.group(1)
+        if n not in params:
+            return m.group(0)
+        if _SECRETO_PARAM.search(n):
+            return "****" if mascara else m.group(0)
+        return str(params[n])
+    return _REF_PARAM.sub(r, texto)
+def params_efectivos(ej, step=None):
+    """Parametros que ve un paso: pset aplicado (ejecucion.env) < overrides del plan
+    (ejecucion.params) < overrides del paso (step.params). Solo valores literales (params_a_env)."""
+    p = {}
+    for d in (ej.get("env"), ej.get("params"), (step or {}).get("params")):
+        p.update(params_a_env(d or {})[0])
+    return p
+def _cmd_sql(a, ej, portable, params):
+    py = "python3" if portable else sys.executable
+    c = [py, "-m", "src.orq_sql", f"--motor={a.get('motor', 'spark_sql')}",
+         "--sentencia=" + expandir_params(a["sentencia"], params or {})]
+    for k, opt in (("url", "url"), ("driver", "driver"), ("jar", "jar"), ("usuario", "usuario"),
+                   ("password_env", "password-env")):
+        if a.get(k):
+            c.append(f"--{opt}={a[k]}")
+    for k, v in (a.get("hivevar") or {}).items():
+        c.append(f"--hivevar={k}={expandir_params(str(v), params or {})}")
+    return c
+def _cmd_nuevo(a, ej, portable, params=None):
     """argv del paso. portable=True: nombres de binario (python3/spark-submit) para Airflow."""
     t = a["type"]
     py = "python3" if portable else sys.executable
+    if t == "sql":
+        return _cmd_sql(a, ej, portable, params)
     if t == "python":
         return [py, a["target"], *a.get("args", [])]
     if t == "spark_submit":
@@ -1046,7 +1285,9 @@ def _cmd_nuevo(a, ej, portable):
         m = ["--master", a["master"]] if a.get("master") else []
         return [sb, *m, *a.get("spark_args", []), a["target"], *a.get("args", [])]
     if t == "shell":
-        argv = shlex.split(a["comando"])
+        # ${PARAM} se expande con los parametros del pset/plan (los de nombre secreto no: use la
+        # variable de entorno dentro del script); sin shell, solo se sustituye texto.
+        argv = shlex.split(expandir_params(a["comando"], params or {}))
         ext = os.path.splitext(argv[0])[1].lower()
         if ext == ".ksh":
             return ["ksh", *argv]
@@ -1125,7 +1366,7 @@ def comando_airflow(step, ej, root):
     c = shlex.join(_cmd_nuevo(a, ej, portable=True))
     if a["type"] == "http" and a.get("token_env"):
         c = f"printf 'Authorization: Bearer %s\\n' \"${{{a['token_env']}:?defina {a['token_env']}}}\" | " + c
-    if a["type"] == "esperar_archivo":
+    if a["type"] in ("esperar_archivo", "sql"):
         c = f"cd {shlex.quote(root)} && " + c
     # Airflow trata un bash_command que termina en .sh/.bash como plantilla de archivo
     return c + " " if c.endswith((".sh", ".bash", ".ksh")) else c
@@ -1218,6 +1459,8 @@ def _pasos_manuales(almacenado, inc):
                 if not isinstance(s[k], bool):
                     raise ValueError(f"{sid}.{k} debe ser booleano")
                 paso[k] = s[k]
+        if s.get("params"):
+            paso["params"] = _validar_params(s["params"], f"{sid}.params")
         out.append(paso)
     return out
 
@@ -1247,7 +1490,7 @@ def nueva(nombre, proyecto, base=None):
 def build_command(step, ej, portable=False):
     a = step["action"]
     if a["type"] in TIPOS_NUEVOS:
-        return _cmd_nuevo(a, ej, portable)
+        return _cmd_nuevo(a, ej, portable, params_efectivos(ej, step))
     if a["type"] == "graph":
         if ej.get("modo") == "spark-submit":
             return [_spark_submit_bin(ej), *ej.get("spark_args", []), a["target"]]
@@ -1255,9 +1498,11 @@ def build_command(step, ej, portable=False):
     return ["ksh", a["target"]]
 
 
-def _job_env(ej):
+def _job_env(ej, step=None):
     env = dict(os.environ)
     env.update({str(k): str(v) for k, v in (ej.get("env") or {}).items()})
+    # overrides editados desde la GUI: del plan (ejecucion.params) y del paso (step.params)
+    env.update(params_efectivos({"params": ej.get("params")}, step))
     if ej.get("base_path"):
         env["BNX_BASE_PATH"] = _base_efectiva(ej)
     # Los jobs (y los workers de Spark) deben usar el MISMO Python que el orquestador
@@ -1618,13 +1863,23 @@ def ejecutar(o, real=False, modo=None, base_path=None, _nivel=0, _pila=(),
             print(f"[>] {sid} {s['name']} [{ubicacion_de(a)}/{a['type']}]: {shlex.join(cmd)}")
             if a["type"] == "http" and a.get("token_env"):
                 print(f"    (header Authorization desde ${a['token_env']}, por stdin)")
+            if a["type"] == "sql":
+                prm = params_efectivos(ej, s)
+                print(f"    sentencia expandida ({a.get('motor', 'spark_sql')}"
+                      + (f", clave desde ${a['password_env']}" if a.get("password_env") else "") + "):")
+                for ln in expandir_params(a["sentencia"], prm, mascara=True).splitlines():
+                    print("      " + ln)
+                sin = sorted({m for m in _REF_PARAM.findall(expandir_params(a["sentencia"], prm, mascara=True))
+                              if m not in os.environ})
+                if sin:
+                    print(f"    [!] sin valor (parametro o variable de entorno): {', '.join(sin)}")
             if not real:
                 done.add(sid)
                 continue
             _evento(ruta_ev, "corriendo")
             try:
-                rc = subprocess.run(cmd, env=_job_env(ej), input=entrada, text=entrada is not None,
-                                    cwd=_ROOT if a["type"] == "esperar_archivo" else None).returncode
+                rc = subprocess.run(cmd, env=_job_env(ej, s), input=entrada, text=entrada is not None,
+                                    cwd=_ROOT if a["type"] in ("esperar_archivo", "sql") else None).returncode
             except OSError as e:
                 print(f"[x] {sid}: no se pudo lanzar {cmd[0]}: {e}")
                 rc = 127
@@ -1660,7 +1915,7 @@ def ejecutar(o, real=False, modo=None, base_path=None, _nivel=0, _pila=(),
                 continue
         _evento(ruta_ev, "corriendo")
         try:
-            rc = subprocess.run(cmd, env=_job_env(ej)).returncode
+            rc = subprocess.run(cmd, env=_job_env(ej, s)).returncode
         except OSError as e:
             print(f"[x] {sid}: no se pudo lanzar {cmd[0]}: {e}")
             rc = 127
@@ -2216,7 +2471,61 @@ def _valor_que_cumple(lista, es_num, tipo, i):
     return int(v) if ent else round(float(v), 2)
 
 
-def generar_datos(o, base_path, n_rows=20, seed=42, sobrescribir=False, seleccion=None):
+ORIGEN_JSON = "_origen.json"
+def leer_origen(base):
+    """Manifiesto <base>/raw/_origen.json: {nombre_dataset: {origen: propio|sintetico, ...}}."""
+    try:
+        with open(os.path.join(base, "raw", ORIGEN_JSON), "r", encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+def marcar_origen(base, nombre, origen, **meta):
+    """Anota (atomicamente) de donde viene <base>/raw/<nombre>: 'propio' o 'sintetico'."""
+    import datetime as _dt
+    d = leer_origen(base)
+    d[nombre] = {"origen": origen, "fecha": _dt.datetime.now().isoformat(timespec="seconds"), **meta}
+    os.makedirs(os.path.join(base, "raw"), exist_ok=True)
+    destino = os.path.join(base, "raw", ORIGEN_JSON)
+    tmp = destino + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(d, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, destino)
+def _esquema_de(j, var, ruta, cache):
+    """(columnas, nota, marcas_hdr_trl, filtros) de una entrada de un job (DML o inferido)."""
+    from src.py2spark import infer_input_schema
+    code, a = j["code"], j["step"]["action"]
+    if j["paso"] not in cache:
+        lecturas = [v for v, _r, _ok in j["lee"]]
+        marcas, filtros = {}, {}
+        linaje = _columnas_por_fuente(code, lecturas, marcas, filtros)
+        alias = _alias_creados(code)
+        for lit in _STR_LIT.findall(code):
+            alias |= set(re.findall(r"`?\b([A-Za-z_]\w*)`?\s*\.\s*`?[A-Za-z_]", lit))
+        try:
+            infer = {x["node"].lower(): x["columns"] for x in infer_input_schema(code)}
+        except Exception:
+            infer = {}
+        cache[j["paso"]] = (marcas, filtros, linaje, alias, infer, _dml_de_entradas(a))
+    marcas, filtros, linaje, alias, infer, dml = cache[j["paso"]]
+    cols, nota = _columnas_de_fuente(var, ruta, dml, linaje.get(var.lower(), {}),
+                                     infer.get(var.lower(), []), alias)
+    return cols, nota, marcas, filtros
+def esquemas_entradas(o, seleccion=None):
+    """Entradas EXTERNAS del plan: [{ruta, nombre, paso, columnas:[{name,type}], nota}] (sin
+    repetir ruta; sin rutas con parametros sin resolver)."""
+    res, vistos, cache = [], set(), {}
+    for j, var, ruta, resuelto, origen in _clasificar_entradas(_jobs_del_plan(o, seleccion)):
+        if origen is not None or not resuelto or ruta in vistos:
+            continue
+        vistos.add(ruta)
+        cols, nota, _m, _f = _esquema_de(j, var, ruta, cache)
+        res.append({"ruta": ruta, "nombre": _nombre_dataset(ruta), "paso": j["paso"],
+                    "columnas": [{"name": c["name"], "type": c.get("type", "string")} for c in cols],
+                    "nota": nota})
+    return res
+def generar_datos(o, base_path, n_rows=20, seed=42, sobrescribir=False, seleccion=None,
+                  sobrescribir_propios=False, solo_rutas=None):
     """Escribe parquet sintetico en <base>/raw/<x> para cada ENTRADA EXTERNA de los jobs del plan.
 
     - Externa = dataset raw que ningun paso anterior del plan (ni de los sub-planes de un plan
@@ -2228,7 +2537,9 @@ def generar_datos(o, base_path, n_rows=20, seed=42, sobrescribir=False, seleccio
     - Valores: src.datagen.build_synthetic_data (PII redactada, claves de join compartidas) y
       ~80% de las filas cumplen los filtros con literales del job (el resto ejercita rechazos).
     - Se omiten los enlaces, las rutas con parametros sin resolver y las que ya existen (salvo
-      sobrescribir=True). Solo base_path local; las rutas deben quedar dentro de base_path.
+      sobrescribir=True). Los datasets marcados "propio" en <base>/raw/_origen.json (datos del
+      usuario, ver src/datos_propios.py) solo se pisan con sobrescribir_propios=True.
+      Solo base_path local; las rutas deben quedar dentro de base_path.
     Devuelve una lista de dicts {paso, ruta, estado, filas?, columnas?, motivo?}.
     """
     from src.py2spark import infer_input_schema
@@ -2242,6 +2553,8 @@ def generar_datos(o, base_path, n_rows=20, seed=42, sobrescribir=False, seleccio
     cache = {}
     for j, var, ruta, resuelto, origen in _clasificar_entradas(_jobs_del_plan(o, seleccion)):
         item = {"paso": j["paso"], "ruta": ruta}
+        if solo_rutas is not None and ruta not in solo_rutas:
+            continue
         if not resuelto:
             rep.append({**item, "estado": "omitido",
                         "motivo": "parametro sin valor; defina la variable de entorno"})
@@ -2257,26 +2570,17 @@ def generar_datos(o, base_path, n_rows=20, seed=42, sobrescribir=False, seleccio
         if not dest.startswith(base + os.sep):
             rep.append({**item, "estado": "omitido", "motivo": "la ruta sale de base_path"})
             continue
+        if os.path.exists(dest) and leer_origen(base).get(_nombre_dataset(ruta), {}).get("origen") == "propio" \
+                and not sobrescribir_propios:
+            rep.append({**item, "estado": "propio",
+                        "motivo": "son datos propios (no se sobrescriben sin confirmacion)"})
+            hechos.add(ruta)
+            continue
         if os.path.exists(dest) and not sobrescribir:
             rep.append({**item, "estado": "existe", "motivo": "ya existe (use sobrescribir)"})
             hechos.add(ruta)
             continue
-        code, a = j["code"], j["step"]["action"]
-        if j["paso"] not in cache:
-            lecturas = [v for v, _r, _ok in j["lee"]]
-            marcas, filtros = {}, {}
-            linaje = _columnas_por_fuente(code, lecturas, marcas, filtros)
-            alias = _alias_creados(code)
-            for lit in _STR_LIT.findall(code):
-                alias |= set(re.findall(r"`?\b([A-Za-z_]\w*)`?\s*\.\s*`?[A-Za-z_]", lit))
-            try:
-                infer = {x["node"].lower(): x["columns"] for x in infer_input_schema(code)}
-            except Exception:
-                infer = {}
-            cache[j["paso"]] = (marcas, filtros, linaje, alias, infer, _dml_de_entradas(a))
-        marcas, filtros, linaje, alias, infer, dml = cache[j["paso"]]
-        cols, nota = _columnas_de_fuente(var, ruta, dml, linaje.get(var.lower(), {}),
-                                         infer.get(var.lower(), []), alias)
+        cols, nota, marcas, filtros = _esquema_de(j, var, ruta, cache)
         gen = build_synthetic_data(cols, n_rows=n_rows, fmt="json", seed=seed)
         nombres = [c["name"] for c in gen["columns"]]
         hdr_trl = marcas.get(var.lower()) or {}
@@ -2298,6 +2602,7 @@ def generar_datos(o, base_path, n_rows=20, seed=42, sobrescribir=False, seleccio
                         "motivo": f"{type(e).__name__}: {str(e)[:300]}"})
             continue
         hechos.add(ruta)
+        marcar_origen(base, _nombre_dataset(ruta), "sintetico", filas=len(gen["rows"]))
         rep.append({**item, "estado": "generado", "filas": len(gen["rows"]), "motor": motor,
                     "columnas": [f"{c['name']}:{c['type']}" for c in gen["columns"]],
                     **({"motivo": nota} if nota else {})})
@@ -2340,6 +2645,7 @@ def generar_airflow(o, root=None):
     by_id = {s["id"]: s for s in o["steps"]}
     tid = {s["id"]: re.sub(r"\W", "_", f"{s['id']}_{s['name']}")[:200] for s in steps}
     env = {str(k): str(v) for k, v in (ej.get("env") or {}).items()}
+    env.update(params_a_env(ej.get("params") or {})[0])
     if ej.get("base_path"):
         env["BNX_BASE_PATH"] = ej["base_path"]
     dag_id = dag_id_de(o)
@@ -2414,7 +2720,9 @@ def generar_airflow(o, root=None):
             L.append(f"    {name} = EmptyOperator(task_id={name!r}, trigger_rule={rule!r})")
         else:
             L.append(f"    {name} = BashOperator(task_id={name!r}, trigger_rule={rule!r},")
-            L.append(f"        bash_command={cmd_for(s)!r}, env=ENV, append_env=True)")
+            penv = params_a_env(s.get("params") or {})[0]
+            envx = f"{{**ENV, **{penv!r}}}" if penv else "ENV"
+            L.append(f"        bash_command={cmd_for(s)!r}, env={envx}, append_env=True)")
 
     links = [e for e in (o.get("enlaces") or []) if e.get("habilitado", True)
              and e["desde"] in on and e["hacia"] in on]

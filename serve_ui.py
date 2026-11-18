@@ -197,7 +197,9 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path
 
-        if path.startswith("/orquestador/") or path.startswith("/api/orquestador/"):
+        if path in ("/orquestador/datos_subir", "/api/orquestador/datos_subir"):
+            self._datos_subir_seguro()
+        elif path.startswith("/orquestador/") or path.startswith("/api/orquestador/"):
             self._orquestador_seguro(path)
         elif path.startswith(("/mlops/simular/", "/api/mlops/simular/")):
             self._handle_mlops_simular(path)
@@ -3805,6 +3807,89 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 return f"origen no permitido para ejecutar: {origin}"
         return None
 
+    def _datos_subir_seguro(self):
+        try:
+            self._handle_datos_subir()
+        except (BrokenPipeError, ConnectionResetError):
+            raise
+        except Exception as e:
+            self.close_connection = True
+            try:
+                self._json_response(500, {"ok": False, "error": f"{type(e).__name__}: {e}"})
+            except Exception:
+                pass
+
+    def _handle_datos_subir(self):
+        """POST /api/orquestador/datos_subir?file=<orquestacion>&base_path=<base>&name=<archivo>
+        con el cuerpo CRUDO del archivo (streaming por bloques de 4 MB, como /vendor/upload) a
+        <base>/_staging/<token>/<archivo>. Limite BNX_DATOS_MAX_MB (512). Solo desde localhost.
+        Devuelve el token y el analisis (columnas, vista previa, validacion) de la entrada."""
+        from urllib.parse import parse_qs as _pq
+        from src import datos_propios as _dp
+        root = os.path.dirname(os.path.abspath(__file__))
+        bloqueo = self._orq_local_only()
+        total = int(self.headers.get("Content-Length") or -1) if (self.headers.get("Content-Length") or "").lstrip("-").isdigit() else -1
+        q = {k: v[0] for k, v in _pq(urlparse(self.path).query).items()}
+        limite = int(_dp.MAX_MB * 1048576)
+        error, fp, plan = None, None, None
+        if bloqueo:
+            error = (403, bloqueo)
+        else:
+            fp = self._orq_safe(q.get("file"), "output", r"orquestacion_[\w.\-]+\.json")
+            if not fp or not os.path.isfile(fp):
+                error = (400, "plan invalido")
+            elif not _dp.nombre_archivo_valido(q.get("name")):
+                error = (400, "nombre de archivo no valido o formato no soportado (CSV, TSV, JSON, JSONL, Parquet, xlsx)")
+            elif total < 0:
+                error = (411, "falta Content-Length")
+            elif total > limite:
+                error = (413, "el archivo pesa %.0f MB y el limite es %.0f MB (BNX_DATOS_MAX_MB)" % (total / 1048576.0, _dp.MAX_MB))
+        if error is None:
+            with open(fp, "r", encoding="utf-8") as f:
+                plan = json.load(f)
+            base = str(q.get("base_path") or "").strip() or str((plan.get("ejecucion") or {}).get("base_path") or "").strip()
+            if not base or base.startswith("s3://"):
+                base = os.path.join(os.path.dirname(fp), "datos_sinteticos")
+            try:
+                _dp._externa(plan, q.get("ruta") or "")
+                token, destdir = _dp.nueva_subida(base)
+            except ValueError as e:
+                error = (400, str(e))
+        if error:
+            if 0 < total <= 64 << 20:
+                quedan = total
+                while quedan > 0:
+                    ch = self.rfile.read(min(4 << 20, quedan))
+                    if not ch:
+                        break
+                    quedan -= len(ch)
+            self.close_connection = True
+            self._json_response(error[0], {"ok": False, "error": error[1]})
+            return
+        final = os.path.join(destdir, q["name"])
+        leido = 0
+        try:
+            with open(final, "wb") as out:
+                while leido < total:
+                    chunk = self.rfile.read(min(4 << 20, total - leido))
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    leido += len(chunk)
+            if leido != total:
+                raise IOError("subida incompleta (%d de %d bytes)" % (leido, total))
+            res = _dp.analizar(plan, base, q.get("ruta"), {"tipo": "staging", "token": token})
+        except _dp.DatosError as e:
+            _dp.limpiar_subida(base, token)
+            self._json_response(400, {"ok": False, "error": str(e), **e.extra})
+            return
+        except Exception as e:
+            _dp.limpiar_subida(base, token)
+            self.close_connection = True
+            self._json_response(400, {"ok": False, "error": str(e)[:300]})
+            return
+        self._json_response(200, {**res, "token": token, "bytes": leido, "base_path": os.path.realpath(base)})
+
     def _handle_orquestador(self, path):
         import glob as _glob
         import io as _io
@@ -4104,6 +4189,79 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._json_response(400, {"error": "archivo invalido (debe ser output/**/orquestacion_*.json)"})
             return
 
+        if action in ("params", "pset_exportar"):
+            # Parametros del pset del plan / de un paso (solo lectura de abinitio/) y export del
+            # .pset editado a output/<proyecto>/psets_editados/ (nunca sobre el original).
+            if not os.path.isfile(fp):
+                self._json_response(404, {"error": "no existe"})
+                return
+            with open(fp, "r", encoding="utf-8") as f:
+                plan = json.load(f)
+            proj = os.path.basename(os.path.dirname(fp))
+            ab = os.path.join(root, "abinitio", proj)
+            paso = data.get("paso") or None
+            try:
+                if action == "params":
+                    self._json_response(200, {"ok": True, **_orq.params_pset(plan, ab, paso)})
+                    return
+                bloqueo = self._orq_local_only()
+                if bloqueo:
+                    self._json_response(403, {"ok": False, "error": bloqueo})
+                    return
+                out_dir = os.path.join(root, "output", proj, "psets_editados")
+                destino, texto = _orq.exportar_pset(plan, ab, out_dir, paso)
+                self._json_response(200, {"ok": True, "file": os.path.relpath(destino, root),
+                                          "name": os.path.basename(destino), "texto": texto})
+            except (ValueError, OSError, KeyError) as e:
+                self._json_response(400, {"ok": False, "error": str(e)})
+            return
+
+        if action in ("datos_estado", "datos_analizar", "datos_importar"):
+            # Datos de entrada PROPIOS (src/datos_propios.py): estado por entrada externa,
+            # validacion contra lo que espera el job e importacion a <base>/raw/<nombre>.
+            from src import datos_propios as _dp
+            if not os.path.isfile(fp):
+                self._json_response(404, {"error": "no existe"})
+                return
+            with open(fp, "r", encoding="utf-8") as f:
+                plan = json.load(f)
+            base = str(data.get("base_path") or "").strip() or str(
+                (plan.get("ejecucion") or {}).get("base_path") or "").strip()
+            if not base or base.startswith("s3://"):
+                base = os.path.join(os.path.dirname(fp), "datos_sinteticos")
+            bloqueo = self._orq_local_only()
+            if bloqueo:
+                self._json_response(403, {"ok": False, "error": bloqueo})
+                return
+            try:
+                if action == "datos_estado":
+                    self._json_response(200, {"ok": True, "base_path": base,
+                                              "entradas": _dp.estado_entradas(plan, base),
+                                              "max_mb": _dp.MAX_MB})
+                    return
+                kw = dict(mapeo=data.get("mapeo") if isinstance(data.get("mapeo"), dict) else None,
+                          delimitador=data.get("delimitador") or None,
+                          cabecera=data.get("cabecera") if isinstance(data.get("cabecera"), bool) else None)
+                if action == "datos_analizar":
+                    self._json_response(200, {**_dp.analizar(plan, base, data.get("ruta"), data.get("fuente"), **kw),
+                                              "base_path": base})
+                    return
+                res = _dp.importar(plan, base, data.get("ruta"), data.get("fuente"),
+                                   aceptar_avisos=data.get("aceptar_avisos") is True,
+                                   sobrescribir=data.get("sobrescribir") is True, **kw)
+                real = os.path.realpath(base)
+                if plan.get("ejecucion", {}).get("base_path") != real:
+                    plan.setdefault("ejecucion", {})["base_path"] = real
+                    with open(fp, "w", encoding="utf-8") as f:
+                        json.dump(plan, f, indent=2, ensure_ascii=False)
+                self._json_response(200, {**res, "base_path": real})
+            except _dp.DatosError as e:
+                self._json_response(409 if e.extra.get("codigo") == "existe" else 400,
+                                    {"ok": False, "error": str(e), **e.extra})
+            except (ValueError, OSError, KeyError, TypeError) as e:
+                self._json_response(400, {"ok": False, "error": str(e)})
+            return
+
         if action == "get":
             if not os.path.isfile(fp):
                 self._json_response(404, {"error": "no existe"})
@@ -4164,8 +4322,12 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                     return
             try:
                 n_rows = max(1, min(int(data.get("filas", 20)), 10000))
-                rep = _orq.generar_datos(plan, base, n_rows=n_rows, seed=42,
-                                         sobrescribir=bool(data.get("sobrescribir")))
+                solo = data.get("solo_rutas")
+                solo = [x for x in solo if isinstance(x, str)] if isinstance(solo, list) else None
+                seed = int(data.get("seed", 42))
+                rep = _orq.generar_datos(plan, base, n_rows=n_rows, seed=seed, solo_rutas=solo,
+                                         sobrescribir=bool(data.get("sobrescribir")),
+                                         sobrescribir_propios=data.get("sobrescribir_propios") is True)
             except (ValueError, KeyError, TypeError) as e:
                 self._json_response(400, {"ok": False, "error": str(e)})
                 return

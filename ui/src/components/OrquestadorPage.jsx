@@ -6,6 +6,8 @@ import ReactFlow, {
 import 'reactflow/dist/style.css'
 import { ORQUESTADOR_URL } from '../config'
 import ParquetVisor from './ParquetVisor'
+import ParamsPanel from './ParamsPanel'
+import DatosEntradasModal from './DatosEntradasModal'
 
 // Colores por estado de la accion del paso
 const STATUS_COLOR = {
@@ -13,6 +15,7 @@ const STATUS_COLOR = {
   faltante: '#ef4444',      // referencia un archivo que no esta en la carpeta
   sin_convertir: '#f59e0b', // el grafo existe pero no se convirtio
   no_traducido: '#64748b',  // tarea de programa/script sin traduccion automatica
+  editado: '#a855f7',       // accion editada desde la GUI (se puede restaurar la original)
 }
 
 // Ubicacion de ejecucion de cada paso: color / icono / etiqueta
@@ -36,6 +39,16 @@ const TIPOS_UI = {
     { k: 'master', label: 'Master', kind: 'text', ph: 'local[*] / yarn' },
     { k: 'spark_args', label: 'Args de spark-submit (uno por línea)', kind: 'list' },
     { k: 'args', label: 'Argumentos del job (uno por línea)', kind: 'list' }] },
+  sql: { label: 'SQL / base de datos (secuencia, procedure, insert…)', ubic: 'local', fields: [
+    { k: 'motor', label: 'Motor', kind: 'select', opts: ['spark_sql', 'jdbc', 'beeline', 'bteq', 'sqlplus'] },
+    { k: 'sentencia', label: 'Sentencia SQL (varias separadas por ;). Admite ${PARAM}', kind: 'area', req: true,
+      ph: "INSERT INTO ${ESQUEMA}.log_status VALUES (seq_log.NEXTVAL, 'running')" },
+    { k: 'url', label: 'URL JDBC (jdbc:…) / host (bteq) / conexión (sqlplus)', kind: 'text', only: ['jdbc', 'beeline', 'bteq', 'sqlplus'], ph: 'jdbc:oracle:thin:@host:1521/SERVICIO' },
+    { k: 'driver', label: 'Clase del driver JDBC', kind: 'text', only: ['jdbc'], ph: 'oracle.jdbc.OracleDriver' },
+    { k: 'jar', label: 'Ruta del .jar del driver', kind: 'text', only: ['jdbc'] },
+    { k: 'usuario', label: 'Usuario', kind: 'text', only: ['jdbc', 'beeline', 'bteq', 'sqlplus'] },
+    { k: 'password_env', label: 'Variable de entorno con la contraseña (solo el NOMBRE)', kind: 'text', only: ['jdbc', 'beeline', 'bteq', 'sqlplus'], ph: 'DB_PASSWORD' },
+    { k: 'hivevar', label: '--hivevar (clave=valor por línea)', kind: 'kv', only: ['beeline'] }] },
   esperar_archivo: { label: 'Esperar archivo (sensor)', ubic: 'local', fields: [
     { k: 'ruta', label: 'Ruta local (admite *) o s3://bucket/clave', kind: 'text', req: true },
     { k: 'timeout_s', label: 'Timeout (s)', kind: 'int', ph: '300' },
@@ -79,6 +92,7 @@ const TIPOS_UI = {
 
 const ubicDe = (a) => {
   if (!a) return 'local'
+  if (a.type === 'sql') return (a.motor || 'spark_sql') === 'spark_sql' ? 'local' : 'remoto'
   if (a.type === 'esperar_archivo') return String(a.ruta || '').startsWith('s3://') ? 'nube' : 'local'
   return TIPOS_UI[a.type]?.ubic || 'local'
 }
@@ -96,6 +110,7 @@ const resumenAccion = (a) => {
   if (t === 'emr_step') return `${a.cluster_id} ${a.script}`
   if (t === 'lambda') return a.function_name
   if (t === 's3_copy') return `${a.origen} → ${a.destino}`
+  if (t === 'sql') { const x = String(a.sentencia || '').replace(/\s+/g, ' '); return `[${a.motor || 'spark_sql'}] ${x.length > 60 ? x.slice(0, 60) + '…' : x}` }
   return ''
 }
 
@@ -127,6 +142,7 @@ const textoACampo = (f, v) => {
     })
     return o
   }
+  if (f.kind === 'area') return String(v).replace(/\r\n/g, '\n').trim()
   if (f.kind === 'json') {
     try { return JSON.parse(t) } catch { throw new Error(`${f.label}: JSON inválido`) }
   }
@@ -289,6 +305,9 @@ function StepNode({ data }) {
       </div>
       <div style={{ fontSize: 10, marginTop: 2 }}>
         <span style={{ color }}>● {s.action?.status === 'sin_convertir' ? 'sin convertir' : s.action?.status}</span>
+        {s.editado && <span style={{ color: STATUS_COLOR.editado, fontWeight: 700 }} title="Acción editada desde la GUI"> · ✎ editado</span>}
+        {s.agregado && <span style={{ color: '#38bdf8', fontWeight: 700 }}> · ＋ agregado</span>}
+        {s.params && Object.keys(s.params).length > 0 && <span style={{ color: '#c084fc' }} title="Parámetros override"> · ⚙{Object.keys(s.params).length}</span>}
         {s.solo_en_fallo && <span style={{ color: '#fb923c' }}> · solo en fallo</span>}
         {!s.enabled && <span> · deshabilitado</span>}
         {data.run && <span style={{ color: rc, fontWeight: 700 }}> · {data.run === 'corriendo' ? '⏳' : '●'} {RUN_LABEL[data.run]}</span>}
@@ -482,30 +501,39 @@ function NuevaPanel({ t, btn, card, proyectos, proyectoInicial, onCreada, onErro
 }
 
 // Formulario para agregar/editar un paso de una orquestacion manual
-function PasoForm({ t, btn, plan, inicial, proyecto, onGuardar, onCancelar, onError }) {
-  const [tipo, setTipo] = useState(inicial?.action?.type || 'shell')
+function PasoForm({ t, btn, plan, inicial, proyecto, depsIniciales, titulo, onGuardar, onCancelar, onError }) {
+  const esPlan = plan.origen !== 'manual'          // paso de un plan generado desde .plan
+  const tipoInicial = (() => {
+    const ty = inicial?.action?.type
+    if (ty && ty in TIPOS_UI) return ty
+    return ty === 'script' ? 'shell' : (inicial ? 'sql' : 'shell')   // noop / no traducido -> SQL por defecto
+  })()
+  const [tipo, setTipo] = useState(tipoInicial)
   const [nombre, setNombre] = useState(inicial?.name || '')
   const [vals, setVals] = useState(() => {
     const v = {}
     const def = TIPOS_UI[inicial?.action?.type]
     ;(def?.fields || []).forEach(f => { v[f.k] = campoATexto(f, inicial.action[f.k]) })
+    if (inicial?.action?.type === 'script') v.comando = inicial.action.target || ''
     return v
   })
-  const [deps, setDeps] = useState(inicial?.depends_on || [])
+  const [deps, setDeps] = useState(inicial?.depends_on || depsIniciales || [])
   const [jobs, setJobs] = useState([])
   const def = TIPOS_UI[tipo]
   const input = { ...btn(false), width: '100%', boxSizing: 'border-box', textAlign: 'left', fontFamily: 'inherit' }
+  const motor = vals.motor || 'spark_sql'
+  const campos = def.fields.filter(f => !f.only || f.only.includes(motor))
   useEffect(() => {
     if (tipo !== 'graph' || !proyecto) return
     post('jobs', { proyecto }).then(d => setJobs(d.jobs || [])).catch(() => setJobs([]))
   }, [tipo, proyecto])
   const otros = plan.steps.filter(s => s.id !== inicial?.id)
-  const u = UBIC[ubicDe({ type: tipo, ruta: vals.ruta })]
+  const u = UBIC[ubicDe({ type: tipo, ruta: vals.ruta, motor })]
   const guardar = () => {
     try {
       if (!nombre.trim()) throw new Error('Escribe un nombre para el paso.')
       const action = { type: tipo }
-      def.fields.forEach(f => {
+      campos.forEach(f => {
         const v = textoACampo(f, vals[f.k])
         if (v === undefined && f.req) throw new Error(`Falta: ${f.label}`)
         if (v !== undefined) action[f.k] = v
@@ -515,9 +543,12 @@ function PasoForm({ t, btn, plan, inicial, proyecto, onGuardar, onCancelar, onEr
   }
   return (
     <div style={{ fontSize: 12, display: 'flex', flexDirection: 'column', gap: 6, color: t.text }}>
-      <div style={{ fontWeight: 700, fontSize: 14 }}>{inicial ? `Editar paso ${inicial.id}` : 'Agregar paso'}</div>
+      <div style={{ fontWeight: 700, fontSize: 14 }}>{titulo || (inicial ? `Editar paso ${inicial.id}` : 'Agregar paso')}</div>
+      {esPlan && inicial && !inicial.agregado && <div style={{ fontSize: 11, color: '#c084fc' }}>
+        Paso de Ab Initio ({inicial.action?.type}/{inicial.action?.status}). Al cambiar su acción queda “editado”
+        y puedes restaurar la original.</div>}
       <label>Tipo
-        <select value={tipo} disabled={!!inicial} onChange={e => { setTipo(e.target.value); setVals({}) }} style={input}>
+        <select value={tipo} disabled={!!inicial && !esPlan} onChange={e => { setTipo(e.target.value); setVals({}) }} style={input}>
           {Object.entries(UBIC).map(([k, ub]) => (
             <optgroup key={k} label={`${ub.icon} ${ub.label}`}>
               {Object.entries(TIPOS_UI).filter(([, d]) => d.ubic === k)
@@ -526,8 +557,10 @@ function PasoForm({ t, btn, plan, inicial, proyecto, onGuardar, onCancelar, onEr
         </select></label>
       <div style={{ color: u.color, fontWeight: 700 }}>{u.icon} Se ejecuta: {u.label}</div>
       <label>Nombre del paso
-        <input value={nombre} onChange={e => setNombre(e.target.value)} style={input} /></label>
-      {def.fields.map(f => (
+        <input value={nombre} onChange={e => setNombre(e.target.value)} style={input}
+          readOnly={esPlan && !!inicial && !inicial.agregado && !inicial.editado}
+          title={esPlan && inicial && !inicial.agregado ? 'El nombre enlaza el paso con el .plan' : undefined} /></label>
+      {campos.map(f => (
         <label key={f.k}>{f.label}{f.req ? ' *' : ''}
           {f.kind === 'bool' ? (
             <input type="checkbox" checked={!!vals[f.k]} style={{ marginLeft: 6 }}
@@ -550,6 +583,10 @@ function PasoForm({ t, btn, plan, inicial, proyecto, onGuardar, onCancelar, onEr
         </label>))}
       {tipo === 'ssh' && <div style={{ fontSize: 10, color: t.muted }}>Usa tu clave / ssh-agent (BatchMode). No se guardan contraseñas.</div>}
       {tipo === 'http' && <div style={{ fontSize: 10, color: t.muted }}>El token se lee de la variable de entorno al ejecutar; no se guarda en el JSON.</div>}
+      {tipo === 'sql' && <div style={{ fontSize: 10, color: t.muted }}>
+        <b>spark_sql</b>: spark.sql en local[*]. <b>jdbc</b>: DriverManager (secuencias, CALL, INSERT…) vía PySpark o jaydebeapi.
+        <b> beeline / bteq / sqlplus</b>: requieren ese cliente instalado. La contraseña nunca se guarda: se lee de la
+        variable de entorno indicada. <code>${'{PARAM}'}</code> se expande con los parámetros del pset/plan y el entorno.</div>}
       {def.ubic === 'nube' && <div style={{ fontSize: 10, color: t.muted }}>Usa la CLI <code>aws</code> con tus credenciales; profile/region vacíos toman los de Ejecución.</div>}
       <div style={{ fontWeight: 600 }}>Corre después de:</div>
       {otros.length === 0 && <div style={{ color: t.muted }}>(no hay otros pasos)</div>}
@@ -649,6 +686,7 @@ export default function OrquestadorPage({ theme }) {
   const [colGrafo, setColGrafo] = usePersist('bnx_orq_col_grafo', false)
   const [colLog, setColLog] = usePersist('bnx_orq_col_log', false)
   const [colPanel, setColPanel] = usePersist('bnx_orq_col_panel', false)
+  const [datosModal, setDatosModal] = useState(null)   // {base} modal de datos de entrada (sintéticos / propios)
   const [visor, setVisor] = useState(null)            // {basePath, zona?, nombre?}
   const cerrarVisor = useCallback(() => setVisor(null), [])
 
@@ -836,37 +874,6 @@ export default function OrquestadorPage({ theme }) {
     })
   }
 
-  const datosSinteticos = async () => {
-    const txt = window.prompt('Filas por dataset de entrada (1-10000):', '20')
-    if (txt === null) return
-    const filas = Math.max(1, Math.min(10000, parseInt(txt, 10) || 20))
-    setBusy(true)
-    try {
-      if (dirty) { await post('save', { file, plan }); setDirty(false) }
-      const bp = (ej.base_path || '').trim()
-      const baseReq = bp && !bp.startsWith('s3://') ? { base_path: bp } : {}   // sin base: carpeta del plan
-      let d = await post('datos', { file, filas, ...baseReq })
-      if (d.reporte.some(r => r.estado === 'existe') &&
-          window.confirm('Algunos datasets ya existen. ¿Regenerarlos (se sobrescriben)?')) {
-        d = await post('datos', { file, filas, sobrescribir: true, ...baseReq })
-      }
-      const icon = { generado: '✔', existe: '•', omitido: '–', error: '✖' }
-      const lineas = d.reporte.map(r => `${icon[r.estado] || '?'} [${r.estado}] ${r.paso} ${r.ruta}` +
-        (r.filas ? ` · ${r.filas} filas · ${r.columnas.join(', ')}` : '') + (r.motivo ? ` · ${r.motivo}` : ''))
-      setDry({ ok: d.reporte.every(r => r.estado !== 'error'),
-        output: `Datos sintéticos en ${d.base_path}\n(base_path del plan actualizado)\n` +
-          `Motor parquet: ${(d.motores || []).join(', ') || '(ninguno nuevo)'}` +
-          `${(d.motores || []).includes('python-puro') ? ' (sin pyarrow: escritor Python puro; Spark lo lee igual)' : ''}\n\n` +
-          (lineas.join('\n') || 'Ningún paso con job convertido: no hay entradas que generar.') })
-      await loadPlan(file)
-      flash('ok', `${d.reporte.filter(r => r.estado === 'generado').length} dataset(s) generados`)
-    } catch (e) {
-      flash('err', `Datos sintéticos: ${e.message}`)
-      if (e.data?.traceback) setDry({ ok: false, output: `${e.message}\n\n${e.data.traceback}` })
-    }
-    setBusy(false)
-  }
-
   const verAirflow = async () => {
     try {
       if (dirty) { await post('save', { file, plan }); setDirty(false) }
@@ -886,7 +893,7 @@ export default function OrquestadorPage({ theme }) {
     try {
       await post('save', { file, plan })
       setDirty(false); flash('ok', 'Guardado.')
-      if (plan.origen === 'manual') await loadPlan(file)   // el servidor normaliza las acciones
+      await loadPlan(file)   // el servidor normaliza las acciones (y marca editado/restaurado)
     } catch (e) { flash('err', `No se guardo: ${e.message}`) }
     setBusy(false)
   }
@@ -1082,21 +1089,75 @@ export default function OrquestadorPage({ theme }) {
 
   // ---- pasos de una orquestacion manual ----
   const proyectoDe = (f) => (plan?.proyecto || f.split(/[\\/]/).slice(-2, -1)[0] || '')
-  const aplicarPaso = (datos, id) => {
+  const esManual = plan?.origen === 'manual'
+  const editable = !!plan && plan.tipo !== 'plan_de_planes'      // pasos editables (manual o de un .plan)
+  const hayCiclo = (steps) => {
+    const by = Object.fromEntries(steps.map(x => [x.id, x]))
+    const estado = {}
+    const visita = (id) => {
+      if (estado[id] === 1) return true
+      if (estado[id] === 2) return false
+      estado[id] = 1
+      for (const d of by[id]?.depends_on || []) if (by[d] && visita(d)) return true
+      estado[id] = 2
+      return false
+    }
+    return steps.some(x => visita(x.id))
+  }
+  // Acción comparable (solo los campos del formulario) para saber si el usuario la cambió
+  const accionComparable = (a) => {
+    const def = TIPOS_UI[a?.type]
+    if (!def) return JSON.stringify({ type: a?.type, target: a?.target })
+    const o = { type: a.type }
+    def.fields.forEach(f => { if (a[f.k] !== undefined && a[f.k] !== '' && !(Array.isArray(a[f.k]) && !a[f.k].length)) o[f.k] = a[f.k] })
+    return JSON.stringify(o, Object.keys(o).sort())
+  }
+  const aplicarPaso = (datos, id, pos) => {
     const next = JSON.parse(JSON.stringify(plan))
     let nid = id
     if (id) {
       const st = next.steps.find(x => x.id === id)
-      Object.assign(st, { name: datos.name, action: datos.action, depends_on: datos.depends_on })
+      const cambio = !esManual && accionComparable(datos.action) !== accionComparable(st.action)
+      Object.assign(st, { depends_on: datos.depends_on })
+      if (esManual || st.agregado || st.editado) st.name = datos.name
+      if (esManual) st.action = datos.action
+      else if (cambio) {
+        st.action = { ...datos.action, status: datos.action.type === 'graph' ? 'ok' : 'editado' }
+        st.editado = true            // el servidor guarda accion_original la primera vez
+      }
       st.dep_flags = Object.fromEntries(Object.entries(st.dep_flags || {}).filter(([k]) => datos.depends_on.includes(k)))
       limpiarEnlaces(next)
     } else {
       const n = Math.max(0, ...next.steps.map(x => Number(String(x.id).replace(/\D/g, '')) || 0)) + 1
       nid = `t${n}`
       next.steps.push({ id: nid, name: datos.name, action: datos.action, depends_on: datos.depends_on,
-        dep_flags: {}, solo_en_fallo: false, enabled: true, continue_on_error: false })
+        dep_flags: {}, solo_en_fallo: false, enabled: true, continue_on_error: false, ...(esManual ? {} : { agregado: true }) })
+      if (pos?.ref) {
+        if (pos.modo === 'despues') {        // los que corrían tras REF ahora corren tras el nuevo
+          next.steps.forEach(x => {
+            if (x.id !== nid && x.depends_on.includes(pos.ref)) {
+              x.depends_on = [...new Set(x.depends_on.map(d => (d === pos.ref ? nid : d)))]
+              if (x.dep_flags && pos.ref in x.dep_flags) { x.dep_flags[nid] = x.dep_flags[pos.ref]; delete x.dep_flags[pos.ref] }
+            }
+          })
+        } else {                              // 'antes': REF pasa a depender del nuevo
+          const ref = next.steps.find(x => x.id === pos.ref)
+          ref.depends_on = [...new Set([...ref.depends_on.filter(d => !datos.depends_on.includes(d)), nid])]
+        }
+      }
+      if (!esManual) next.estructura = true
     }
+    if (hayCiclo(next.steps)) { onErrorForm('Esa combinación de dependencias crea un ciclo.'); return }
     setForm(null); setPlan(next); setDirty(true); setSelId(nid); relayout(next)
+  }
+  const onErrorForm = (m) => flash('err', m)
+  const restaurarAccion = (id) => {
+    if (!window.confirm('¿Restaurar la acción original de Ab Initio de este paso? (guarda para aplicar)')) return
+    const next = JSON.parse(JSON.stringify(plan))
+    const st = next.steps.find(x => x.id === id)
+    if (st.accion_original) { st.action = st.accion_original; delete st.accion_original }
+    st.editado = false
+    setPlan(next); setDirty(true)
   }
   const borrarPaso = (id) => {
     if (!window.confirm('¿Borrar este paso y sus dependencias/enlaces?')) return
@@ -1107,6 +1168,7 @@ export default function OrquestadorPage({ theme }) {
       if (x.dep_flags) delete x.dep_flags[id]
     })
     next.enlaces = (next.enlaces || []).filter(e => e.desde !== id && e.hacia !== id)
+    if (!esManual) next.estructura = true
     setPlan(next); setDirty(true); setSelId(null); setForm(null); relayout(next)
   }
   useEffect(() => { setForm(null) }, [file])
@@ -1164,8 +1226,12 @@ export default function OrquestadorPage({ theme }) {
                 <input type="checkbox" checked={permitirRem} onChange={e => setPermitirRem(e.target.checked)} />
                 permitir pasos remotos/nube</label>
               <button style={btn(false)} onClick={verAirflow} disabled={!plan || busy}>🌀 DAG Airflow</button>
-              <button style={btn(false)} onClick={datosSinteticos} disabled={!plan || busy}
-                title="Genera parquet de entrada en <carpeta del plan>/datos_sinteticos/raw y deja el base_path apuntando ahí">🧪 Datos sintéticos</button>
+              <button style={btn(false)} onClick={async () => {
+                try { if (dirty) { await post('save', { file, plan }); setDirty(false) } } catch (e) { flash('err', e.message); return }
+                const bp = (ej.base_path || '').trim()
+                setDatosModal({ base: bp && !bp.startsWith('s3://') ? bp : '' })
+              }} disabled={!plan || busy}
+                title="Entradas externas del plan: genera datos sintéticos o usa los tuyos (CSV/Parquet/JSON/Excel, ruta local o pegado)">🧪 Datos de entrada</button>
               <button style={btn(false)} onClick={descargar} disabled={!plan}>📥 JSON</button>
               <button style={btn(creando)} onClick={() => setCreando(v => !v)}
                 title="Crea una orquestación vacía sin .plan y arma los pasos a mano">✨ Nueva orquestación</button>
@@ -1336,12 +1402,12 @@ export default function OrquestadorPage({ theme }) {
             {form && plan && (
               <PasoForm key={form.id || 'nuevo'} t={t} btn={btn} plan={plan}
                 inicial={form.id ? plan.steps.find(x => x.id === form.id) : null}
-                proyecto={proyectoDe(file)}
-                onGuardar={(datos) => aplicarPaso(datos, form.id)} onCancelar={() => setForm(null)}
+                proyecto={proyectoDe(file)} depsIniciales={form.deps} titulo={form.titulo}
+                onGuardar={(datos) => aplicarPaso(datos, form.id, form.pos)} onCancelar={() => setForm(null)}
                 onError={(m) => flash('err', m)} />)}
             {!form && !sel && <div style={{ fontSize: 12, color: t.muted }}>
               Selecciona un paso para ver y editar sus datos.
-              {plan?.origen === 'manual' && <div style={{ marginTop: 8 }}>
+              {editable && <div style={{ marginTop: 8 }}>
                 <button style={btn(true)} onClick={() => setForm({})}>+ Agregar paso</button></div>}
               <div style={{ marginTop: 12 }}>
                 {Object.entries(STATUS_COLOR).map(([k, c]) =>
@@ -1354,6 +1420,12 @@ export default function OrquestadorPage({ theme }) {
                 nameOf={nameOf} sugerir={sugerir} addEnlace={addEnlace} verDatos={() => abrirVisor()}
                 toggleEnlace={(id) => mutate(p => { const e = p.enlaces.find(x => x.id === id); e.habilitado = !e.habilitado })}
                 delEnlace={(id) => mutate(p => { p.enlaces = p.enlaces.filter(x => x.id !== id) })} />}
+              {plan && editable && <div style={{ marginTop: 14, color: t.text }}>
+                <ParamsPanel key={`plan-${file}`} t={t} btn={btn} post={post} file={file} paso={null}
+                  overrides={plan.ejecucion?.params}
+                  onChange={(n) => mutate(p => { p.ejecucion = { ...(p.ejecucion || {}), params: n }; if (!Object.keys(n).length) delete p.ejecucion.params })}
+                  guardarSiHaceFalta={async () => { if (dirty) { await post('save', { file, plan }); setDirty(false); await loadPlan(file) } }}
+                  flash={flash} /></div>}
             </div>}
             {!form && sel && (
               <div style={{ fontSize: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -1363,12 +1435,30 @@ export default function OrquestadorPage({ theme }) {
                     {' '}· {UBIC[ubicDe(sel.action)].icon} {UBIC[ubicDe(sel.action)].label}</span>}</div>
                 {sel.action?.type in TIPOS_UI && sel.action.type !== 'graph' &&
                   <div style={{ wordBreak: 'break-all', color: t.muted }}>{resumenAccion(sel.action)}</div>}
-                {plan?.origen === 'manual' && (
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <button style={btn(false)} onClick={() => setForm({ id: sel.id })}>✏️ Editar paso</button>
+                {editable && (
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    <button style={btn(true)} onClick={() => setForm({ id: sel.id })}
+                      title="Cambiar qué hace este paso (SQL, shell, python, spark-submit, ssh, http, nube…)">
+                      ✏️ {esManual ? 'Editar paso' : 'Editar acción'}</button>
+                    {sel.editado && <button style={btn(false)} onClick={() => restaurarAccion(sel.id)}
+                      title="Vuelve a la acción original de Ab Initio">↩ Restaurar original</button>}
                     <button style={btn(false)} onClick={() => borrarPaso(sel.id)}>🗑 Borrar</button>
-                    <button style={btn(false)} onClick={() => setForm({})}>+ Paso</button>
+                    <button style={btn(false)} onClick={() => setForm({ pos: { modo: 'antes', ref: sel.id }, deps: sel.depends_on,
+                      titulo: `Insertar paso ANTES de ${sel.name}` })}>⤒ Insertar antes</button>
+                    <button style={btn(false)} onClick={() => setForm({ pos: { modo: 'despues', ref: sel.id }, deps: [sel.id],
+                      titulo: `Insertar paso DESPUÉS de ${sel.name}` })}>⤓ Insertar después</button>
                   </div>)}
+                {sel.editado && sel.accion_original && <div style={{ fontSize: 11, color: '#c084fc' }}>
+                  ✎ Editado. Original de Ab Initio: {sel.accion_original.type}/{sel.accion_original.status}
+                  {sel.accion_original.target ? ` · ${sel.accion_original.target}` : ''}</div>}
+                {editable && <details style={{ marginTop: 2 }}>
+                  <summary style={{ cursor: 'pointer', fontWeight: 600 }}>⚙ Parámetros de este paso
+                    {sel.params && Object.keys(sel.params).length > 0 ? ` (${Object.keys(sel.params).length} override)` : ''}</summary>
+                  <ParamsPanel key={`${file}-${sel.id}`} t={t} btn={btn} post={post} file={file} paso={sel.id}
+                    overrides={sel.params}
+                    onChange={(n) => mutate(p => { const st = p.steps.find(x => x.id === sel.id); if (Object.keys(n).length) st.params = n; else delete st.params })}
+                    guardarSiHaceFalta={async () => { if (dirty) { await post('save', { file, plan }); setDirty(false); await loadPlan(file) } }}
+                    flash={flash} /></details>}
                 {sel.action?.target && <div style={{ wordBreak: 'break-all', color: t.muted }}>{sel.action.target}</div>}
                 {['lee', 'escribe'].some(k => (sel.action?.io?.[k] || []).length > 0) && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
@@ -1557,6 +1647,14 @@ export default function OrquestadorPage({ theme }) {
           </div>
         </div>
       )}
+      {datosModal && <DatosEntradasModal t={t} btn={btn} post={post} file={file} base={datosModal.base}
+        onClose={async () => {
+          const c = confirmar
+          setDatosModal(null)
+          await loadPlan(file)
+          if (c && !c.enviando) { try { const d = await post('preflight', c.body); setConfirmar({ ...c, dry_run: d.dry_run, dry_ok: d.dry_ok, checks: d.checks, bloqueado: d.bloqueado }) } catch { /* se mantiene el aviso anterior */ } }
+        }}
+        abrirVisor={(z, n, b) => abrirVisor(z, n, b)} />}
       {visor && <ParquetVisor key={visor.k} t={t} btn={btn} post={post} basePath={visor.basePath}
         inicial={visor.nombre ? { zona: visor.zona, nombre: visor.nombre } : (visor.zona ? { zona: visor.zona } : null)}
         onClose={cerrarVisor} />}
@@ -1589,7 +1687,10 @@ export default function OrquestadorPage({ theme }) {
                 <button style={btn(true)} onClick={generarEntradasFaltantes} disabled={confirmar.enviando}
                   aria-label="Generar los datos sintéticos de entrada que faltan en este base path">
                   {confirmar.enviando ? 'Generando…' : '🧪 Generar datos de entrada que faltan'}</button>
-                <span style={{ color: t.muted }}>20 filas por dataset; no sobrescribe lo que ya existe.</span>
+                <button style={btn(false)} disabled={confirmar.enviando}
+                  onClick={() => setDatosModal({ base: confirmar.body.base_path })}
+                  title="Ver qué espera cada job y subir tus propios datos (CSV/Parquet/JSON/Excel) o indicar una ruta">📂 Usar mis datos…</button>
+                <span style={{ color: t.muted }}>20 filas por dataset; no sobrescribe lo que ya existe ni tus datos propios.</span>
               </div>}
             {confirmar.checks.some(c => c.nivel === 'warn') && !confirmar.bloqueado &&
               <div style={{ fontSize: 12, color: '#f59e0b' }}>Hay avisos (⚠): puedes continuar bajo tu responsabilidad.</div>}
