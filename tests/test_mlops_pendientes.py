@@ -61,16 +61,16 @@ def test_extra_sin_libs_del_banco_incluye_wheels(tmp_path):
 @pytest.mark.skipif(not os.path.isdir(CACHE_WHEELS), reason="sin cache de wheels del banco")
 def test_ligero_trae_lo_necesario_y_no_todo_el_cache(tmp_path):
     code = "import pandas as pd\nfrom toolbox.kernel import Kernel\ndef run(df):\n    return df\n"
-    z, files, rep = _build(tmp_path, [{"name": "job_1.py", "code": code}], py_target="py38-311")
+    z, files, rep = _build(tmp_path, [{"name": "job_1.py", "code": code}], py_target="py3.11")
     vend = [f for f in files if f.startswith("vendor/")]
     assert not any(os.path.basename(f).startswith(("xgboost-", "scipy-", "scikit_learn-")) for f in vend)
-    # Python 3.8 (el del banco): pandas/numpy cp38 desde el cache del banco
-    assert any("pandas-1.3.1-cp38" in f for f in vend)
+    # Python 3.11 (servidor RHEL 8): pandas cp311 desde la pieza ciencia-linux del cache
+    assert any(os.path.basename(f).startswith("pandas-") and "-cp311-" in f for f in vend)
     # banco: mex-lib* y el wheel con toolbox/bnmxverse/utils (bnx_bank_pkgcode) si el cache lo tiene
     assert all(os.path.basename(f).lower().startswith(("mex", "bnx_bank_pkgcode")) for f in vend
                if f.startswith("vendor/bank/") and f.endswith((".whl", ".tar.gz")))
     meta = [r for r in mp.build_package_from_sources(
-        [{"name": "job_1.py", "code": code}], convert_fn=_convert, py_target="py38-311",
+        [{"name": "job_1.py", "code": code}], convert_fn=_convert, py_target="py3.11",
         out_path=str(tmp_path / "b.zip"))[2] if r.get("_meta")][0]
     # ~65-125 MB segun cuantas versiones (3.8-3.11) tenga el cache; nunca los ~350 MB de antes
     assert meta["vendor_mb"] < 200 and meta["vendor_missing"] is False
@@ -217,7 +217,7 @@ def test_versiones_target():
 
 
 @pytest.mark.skipif(not os.path.isdir(CACHE_WHEELS), reason="sin cache de wheels del banco")
-@pytest.mark.parametrize("tgt,abi", [("py3.8", "cp38"), ("py3.12", "cp312")])
+@pytest.mark.parametrize("tgt,abi", [("py3.11", "cp311"), ("py3.14", "cp314")])
 def test_version_exacta_solo_lo_necesario(tmp_path, tgt, abi, monkeypatch):
     monkeypatch.setenv("BNX_NO_DOWNLOAD", "1")
     code = "import pandas as pd\nimport cytoolz\ndef run(df):\n    return df\n"
