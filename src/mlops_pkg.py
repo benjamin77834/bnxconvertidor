@@ -1494,7 +1494,12 @@ _here = os.path.dirname(os.path.abspath(__file__))
 # exactos. Va AL FINAL del path: un 'email.py' del banco no debe tapar al stdlib.
 _bank_src = os.path.join(_here, "bank_src")
 if os.path.isdir(_bank_src) and _bank_src not in sys.path:
-    sys.path.append(_bank_src)
+    # Solo PAQUETES (toolbox/, jobs/, bnmxverse/...): van primero, asi manda el codigo
+    # que subiste y no una copia vieja del cache. Con modulos sueltos va al final.
+    if any(f.endswith(".py") and f != "main.py" for f in os.listdir(_bank_src)):
+        sys.path.append(_bank_src)
+    else:
+        sys.path.insert(0, _bank_src)
 for _cand in (os.path.join(_here, "bank_pkg"),
               os.path.join(_here, "vendor", "bank", "pkgcode")):
     if os.path.isdir(_cand) and _cand not in sys.path:
@@ -1509,6 +1514,11 @@ except Exception as e:
                      "con 'bash setup.sh' primero. Detalle: %s" % e)
 
 from framework_mlops_v2.aggregates.router import REGISTRY, GroupBy
+from framework_mlops_v2.aggregates import router as _router
+
+# Jobs del banco (def run(kernel)) y alias de los nombres viejos (job, job_2...) -> nombre por ruta.
+KERNEL = getattr(_router, "KERNEL", {})
+ALIAS = getattr(_router, "ALIAS", {})
 
 
 def _synthetic_df(spark, n=20):
@@ -1766,9 +1776,11 @@ def _resolver_source(nombre, src_cfg, bank_fmt, registry=None):
     raise SystemExit(
         "[source] ERROR: '%s' no es una tabla del config ni un job del REGISTRY.\\n"
         "  Tablas del config: %s\\n"
-        "  Jobs del REGISTRY: %s"
+        "  Jobs del REGISTRY: %s\\n"
+        "  Jobs del banco (run(kernel)): %s"
         % (crudo, ", ".join(map(str, src_cfg or {})) or "(ninguna)",
-           ", ".join(map(str, registry or {})) or "(ninguno)"))
+           ", ".join(map(str, registry or {})) or "(ninguno)",
+           ", ".join(map(str, globals().get("KERNEL") or {})) or "(ninguno)"))
 
 
 def _cargar_orden(path=None):
@@ -2142,6 +2154,348 @@ def _bank_sources(cfg, args, cfg_dir, spark=None):
     return src, prev
 
 
+# ---------------------------------------------------------------------------
+# JOBS DEL BANCO (def run(kernel)): se ejecutan con el Kernel de toolbox.
+# Secuencia replicada de main.py del banco (class Launcher), que arma el job asi:
+#   argumentos -f/--fid -e/--env -m/--model -j/--job -c/--cohort -v/--verbose
+#   Kernel(job, os.environ["LOG_FILE_PATH"], os.environ["CONF_PATH"])
+#   kernel.launch(args)      # Settings(spark.json, jobs.json, <model>/<job>.json) + SparkSession
+#   importlib.import_module("jobs.<model>.<job>.job").run(kernel)
+#   si falla: kernel.log.log_error() y se relanza la excepcion.
+# Si el main.py del banco viaja en bank_src/, se IMPORTA y se usa su Launcher tal cual;
+# si no, se replica esa misma secuencia. Las variables de entorno son las de
+# bin/opt/profile.sh (APP_NAME, BIN_PATH, CONF_PATH, LOG_FILE_PATH, ROOT_LOCAL, PYLIB...).
+# ---------------------------------------------------------------------------
+def _aplicar_alias(src):
+    """orden.json con nombres viejos (job, job_2...) -> nombres por ruta (rps_datapull...)."""
+    al = ALIAS
+    if not al:
+        return src
+    out = {}
+    for k, v in (src or {}).items():
+        if isinstance(v, dict) and isinstance(v.get("depends_on"), list):
+            v = dict(v)
+            v["depends_on"] = [al.get(d, d) for d in v["depends_on"]]
+        out[al.get(k, k)] = v
+    return out
+
+
+def _nombre_job(nombre):
+    """'rps_datapull', 'rps_datapull.py', 'RPS/datapull', 'job_2' (alias viejo) -> nombre canonico."""
+    crudo = str(nombre).strip().replace("\\\\", "/").strip("/").lower()
+    por_ruta = dict(("%s/%s" % (v.get("model"), v.get("job")), k)
+                    for k, v in KERNEL.items() if v.get("model") and v.get("job"))
+    if crudo in por_ruta:
+        return por_ruta[crudo]
+    n = os.path.splitext(os.path.basename(crudo))[0]
+    n = ALIAS.get(n, n)
+    return dict((k.lower(), k) for k in KERNEL).get(n, n)
+
+
+def _kernel_seleccion(args):
+    """(jobs de kernel a correr, si corren ademas los aggregates)."""
+    if not KERNEL:
+        return [], True
+    if args.source:
+        n = _nombre_job(args.source)
+        return ([n], False) if n in KERNEL else ([], True)
+    return list(KERNEL), (len(REGISTRY) > 0 or bool(args.config))
+
+
+def _kernel_dir_settings(args):
+    """Carpeta de settings del banco (bin/settings): --settings > CONF_PATH > junto al --config."""
+    d = args.settings or os.environ.get("CONF_PATH")
+    if not d and args.config:
+        p = os.path.dirname(os.path.abspath(args.config))
+        for _ in range(3):
+            if os.path.isfile(os.path.join(p, "spark.json")):
+                return p
+            p = os.path.dirname(p)
+    return d
+
+
+def _kernel_settings_demo(settings_dir, env, entries, root):
+    """settings MINIMOS para el DEMO (no hay settings reales): lo justo para que
+    Settings() y Email() arranquen. Los jobs que lean su config de negocio fallaran."""
+    def _w(rel, obj):
+        ruta = os.path.join(settings_dir, rel)
+        os.makedirs(os.path.dirname(ruta), exist_ok=True)
+        with open(ruta, "w", encoding="utf-8") as fh:
+            json.dump(obj, fh)
+    _w("spark.json", {"logging_path": "logs/", "logging_level": "ERROR", "default": {},
+                      "spark_queue_uat": "default"})
+    _w("jobs.json", {env: {"general_root": root.rstrip("/") + "/", "static": ""}})
+    for e in entries:
+        if e.get("model") and e.get("job"):
+            _w("%s/%s.json" % (e["model"], e["job"]), {env: {}})
+            _w("%s/config_custom.json" % e["model"], {"env": {env: {}}, "default": {}})
+
+
+def _patch_sql(spark, synth):
+    """DEMO: spark.table(...) y spark.sql('select ...') sobre tablas que no existen -> df sintetico."""
+    cls = type(spark)
+    orig_sql = cls.sql
+
+    def _sql(self, q, *a, **k):
+        try:
+            return orig_sql(self, q, *a, **k)
+        except Exception:
+            if str(q).lstrip().lower().startswith(("select", "with")):
+                return synth
+            raise
+    try:
+        cls.sql = _sql
+        cls.table = lambda self, name: synth
+    except Exception:
+        pass
+
+
+_DEMO_MOD = []
+def _demo_mod():
+    """bnx_demo/ (datos sinteticos por lectura, rutas del cluster -> demo_out/, shim hdfs) o None."""
+    if not _DEMO_MOD:
+        _DEMO_MOD.append(None)
+        if os.path.isdir(os.path.join(_here, "bnx_demo")):
+            try:
+                import bnx_demo
+                _DEMO_MOD[0] = bnx_demo
+            except Exception as e:
+                print("[demo] aviso: no se pudo importar bnx_demo (%s: %s); se usan lecturas de juguete"
+                      % (type(e).__name__, str(e)[:120]))
+    return _DEMO_MOD[0]
+def _demo_out_dir():
+    return os.path.abspath(os.environ.get("BNX_DEMO_OUT") or os.path.join(_here, "demo_out"))
+def _kernel_conector_demo(work):
+    """SparkConnector de DEMO: sesion LOCAL (sin yarn/Hive) con lecturas sinteticas."""
+    jopts = ("-Djava.io.tmpdir=%s -Dorg.xerial.snappy.tempdir=%s -Djna.tmpdir=%s"
+             % (work, work, work))
+
+    class _ConectorDemo(object):
+        def __init__(self, settings):
+            self.settings = settings
+            # los workers de PySpark usan el MISMO python que este (sin activar el venv no coincidia)
+            os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
+            os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
+            b = (SparkSession.builder.appName("bnx_kernel_demo").master("local[1]")
+                 .config("spark.ui.enabled", "false")
+                 .config("spark.sql.shuffle.partitions", "2")
+                 .config("spark.sql.warehouse.dir", os.path.join(_demo_out_dir(), "spark-warehouse"))
+                 .config("spark.sql.ansi.enabled", "false")
+                 .config("spark.local.dir", work)
+                 .config("spark.driver.extraJavaOptions", jopts)
+                 .config("spark.io.compression.codec", os.environ.get("BNX_IO_CODEC", "lz4")))
+            self.session = b.getOrCreate()
+            self.session.sparkContext.setLogLevel("ERROR")
+            if _demo_mod() is None:
+                # sin bnx_demo/: lecturas de juguete (un mismo df para toda lectura)
+                synth = _synthetic_df(self.session)
+                _patch_reads(self.session, synth)
+                _patch_sql(self.session, synth)
+    return _ConectorDemo
+
+
+def _kernel_demo_sin_correo():
+    """DEMO: toolbox.email usa smtplib.SMTP (servidor interno del banco). En demo NUNCA se
+    envia un correo ni se resuelve ese host: SMTP se reemplaza por un simulador."""
+    import smtplib
+
+    class _SmtpDemo(object):
+        def __init__(self, *a, **k):
+            print("[demo] SMTP simulado: el correo NO se envia (%s)" % (", ".join(map(str, a[:2])),))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def __getattr__(self, nombre):
+            return lambda *a, **k: (250, b"demo")
+    smtplib.SMTP = _SmtpDemo
+    smtplib.SMTP_SSL = _SmtpDemo
+
+
+_BANK_MAIN = []
+
+
+def _bank_launcher():
+    """main.py del banco (bank_src/main.py) importado, o None si no viajo / no importa."""
+    if not _BANK_MAIN:
+        _BANK_MAIN.append(None)
+        ruta = os.path.join(_bank_src, "main.py")
+        if os.path.isfile(ruta):
+            import importlib.util
+            try:
+                spec = importlib.util.spec_from_file_location("bnx_bank_main", ruta)
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                if hasattr(mod, "Launcher"):
+                    _BANK_MAIN[0] = mod
+            except Exception as e:
+                print("[kernel] aviso: no se pudo importar bank_src/main.py (%s: %s); "
+                      "se replica su secuencia" % (type(e).__name__, str(e)[:120]))
+    return _BANK_MAIN[0]
+
+
+def _kernel_entorno(args, settings_dir, real_settings, env, fid, model, job):
+    """Variables de entorno de bin/opt/profile.sh que usan toolbox y los jobs."""
+    import time
+    bin_path = os.environ.get("BIN_PATH") or (
+        os.path.dirname(os.path.abspath(settings_dir)) if real_settings else _bank_src)
+    root_local = os.environ.get("ROOT_LOCAL") or os.path.dirname(os.path.abspath(bin_path))
+    app = "%s_%s_%s" % (os.environ.get("LOCAL_DIR") or "bnx", model or "x", job)
+    log_dir = os.path.join(os.environ.get("LOG_PATH") or os.path.join(_here, "logs"),
+                           time.strftime("%Y_%m"))
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, "%s_%s.log" % (app, time.strftime("%d_%H_%M_%S")))
+    open(log_file, "a").close()
+    pylib = os.environ.get("PYLIB")
+    if not pylib:
+        sh = os.environ.get("SPARK_HOME")
+        pylib = os.path.join(sh, "python", "lib") if sh and os.path.isdir(os.path.join(sh, "python", "lib")) \
+            else os.path.dirname(os.path.dirname(os.path.abspath(sys.modules["pyspark"].__file__)))
+    os.environ.update({
+        "FID": fid, "ENV": env, "MODEL": model or "", "JOB": job, "JOB_NAME": job,
+        "APP_NAME": app, "BIN_PATH": bin_path, "CONF_PATH": settings_dir,
+        "ROOT_LOCAL": root_local, "LOG_FILE_PATH": log_file, "PYLIB": pylib})
+    return log_file
+
+
+def _kernel_lanzar(entry, env, fid, cohort, verbose):
+    """Construye el Kernel como el main.py del banco y llama modulo.run(kernel)."""
+    model, job = entry.get("model") or "", entry.get("job") or ""
+    if not model or not job:
+        raise RuntimeError("no se conoce model/job de este job (el archivo se subio sin su ruta "
+                           "jobs/<model>/<job>/job.py); sube la carpeta del proyecto completa")
+    modulo = entry["module"]
+    launcher = _bank_launcher() if modulo == "jobs.%s.%s.job" % (model, job) else None
+    if launcher is not None:
+        argv0 = sys.argv
+        sys.argv = ["main.py", "-f", fid, "-e", env, "-m", model, "-j", job, "-c", cohort]
+        if verbose:
+            sys.argv += ["-v", "True"]
+        try:
+            return launcher.Launcher().run()
+        finally:
+            sys.argv = argv0
+    import importlib
+    from toolbox.kernel import Kernel
+    kernel = Kernel(job, os.environ["LOG_FILE_PATH"], os.environ["CONF_PATH"])
+    try:
+        kernel.launch({"fid": fid, "env": env, "model": model, "job": job,
+                       "cohort": cohort, "verbose": bool(verbose)})
+        return importlib.import_module(modulo).run(kernel)
+    except Exception:
+        kernel.log.log_error()
+        raise
+
+
+def _kernel_main(args, nombres):
+    """Corre los jobs de kernel EN ORDEN (orden.json / depends_on; pivote primero).
+    Devuelve 0 si todos OK, 1 si alguno fallo o se salto."""
+    import datetime
+    import time
+    import traceback
+    settings_dir = _kernel_dir_settings(args)
+    if args.config and not args.settings and not os.environ.get("CONF_PATH") \
+            and not args.source and not settings_dir:
+        print("[kernel] %d job(s) del banco (run(kernel)) NO corren con --config sin --settings: "
+              "usa  --settings <bin/settings>  o  --source <job>" % len(nombres))
+        return 0
+    demo = bool(args.demo) or not settings_dir
+    env = (args.env or ("uat" if demo else "")).lower()
+    if not env:
+        raise SystemExit("[kernel] falta --env (prod|uat|sbx): es el ambiente de los settings del banco")
+    fid = (args.fid or "demo").lower()
+    cohort = args.cohort or datetime.date.today().strftime("%Y%m")
+    work = _work_dir()
+    base = None
+    entradas = dict((n, KERNEL[n]) for n in nombres)
+    print("=" * 64)
+    print("JOBS DEL BANCO (run(kernel)) — %s" % ("DEMO (Spark local, lecturas sinteticas)" if demo
+                                                else "DATOS REALES (settings: %s)" % settings_dir))
+    print("=" * 64)
+    try:
+        import toolbox.kernel as _tk
+    except Exception as e:
+        raise SystemExit("[kernel] no se pudo importar toolbox.kernel (%s: %s). Monta el entorno con "
+                         "'bash setup.sh' (toolbox viaja en bank_pkg/ o bank_src/)." % (type(e).__name__, e))
+    if demo:
+        base = tempfile.mkdtemp(prefix="bnx_kernel_", dir=work)
+        if not settings_dir:
+            settings_dir = os.path.join(base, "settings")
+            _kernel_settings_demo(settings_dir, env, list(entradas.values()), os.path.join(base, "data"))
+            print("[kernel] DEMO sin --settings: settings minimos de prueba; los jobs que lean su "
+                  "config de negocio (config_custom.json, tablas) fallaran. Con --settings <bin/settings> "
+                  "se usa tu config pero SIN conectar a Hive/Teradata.")
+        _tk.SparkConnector = _kernel_conector_demo(work)
+        _kernel_demo_sin_correo()
+        _dm = _demo_mod()
+        if _dm is not None:
+            _dm.iniciar(_here, bank_dirs=[_bank_src, os.path.join(_here, "bank_pkg")],
+                        settings_dir=settings_dir, cohort=cohort, limpiar=not args.source)
+            _dm.activar()
+    if args.source:
+        lista, deps = list(nombres), {}
+    else:
+        lista, deps = _orden_dependencias(list(nombres), {}, _aplicar_alias(_cargar_orden(args.orden)))
+    ok = fail = skip = 0
+    resumen = []
+    fallidos = set()
+    for i, n in enumerate(lista):
+        e = entradas[n]
+        bloquean = [d for d in deps.get(n, []) if d in fallidos]
+        if bloquean or (fail and not args.continuar_si_falla):
+            motivo = ("depende de %s, que fallo o se salto" % ", ".join(bloquean)) if bloquean \
+                else "un job anterior fallo (usa --continuar-si-falla para seguir)"
+            print("[kernel] SALTADO %s: %s" % (n, motivo))
+            fallidos.add(n)
+            skip += 1
+            resumen.append((n, "SALTADO", 0.0, motivo))
+            continue
+        print("-" * 64)
+        print("[kernel] INICIO %s (%d/%d)  model=%s job=%s" % (n, i + 1, len(lista), e.get("model"), e.get("job")))
+        t0 = time.time()
+        log_file = ""
+        if demo and _demo_mod() is not None:
+            _demo_mod().set_job(n)
+        try:
+            log_file = _kernel_entorno(args, settings_dir, not (demo and not args.settings),
+                                       env, fid, e.get("model"), e.get("job") or n)
+            ret = _kernel_lanzar(e, env, fid, cohort, args.verbose)
+            dt = time.time() - t0
+            print("[kernel] FIN OK %s en %.1f s | log: %s%s" % (
+                n, dt, log_file, "" if ret is None else " | retorno: %r" % (ret,)))
+            ok += 1
+            resumen.append((n, "OK", dt, ""))
+        except (Exception, SystemExit) as ex:
+            dt = time.time() - t0
+            cola = " | ".join(l.strip() for l in traceback.format_exc().strip().splitlines()[-6:])
+            print("[kernel] FIN ERROR %s en %.1f s: %s: %s" % (n, dt, type(ex).__name__, str(ex)[:300]))
+            print("         traceback (corto): %s" % cola[:900])
+            if log_file:
+                print("         log: %s" % log_file)
+            fail += 1
+            fallidos.add(n)
+            resumen.append((n, "ERROR", dt, "%s: %s" % (type(ex).__name__, str(ex)[:160])))
+    print("=" * 64)
+    for n, est, dt, det in resumen:
+        print("  %-8s %-28s %6.1f s  %s" % (est, n, dt, det))
+    print("RESULTADO jobs del banco: %d OK, %d con error, %d saltados." % (ok, fail, skip))
+    if demo and _demo_mod() is not None:
+        _demo_mod().reporte()
+        _demo_mod().desactivar()
+    try:
+        act = SparkSession.getActiveSession()
+        if act is not None:
+            act.stop()
+    except Exception:
+        pass
+    if base:
+        shutil.rmtree(base, ignore_errors=True)
+    return 0 if (fail == 0 and skip == 0) else 1
+
+
 def main():
     ap = argparse.ArgumentParser(description="Framework MLOps v2 — entry point")
     ap.add_argument("--config", help="JSON con previous_path y sources (datos reales)")
@@ -2158,7 +2512,21 @@ def main():
                     help="ruta base de SALIDA (HDFS en el cluster); se le agrega working_path")
     ap.add_argument("--root", help="general_root (default: settings/jobs.json o ./data)")
     ap.add_argument("--orden", help="JSON con el orden de las fuentes (default: orden.json junto a main.py)")
+    ap.add_argument("--settings", help="carpeta bin/settings del banco (jobs de kernel run(kernel)); default: $CONF_PATH")
+    ap.add_argument("--fid", help="FID del banco (jobs de kernel; default: demo)")
+    ap.add_argument("--demo", action="store_true",
+                    help="jobs de kernel: Spark LOCAL con lecturas sinteticas (sin yarn/Hive/Teradata), aunque haya --settings")
+    ap.add_argument("--continuar-si-falla", dest="continuar_si_falla", action="store_true",
+                    help="jobs de kernel: si uno falla, seguir con los demas (por defecto se detiene)")
+    ap.add_argument("--verbose", action="store_true", help="jobs de kernel: log extendido (-v del banco)")
     args = ap.parse_args()
+    # Jobs del banco (def run(kernel)): los corre el runner con toolbox.kernel.Kernel.
+    kernel_sel, correr_agg = _kernel_seleccion(args)
+    kernel_rc = 0
+    if kernel_sel:
+        kernel_rc = _kernel_main(args, kernel_sel)
+        if not correr_agg:
+            raise SystemExit(kernel_rc)
     demo = not args.config
     cfg = {} if demo else _load_config(args.config)
     cfg_dir = os.path.dirname(os.path.abspath(args.config)) if args.config else _here
@@ -2359,7 +2727,7 @@ def main():
     if base:
         shutil.rmtree(base, ignore_errors=True)
     spark.stop()
-    raise SystemExit(0 if fail == 0 else 1)
+    raise SystemExit(0 if (fail == 0 and not kernel_rc) else 1)
 
 
 if __name__ == "__main__":
@@ -2609,8 +2977,13 @@ import sys
 # Modulos de PYTHONPATH del banco (toolbox, bnmxverse, utils): main.py los agrega
 # al path desde ./bank_pkg; aqui igual, para no reportarlos como faltantes.
 _HERE = os.path.dirname(os.path.abspath(__file__))
-if os.path.isdir(os.path.join(_HERE, "bank_src")) and os.path.join(_HERE, "bank_src") not in sys.path:
-    sys.path.append(os.path.join(_HERE, "bank_src"))   # al final: no tapa al stdlib
+_BS = os.path.join(_HERE, "bank_src")
+if os.path.isdir(_BS) and _BS not in sys.path:
+    # con modulos sueltos va al final (no tapa al stdlib); solo paquetes: primero (manda lo subido)
+    if any(f.endswith(".py") and f != "main.py" for f in os.listdir(_BS)):
+        sys.path.append(_BS)
+    else:
+        sys.path.insert(0, _BS)
 for _cand in (os.path.join(_HERE, "bank_pkg"), os.path.join(_HERE, "vendor", "bank", "pkgcode"), _HERE):
     if os.path.isdir(_cand) and _cand not in sys.path:
         sys.path.insert(0, _cand)
@@ -2771,10 +3144,8 @@ def _probar_jobs():
     if _project_root() not in sys.path:
         sys.path.insert(0, _project_root())
     errores = []
-    for fn in sorted(os.listdir(base)):
-        if not fn.endswith(".py") or fn in ("__init__.py", "router.py"):
-            continue
-        mod = "framework_mlops_v2.aggregates." + fn[:-3]
+
+    def _probar(nombre, mod):
         try:
             importlib.import_module(mod)
         except Exception as e:   # ImportError o error al cargar el modulo
@@ -2784,8 +3155,22 @@ def _probar_jobs():
             pista = ""
             if _es_error_openmp(txt):
                 pista = _pista_openmp()
-            errores.append((fn[:-3], "%s: %s (en %s:%s)%s" % (
+            errores.append((nombre, "%s: %s (en %s:%s)%s" % (
                 type(e).__name__, primera, os.path.basename(ultimo.filename), ultimo.lineno, pista)))
+
+    for fn in sorted(os.listdir(base)):
+        if not fn.endswith(".py") or fn in ("__init__.py", "router.py"):
+            continue
+        _probar(fn[:-3], "framework_mlops_v2.aggregates." + fn[:-3])
+    # Jobs del banco (def run(kernel)): el Kernel de toolbox y cada job se importan de verdad.
+    try:
+        kernel = dict(getattr(importlib.import_module("framework_mlops_v2.aggregates.router"), "KERNEL", {}))
+    except Exception:
+        kernel = {}
+    if kernel:
+        _probar("toolbox.kernel", "toolbox.kernel")
+        for nombre, ent in sorted(kernel.items()):
+            _probar(nombre, ent["module"])
     return errores
 
 
@@ -2998,6 +3383,16 @@ def _usa_pandas(code):
                       code or "", _re.M) is not None
 
 
+def _demo_files():
+    """{'bnx_demo/<modulo>.py': codigo}: el paquete del DEMO de los jobs del banco (src/mlops_demo/)."""
+    d = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mlops_demo")
+    out = {}
+    if os.path.isdir(d):
+        for f in sorted(os.listdir(d)):
+            if f.endswith(".py"):
+                with open(os.path.join(d, f), "r", encoding="utf-8") as fh:
+                    out["bnx_demo/" + f] = fh.read()
+    return out
 def _es_job_kernel(code):
     """True si el archivo es un job del framework del banco: def run(kernel...)."""
     return _re.search(r"^def\s+run\s*\(\s*kernel\b", code or "", _re.M) is not None
@@ -3010,6 +3405,10 @@ def _norm_fuente(n):
 def _en_registry(raw_name, src, registry):
     """El archivo esta en la lista de jobs a registrar (por nombre de archivo o modulo)."""
     sel = {_norm_fuente(r) for r in registry or []}
+    # Con rutas (carpeta subida): dos 'job.py' distintos se distinguen por su ruta completa.
+    rutas = {"/".join(_partes_ruta(r)).lower() for r in registry or [] if len(_partes_ruta(r)) > 1}
+    if rutas and len(_partes_ruta(raw_name)) > 1:
+        return "/".join(_partes_ruta(raw_name)).lower() in rutas
     return _norm_fuente(raw_name) in sel or str(src).lower() in sel
 
 
@@ -3068,6 +3467,67 @@ def _paquetes_importados(sources):
             ent = out.setdefault(mod.lower(), (pkg, mod, []))
             if quien not in ent[2]:
                 ent[2].append(quien)
+    return out
+
+
+def _partes_ruta(raw_name):
+    """['dir', 'sub', 'archivo.py'] de un nombre subido (webkitRelativePath o solo el nombre)."""
+    p = str(raw_name or "").replace("\\", "/")
+    return [x for x in p.split("/") if x and x != "."]
+
+
+def _es_main_banco(raw_name, code):
+    """main.py del banco (class Launcher que arma el Kernel de toolbox): NO es un job."""
+    partes = _partes_ruta(raw_name)
+    return (bool(partes) and partes[-1].lower() == "main.py"
+            and _re.search(r"\btoolbox\.kernel\b|\bKernel\s*\(", code or "") is not None)
+
+
+def _ruta_paquete_banco(raw_name, dirs_init):
+    """Ruta relativa dentro de bank_src/ si el archivo vive bajo toolbox/, bnmxverse/,
+    utils/ (o un paquete con __init__.py subido): 'toolbox/weeks.py'. None si no."""
+    partes = _partes_ruta(raw_name)
+    dirs = partes[:-1]
+    for i, d in enumerate(dirs):
+        if d in _BANK_PATH_MODULES and _re.fullmatch(r"[A-Za-z_]\w*", d):
+            return "/".join(partes[i:])
+    for i, d in enumerate(dirs):
+        if d.lower() != "jobs" and "/".join(dirs[:i + 1]).lower() in dirs_init \
+                and all(_re.fullmatch(r"[A-Za-z_]\w*", x) for x in dirs[i:]):
+            return "/".join(partes[i:])
+    return None
+
+
+def _kernel_ids(raw_name):
+    """Identidad de un job de kernel segun su ruta: (nombre, modulo, model, job).
+    jobs/rps/datapull/job.py -> ('rps_datapull', 'jobs.rps.datapull.job', 'rps', 'datapull').
+    Sin carpeta 'jobs' en la ruta (archivo suelto) devuelve None: se usa el nombre del archivo."""
+    partes = _partes_ruta(raw_name)
+    dirs = [d.lower() for d in partes[:-1]]
+    if "jobs" not in dirs:
+        return None
+    sub = [_safe_name(d) for d in dirs[dirs.index("jobs") + 1:]]
+    stem = _safe_name(partes[-1])
+    if not sub:
+        return None
+    if stem == "job":
+        modulo = "jobs." + ".".join(sub) + ".job"
+        nombre = "_".join(sub)
+        model, job = (sub[0], sub[1]) if len(sub) >= 2 else (sub[0], sub[0])
+    else:
+        modulo = "jobs." + ".".join(sub) + "." + stem
+        nombre = "_".join(sub + [stem])
+        model, job = sub[0], (sub[1] if len(sub) >= 2 else stem)
+    return nombre, modulo, model, job
+
+
+def _init_dirs(sources):
+    """Carpetas (minusculas) donde se subio un __init__.py: son paquetes del banco."""
+    out = set()
+    for it in sources or []:
+        partes = _partes_ruta(it.get("name"))
+        if partes and partes[-1].lower() == "__init__.py" and len(partes) > 1:
+            out.add("/".join(partes[:-1]).lower())
     return out
 
 
@@ -3151,17 +3611,29 @@ class {cls}(BaseAggregate):
 '''
 
 
-def _router_from_sources(sources):
+def _router_from_sources(sources, kernel=None, alias=None):
     """Genera el router con todas las fuentes del usuario registradas.
 
     El registro es PEREZOSO: cada job se importa al usarse. Asi una libreria nativa que
     no carga en esta maquina (p.ej. xgboost sin libomp en Mac) solo afecta a los jobs
-    que la usan, no a todo el framework, y el error dice como resolverlo."""
+    que la usan, no a todo el framework, y el error dice como resolverlo.
+
+    kernel: jobs del banco (def run(kernel)): [{"name","module","model","job"}]. No son
+    aggregates: van en KERNEL y los ejecuta main.py con toolbox.kernel.Kernel.
+    alias: {nombre_viejo: nombre_nuevo} para orden.json/--source hechos con los nombres
+    anteriores (job, job_2...)."""
     registry = "\n".join(
         f'    "{s}": (".{s}", "{_class_name(s)}"),' for s in sources)
+    if kernel:
+        registry += "\n" + "\n".join(
+            f'    "{k["name"]}": ("{k["module"]}", "run", "kernel", "{k["model"]}/{k["job"]}"),'
+            for k in kernel)
+    alias_txt = "\n".join(f'    "{a}": "{b}",' for a, b in sorted((alias or {}).items()))
     return f'''# framework_mlops_v2/aggregates/router.py
 """Router de agregaciones generado por BNX. Una entrada por fuente del negocio.
-Los jobs se importan al usarse (registro perezoso)."""
+Los jobs se importan al usarse (registro perezoso).
+Entradas de 2 elementos = aggregate (clase). Entradas con "kernel" = job del banco
+(def run(kernel)): NO es un aggregate; lo ejecuta main.py con toolbox.kernel.Kernel."""
 import importlib
 import platform
 from collections.abc import Mapping
@@ -3169,6 +3641,15 @@ from collections.abc import Mapping
 _FUENTES = {{
 {registry}
 }}
+
+# nombre viejo (job, job_2...) -> nombre por ruta (rps_datapull...)
+ALIAS = {{
+{alias_txt}
+}}
+
+_AGGREGATES = {{k: v for k, v in _FUENTES.items() if len(v) == 2}}
+KERNEL = {{k: {{"module": v[0], "model": v[3].split("/")[0], "job": v[3].split("/")[1]}}
+          for k, v in _FUENTES.items() if len(v) == 4}}
 
 
 def _ayuda_import(e):
@@ -3210,7 +3691,20 @@ class _RegistroPerezoso(Mapping):
         return len(self._fuentes)
 
 
-REGISTRY = _RegistroPerezoso(_FUENTES)
+REGISTRY = _RegistroPerezoso(_AGGREGATES)   # solo aggregates (GroupBy)
+
+
+def cargar_job_kernel(nombre):
+    """Importa (al usarse) el modulo de un job del banco y devuelve el modulo (tiene run(kernel))."""
+    if nombre not in KERNEL:
+        raise KeyError("Job del banco no registrado: %r. Opciones: %s" % (nombre, sorted(KERNEL)))
+    mod = KERNEL[nombre]["module"]
+    try:
+        return importlib.import_module(mod)
+    except Exception as e:  # noqa: BLE001 - mensaje claro para el usuario
+        raise ImportError("No se pudo cargar el job del banco %r (%s): %s: %s -> %s" % (
+            nombre, mod, type(e).__name__, str(e).splitlines()[0] if str(e) else "",
+            _ayuda_import(e))) from e
 
 
 class GroupBy:
@@ -4139,6 +4633,11 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     seen = set()
     original_codes = []    # codigo pandas original de cada fuente (para detectar libs)
     paquetes = _paquetes_importados(sources)
+    dirs_init = _init_dirs(sources)
+    kernel_jobs = []       # jobs del banco (def run(kernel)): los ejecuta main.py con el Kernel
+    alias = {}             # nombre viejo (job, job_2...) -> nombre por ruta
+    usados = set()         # nombres finales de jobs (aggregates y de kernel)
+    _init_txt = "# BNX: paquete armado con los archivos subidos al portal.\n"
 
     for item in sources or []:
         raw_name = item.get("name") or "fuente.py"
@@ -4146,9 +4645,71 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
         if pandas_code.strip():
             original_codes.append(pandas_code)
         if not pandas_code.strip():
+            if _partes_ruta(raw_name)[-1:] == ["__init__.py"]:
+                continue      # marcador de paquete vacio: no es una fuente ni un error
             report.append({"name": raw_name, "ok": False, "reason": "vacio"})
             continue
         src = _safe_name(raw_name)
+        # (a) main.py del banco (Launcher): NO es un job ni un aggregate. Va exacto a
+        # bank_src/main.py; el runner de main.py importa su Launcher para armar el Kernel.
+        if _es_main_banco(raw_name, pandas_code):
+            files["bank_src/main.py"] = pandas_code
+            report.append({"name": raw_name, "source": None, "ok": True, "role": "apoyo",
+                           "verbatim": True, "file": "bank_src/main.py", "todos": [],
+                           "warnings": 0, "unsupported": 0,
+                           "nota": "main.py del banco: no es un job; el runner usa su Launcher "
+                                   "(construye el Kernel igual que el banco)"})
+            continue
+        # (b) todo lo que vive bajo toolbox/, bnmxverse/, utils/ (o un paquete con
+        # __init__.py) es modulo de apoyo de ese paquete, aunque nadie lo importe.
+        _rel_pkg = _ruta_paquete_banco(raw_name, dirs_init)
+        if _rel_pkg:
+            _rel = "bank_src/" + _rel_pkg
+            _dirs = _rel_pkg.split("/")[:-1]
+            if _rel in files and files[_rel] != pandas_code:
+                report.append({"name": raw_name, "ok": False, "role": "apoyo",
+                               "reason": f"nombre repetido en bank_src/: {_rel}"})
+                continue
+            files[_rel] = pandas_code
+            for _i in range(len(_dirs)):
+                files.setdefault("bank_src/" + "/".join(_dirs[:_i + 1]) + "/__init__.py", _init_txt)
+            report.append({"name": raw_name, "source": None, "ok": True, "role": "apoyo",
+                           "verbatim": True, "file": _rel, "todos": [], "warnings": 0,
+                           "unsupported": 0, "paquete": _dirs[0] if _dirs else None,
+                           "nota": "ruta del paquete del banco " + (_dirs[0] if _dirs else "")})
+            continue
+        # (c) job del framework del banco (def run(kernel)): se registra como job de
+        # KERNEL (no como aggregate). Nombre por ruta: jobs/rps/datapull/job.py -> rps_datapull.
+        if _es_job_kernel(pandas_code) and (registry is None or _en_registry(raw_name, src, registry)):
+            legacy, _n = src, 1
+            while legacy in seen:
+                _n += 1
+                legacy = f"{src}_{_n}"
+            seen.add(legacy)
+            ids = _kernel_ids(raw_name)
+            if ids:
+                nombre, modulo, model, job = ids
+            else:   # archivo suelto (sin ruta): se queda con el nombre del archivo
+                nombre, model, job = legacy, "", legacy
+                modulo = f"jobs.{legacy}.job"
+            _base, _n = nombre, 1
+            while nombre in usados:
+                _n += 1
+                nombre = f"{_base}_{_n}"
+            usados.add(nombre)
+            if legacy != nombre:
+                alias[legacy] = nombre
+            _rel = "bank_src/" + modulo.replace(".", "/") + ".py"
+            _dirs = modulo.split(".")[:-1]
+            files[_rel] = pandas_code      # COPIA EXACTA: nunca se convierte ni se envuelve
+            for _i in range(len(_dirs)):
+                files.setdefault("bank_src/" + "/".join(_dirs[:_i + 1]) + "/__init__.py", _init_txt)
+            kernel_jobs.append({"name": nombre, "module": modulo, "model": model, "job": job})
+            report.append({"name": raw_name, "source": nombre, "ok": True, "role": "job",
+                           "kind": "kernel", "verbatim": True, "job_kernel": True,
+                           "file": _rel, "todos": [], "warnings": 0, "unsupported": 0,
+                           "modulo": modulo, "alias": legacy if legacy != nombre else None})
+            continue
         # ¿Otro archivo subido lo importa como 'paquete.este_modulo'? Entonces es un
         # modulo de ESE paquete (toolbox/kernel.py, utils/emails_full.py, ...): va
         # EXACTO a bank_src/<paquete>/ para que el import funcione aunque el servidor
@@ -4197,10 +4758,11 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
             continue
         base = src
         n = 1
-        while src in seen:
+        while src in seen or src in usados:
             n += 1
             src = f"{base}_{n}"
         seen.add(src)
+        usados.add(src)
 
         # Sin pandas no hay nada que convertir pandas->PySpark: el conversor solo
         # reescribiria el archivo (perdia comentarios/formato). Se copia tal cual.
@@ -4247,7 +4809,8 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
         report[-1]["todos"] = todos
         report[-1]["unsupported"] = len(todos) if todos else report[-1].get("unsupported", 0)
 
-    if not gen_sources and not any(r.get("role") == "apoyo" and r.get("ok") for r in report):
+    if not gen_sources and not kernel_jobs and not any(
+            r.get("role") == "apoyo" and r.get("ok") for r in report):
         # Nada convertible: devolvemos el paquete base de ejemplo.
         data, filename = build_mlops_package(include_bank_libs)
         return data, filename, report
@@ -4258,7 +4821,10 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     files["framework_mlops_v2/core/base_aggregate.py"] = _BASE_AGGREGATE
     files["framework_mlops_v2/core/quality.py"] = _QUALITY
     files["framework_mlops_v2/aggregates/__init__.py"] = ""
-    files["framework_mlops_v2/aggregates/router.py"] = _router_from_sources(gen_sources)
+    _nombres_finales = set(gen_sources) | {k["name"] for k in kernel_jobs}
+    files["framework_mlops_v2/aggregates/router.py"] = _router_from_sources(
+        gen_sources, kernel_jobs,
+        {a: b for a, b in alias.items() if a not in _nombres_finales})
     files["framework_mlops_v2/features/__init__.py"] = ""
     files["framework_mlops_v2/features/ratios.py"] = _RATIOS
     # Pasos EXTRA opcionales + monitoreo DENTRO del paquete (si no se separa).
@@ -4268,6 +4834,8 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     files["tests/test_aggregates.py"] = _TEST
     files["main.py"] = _MAIN_PY   # entry point del framework (demo + --config)
     files["check_env.py"] = _CHECK_ENV   # verificador de deps (que no falte nada)
+    if kernel_jobs:
+        files.update(_demo_files())   # bnx_demo/: DEMO de los jobs del banco sin cluster
     # Detectar librerias INTERNAS del banco (toolbox, mex_lib_cs, ...) en el
     # codigo original. Van en requirements.txt (dadas de alta) para visibilidad,
     # y ADEMAS en requirements-bank.txt para que el montaje offline del core
@@ -4373,12 +4941,53 @@ def _readme_custom(include_bank_libs, sources, report, extra_steps=False,
     rows = "\n".join(
         (f"- `{r.get('file')}` ← {r['name']} (módulo de apoyo, copia exacta; no está en el REGISTRY)"
          if r.get("role") == "apoyo" else
+         f"- `{r.get('source')}` ← {r['name']} (job del banco `run(kernel)`: lo ejecuta `main.py` con `toolbox.Kernel`; "
+         f"`python main.py --source {r.get('source')}`)"
+         if r.get("kind") == "kernel" else
          f"- `{r.get('source', '?')}` ← {r['name']}"
          + (" ✅" if r.get("ok") else f" ⚠️ {r.get('reason', '')}")
          + (f" ({r['unsupported']} revisión manual)" if r.get("unsupported") else ""))
         for r in report if not r.get("_meta"))
     # Puede no haber ningun job (solo modulos de apoyo): el ejemplo usa un nombre generico.
     sources = list(sources) or ["<tu_job>"]
+    kernel_md = ""
+    if any(r.get("kind") == "kernel" for r in report):
+        kernel_md = '''
+## Jobs del banco (`def run(kernel)`)
+Estos jobs NO son aggregates: `main.py` construye el `Kernel` de `toolbox` como el `main.py` del
+banco (usa su `Launcher` si viajo en `bank_src/main.py`) y llama `modulo.run(kernel)` en el orden de
+`orden.json` / `depends_on` (pivote primero).
+```bash
+. .venv/bin/activate
+python main.py                                   # DEMO: Spark local, lecturas sinteticas
+python main.py --source rps_datapull             # un solo job (acepta los nombres viejos job, job_2...)
+python main.py --continuar-si-falla              # no se detiene al primer error
+python main.py --settings <bin/settings> --env uat --fid <fid> --cohort 202501   # datos REALES
+```
+Datos reales: `--settings` es la carpeta `bin/settings` del banco (`spark.json`, `jobs.json`,
+`<model>/<job>.json`, `config_custom.json`) y el `toolbox` usa `master("yarn")` + Hive + Kerberos
+del servidor (como `spark_exe.sh`). En DEMO no se conecta a nada externo.
+
+### DEMO sin cluster (`--demo`, Mac/Windows; con `--settings` usa tu config de negocio)
+```bash
+python main.py --demo --settings <bin/settings> --env prod --continuar-si-falla
+```
+Sin tocar el codigo del banco, `bnx_demo/` parchea en memoria (solo en DEMO; con datos reales NO se activa):
+- **Lecturas**: cada `spark.sql('select ... from db.tabla')`, `spark.table`, `read.parquet/csv/json`, JDBC y
+  `pandas.read_*` devuelve datos sinteticos con las COLUMNAS que ese SQL / ese job usa (AST + SQL + settings),
+  tipos por nombre y uso, y valores que pasan los filtros (`where`). Las claves (`numcliente`, `crd_acct_nbr`...)
+  coinciden entre tablas para que los joins devuelvan filas. Determinista (`BNX_DEMO_SEED`); filas con
+  `BNX_DEMO_FILAS` (default 50).
+- **Tus datos de muestra**: `demo_data/<tabla>.parquet|csv` (o `<db>.<tabla>`) se usan antes que lo sintetico
+  (tambien `BNX_DEMO_DATA=<carpeta>`).
+- **Rutas del cluster** (`/data/...`, `hdfs://`, `s3://`, `abfss://`, rutas de los settings) se redirigen a
+  `demo_out/<ruta>`; las tablas Hive (`saveAsTable`, `insertInto`, `INSERT OVERWRITE`) se escriben como parquet en
+  `demo_out/hive/<db>/<tabla>` y los jobs siguientes las leen (datapull -> pivot -> target -> score encadenan).
+- **CLI del cluster**: `hdfs dfs -ls/-test/-mkdir/-rm/-put/-get/-cat/-du/-mv` se emulan en local; `beeline`,
+  `impala-shell`, `kinit`... se simulan (rc 0, sin salida; con `BNX_DEMO_ESTRICTO=1` fallan).
+- Al final imprime (y guarda en `demo_out/REPORTE_DEMO.json`) por job: fuentes leidas, columnas, filas escritas y
+  comandos simulados. Un `--source <job>` conserva `demo_out/` de la corrida anterior.
+'''
     base = _readme(include_bank_libs)
     env = ""
     if full_env:
@@ -4488,7 +5097,7 @@ from framework_mlops_v2.aggregates.router import GroupBy
 GroupBy("{sources[0]}", previous_path, agg_dict, sqlContext).aggregate()
 ```
 Revisa los comentarios `# TODO py2spark` donde la conversión no fue 1:1.
-{extra}{env}'''
+{kernel_md}{extra}{env}'''
 
 
 def build_mlops_package(include_bank_libs=True, extra_steps=False,

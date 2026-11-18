@@ -144,7 +144,8 @@ def test_registry_y_modulos_de_apoyo_exactos(tmp_path):
     router = _read(z, files, "framework_mlops_v2/aggregates/router.py")
     reg = ast.literal_eval(router.split("_FUENTES = ")[1].split("\n}")[0] + "\n}")
     assert set(reg) == {"job_3", "job_4"}                         # 5) solo los jobs elegidos
-    assert reg["job_4"] == (".job_4", "Job4Aggregate")            # registro perezoso
+    # jobs del banco run(kernel): NO son aggregates, los ejecuta el runner (archivo sin ruta: nombre del archivo)
+    assert reg["job_4"] == ("jobs.job_4.job", "run", "kernel", "/job_4")
     # 4) apoyo: copia EXACTA. Los que otro archivo importa como toolbox.<x> van a su
     #    PAQUETE (bank_src/toolbox/), asi 'from toolbox.kernel import Kernel' funciona
     #    aunque el servidor no tenga toolbox en cache; el resto, sueltos en bank_src/.
@@ -157,12 +158,12 @@ def test_registry_y_modulos_de_apoyo_exactos(tmp_path):
     assert por["kernel.py"]["role"] == "apoyo" and por["kernel.py"]["paquete"] == "toolbox"
     assert "aviso" not in por["email.py"]   # dentro del paquete toolbox ya no choca con stdlib
     assert por["job_3.py"]["job_kernel"] and por["job_4.py"]["job_kernel"]
-    # job sin pandas registrado: NO pasa por el conversor (conserva comentarios)
-    agg = _read(z, files, "framework_mlops_v2/aggregates/job_4.py")
-    assert "CONVERTIDO" not in agg and "RPS Data Pull Proccess" in agg
+    # job de kernel: copia EXACTA (sin conversor ni envoltura aggregate)
+    assert _read(z, files, "bank_src/jobs/job_4/job.py") == fuentes[1]["code"]
+    assert "framework_mlops_v2/aggregates/job_4.py" not in files
     # todo lo generado es Python valido
     for rel in ("main.py", "check_env.py", "framework_mlops_v2/aggregates/router.py",
-                "framework_mlops_v2/aggregates/job_3.py", "framework_mlops_v2/aggregates/job_4.py"):
+                "bank_src/jobs/job_3/job.py", "bank_src/jobs/job_4/job.py"):
         ast.parse(_read(z, files, rel))
 
 

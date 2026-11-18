@@ -719,6 +719,8 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                       {r.file && <span style={{ color: t.dim || '#64748b' }}> · {r.file}</span>}
                       {r.ok && r.role === 'apoyo'
                         ? <span style={{ color: '#a78bfa' }}> · módulo de apoyo: copia exacta (no está en el REGISTRY){r.nota ? ` — ${r.nota}` : ''}</span>
+                        : r.ok && r.kind === 'kernel'
+                        ? <span style={{ color: '#22c55e' }}> · job de kernel: copia exacta (no es aggregate)</span>
                         : r.ok && r.verbatim
                         ? <span style={{ color: '#38bdf8' }}> · PySpark / Python sin pandas: copiado completo, sin conversión</span>
                         : r.ok
@@ -727,9 +729,10 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                           : <span style={{ color: '#22c55e' }}> · conversión limpia</span>)
                         : <span style={{ color: '#f87171' }}> · {r.reason}</span>}
                       {r.aviso && <div style={{ marginLeft: 16, color: '#f59e0b' }}>⚠ {r.aviso}</div>}
-                      {r.job_kernel && <div style={{ marginLeft: 16, color: '#f59e0b' }}>
-                        ⚠ Es un job del framework del banco (<code>def run(kernel)</code>): el paquete lo envuelve como aggregate y
-                        <b> no llama a su run(kernel)</b>. Para ejecutarlo hace falta el runner con el Kernel de toolbox.</div>}
+                      {r.job_kernel && <div style={{ marginLeft: 16, color: '#22c55e' }}>
+                        ✅ job del banco (<code>run(kernel)</code>): lo ejecuta el runner con <code>toolbox.Kernel</code>
+                        {r.source ? <> · <code>python main.py --source {r.source}</code></> : null}
+                        {r.alias ? <span style={{ color: '#94a3b8' }}> (antes: {r.alias})</span> : null}</div>}
                     </div>
                     {/* Detalle: lineas no traducibles de esta fuente */}
                     {(r.todos || []).length > 0 && (
