@@ -297,28 +297,42 @@ def detectar_python_en_workers(code):
 # ---------------------------------------------------------------------------
 # Tabla de tiempos
 # ---------------------------------------------------------------------------
-def tabla_tiempos(filas, master=None, app_id=None):
-    """filas: [{"etapa","nombre","seg","particiones","archivos","filas","estado"}] -> texto."""
+def tabla_tiempos(filas, master=None, app_id=None, resumen_cpu=None):
+    """filas: [{"etapa","nombre","seg","particiones","archivos","filas","estado"} (+ cpu_prom, cpu_pico, nuc_prom,
+    mem_pico, tareas, eficiencia si el monitor de recursos esta activo)] -> texto."""
     def f(v, fmt="%s"):
         return "-" if v is None else fmt % v
-    out = ["TABLA DE TIEMPOS  master=%s  applicationId=%s" % (master or "?", app_id or "?"),
-           "%-10s %-28s %9s %7s %8s %12s  %s" % ("etapa", "fuente/job", "segundos", "partic.",
-                                                 "archivos", "filas", "estado")]
+    con_cpu = any(r.get("cpu_prom") is not None for r in filas)
+    out = ["TABLA DE TIEMPOS  master=%s  applicationId=%s" % (master or "?", app_id or "?")]
+    if con_cpu:
+        out.append("%-10s %-24s %9s %8s %8s %7s %9s %7s %6s %7s %8s %12s  %s" % (
+            "etapa", "fuente/job", "segundos", "CPU %prom", "CPU %pico", "nuc.prom", "mem MB", "tareas", "efic.",
+            "partic.", "archivos", "filas", "estado"))
+    else:
+        out.append("%-10s %-28s %9s %7s %8s %12s  %s" % ("etapa", "fuente/job", "segundos", "partic.",
+                                                         "archivos", "filas", "estado"))
     total = 0.0
     for r in filas:
         total += r.get("seg") or 0.0
-        out.append("%-10s %-28s %9s %7s %8s %12s  %s" % (
-            r.get("etapa", ""), str(r.get("nombre", ""))[:28], f(r.get("seg"), "%.1f"),
-            f(r.get("particiones")), f(r.get("archivos")), f(r.get("filas")), r.get("estado", "")))
+        if con_cpu:
+            out.append("%-10s %-24s %9s %8s %8s %7s %9s %7s %6s %7s %8s %12s  %s" % (
+                r.get("etapa", ""), str(r.get("nombre", ""))[:24], f(r.get("seg"), "%.1f"),
+                f(r.get("cpu_prom"), "%.0f"), f(r.get("cpu_pico"), "%.0f"), f(r.get("nuc_prom"), "%.2f"),
+                f(r.get("mem_pico"), "%.0f"), f(r.get("tareas")), f(r.get("eficiencia"), "%.2f"),
+                f(r.get("particiones")), f(r.get("archivos")), f(r.get("filas")), r.get("estado", "")))
+        else:
+            out.append("%-10s %-28s %9s %7s %8s %12s  %s" % (
+                r.get("etapa", ""), str(r.get("nombre", ""))[:28], f(r.get("seg"), "%.1f"),
+                f(r.get("particiones")), f(r.get("archivos")), f(r.get("filas")), r.get("estado", "")))
     out.append("%-10s %-28s %9.1f" % ("TOTAL", "", total))
     if filas:
         peor = max(filas, key=lambda r: r.get("seg") or 0.0)
         out.append("Lo mas lento: %s '%s' (%.1f s, %.0f%% del total)" % (
             peor.get("etapa"), peor.get("nombre"), peor.get("seg") or 0.0,
             100.0 * (peor.get("seg") or 0.0) / total if total else 0.0))
+    if resumen_cpu:
+        out.append(resumen_cpu)
     return "\n".join(out)
-
-
 # ---------------------------------------------------------------------------
 # CLI (lo usa run.sh)
 # ---------------------------------------------------------------------------
@@ -363,7 +377,7 @@ def main(argv=None):
         return 0
     conf = {}
     if demo:
-        print("[spark-conf] DEMO: local[1], 2 particiones de shuffle (datos sinteticos)")
+        print("[spark-conf] DEMO: local[N] (BNX_DEMO_CORES o min(4, cpus-1)), AQE y particiones acotadas (datos sinteticos)")
     else:
         mem, quien = memoria_driver_local(cfg)
         if mem:

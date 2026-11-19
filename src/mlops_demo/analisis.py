@@ -36,11 +36,16 @@ class Archivo(object):
         self.lecturas = {}    # lineno -> set(cols)
         self.sqls = []
         self.attrs = set()
+        self.llamados = set()   # id() de los Attribute que son el func de una Call
+        self.bases_no = set()   # nombres importados / funciones / clases: sus atributos no son columnas
 
     def todas(self):
         return set(c for c in (self.cols | self.attrs) if c not in _NO_COL)
 
 
+_OBJ_CONOCIDOS = set("""self cls kernel email log logger args kwargs settings config cfg reader writer spark
+sqlContext sc F T W os sys re json time datetime math np pd xgb pickle traceback checks dateUtils""".split())
+_BUILTINS = set(dir(__builtins__) if not isinstance(__builtins__, dict) else __builtins__.keys())
 _NO_COL = set()
 try:
     from pyspark.sql import DataFrame as _DF
@@ -210,7 +215,10 @@ def _otros(a, n):
         if isinstance(sl, (ast.List, ast.Tuple)):
             _ids(a, sl)
     elif isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name):
-        a.attrs.add(n.attr)
+        base = n.value.id
+        if id(n) not in a.llamados and base not in a.bases_no and base not in _OBJ_CONOCIDOS \
+                and not n.attr.startswith("__") and n.attr not in _BUILTINS:
+            a.attrs.add(n.attr)
     elif isinstance(n, (ast.Constant,)) and isinstance(n.value, str) and len(n.value) > 15:
         low = n.value.lstrip().lower()
         if (low.startswith("select") or low.startswith("with ")) and " from " in low.replace("\n", " "):
@@ -270,6 +278,19 @@ def analizar_archivo(ruta):
     try:
         with open(ruta, encoding="utf-8", errors="replace") as fh:
             tree = ast.parse(fh.read())
+        # atributos que NO son columnas (df.col): llamadas (obj.metodo(...)), modulos/clases importados,
+        # objetos conocidos (self, kernel, email...) y variables que se asignan desde una llamada a clase.
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute):
+                a.llamados.add(id(n.func))
+            elif isinstance(n, ast.Import):
+                a.bases_no.update((x.asname or x.name).split(".")[0] for x in n.names)
+            elif isinstance(n, ast.ImportFrom):
+                a.bases_no.update(x.asname or x.name for x in n.names)
+            elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                a.bases_no.add(n.name)
+                if not isinstance(n, ast.ClassDef):
+                    a.bases_no.update(x.arg for x in n.args.args if x.arg in _OBJ_CONOCIDOS)
         for n in ast.walk(tree):
             if isinstance(n, ast.Call):
                 _llamada(a, n)

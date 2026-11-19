@@ -247,6 +247,8 @@ def aplicar():
     DataFrameWriter.insertInto, DataFrameWriter.jdbc, DataFrameWriter.mode = _insert_into, _w_jdbc, _w_mode
     O["tf"] = SparkContext.textFile
     SparkContext.textFile = _text_file
+    from . import sparkcfg
+    sparkcfg.parchear_particiones()
 
 
 def quitar():
@@ -265,3 +267,5 @@ def quitar():
     DataFrameWriter.save, DataFrameWriter.saveAsTable = O["w_save"], O["w_saveAsTable"]
     DataFrameWriter.insertInto, DataFrameWriter.jdbc, DataFrameWriter.mode = O["w_insertInto"], O["w_jdbc"], O["w_mode"]
     SparkContext.textFile = O["tf"]
+    from . import sparkcfg
+    sparkcfg.quitar_particiones()

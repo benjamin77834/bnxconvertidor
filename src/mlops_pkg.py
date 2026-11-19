@@ -1005,6 +1005,12 @@ elif [ -n "$PY_T" ] && command -v "python$PY_T" >/dev/null 2>&1; then
 else
   PY="python3"
 fi
+# Ruta ABSOLUTA del python del SISTEMA, fijada ANTES de crear/activar el venv: despues de activarlo
+# 'python3.11' (nombre relativo) resuelve al del venv y ya no ve el PySpark instalado en el sistema.
+if [ -z "${BNX_SYSTEM_PYTHON:-}" ]; then
+  BNX_SYSTEM_PYTHON="$(command -v "$PY" 2>/dev/null || true)"
+  if [ -n "$BNX_SYSTEM_PYTHON" ]; then export BNX_SYSTEM_PYTHON; fi
+fi
 if ! command -v "$PY" >/dev/null 2>&1; then
   echo "[ERROR] No encuentro '$PY'.${PY_T:+ Este paquete es para Python $PY_T: instalalo (RHEL 8:  sudo dnf install python$PY_T )}"
   exit 1
@@ -1060,7 +1066,7 @@ if [ -n "$VENDOR_DIR" ] && ls "$VENDOR_DIR"/*.whl >/dev/null 2>&1; then
   python -m pip install --no-index --find-links "$VENDOR_DIR" pip setuptools wheel >/dev/null 2>&1 || true
   if ls "$VENDOR_DIR"/pyspark-*.whl >/dev/null 2>&1; then
     echo "      OFFLINE desde $VENDOR_DIR (ambiente completo, sin internet)."
-    python -m pip install --no-index --find-links "$VENDOR_DIR" $BANK_LINKS -r requirements.txt || {
+    python -m pip install --no-index --pre --find-links "$VENDOR_DIR" $BANK_LINKS -r requirements.txt || {
       echo "      [!] Falto alguna wheel en vendor/: intento completar por internet (PyPI/PIP_INDEX_URL) ..."
       python -m pip install --find-links "$VENDOR_DIR" $BANK_LINKS -r requirements.txt
     }
@@ -1069,7 +1075,7 @@ if [ -n "$VENDOR_DIR" ] && ls "$VENDOR_DIR"/*.whl >/dev/null 2>&1; then
     echo "      OFFLINE desde $VENDOR_DIR (sin PySpark: el resto de librerias offline)."
     mkdir -p .bnx_tmp
     grep -viE '^[[:space:]]*(pyspark|py4j)([^a-z0-9_-]|$)' requirements.txt > .bnx_tmp/requirements-sin-spark.txt
-    python -m pip install --no-index --find-links "$VENDOR_DIR" $BANK_LINKS -r .bnx_tmp/requirements-sin-spark.txt || {
+    python -m pip install --no-index --pre --find-links "$VENDOR_DIR" $BANK_LINKS -r .bnx_tmp/requirements-sin-spark.txt || {
       echo "      [!] Falto alguna wheel en vendor/: intento completar por internet (PyPI/PIP_INDEX_URL) ..."
       python -m pip install --find-links "$VENDOR_DIR" $BANK_LINKS -r .bnx_tmp/requirements-sin-spark.txt
     }
@@ -1139,7 +1145,7 @@ if [ -f requirements-bank.txt ]; then
     echo "      Instalando librerias internas del banco OFFLINE desde vendor/bank/ ..."
     # Las deps de las mex-lib (pandas, ...) estan en vendor/<serie>/, no en vendor/bank/.
     VLINKS=""; if [ -n "$VENDOR_DIR" ]; then VLINKS="--find-links $VENDOR_DIR"; fi
-    python -m pip install --no-index --find-links vendor/bank $VLINKS -r requirements-bank.txt || \\
+    python -m pip install --no-index --pre --find-links vendor/bank $VLINKS -r requirements-bank.txt || \\
       python -m pip install --no-index --find-links vendor/bank $VLINKS $(ls vendor/bank/mex*.whl vendor/bank/*.tar.gz 2>/dev/null) || \\
       echo "      [!]  Fallo la instalacion offline de libs del banco. Revisa vendor/bank/."
   else
@@ -2028,7 +2034,7 @@ def _imprimir_tiempos(spark=None):
         master, app = sc.master, sc.applicationId
     except Exception:
         pass
-    print("\\n" + _bs.tabla_tiempos(_TIEMPOS, master, app))
+    print("\\n" + _bs.tabla_tiempos(_TIEMPOS, master, app, _mon_linea()))
     del _TIEMPOS[:]
 def _extract_sources(spark, fuentes, src_cfg, prev, cfg_dir, dry_run=False):
     """Ejecuta el query de cada fuente en la sesion de Spark y lo baja a parquet
@@ -2591,22 +2597,79 @@ def _kernel_buscar_settings(args):
 
 
 def _kernel_settings_demo(settings_dir, env, entries, root):
-    """settings MINIMOS para el DEMO (no hay settings reales): lo justo para que
-    Settings() y Email() arranquen. Los jobs que lean su config de negocio fallaran."""
+    """settings MINIMOS COMPLETOS para el DEMO (no hay settings reales): se infieren del codigo de cada
+    job (accesos self.config['x'], settings['tables_info'][t]['database'], config_custom[...]) con
+    bnx_demo.settings_infer. Devuelve {'modelo/job': [claves inventadas]} (va al reporte del demo)."""
+    try:
+        from bnx_demo import settings_infer as _si
+        return _si.generar(settings_dir, entries, env, root,
+                           [d for d in (_bank_src, os.path.join(_here, "bank_pkg")) if os.path.isdir(d)])
+    except Exception as ex:
+        print("[kernel] aviso: no se pudieron inferir los settings del demo (%s: %s); se usan vacios"
+              % (type(ex).__name__, str(ex)[:160]))
     def _w(rel, obj):
         ruta = os.path.join(settings_dir, rel)
         os.makedirs(os.path.dirname(ruta), exist_ok=True)
         with open(ruta, "w", encoding="utf-8") as fh:
             json.dump(obj, fh)
-    _w("spark.json", {"logging_path": "logs/", "logging_level": "ERROR", "default": {},
-                      "spark_queue_uat": "default"})
+    _w("spark.json", {"logging_path": "logs/", "logging_level": "ERROR",
+                      "default": {"spark.yarn.queue": "default"}, "spark_queue_uat": "default"})
     _w("jobs.json", {env: {"general_root": root.rstrip("/") + "/", "static": ""}})
     for e in entries:
         if e.get("model") and e.get("job"):
             _w("%s/%s.json" % (e["model"], e["job"]), {env: {}})
             _w("%s/config_custom.json" % e["model"], {"env": {env: {}}, "default": {}})
-
-
+    return {}
+def _hint_clave_faltante(ex, settings_dir, env, entry):
+    """Si el error es un KeyError de la config de negocio: que clave falta y en que archivo de settings
+    deberia estar (y que campo del panel de simulacion indica la carpeta real)."""
+    if not isinstance(ex, KeyError):
+        return ""
+    import traceback
+    clave = ex.args[0] if ex.args else "?"
+    linea, archivo = "", ""
+    try:
+        fr = traceback.extract_tb(ex.__traceback__)
+        if fr:
+            archivo, linea = "%s:%s" % (os.path.basename(fr[-1].filename), fr[-1].lineno), fr[-1].line or ""
+    except Exception:
+        pass
+    modelo, job = entry.get("model") or "<model>", entry.get("job") or "<job>"
+    if "config_custom" in linea:
+        donde = "%s/%s/config_custom.json (claves de 'default' o 'env.%s')" % (settings_dir or "<bin/settings>", modelo, env)
+    elif "settings.jobs" in linea or "general_root" in linea:
+        donde = "%s/jobs.json (bloque '%s')" % (settings_dir or "<bin/settings>", env)
+    else:
+        donde = "%s/%s/%s.json (bloque '%s')" % (settings_dir or "<bin/settings>", modelo, job, env)
+    otro = _clave_en_otro_env(clave, settings_dir, env, modelo, job, linea)
+    return ("[kernel] FALTA LA CLAVE %r en los settings: el codigo la lee en %s. Deberia estar en %s. "
+            "Pasa la carpeta bin/settings del banco con --settings (en el panel de simulacion: campo "
+            "'Carpeta bin/settings').%s" % (clave, archivo or "(archivo desconocido)", donde, otro))
+def _clave_en_otro_env(clave, settings_dir, env, modelo, job, linea):
+    """' AVISO: la clave existe en el ambiente prod pero no en uat' (no se modifica ningun settings)."""
+    if not settings_dir or not isinstance(clave, str):
+        return ""
+    if "config_custom" in linea:
+        rels = [modelo + "/config_custom.json"]
+    elif "settings.jobs" in linea or "general_root" in linea:
+        rels = ["jobs.json"]
+    else:
+        rels = [modelo + "/" + job + ".json", "jobs.json"]
+    for rel in rels:
+        try:
+            with open(os.path.join(settings_dir, rel), "r", encoding="utf-8") as fh:
+                d = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        bloques = d.get("env") if rel.endswith("config_custom.json") and isinstance(d.get("env"), dict) else d
+        if not isinstance(bloques, dict):
+            continue
+        en = [e for e, v in bloques.items() if isinstance(v, dict) and clave in v and e != env]
+        if en and not (isinstance(bloques.get(env), dict) and clave in bloques[env]):
+            return (" AVISO: %r esta en el ambiente %s pero no en %r (%s). Corre la simulacion con ese ambiente "
+                    "(selector 'Ambiente' del panel / --env %s); los settings del banco NO se modifican."
+                    % (clave, " y ".join("'%s'" % e for e in en), env, rel, en[0]))
+    return ""
 def _patch_sql(spark, synth):
     """DEMO: spark.table(...) y spark.sql('select ...') sobre tablas que no existen -> df sintetico."""
     cls = type(spark)
@@ -2641,6 +2704,55 @@ def _demo_mod():
     return _DEMO_MOD[0]
 def _demo_out_dir():
     return os.path.abspath(os.environ.get("BNX_DEMO_OUT") or os.path.join(_here, "demo_out"))
+def _demo_builder(builder):
+    """Config de Spark del DEMO: todos los nucleos (BNX_DEMO_CORES), AQE, particiones acotadas, driver 4g
+    (BNX_DEMO_MEM), sin barras de progreso. Sin bnx_demo/: local[1] con 2 particiones (como antes)."""
+    try:
+        from bnx_demo import sparkcfg
+        return sparkcfg.aplicar_a(builder)
+    except Exception:
+        return (builder.master("local[1]").config("spark.ui.enabled", "false")
+                .config("spark.sql.shuffle.partitions", "2"))
+def _mon_obtener(demo=None):
+    """Monitor de recursos (bnx_demo/monitor.py; BNX_MONITOR=0 lo apaga). N = nucleos asignados al demo."""
+    try:
+        from bnx_demo import monitor
+        n = None
+        if demo:
+            from bnx_demo import sparkcfg
+            n = sparkcfg.nucleos()
+        return monitor.obtener(nucleos=n)
+    except Exception:
+        return None
+def _mon_ini(nombre, demo=None):
+    m = _mon_obtener(demo)
+    if m is not None:
+        m.job_inicio(nombre)
+def _mon_fin(nombre, estado="OK"):
+    m = _mon_obtener()
+    if m is not None:
+        try:
+            return m.job_fin(nombre, estado)
+        except Exception:
+            return None
+    return None
+def _mon_extra(nombre):
+    """Columnas de CPU/memoria de un job para la TABLA DE TIEMPOS."""
+    m = _mon_obtener()
+    s = m.stats.get(nombre) if m is not None else None
+    if not s:
+        return {}
+    return {"cpu_prom": s["cpu_prom"], "cpu_pico": s["cpu_pico"], "nuc_prom": s["nuc_prom"],
+            "mem_pico": s["mem_pico"], "tareas": s.get("tareas"), "eficiencia": s["eficiencia"]}
+def _mon_linea():
+    m = _mon_obtener()
+    return m.linea_resumen() if m is not None else ""
+def _demo_resumen():
+    try:
+        from bnx_demo import sparkcfg
+        return sparkcfg.resumen()
+    except Exception:
+        return "demo: local[1] | shuffle 2"
 def _kernel_conector_demo(work):
     """SparkConnector de DEMO: sesion LOCAL (sin yarn/Hive) con lecturas sinteticas."""
     jopts = ("-Djava.io.tmpdir=%s -Dorg.xerial.snappy.tempdir=%s -Djna.tmpdir=%s"
@@ -2652,16 +2764,21 @@ def _kernel_conector_demo(work):
             # los workers de PySpark usan el MISMO python que este (sin activar el venv no coincidia)
             os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
             os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
-            b = (SparkSession.builder.appName("bnx_kernel_demo").master("local[1]")
-                 .config("spark.ui.enabled", "false")
-                 .config("spark.sql.shuffle.partitions", "2")
-                 .config("spark.sql.warehouse.dir", os.path.join(_demo_out_dir(), "spark-warehouse"))
+            b = SparkSession.builder.appName("bnx_kernel_demo")
+            b = _demo_builder(b)       # local[N], AQE, shuffle, driver.memory (bnx_demo/sparkcfg.py)
+            b = (b.config("spark.sql.warehouse.dir", os.path.join(_demo_out_dir(), "spark-warehouse"))
                  .config("spark.sql.ansi.enabled", "false")
                  .config("spark.local.dir", work)
                  .config("spark.driver.extraJavaOptions", jopts)
                  .config("spark.io.compression.codec", os.environ.get("BNX_IO_CODEC", "lz4")))
             self.session = b.getOrCreate()
             self.session.sparkContext.setLogLevel("ERROR")
+            try:     # spark.driver.memory solo vale al crear la JVM: se comprueba que surtio efecto
+                _mx = self.session._jvm.java.lang.Runtime.getRuntime().maxMemory() / 1048576.0
+                print("[demo] sesion Spark: master=%s | JVM del driver max=%.0f MB (spark.driver.memory=%s)" % (
+                    self.session.sparkContext.master, _mx, self.session.conf.get("spark.driver.memory", "?")))
+            except Exception:
+                pass
             if _demo_mod() is None:
                 # sin bnx_demo/: lecturas de juguete (un mismo df para toda lectura)
                 synth = _synthetic_df(self.session)
@@ -2787,6 +2904,10 @@ def _kernel_main(args, nombres, correr_agg=False):
     settings_dir, motivo_s, probados = None, "", []
     if not demo or args.settings or conf_path or args.config:
         settings_dir, motivo_s, probados = _kernel_buscar_settings(args)
+    else:    # DEMO sin pedir nada: usa el bin/settings que VIAJA en el paquete (bank_src/settings), si lo hay
+        _emp = os.path.join(_bank_src, "settings")
+        if os.path.isfile(os.path.join(_emp, "spark.json")):
+            settings_dir, motivo_s = _emp, "bank_src/settings del paquete (autodetectado)"
     if not demo:
         if settings_dir and not os.path.isdir(settings_dir):
             raise SystemExit("[kernel] ERROR: la carpeta de settings '%s' (%s) no existe. "
@@ -2818,6 +2939,8 @@ def _kernel_main(args, nombres, correr_agg=False):
     print("  por que: %s" % motivo_modo)
     if settings_dir:
         print("  settings: %s (%s) | env=%s cohort=%s fid=%s" % (settings_dir, motivo_s, env, cohort, fid))
+    if demo:
+        print("  [demo] config: " + _demo_resumen())
     _info_python()
     print("=" * 64)
     try:
@@ -2829,18 +2952,24 @@ def _kernel_main(args, nombres, correr_agg=False):
                          % (type(e).__name__, e, sys.executable, sys.executable))
     if demo:
         base = tempfile.mkdtemp(prefix="bnx_kernel_", dir=work)
+        _inventadas = {}
+        settings_dir_demo = not settings_dir
         if not settings_dir:
             settings_dir = os.path.join(base, "settings")
-            _kernel_settings_demo(settings_dir, env, list(entradas.values()), os.path.join(base, "data"))
-            print("[kernel] DEMO sin --settings: settings minimos de prueba; los jobs que lean su "
-                  "config de negocio (config_custom.json, tablas) fallaran. Con --settings <bin/settings> "
-                  "se usa tu config pero SIN conectar a Hive/Teradata.")
+            _inv = _kernel_settings_demo(settings_dir, env, list(entradas.values()), os.path.join(base, "data"))
+            _inventadas = _inv or {}
+            _n_inv = sum(len(v) for v in _inventadas.values())
+            print("[kernel] DEMO sin --settings: settings minimos INFERIDOS del codigo de los jobs (%d clave(s) "
+                  "inventadas; detalle en REPORTE_DEMO.json). Son un relleno para que no falle por claves "
+                  "ausentes, no tu config de negocio: con --settings <bin/settings> se usa la real (SIN "
+                  "conectar a Hive/Teradata)." % _n_inv)
         _tk.SparkConnector = _kernel_conector_demo(work)
         _kernel_demo_sin_correo()
         _dm = _demo_mod()
         if _dm is not None:
             _dm.iniciar(_here, bank_dirs=[_bank_src, os.path.join(_here, "bank_pkg")],
                         settings_dir=settings_dir, cohort=cohort, limpiar=not args.source)
+            _dm.registrar_inventadas(_inventadas)
             _dm.activar()
     if args.source:
         lista, deps = list(nombres), {}
@@ -2864,33 +2993,39 @@ def _kernel_main(args, nombres, correr_agg=False):
         print("[kernel] INICIO %s (%d/%d)  model=%s job=%s" % (n, i + 1, len(lista), e.get("model"), e.get("job")))
         t0 = time.time()
         log_file = ""
+        _mon_ini(n, demo)
         if demo and _demo_mod() is not None:
             _demo_mod().set_job(n)
         try:
-            log_file = _kernel_entorno(args, settings_dir, not (demo and not args.settings),
+            log_file = _kernel_entorno(args, settings_dir, not (demo and settings_dir_demo),
                                        env, fid, e.get("model"), e.get("job") or n)
             ret = _kernel_lanzar(e, env, fid, cohort, args.verbose)
             dt = time.time() - t0
             print("[kernel] FIN OK %s en %.1f s | log: %s%s" % (
                 n, dt, log_file, "" if ret is None else " | retorno: %r" % (ret,)))
             ok += 1
+            _mon_fin(n, "OK")
             resumen.append((n, "OK", dt, ""))
         except (Exception, SystemExit) as ex:
             dt = time.time() - t0
             cola = " | ".join(l.strip() for l in traceback.format_exc().strip().splitlines()[-6:])
             print("[kernel] FIN ERROR %s en %.1f s: %s: %s" % (n, dt, type(ex).__name__, str(ex)[:300]))
+            _hint = _hint_clave_faltante(ex, settings_dir, env, e)
+            if _hint:
+                print(_hint)
             print("         traceback (corto): %s" % cola[:900])
             if log_file:
                 print("         log: %s" % log_file)
             fail += 1
             fallidos.add(n)
+            _mon_fin(n, "ERROR")
             resumen.append((n, "ERROR", dt, "%s: %s" % (type(ex).__name__, str(ex)[:160])))
     print("=" * 64)
     for n, est, dt, det in resumen:
         print("  %-8s %-28s %6.1f s  %s" % (est, n, dt, det))
     print("RESULTADO jobs del banco: %d OK, %d con error, %d saltados." % (ok, fail, skip))
     for n, est, dt, det in resumen:
-        _TIEMPOS.append({"etapa": "kernel", "nombre": n, "seg": dt, "estado": est})
+        _TIEMPOS.append(dict({"etapa": "kernel", "nombre": n, "seg": dt, "estado": est}, **_mon_extra(n)))
     _imprimir_tiempos()
     if demo and _demo_mod() is not None:
         _demo_mod().reporte()
@@ -2962,16 +3097,22 @@ def main():
     else:
         if _bs.es_demo(args.config, args.settings, args.demo):
             # DEMO (datos sinteticos): chico a proposito.
-            _master, _shuf = scfg_spark.get("master", "local[1]"), "2"
+            _master, _shuf = scfg_spark.get("master"), None
         else:
             # DATOS REALES en un solo nodo: todos los nucleos y mas particiones.
             # (cfg spark.master / spark.conf mandan sobre estos valores.)
             _master = scfg_spark.get("master") or os.environ.get("BNX_MASTER") or "local[*]"
             _shuf = str(_bs.shuffle_local(_bs.nucleos(_master)))
-        builder = (builder.master(_master)
-                   .config("spark.ui.enabled", "false")
-                   .config("spark.sql.shuffle.partitions", _shuf)
-                   .config("spark.local.dir", work)
+        if _shuf is None:          # DEMO: config de bnx_demo/sparkcfg.py (cores, AQE, particiones, driver 4g)
+            builder = _demo_builder(builder)
+            if _master:
+                builder = builder.master(_master)
+            print("[demo] config de Spark: " + _demo_resumen())
+        else:
+            builder = (builder.master(_master)
+                       .config("spark.ui.enabled", "false")
+                       .config("spark.sql.shuffle.partitions", _shuf))
+        builder = (builder.config("spark.local.dir", work)
                    .config("spark.driver.extraJavaOptions", jopts))
     # Compresion INTERNA de Spark (shuffle/mapStatus): lz4 en vez de zstd. zstd-jni
     # es nativo y se extrae a /tmp; en servidores con /tmp 'noexec' revienta con
@@ -3116,13 +3257,16 @@ def main():
                 continue
             # 2) Aggregate de ESTA fuente.
             _ta = time.time()
+            _mon_ini(s, demo)
             try:
                 GroupBy(s, previous_path=prev, agg_dict=scfg,
                         sqlContext=spark).aggregate()
             except Exception:
-                _TIEMPOS.append({"etapa": "aggregate", "nombre": s, "seg": time.time() - _ta, "estado": "ERROR"})
+                _mon_fin(s, "ERROR")
+                _TIEMPOS.append(dict({"etapa": "aggregate", "nombre": s, "seg": time.time() - _ta, "estado": "ERROR"}, **_mon_extra(s)))
                 raise
-            _TIEMPOS.append({"etapa": "aggregate", "nombre": s, "seg": time.time() - _ta, "estado": "OK"})
+            _mon_fin(s, "OK")
+            _TIEMPOS.append(dict({"etapa": "aggregate", "nombre": s, "seg": time.time() - _ta, "estado": "OK"}, **_mon_extra(s)))
             head, _ = os.path.split(prev)
             _tc = time.time()
             out = spark.read.parquet(os.path.join(head, "groupby"))
@@ -3397,6 +3541,13 @@ Ejemplo de ejecución local (para probar sin cluster): `bash run.sh --config cfg
 - En cluster el **driver** usa el python del venv (`--conf spark.pyspark.driver.python`); los **executors** usan el del cluster.
 - `run.sh` **no reemplaza** la config de Spark del cluster (`/etc/spark3/conf`, `/etc/spark/conf`...): la usa tal cual, o una copia
   completa + `hive-site.xml` si ella no lo trae. El log dice cuál usó y por qué (`BNX_CLUSTER_CONF_DIR=<dir>` para forzar otra).
+- `bin/settings` viaja en el paquete (`bank_src/settings/`, si lo subiste): el DEMO lo autodetecta y lo usa sin `--settings`
+  (`settings: ... bank_src/settings del paquete (autodetectado)`); `--settings <otra carpeta>` manda sobre el del paquete. Sin settings
+  el demo INFIERE unos minimos del codigo de los jobs (claves inventadas: `demo_out/REPORTE_DEMO.json`, `settings_inventados`). Si falta
+  una clave, el log dice cual, en que archivo deberia estar y si existe en otro ambiente (`--env prod`). `--env` elige uat/prod/sbx.
+- DEMO: `local[N]` con `N = BNX_DEMO_CORES` o `min(4, max(1, cpus-1))`, AQE y `repartition(n)` acotado a `2N`; driver `BNX_DEMO_MEM` (4g).
+  Monitoreo de CPU/memoria en el log (`TABLA DE TIEMPOS` y linea `CPU: promedio ...`; `BNX_MONITOR=0` lo apaga, `BNX_MONITOR_INTERVALO` s).
+- Simulacion en Linux RHEL 8 desde una Mac (Podman): ver el README del portal (`tools/linux/simular_en_linux.sh`).
 - Si sale `No module named 'pandas'` (módulos del banco que lo importan): `.venv/bin/python -c "import pandas, sys; print(sys.executable)"`,
   `ls .venv/.bnx_setup_ok` (si no existe, setup.sh no terminó) y `bash setup.sh`.
 '''
@@ -4097,6 +4248,18 @@ def _partes_ruta(raw_name):
     return [x for x in p.split("/") if x and x != "."]
 
 
+_EXT_SETTINGS = (".json", ".yaml", ".yml", ".cfg", ".ini")
+def _ruta_settings(raw_name):
+    """'rps/pivot.json' si raw_name es un archivo de config (json/yaml/cfg/ini) bajo una carpeta
+    'settings' (bin/settings/rps/pivot.json); None si no. Sin '..' ni rutas absolutas."""
+    partes = _partes_ruta(raw_name)
+    if len(partes) < 2 or not partes[-1].lower().endswith(_EXT_SETTINGS) or ".." in partes:
+        return None
+    dirs = [d.lower() for d in partes[:-1]]
+    if "settings" not in dirs:
+        return None
+    rel = partes[dirs.index("settings") + 1:]
+    return "/".join(rel) if rel else None
 def _es_main_banco(raw_name, code):
     """main.py del banco (class Launcher que arma el Kernel de toolbox): NO es un job."""
     partes = _partes_ruta(raw_name)
@@ -5307,6 +5470,17 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     for item in sources or []:
         raw_name = _nombre_con_ruta(item)
         pandas_code = item.get("code") or ""
+        # (0) config del banco (bin/settings: spark.json, jobs.json, config_custom.json, <model>/<job>.json...):
+        # va EXACTA a bank_src/settings/ (config interna del banco: queda en el paquete, nunca en git);
+        # el demo/simulacion la usa por defecto con --settings.
+        _rel_set = _ruta_settings(raw_name)
+        if _rel_set:
+            if pandas_code.strip():
+                files["bank_src/settings/" + _rel_set] = pandas_code
+                report.append({"name": raw_name, "source": None, "ok": True, "role": "settings", "verbatim": True,
+                               "file": "bank_src/settings/" + _rel_set, "todos": [], "warnings": 0,
+                               "unsupported": 0, "nota": "settings del banco: la simulacion/demo los usa con --settings"})
+            continue
         if pandas_code.strip():
             original_codes.append(pandas_code)
         if not pandas_code.strip():
@@ -6016,7 +6190,7 @@ def verify_package_env(code_files, full_env=False, py_target="all", timeout=900,
         req = os.path.join(pkg_root, "requirements.txt")
         if vendor_dir:
             _run("deps (offline vendor/)",
-                 [py, "-m", "pip", "install", "--no-index",
+                 [py, "-m", "pip", "install", "--no-index", "--pre",
                   "--find-links", vendor_dir, "-r", req], pkg_root)
             _run("framework (editable)",
                  [py, "-m", "pip", "install", "--no-build-isolation", "-e", "."],

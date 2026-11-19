@@ -22,6 +22,7 @@ E = {
     "lecturas": [],
     "escrituras": [],
     "comandos": [],
+    "inventadas": {},      # modelo/job -> claves de settings inventadas (settings minimos inferidos)
     "orig": {},            # funciones originales (para desactivar)
     "enproceso": 0,        # >0: no interceptar (llamadas internas del demo)
 }
@@ -41,6 +42,6 @@ def env_int(nombre, defecto):
 def reset():
     for k in ("lecturas", "escrituras", "comandos", "bank_dirs", "demo_data", "raices"):
         E[k] = []
-    for k in ("registro", "features", "tablas_prod", "rutas_prod", "orig"):
+    for k in ("registro", "features", "tablas_prod", "rutas_prod", "orig", "inventadas"):
         E[k] = {}
     E.update({"activo": False, "job": "", "enproceso": 0, "settings_dir": None})

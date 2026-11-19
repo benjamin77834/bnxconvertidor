@@ -82,3 +82,7 @@ def reporte(imprimir=True):
         if ruta:
             print("[demo] reporte JSON: %s" % ruta)
     return txt
+
+def registrar_inventadas(inventadas):
+    """{'modelo/job': [claves inventadas]} de los settings minimos inferidos (va al reporte)."""
+    E["inventadas"] = dict(inventadas or {})

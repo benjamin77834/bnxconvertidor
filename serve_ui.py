@@ -1502,25 +1502,37 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             return zp
         try:
             if accion == "info" and self.command == "GET":
-                self._json_response(200, _sim.info(_zip_de(data.get("token"))))
+                self._json_response(200, _sim.info(_zip_de(data.get("token")), data.get("donde") or "mac"))
             elif accion == "estado" and self.command == "GET":
-                self._json_response(200, _sim.estado(data.get("run"), data.get("offset", 0)))
+                self._json_response(200, _sim.estado(data.get("run"), data.get("offset", 0), data.get("moff", 0)))
             elif accion == "espacio" and self.command == "GET":
-                self._json_response(200, _sim.espacio_simulaciones())
+                self._json_response(200, _sim.espacio_total())
+            elif accion == "linux" and self.command == "GET":
+                # estado de Linux (Podman, maquina, imagenes) y, con ?offset=, el log de la preparacion
+                d = _sim.linux_info()
+                if "offset" in data:
+                    d["prep"] = _sim.preparacion_estado(data.get("offset", 0))
+                self._json_response(200, dict(d, ok=True))
+            elif accion == "envs" and self.command == "GET":
+                # ambientes (uat/prod/sbx) de una carpeta bin/settings elegida y cual conviene (claves completas)
+                self._json_response(200, dict(_sim.analizar_envs(_sim.validar_settings(data.get("path"))), ok=True))
+            elif accion == "preparar" and self.command == "POST":
+                self._json_response(200, _sim.preparar_linux())
             elif accion == "limpiar" and self.command == "POST":
                 # boton 'Limpiar simulaciones': borra todas las inactivas (nunca la que corre)
-                self._json_response(200, _sim.limpiar_simulaciones(conservar=data.get("conservar", 0)))
+                self._json_response(200, _sim.limpiar_todas(conservar=data.get("conservar", 0)))
             elif accion == "iniciar" and self.command == "POST":
                 tok = data.get("token")
-                rid = _sim.iniciar(tok, _zip_de(tok), data.get("job"), data.get("timeout"), data.get("settings"))
+                rid = _sim.iniciar(tok, _zip_de(tok), data.get("job"), data.get("timeout"), data.get("settings"),
+                                   data.get("donde") or "mac", data.get("env"))
                 self._json_response(200, {"ok": True, "run": rid})
             elif accion == "cancelar" and self.command == "POST":
                 self._json_response(200, _sim.cancelar(data.get("run")))
             elif accion == "reiniciar" and self.command == "POST":
-                self._json_response(200, _sim.reiniciar(_zip_de(data.get("token"))))
+                self._json_response(200, _sim.reiniciar(_zip_de(data.get("token")), data.get("donde") or "mac"))
             elif accion == "visor" and self.command == "POST":
                 from src import parquet_visor as _pv
-                base = _sim.base_visor(_zip_de(data.get("token")))
+                base = _sim.base_visor(_zip_de(data.get("token")), data.get("donde") or "mac")
                 try:
                     if data.get("action") == "datasets":
                         self._json_response(200, _pv.listar(base))

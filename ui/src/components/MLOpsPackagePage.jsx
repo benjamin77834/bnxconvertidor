@@ -107,7 +107,9 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
   }
   // Lee los .py de una carpeta o seleccion de archivos.
   const onPickFiles = async (fileList) => {
-    const arr = Array.from(fileList || []).filter(f => /\.(py|txt)$/i.test(f.name))
+    // .py/.txt y, dentro de una carpeta 'settings', la config del banco (.json/.yaml/.yml/.cfg/.ini: spark.json, jobs.json, <modelo>/<job>.json)
+    const arr = Array.from(fileList || []).filter(f => /\.(py|txt)$/i.test(f.name) ||
+      (/\.(json|ya?ml|cfg|ini)$/i.test(f.name) && /(^|\/)settings\//i.test(f.webkitRelativePath || f.path || '')))
     const read = await Promise.all(arr.map(f => new Promise(resolve => {
       const r = new FileReader()
       r.onload = () => resolve({ name: f.webkitRelativePath || f.path || f.name, code: String(r.result || '') })

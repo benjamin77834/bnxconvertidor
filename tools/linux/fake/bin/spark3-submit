@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# spark3-submit FALSO (solo para probar run.sh en modo cluster en el contenedor): imprime lo que recibiria.
+echo "FAKE-SPARK3-SUBMIT: argv ($#):"
+for a in "$@"; do echo "  ARG: $a"; done
+echo "FAKE-SPARK3-SUBMIT: SPARK_CONF_DIR=${SPARK_CONF_DIR:-}"
+echo "FAKE-SPARK3-SUBMIT: PYSPARK_DRIVER_PYTHON=${PYSPARK_DRIVER_PYTHON:-}"
+echo "FAKE-SPARK3-SUBMIT: PYSPARK_PYTHON=${PYSPARK_PYTHON:-(sin definir)}"
+echo "FAKE-SPARK3-SUBMIT: HADOOP_CONF_DIR=${HADOOP_CONF_DIR:-} YARN_CONF_DIR=${YARN_CONF_DIR:-}"
+echo "FAKE-SPARK3-SUBMIT: TMPDIR=${TMPDIR:-}"
+exit 0

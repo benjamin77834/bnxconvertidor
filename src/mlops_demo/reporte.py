@@ -44,6 +44,10 @@ def texto():
                 "?" if x["filas"] is None else x["filas"]))
         for x in j["comandos"]:
             out.append("  CMD   [%s] %s" % (x["tipo"], x["cmd"]))
+    for j, claves in sorted((E.get("inventadas") or {}).items()):
+        if claves:
+            out.append("  SETTINGS INVENTADOS para %s (%d): %s" % (j, len(claves), ", ".join(claves[:12])
+                                                               + (" ..." if len(claves) > 12 else "")))
     out.append("=" * 64)
     return "\n".join(out)
 
@@ -55,7 +59,8 @@ def guardar():
         os.makedirs(E["out"], exist_ok=True)
         ruta = os.path.join(E["out"], "REPORTE_DEMO.json")
         with open(ruta, "w", encoding="utf-8") as fh:
-            json.dump({"filas": E["filas"], "seed": E["seed"], "jobs": datos()}, fh, indent=1, default=str)
+            json.dump({"filas": E["filas"], "seed": E["seed"], "jobs": datos(),
+                       "settings_inventados": E.get("inventadas") or {}}, fh, indent=1, default=str)
         return ruta
     except OSError:
         return None

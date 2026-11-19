@@ -1,0 +1,13 @@
+{
+  "logging_path": "logs/",
+  "logging_level": "ERROR",
+  "default": {
+    "spark.yarn.queue": "root.cola_prod",
+    "spark.executor.instances": "7",
+    "spark.executor.memory": "6g",
+    "spark.executor.cores": "3",
+    "spark.driver.memory": "5g",
+    "spark.sql.shuffle.partitions": "123"
+  },
+  "spark_queue_uat": "root.cola_uat_prueba"
+}
