@@ -188,7 +188,8 @@ def test_run_sh_sintaxis_y_conf_en_cluster(tmp_path, settings):
     # .venv falso + spark-submit falso
     vb = os.path.join(pkg, ".venv", "bin")
     os.makedirs(vb)
-    os.symlink(sys.executable, os.path.join(vb, "python"))
+    open(os.path.join(vb, "python"), "w").write('#!/bin/bash\nexec "%s" "$@"\n' % sys.executable)
+    os.chmod(os.path.join(vb, "python"), 0o755)
     open(os.path.join(vb, "activate"), "w").write('export PATH="$PWD/.venv/bin:$PATH"\n')
     fake = tmp_path / "fake-submit"
     fake.write_text('#!/bin/bash\nfor a in "$@"; do echo "ARG:$a"; done\n')

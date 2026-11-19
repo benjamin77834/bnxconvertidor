@@ -55,9 +55,23 @@ def _leer_json(path):
         return None
 
 
-def es_demo(config=None, settings=None, demo_flag=False):
-    """DEMO = --demo, o no hay ni --config ni --settings. Todo lo demas son datos REALES."""
-    return bool(demo_flag) or not (config or settings)
+def es_demo(config=None, settings=None, demo_flag=False, env=None, cohort=None, fid=None):
+    """DEMO = --demo, o no se pidio nada real (ni --config/--settings ni --env/--cohort/--fid).
+    Todo lo demas son datos REALES."""
+    return bool(demo_flag) or not (config or settings or env or cohort or fid)
+
+
+def modo_ejecucion(config=None, settings=None, demo_flag=False, env=None, cohort=None, fid=None,
+                   conf_path=None):
+    """(demo, motivo) para los jobs de kernel. DEMO solo con --demo explicito o cuando no se
+    pidio nada real; con --config/--settings/--env/--cohort/--fid/CONF_PATH es REAL."""
+    if demo_flag:
+        return True, "--demo explicito"
+    pedidos = [n for n, v in (("--config", config), ("--settings", settings), ("CONF_PATH", conf_path),
+                              ("--env", env), ("--cohort", cohort), ("--fid", fid)) if v]
+    if pedidos:
+        return False, "se indico " + ", ".join(pedidos) + " (y no --demo)"
+    return True, "sin --config ni --settings (ni --env/--cohort/--fid)"
 
 
 def dir_settings(settings=None, config=None, env=None):
@@ -71,6 +85,41 @@ def dir_settings(settings=None, config=None, env=None):
                 return p
             p = os.path.dirname(p)
     return d
+
+
+def buscar_settings(settings=None, config=None, environ=None, bases=None, cwd=None):
+    """Busca bin/settings del banco -> (carpeta o None, motivo, lugares_probados).
+    Orden: --settings > $CONF_PATH > $BIN_PATH/settings > <base>/bank_src/settings (base = raiz
+    del paquete) > carpeta del --config y 3 padres (con spark.json, o su subcarpeta settings/)
+    > ./settings > <base>/bin/settings. Lo explicito (--settings/CONF_PATH) se devuelve tal cual
+    (quien llama valida que exista); lo demas solo cuenta si trae spark.json."""
+    environ = os.environ if environ is None else environ
+    if settings:
+        return settings, "--settings", [settings]
+    if environ.get("CONF_PATH"):
+        return environ["CONF_PATH"], "$CONF_PATH", [environ["CONF_PATH"]]
+    cands = []
+    if environ.get("BIN_PATH"):
+        cands.append((os.path.join(environ["BIN_PATH"], "settings"), "$BIN_PATH/settings"))
+    for b in (bases or []):
+        cands.append((os.path.join(b, "bank_src", "settings"), "bank_src/settings del paquete"))
+    if config:
+        p = os.path.dirname(os.path.abspath(config))
+        for i in range(4):
+            cands.append((p, "carpeta del --config" if i == 0 else "carpeta padre del --config"))
+            cands.append((os.path.join(p, "settings"), "settings/ junto al --config"))
+            p = os.path.dirname(p)
+    cwd = cwd or os.getcwd()
+    cands.append((os.path.join(cwd, "settings"), "./settings"))
+    for b in (bases or []):
+        cands.append((os.path.join(b, "bin", "settings"), "bin/settings del paquete"))
+    probados = []
+    for d, motivo in cands:
+        if d not in probados:
+            probados.append(d)
+        if os.path.isfile(os.path.join(d, "spark.json")):
+            return d, motivo, probados
+    return None, "no encontrado", probados
 
 
 def leer_spark_json(settings_dir, env_banco=None, modelo=None):
@@ -126,9 +175,11 @@ def conf_cluster(settings_dir=None, env_banco=None, cfg=None, modelo=None, envir
             conf[k] = _s(v)
             origen[k] = quien
     aplicar(DEFAULTS_CLUSTER, "defecto")
-    cfg_conf = ((cfg or {}).get("spark") or {}).get("conf") if isinstance(cfg, dict) else None
-    if isinstance(cfg_conf, dict):
-        aplicar(cfg_conf, "cfg")
+    cfg_spark = (cfg or {}).get("spark") if isinstance(cfg, dict) else None
+    if isinstance(cfg_spark, dict):
+        if isinstance(cfg_spark.get("conf"), dict):
+            aplicar(cfg_spark["conf"], "cfg")
+        aplicar(dict((k, v) for k, v in cfg_spark.items() if str(k).startswith("spark.")), "cfg")
     sj, ruta = leer_spark_json(settings_dir, env_banco, modelo)
     if sj:
         aplicar(sj, "spark.json")
@@ -287,12 +338,28 @@ def main(argv=None):
     demo = es_demo(args.config, args.settings, args.demo)
     cfg = _leer_json(args.config) if args.config else None
     if a.modo == "cluster":
-        conf, origen = conf_cluster(dir_settings(args.settings, args.config), args.env, cfg,
-                                    os.environ.get("BNX_SPARK_MODELO") or None)
+        base = os.path.dirname(os.path.abspath(__file__))
+        sdir, motivo, probados = buscar_settings(args.settings, args.config, bases=[base])
+        if sdir and not os.path.isdir(sdir):
+            print("[spark-conf] AVISO: la carpeta de settings '%s' (%s) no existe" % (sdir, motivo))
+            sdir = None
+        conf, origen = conf_cluster(sdir, args.env, cfg, os.environ.get("BNX_SPARK_MODELO") or None)
         escribir_properties(conf, a.out)
         print("[spark-conf] YARN: %d clave(s) de lanzamiento -> %s (un --conf por clave)" % (len(conf), a.out))
         for l in resumen_conf(conf, origen):
             print("[spark-conf]   " + l)
+        cuenta = {}
+        for k in conf:
+            cuenta[origen.get(k, "?")] = cuenta.get(origen.get(k, "?"), 0) + 1
+        print("[spark-conf] fuentes: " + ", ".join("%s=%d" % (q, n) for q, n in sorted(cuenta.items())))
+        if sdir and leer_spark_json(sdir, args.env)[1]:
+            print("[spark-conf] spark.json del banco: %s (settings: %s)" % (leer_spark_json(sdir, args.env)[1], motivo))
+        elif not cuenta.get("spark.json"):
+            print("[spark-conf] AVISO: sin spark.json del banco (buscado en: %s)" % ", ".join(probados[:6]))
+            if not cuenta.get("cfg"):
+                print("[spark-conf] AVISO: tampoco hay spark.conf en el --config: solo %d clave(s) por defecto; "
+                      "cola y executors los decide el cluster. Para los del banco: --settings <bin/settings> "
+                      "--env uat" % len(conf))
         return 0
     conf = {}
     if demo:

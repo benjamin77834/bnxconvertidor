@@ -858,6 +858,8 @@ _SETUP_SH = '''#!/usr/bin/env bash
 # Uso:  bash setup.sh            (monta el entorno)
 #       bash setup.sh --test     (monta y ademas corre pytest)
 set -e
+# Si setup.sh se corta a medias (set -e) el .venv queda sin pandas/hook: se avisa claro.
+trap 'rc=$?; if [ "$rc" -ne 0 ] && [ -z "${BNX_SETUP_FIN:-}" ]; then echo "[setup] ABORTADO (codigo $rc): el .venv puede estar INCOMPLETO. Corrige lo anterior y vuelve a correr: bash setup.sh"; rm -f .venv/.bnx_setup_ok 2>/dev/null; fi' EXIT
 
 @@SPARKCFG@@
 BNX_RUN_TEST=0
@@ -1142,6 +1144,13 @@ echo "[3/4] Verificando dependencias (check_env.py) ..."
 # Avisa si falta alguna libreria que el codigo importa (no aborta el montaje).
 python check_env.py || echo "  [!]  Faltan librerias (ver arriba). Instalalas antes de produccion."
 
+# Verificacion FINAL de lo que importa el DRIVER (pandas, numpy, toolbox, bnmxverse, utils,
+# mex-lib* y pyspark segun el modo: incluido o del servidor). Con el python de ESTE venv, que
+# es el que run.sh le da al spark-submit del cluster. Si falta algo, setup.sh termina con error.
+echo "      python del venv: $(command -v python) ($(python -V 2>&1))"
+BNX_DRIVER_OK=1
+BNX_PYSPARK_MODE="$BNX_PYSPARK_MODO" python check_env.py --driver || BNX_DRIVER_OK=0
+
 if [ "$BNX_RUN_TEST" = "1" ]; then
   echo "[4/4] Ejecutando pruebas (pytest) ..."
   pytest -q || echo "  (pytest requiere pyspark + Java; revisa el entorno)"
@@ -1149,8 +1158,17 @@ else
   echo "[4/4] Entorno montado (pruebas omitidas; usa --test para correrlas)."
 fi
 
+BNX_SETUP_FIN=1
 echo ""
-echo "[OK] Entorno listo. Para correr el modelo:  bash run.sh"
+if [ "$BNX_DRIVER_OK" != "1" ]; then
+  echo "[ERROR] setup.sh termino pero el venv NO esta completo (ver 'FALTA' arriba): run.sh no va a funcionar."
+  echo "        Python usado: $(command -v python)"
+  echo "        Revisa vendor/OFFLINE_FALTANTES.txt y vuelve a correr:  bash setup.sh"
+  rm -f .venv/.bnx_setup_ok
+  exit 1
+fi
+: > .venv/.bnx_setup_ok
+echo "[OK] Entorno listo (python: $(command -v python)). Para correr el modelo:  bash run.sh"
 echo "   Datos reales:  bash run.sh --config cfg.json"
 '''
 
@@ -1186,6 +1204,8 @@ if [ "${BNX_SPARK:-}" = "cluster" ]; then
     exit 1
   fi
 fi
+# SPARK_CONF_DIR que traia el usuario (el 'activate' del venv lo pisa con .venv/spark_conf).
+BNX_SPARK_CONF_DIR_USUARIO="${SPARK_CONF_DIR:-}"
 . .venv/bin/activate
 if [ "$BNX_SPARK_SERVIDOR" = "1" ]; then
   # `import pyspark` en el venv usa el Spark del servidor (symlink/.pth de setup.sh + PYTHONPATH)
@@ -1199,10 +1219,67 @@ bnx_libomp_fix
 # Modulos de path del banco (toolbox, bnmxverse, utils) que dejo setup.sh.
 if [ -d bank_pkg ]; then export PYTHONPATH="$PWD/bank_pkg:${PYTHONPATH:-}"; fi
 
+# Verificacion PREVIA (rapida): el python del venv debe poder importar lo que necesita el
+# driver. Si falta algo se dice QUE falta y como arreglarlo ANTES de lanzar Spark (si no,
+# spark-submit hace fila en YARN y revienta con "No module named pandas").
+# BNX_SKIP_PREFLIGHT=1 la salta.
+BNX_PY="$PWD/.venv/bin/python"
+if [ "${BNX_SKIP_PREFLIGHT:-0}" != "1" ]; then
+  _NEED="pandas numpy"
+  if [ -d bank_src/toolbox ] || [ -d bank_pkg/toolbox ] || [ -d bank_src/jobs ]; then _NEED="$_NEED toolbox"; fi
+  # PySpark en el venv solo hace falta fuera del modo cluster (spark-submit del nodo trae el suyo).
+  if [ -z "$CLUSTER_SUBMIT" ]; then _NEED="$_NEED pyspark"; fi
+  mkdir -p .bnx_tmp
+  cat > .bnx_tmp/preflight.py <<'EOF_PREFLIGHT'
+import importlib
+import importlib.util
+import os
+import sys
+for _d in ("bank_src", "bank_pkg"):
+    if os.path.isdir(_d):
+        sys.path.append(os.path.abspath(_d))
+falta, vers = [], []
+for m in sys.argv[1:]:
+    try:
+        if m == "toolbox":
+            if importlib.util.find_spec(m) is None:
+                raise ImportError("no esta en bank_src/, bank_pkg/ ni instalado en el venv")
+        else:
+            mod = importlib.import_module(m)
+            vers.append("%s %s" % (m, getattr(mod, "__version__", "?")))
+    except Exception as e:
+        falta.append("%s (%s: %s)" % (m, type(e).__name__, str(e).strip()[:100]))
+print("%s (Python %s)" % (sys.executable, sys.version.split()[0]))
+if falta:
+    for f in falta:
+        print("FALTA: " + f)
+    sys.exit(1)
+print("OK: " + ", ".join(vers))
+EOF_PREFLIGHT
+  if _PF="$("$BNX_PY" .bnx_tmp/preflight.py $_NEED 2>&1)"; then
+    echo "[run.sh] python del venv: $(echo "$_PF" | head -1)"
+    echo "[run.sh] verificacion previa de imports del driver: $(echo "$_PF" | tail -1)"
+    if [ ! -f .venv/.bnx_setup_ok ]; then
+      echo "[run.sh] AVISO: .venv sin la marca de setup completo (.venv/.bnx_setup_ok): si setup.sh se interrumpio, vuelve a correr 'bash setup.sh'."
+    fi
+  else
+    echo "[run.sh] ERROR: el python del venv no puede importar lo que necesita el driver." >&2
+    echo "[run.sh] python: $(echo "$_PF" | head -1)" >&2
+    echo "$_PF" | grep '^FALTA:' | sed 's/^/[run.sh]   /' >&2 || true
+    echo "[run.sh] Como resolverlo (en este orden):" >&2
+    echo "[run.sh]   1) bash setup.sh            (monta/repara el venv; debe terminar con [OK])" >&2
+    echo "[run.sh]   2) revisa vendor/OFFLINE_FALTANTES.txt (wheels que el paquete no pudo traer)" >&2
+    echo "[run.sh]   3) $BNX_PY check_env.py --driver   (diagnostico de imports del driver)" >&2
+    echo "[run.sh]   4) $BNX_PY -c 'import pandas'      (debe terminar sin error)" >&2
+    echo "[run.sh] No se lanzo Spark. (BNX_SKIP_PREFLIGHT=1 salta esta verificacion)" >&2
+    exit 1
+  fi
+fi
+
 # Metastore del CLUSTER: el PySpark del venv es standalone y, sin hive-site.xml,
 # crea un metastore LOCAL vacio (las tablas del banco "no existen"). Si el nodo
 # tiene la config de Spark/Hive del cluster (Cloudera/edge node), la usamos.
-if [ -z "${SPARK_CONF_DIR:-}" ]; then
+if [ -z "$CLUSTER_SUBMIT" ] && [ -z "${SPARK_CONF_DIR:-}" ]; then
   for d in "${SPARK_HOME:+$SPARK_HOME/conf}" /etc/spark/conf /etc/spark3/conf /etc/spark2/conf /opt/cloudera/parcels/CDH/lib/spark/conf; do
     if [ -f "$d/hive-site.xml" ]; then export SPARK_CONF_DIR="$d"; break; fi
   done
@@ -1216,17 +1293,74 @@ fi
 if [ -z "${HADOOP_CONF_DIR:-}" ] && [ -d /etc/hadoop/conf ]; then
   export HADOOP_CONF_DIR=/etc/hadoop/conf
 fi
-if [ -n "${SPARK_CONF_DIR:-}" ]; then
+if [ -n "$CLUSTER_SUBMIT" ]; then
+  :   # modo cluster: el conf dir se elige abajo (SIN reemplazar la config del cluster)
+elif [ -n "${SPARK_CONF_DIR:-}" ]; then
   echo "[run.sh] SPARK_CONF_DIR=$SPARK_CONF_DIR (metastore del cluster)"
 else
   echo "[run.sh] AVISO: no se encontro hive-site.xml; Spark usara un metastore LOCAL."
   echo "         Para tablas del banco: export SPARK_CONF_DIR=<dir con hive-site.xml>"
 fi
 
+# CLUSTER: elige el conf dir de Spark del CLUSTER y NO lo reemplaza. Un conf dir con SOLO
+# hive-site.xml pierde spark-defaults.conf (spark.pyspark.python, yarn jars, ...), spark-env.sh
+# y yarn-conf/ del cluster. Si el del cluster no trae hive-site.xml se arma una COPIA COMPLETA
+# + hive-site.xml. Candidatos: BNX_CLUSTER_CONF_DIR, el de setup.sh (BNX_CLUSTER_SPARK_CONF),
+# el SPARK_CONF_DIR del usuario, y BNX_CLUSTER_CONF_CANDIDATOS (lista separada por ':') o
+# /etc/spark3/conf, /etc/spark/conf, /etc/spark2/conf, /opt/cloudera/parcels/...
+bnx_conf_cluster() {
+  _ours1="$PWD/.venv/spark_conf"; _ours2="$PWD/.bnx_tmp/spark_conf"
+  case "$(basename "$CLUSTER_SUBMIT")" in
+    spark3*) _def="/etc/spark3/conf:/opt/cloudera/parcels/SPARK3/lib/spark3/conf:/etc/spark/conf" ;;
+    *) _def="/etc/spark/conf:/etc/spark3/conf:/opt/cloudera/parcels/SPARK3/lib/spark3/conf" ;;
+  esac
+  _def="$_def:/etc/spark2/conf:/opt/cloudera/parcels/CDH/lib/spark/conf"
+  _lista="${BNX_CLUSTER_CONF_DIR:-}:${BNX_CLUSTER_SPARK_CONF:-}:${BNX_SPARK_CONF_DIR_USUARIO:-}:${BNX_CLUSTER_CONF_CANDIDATOS:-$_def}"
+  _SEL=""; _OLDIFS="$IFS"; IFS=":"
+  for _d in $_lista; do
+    if [ -z "$_d" ] || [ "$_d" = "$_ours1" ] || [ "$_d" = "$_ours2" ]; then continue; fi
+    if [ -d "$_d" ] && { [ -f "$_d/spark-defaults.conf" ] || [ -f "$_d/spark-env.sh" ]; }; then _SEL="$_d"; break; fi
+  done
+  IFS="$_OLDIFS"
+  BNX_CONF_MOTIVO=""
+  if [ -z "$_SEL" ]; then
+    unset SPARK_CONF_DIR
+    BNX_CONF_MOTIVO="no hay config de Spark del cluster en: $_lista; spark-submit usa su SPARK_CONF_DIR por defecto (no se inventa uno)"
+    return 0
+  fi
+  _HIVE=""
+  for _h in "$_SEL/hive-site.xml" "$_SEL/yarn-conf/hive-site.xml"; do
+    if [ -f "$_h" ]; then _HIVE="$_h"; break; fi
+  done
+  if [ -n "$_HIVE" ]; then
+    export SPARK_CONF_DIR="$_SEL"
+    BNX_CONF_MOTIVO="config del CLUSTER tal cual ($_SEL; hive-site.xml: $_HIVE); no se copia ni se reemplaza"
+    return 0
+  fi
+  _EXT=""
+  for _h in "${BNX_HIVE_SITE:-}" /etc/hive/conf/hive-site.xml; do
+    if [ -n "$_h" ] && [ -f "$_h" ]; then _EXT="$_h"; break; fi
+  done
+  if [ -n "$_EXT" ]; then
+    rm -rf "$_ours2"; mkdir -p "$_ours2"
+    if cp -RL "$_SEL"/. "$_ours2"/ 2>/dev/null; then
+      cp "$_EXT" "$_ours2/hive-site.xml"
+      export SPARK_CONF_DIR="$_ours2"
+      BNX_CONF_MOTIVO="COPIA COMPLETA de $_SEL + hive-site.xml de $_EXT (el conf del cluster no trae hive-site.xml; se conservan spark-defaults.conf, spark-env.sh, yarn-conf/...)"
+      return 0
+    fi
+    echo "[run.sh] AVISO: no se pudo copiar $_SEL a $_ours2; se usa el original sin hive-site.xml" >&2
+  fi
+  export SPARK_CONF_DIR="$_SEL"
+  BNX_CONF_MOTIVO="config del CLUSTER tal cual ($_SEL); AVISO: sin hive-site.xml (si 'la base no existe': BNX_HIVE_SITE=/ruta/hive-site.xml)"
+}
+
 if [ -n "$CLUSTER_SUBMIT" ]; then
-  echo "[run.sh] Spark del CLUSTER: $CLUSTER_SUBMIT (python del venv)"
-  export PYSPARK_PYTHON="$PWD/.venv/bin/python"
+  echo "[run.sh] Spark del CLUSTER: $CLUSTER_SUBMIT (driver: python del venv; executors: python del cluster)"
+  # Solo el DRIVER usa el venv. NO se exporta PYSPARK_PYTHON: PySpark lo manda a los executors y
+  # los workers no tienen el venv (no se instala en otros nodos). Con BNX_ENVIAR_VENV=1 si.
   export PYSPARK_DRIVER_PYTHON="$PWD/.venv/bin/python"
+  if [ "${PYSPARK_PYTHON:-}" = "$PWD/.venv/bin/python" ]; then unset PYSPARK_PYTHON; fi
   export BNX_CLUSTER_SPARK=1
   # /tmp del servidor suele estar 'noexec': las librerias nativas que Java extrae
   # ahi (zstd-jni, snappy) fallan con "failed to map segment from shared object".
@@ -1239,10 +1373,18 @@ if [ -n "$CLUSTER_SUBMIT" ]; then
   echo "[run.sh] tmp de la JVM: $BNX_TMP (no /tmp)"
   # spark-submit del CLUSTER con SU config (spark-env.sh/yarn-conf); los ajustes
   # BNX (lz4, tmp) van por --conf / --driver-java-options.
-  if [ -n "${BNX_CLUSTER_SPARK_CONF:-}" ]; then
-    export SPARK_CONF_DIR="$BNX_CLUSTER_SPARK_CONF"
-    echo "[run.sh] SPARK_CONF_DIR del cluster: $SPARK_CONF_DIR"
+  bnx_conf_cluster
+  echo "[run.sh] SPARK_CONF_DIR=${SPARK_CONF_DIR:-(sin definir: spark-submit usa el suyo)}"
+  echo "[run.sh]   por que: $BNX_CONF_MOTIVO"
+  if [ -n "${SPARK_CONF_DIR:-}" ]; then
+    # lo que el cluster fija para python (spark-defaults.conf / spark-env.sh): el driver lo
+    # pisa con --conf spark.pyspark.driver.python; los executors lo respetan.
+    { grep -hE '^[[:space:]]*spark[.]pyspark[.]' "$SPARK_CONF_DIR/spark-defaults.conf" 2>/dev/null || true
+      grep -hE 'PYSPARK_(DRIVER_)?PYTHON' "$SPARK_CONF_DIR/spark-env.sh" 2>/dev/null || true; } | head -6 | while IFS= read -r _l; do
+      echo "[run.sh]   el cluster fija: $_l"
+    done
   fi
+  echo "[run.sh] python del DRIVER: $PWD/.venv/bin/python (--conf spark.pyspark.driver.python + PYSPARK_DRIVER_PYTHON)"
   # YARN: spark-submit --master yarn necesita yarn-site.xml (HADOOP_CONF_DIR o
   # YARN_CONF_DIR) para encontrar el ResourceManager.
   if [ -z "${YARN_CONF_DIR:-}" ] && [ -n "${HADOOP_CONF_DIR:-}" ]; then export YARN_CONF_DIR="$HADOOP_CONF_DIR"; fi
@@ -1274,11 +1416,11 @@ if [ -n "$CLUSTER_SUBMIT" ]; then
       tar -czf .bnx_venv.tar.gz .venv
     fi
     ARCH_ARGS=(--archives ".bnx_venv.tar.gz#bnxenv" \
-      --conf "spark.pyspark.python=./bnxenv/.venv/bin/python" \
-      --conf "spark.pyspark.driver.python=$PWD/.venv/bin/python")
+      --conf "spark.pyspark.python=./bnxenv/.venv/bin/python")
   fi
   exec "$CLUSTER_SUBMIT" --master "${BNX_MASTER:-yarn}" --deploy-mode client \
     --driver-java-options "$JOPTS" \
+    --conf "spark.pyspark.driver.python=$PWD/.venv/bin/python" \
     ${CONF_ARGS[@]+"${CONF_ARGS[@]}"} \
     ${ARCH_ARGS[@]+"${ARCH_ARGS[@]}"} \
     --conf spark.io.compression.codec="${BNX_IO_CODEC:-lz4}" \
@@ -2310,20 +2452,23 @@ def _kernel_seleccion(args):
         return [], True
     if args.source:
         n = _nombre_job(args.source)
-        return ([n], False) if n in KERNEL else ([], True)
+        if n not in KERNEL:
+            return [], True
+        crudo = os.path.splitext(os.path.basename(str(args.source).strip().replace("\\\\", "/").strip("/")))[0]
+        if crudo.lower() != n.lower():
+            print("[source] '%s' -> '%s' (nombre por ruta %s/%s; '%s' es el alias viejo)" % (
+                args.source, n, KERNEL[n].get("model"), KERNEL[n].get("job"), crudo))
+        else:
+            print("[source] '%s' (job del banco %s/%s)" % (n, KERNEL[n].get("model"), KERNEL[n].get("job")))
+        return [n], False
     return list(KERNEL), (len(REGISTRY) > 0 or bool(args.config))
 
 
-def _kernel_dir_settings(args):
-    """Carpeta de settings del banco (bin/settings): --settings > CONF_PATH > junto al --config."""
-    d = args.settings or os.environ.get("CONF_PATH")
-    if not d and args.config:
-        p = os.path.dirname(os.path.abspath(args.config))
-        for _ in range(3):
-            if os.path.isfile(os.path.join(p, "spark.json")):
-                return p
-            p = os.path.dirname(p)
-    return d
+def _kernel_buscar_settings(args):
+    """Carpeta de settings del banco (bin/settings) -> (carpeta o None, motivo, lugares probados).
+    --settings > CONF_PATH > BIN_PATH/settings > bank_src/settings > carpeta del --config y padres
+    > ./settings > bin/settings."""
+    return _bs.buscar_settings(args.settings, args.config, os.environ, bases=[_here])
 
 
 def _kernel_settings_demo(settings_dir, env, entries, root):
@@ -2502,19 +2647,44 @@ def _kernel_lanzar(entry, env, fid, cohort, verbose):
         raise
 
 
-def _kernel_main(args, nombres):
+def _info_python():
+    """Python del driver y lo que el cluster pudo haber fijado (diagnostico de 'No module named ...')."""
+    print("[python] driver=%s (%s) | PYSPARK_PYTHON=%s | PYSPARK_DRIVER_PYTHON=%s" % (
+        sys.executable, sys.version.split()[0], os.environ.get("PYSPARK_PYTHON") or "(sin definir)",
+        os.environ.get("PYSPARK_DRIVER_PYTHON") or "(sin definir)"))
+
+
+def _kernel_main(args, nombres, correr_agg=False):
     """Corre los jobs de kernel EN ORDEN (orden.json / depends_on; pivote primero).
-    Devuelve 0 si todos OK, 1 si alguno fallo o se salto."""
+    Devuelve 0 si todos OK, 1 si alguno fallo o se salto.
+    DEMO solo con --demo o sin pedir nada real; con --config/--settings/--env/--cohort/--fid
+    es REAL y exige los settings del banco (nunca cae a demo en silencio)."""
     import datetime
     import time
     import traceback
-    settings_dir = _kernel_dir_settings(args)
-    if args.config and not args.settings and not os.environ.get("CONF_PATH") \
-            and not args.source and not settings_dir:
-        print("[kernel] %d job(s) del banco (run(kernel)) NO corren con --config sin --settings: "
-              "usa  --settings <bin/settings>  o  --source <job>" % len(nombres))
-        return 0
-    demo = bool(args.demo) or not settings_dir
+    conf_path = os.environ.get("CONF_PATH")
+    demo, motivo_modo = _bs.modo_ejecucion(args.config, args.settings, args.demo, args.env,
+                                           args.cohort, args.fid, conf_path)
+    settings_dir, motivo_s, probados = None, "", []
+    if not demo or args.settings or conf_path or args.config:
+        settings_dir, motivo_s, probados = _kernel_buscar_settings(args)
+    if not demo:
+        if settings_dir and not os.path.isdir(settings_dir):
+            raise SystemExit("[kernel] ERROR: la carpeta de settings '%s' (%s) no existe. "
+                             "No se ejecuto nada." % (settings_dir, motivo_s))
+        if not settings_dir:
+            if args.config and not args.source and correr_agg:
+                print("[kernel] AVISO: %d job(s) del banco (run(kernel)) SALTADOS: hay --config pero no se "
+                      "encontraron settings del banco; no se corrio nada de kernel ni DEMO. Para "
+                      "correrlos usa  --settings <bin/settings>  o  --source <job>." % len(nombres))
+                return 0
+            sys.stderr.write(
+                "[kernel] ERROR: Este job es del framework del banco (run(kernel)): necesita --settings "
+                "<bin/settings> (spark.json, jobs.json, <model>/<job>.json). No se ejecuto nada.\\n"
+                "  Modo: REAL (%s). Para probar con datos sinteticos usa --demo.\\n"
+                "  Se busco settings (carpeta con spark.json) en: %s\\n"
+                % (motivo_modo, ", ".join(probados[:8]) or "(sin candidatos)"))
+            raise SystemExit(2)
     env = (args.env or ("uat" if demo else "")).lower()
     if not env:
         raise SystemExit("[kernel] falta --env (prod|uat|sbx): es el ambiente de los settings del banco")
@@ -2524,14 +2694,20 @@ def _kernel_main(args, nombres):
     base = None
     entradas = dict((n, KERNEL[n]) for n in nombres)
     print("=" * 64)
-    print("JOBS DEL BANCO (run(kernel)) — %s" % ("DEMO (Spark local, lecturas sinteticas)" if demo
-                                                else "DATOS REALES (settings: %s)" % settings_dir))
+    print("JOBS DEL BANCO (run(kernel)) — %s" % ("MODO DEMO (Spark local, lecturas sinteticas; NO toca "
+                                                 "datos reales)" if demo else "MODO REAL (datos reales)"))
+    print("  por que: %s" % motivo_modo)
+    if settings_dir:
+        print("  settings: %s (%s) | env=%s cohort=%s fid=%s" % (settings_dir, motivo_s, env, cohort, fid))
+    _info_python()
     print("=" * 64)
     try:
         import toolbox.kernel as _tk
     except Exception as e:
-        raise SystemExit("[kernel] no se pudo importar toolbox.kernel (%s: %s). Monta el entorno con "
-                         "'bash setup.sh' (toolbox viaja en bank_pkg/ o bank_src/)." % (type(e).__name__, e))
+        raise SystemExit("[kernel] no se pudo importar toolbox.kernel (%s: %s). Python del driver: %s. "
+                         "Monta el entorno con 'bash setup.sh' (toolbox viaja en bank_pkg/ o bank_src/) y "
+                         "revisa: %s -c 'import pandas, numpy'"
+                         % (type(e).__name__, e, sys.executable, sys.executable))
     if demo:
         base = tempfile.mkdtemp(prefix="bnx_kernel_", dir=work)
         if not settings_dir:
@@ -2639,7 +2815,7 @@ def main():
     kernel_sel, correr_agg = _kernel_seleccion(args)
     kernel_rc = 0
     if kernel_sel:
-        kernel_rc = _kernel_main(args, kernel_sel)
+        kernel_rc = _kernel_main(args, kernel_sel, correr_agg)
         if not correr_agg:
             raise SystemExit(kernel_rc)
     demo = not args.config
@@ -2709,7 +2885,13 @@ def main():
               "(spark.master) del cluster." % _sc.master)
 
     print("=" * 64)
-    print("FRAMEWORK MLOPS v2 — %s" % ("DEMO (datos sinteticos)" if demo else "DATOS REALES"))
+    print("FRAMEWORK MLOPS v2 — %s" % ("MODO DEMO (datos sinteticos)" if demo else "MODO REAL (datos reales)"))
+    print("  por que: %s" % ("sin --config" if demo else "se indico --config %s" % args.config))
+    if args.demo and args.config:
+        print("  AVISO: --demo solo aplica a los jobs de kernel; con --config estas fuentes usan datos REALES.")
+    if demo and (args.env or args.cohort or args.fid):
+        print("  AVISO: --env/--cohort/--fid se ignoran sin --config: esto es DEMO (para datos reales indica --config).")
+    _info_python()
     print("=" * 64)
     _report_optimizations()
 
@@ -3080,6 +3262,23 @@ vuelve a avisar al arrancar en modo cluster. Qué hacer:
    Aun así los nodos necesitan `python3.11` en la misma ruta que el edge node. Solo para quien lo necesite.
 
 Ejemplo de ejecución local (para probar sin cluster): `bash run.sh --config cfg.json --extract-only`.
+
+## 8) MODO REAL vs MODO DEMO, settings del banco y diagnóstico en el cluster
+- **DEMO solo** con `--demo` o cuando no pides nada real (sin `--config`, `--settings`, `--env`, `--cohort`, `--fid`).
+  Con cualquiera de esos (o `CONF_PATH`) es **MODO REAL**. El encabezado siempre dice `MODO REAL` o `MODO DEMO` y por qué.
+- Un job del banco (`run(kernel)`) en modo real necesita los settings (`spark.json`, `jobs.json`, `<model>/<job>.json`). Si no
+  pasas `--settings`, se buscan en: `CONF_PATH`, `BIN_PATH/settings`, `bank_src/settings`, la carpeta del `--config` y sus
+  padres, `./settings`, `bin/settings`. Si no hay, **error y sale con código 2 sin ejecutar nada** (nunca cae a demo).
+- `--source job_3` (alias viejo) se muestra como `'job_3' -> 'rps_pivot' (nombre por ruta RPS/pivot)`.
+- Recursos de YARN: salen del `spark.json` de los settings; si no hay, de `spark.conf` del `--config`; si no, solo 3 claves por
+  defecto. La línea `[spark-conf] fuentes:` lo dice.
+- `run.sh` verifica antes de lanzar que el python del venv importa `pandas`, `numpy` (y `toolbox`); si falta algo lo dice y no lanza Spark.
+  `setup.sh` termina con la misma verificación (`python check_env.py --driver`) y falla si algo falta.
+- En cluster el **driver** usa el python del venv (`--conf spark.pyspark.driver.python`); los **executors** usan el del cluster.
+- `run.sh` **no reemplaza** la config de Spark del cluster (`/etc/spark3/conf`, `/etc/spark/conf`...): la usa tal cual, o una copia
+  completa + `hive-site.xml` si ella no lo trae. El log dice cuál usó y por qué (`BNX_CLUSTER_CONF_DIR=<dir>` para forzar otra).
+- Si sale `No module named 'pandas'`: `.venv/bin/python -c "import pandas, sys; print(sys.executable)"`,
+  `ls .venv/.bnx_setup_ok` (si no existe, setup.sh no terminó) y `bash setup.sh`.
 '''
 
 _CFG_EXAMPLE = '''{
@@ -3252,7 +3451,7 @@ def _iter_py_files():
                         yield os.path.join(dp, fn)
 
 
-def _top_level_imports():
+def _top_level_imports(descartar=True):
     """Modulos de primer nivel importados por el codigo (sin relativos)."""
     mods = set()
     for path in _iter_py_files():
@@ -3273,7 +3472,7 @@ def _top_level_imports():
     # El propio paquete y sus submodulos internos NO son dependencias externas.
     # (aggregates/datapull/libs/utils/jobs/settings son carpetas del propio
     # codigo del banco o del paquete generado, no librerias a instalar.)
-    for interno in ("framework_mlops_v2", "framework_mlops_metrics",
+    for interno in () if not descartar else ("framework_mlops_v2", "framework_mlops_metrics",
                     "aggregates", "datapull", "data_pull", "libs", "utils",
                     "jobs", "settings", "static", "core", "features",
                     "scoring", "monitoring"):
@@ -3413,7 +3612,55 @@ def _spark_servidor():
     return out
 
 
+def verificar_driver():
+    """Imports que necesita el DRIVER, con el python de ESTE venv (el que run.sh le da al
+    spark-submit). pandas/numpy (y pyspark si el paquete lo trae o usa el del servidor) se
+    IMPORTAN de verdad; toolbox/bnmxverse/utils/mex-lib* se localizan en el path. Devuelve 0/1."""
+    root = _project_root()
+    print("== Verificacion de imports del DRIVER (check_env.py --driver) ==")
+    print("Python del venv: %s (%s)" % (sys.executable, sys.version.split()[0]))
+    modo = (os.environ.get("BNX_PYSPARK_MODE") or "").strip()
+    if not modo:
+        try:
+            with open(os.path.join(root, "vendor", "PYSPARK_MODE"), encoding="utf-8") as fh:
+                modo = fh.read().strip()
+        except OSError:
+            modo = ""
+    con_wheel = bool(glob.glob(os.path.join(root, "vendor", "*", "pyspark-*.whl")))
+    reales = ["pandas", "numpy"]
+    if modo in ("incluido", "servidor") or con_wheel:
+        reales.append("pyspark")
+    refs = _top_level_imports(descartar=False)
+    banco = sorted(m for m in refs if m in ("toolbox", "bnmxverse", "utils") or m.lower().startswith(("mex", "lib_")))
+    falta = []
+    for m in reales:
+        try:
+            mod = importlib.import_module(m)
+            print("  OK  %-12s %s" % (m, getattr(mod, "__version__", "")))
+        except Exception as e:
+            falta.append((m, "%s: %s" % (type(e).__name__, str(e).strip().splitlines()[0] if str(e).strip() else "")))
+    for m in banco:
+        if _can_import(m):
+            print("  OK  %-12s (banco, localizado)" % m)
+        else:
+            falta.append((m, "no esta en bank_src/, bank_pkg/, vendor/bank/ ni instalado"))
+    if "pyspark" not in reales:
+        print("  --  pyspark      no se exige: paquete ligero / Spark del cluster (BNX_SPARK=cluster)")
+    elif modo == "servidor":
+        print("  i   pyspark      del SERVIDOR (PYSPARK_MODE=servidor)")
+    if not falta:
+        print("[OK] El driver puede importar todo lo necesario con %s" % sys.executable)
+        return 0
+    for m, err in falta:
+        print("FALTA: %s (%s)" % (m, err))
+    print("[FALLA] el python del venv NO puede importar %d modulo(s) que el driver necesita." % len(falta))
+    print("  -> revisa vendor/OFFLINE_FALTANTES.txt, el log de pip de setup.sh y vuelve a correr: bash setup.sh")
+    return 1
+
+
 def main():
+    if "--driver" in sys.argv:
+        return verificar_driver()
     quiet = "--quiet" in sys.argv
     mods = sorted(_top_level_imports())
     faltan, ok = [], []
