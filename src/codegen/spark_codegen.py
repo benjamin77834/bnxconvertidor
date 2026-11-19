@@ -179,6 +179,8 @@ def _is_untranslatable(mapped):
         return True
     if re.search(r'\bcase\s+\'', low):        # "case 'VAL' :" estilo Ab Initio (no CASE WHEN)
         return True
+    if re.search(r'\[\s*record\b', low):      # literal de registro DML ([record campo valor ...]): no es SQL
+        return True
     if re.search(r'\beval\s*\(', low):       # eval([record in in1], campo): reflexion DML, sin equivalente SQL
         return True
     if re.search(r'\bis_null\.', low):        # is_null.campo malformado
@@ -1169,7 +1171,7 @@ def _extract_local_vars(raw_transform):
     # Statements terminados en ';'. Recorremos en orden respetando el ultimo valor.
     # let [modificadores] TIPO(...)? nombre = valor ;   |   nombre = valor ;
     stmt_re = re.compile(
-        r'(?:^|;)\s*'
+        r'(?:^|;|\bbegin\b)\s*'
         r'(?:let\s+(?:[A-Za-z_]\w*(?:\s*\([^)]*\))?\s+)*)?'  # tipo opcional (let string("\x01"))
         r'([A-Za-z_]\w*)\s*=\s*'                             # nombre =
         r'(?!=)'                                             # no confundir con ==
@@ -1203,6 +1205,47 @@ def _extract_local_vars(raw_transform):
     return var_exprs
 
 
+def _split_top_level(text, sep=','):
+    """Parte `text` por `sep` fuera de comillas y de ()/[]/{}."""
+    parts, cur, depth, quote, i = [], [], 0, None, 0
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            cur.append(ch)
+            if ch == '\\' and i + 1 < len(text):
+                cur.append(text[i + 1])
+                i += 1
+            elif ch == quote:
+                quote = None
+        elif ch in ("'", '"'):
+            quote = ch
+            cur.append(ch)
+        elif ch in '([{':
+            depth += 1
+            cur.append(ch)
+        elif ch in ')]}':
+            depth -= 1
+            cur.append(ch)
+        elif ch == sep and depth == 0:
+            parts.append(''.join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+        i += 1
+    parts.append(''.join(cur))
+    return parts
+def _record_literal_fields(val):
+    """{campo: expresion} de un literal de registro DML `[record campo expr, campo expr ...]`;
+    {} si `val` no es un literal de registro."""
+    m = re.match(r'^\s*\[\s*record\b(.*)\]\s*$', val or '', re.S)
+    if not m:
+        return {}
+    campos = {}
+    for item in _split_top_level(m.group(1)):
+        fm = re.match(r'^\s*([A-Za-z_]\w*)\s+(.+?)\s*$', item, re.S)
+        if fm:
+            campos[fm.group(1)] = fm.group(2)
+    return campos
 def _inline_local_vars(expr, var_exprs):
     """Sustituye las variables locales (palabra completa) por su expresion cruda
     dentro de 'expr'. Se aplica ANTES de _translate_dml_expr para que el
@@ -1210,6 +1253,14 @@ def _inline_local_vars(expr, var_exprs):
     if not expr or not var_exprs:
         return expr
     out = expr
+    # Variables que son un literal de registro: `var.campo` -> expresion de ese campo
+    # (un registro no existe en Spark SQL; solo se puede resolver el acceso a campo).
+    for name, val in var_exprs.items():
+        campos = _record_literal_fields(val)
+        if campos:
+            out = re.sub(r'\b' + re.escape(name) + r'\.([A-Za-z_]\w*)\b',
+                         lambda m, _c=campos: f'({_c[m.group(1)]})' if m.group(1) in _c else m.group(0),
+                         out)
     guard = 0
     # Varias pasadas por si una variable quedo dentro de otra ya sustituida.
     while guard < 5:
@@ -1601,6 +1652,9 @@ def _translate_dml_expr(expr_clean):
     # comparar contra el valor del parametro). Lo NORMALIZAMOS a ${VAR}, el mismo
     # placeholder de parametro que ya usa el resto del where (${CAMPAIGN_DATE}),
     # que el usuario resuelve al inyectar los parametros del job.
+    # Referencia a parametro con comillas Ab Initio: $'NOMBRE' -> $NOMBRE (el $ pegado a
+    # un literal no es SQL valido).
+    mapped = re.sub(r"\$'(\w+)'", r'$\1', mapped)
     mapped = _sub_outside_quotes(r'\$\{(\w+)\}', r'${\1}', mapped)
     mapped = _sub_outside_quotes(r'\$(?![\[\{])(\w+)', r'${\1}', mapped)
     # Remove :N: (priority operator in Ab Initio: :0: :1: :2: ...)
@@ -2506,7 +2560,7 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                         cmd_clean = re.sub(r'\$\{?(\w+)\}?', r'{PARAMS.\1}', cmd_clean)
                         f.write(f'# Run_Program: shell command from Ab Initio\n')
                         f.write(f'{var_id}_df = {src}  # passthrough data\n')
-                        _emit_os_system(f, cmd_clean)
+                        _emit_os_system(f, cmd_clean, log_name)
                     elif is_run_program:
                         f.write(f'# Run_Program: no commandline extracted\n')
                         f.write(f'{var_id}_df = {src}  # passthrough (Run_Program)\n')
@@ -2535,7 +2589,7 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
                         cmd_clean = re.sub(r'\$\{?AI_SERIAL\}?', f'{{PARAMS.BASE_PATH}}/raw', cmd_clean)
                         cmd_clean = re.sub(r'\$\{?(\w+)\}?', r'{PARAMS.\1}', cmd_clean)
                         f.write(f'# Run_Program: shell command (no data dependency)\n')
-                        _emit_os_system(f, cmd_clean)
+                        _emit_os_system(f, cmd_clean, log_name)
                         f.write(f'{var_id}_df = None  # Run_Program has no dataframe output\n')
                     elif is_run_program:
                         f.write(f'# Run_Program: no commandline extracted from MP\n')
@@ -3020,13 +3074,22 @@ def generate_spark(dag, output_path, xfr_rules=None, pset_params=None):
     _sanitize_generated_file(output_path)
 
 
-def _emit_os_system(f, cmd_clean):
-    """os.system del comando de un Run_Program. Si el comando es solo un interprete
-    (p.ej. 'ksh', sin script ni argumentos) no se ejecuta: abriria un shell esperando stdin."""
+def _emit_os_system(f, cmd_clean, nombre="Run_Program"):
+    """Emite la llamada a `_bnx_run_program` (runtime de params_runtime) para el comando de un
+    Run_Program. El comando se separa en tokens con shlex AQUI, antes de sustituir parametros
+    (los `{PARAMS.X}` vuelven a `${X}`): en ejecucion cada token se expande por separado y se
+    ejecuta SIN shell, solo con BNX_RUN_PROGRAMS=1. Si el comando es solo un interprete
+    (p.ej. 'ksh', sin script ni argumentos) no se emite nada: abriria un shell esperando stdin."""
     if re.fullmatch(r"\s*(ksh|sh|bash|csh|zsh)\s*", cmd_clean):
         f.write(f'# Run_Program: el comando es solo el interprete "{cmd_clean.strip()}" (sin script); no se ejecuta\n')
-    else:
-        f.write(f'os.system(f"{_emit_shell_literal(cmd_clean)}")\n')
+        return
+    tpl = re.sub(r"\{PARAMS\.(\w+)\}", r"${\1}", cmd_clean)
+    try:
+        from src.codegen.params_runtime import _bnx_rp_tokenize
+        arg = repr(_bnx_rp_tokenize(tpl))
+    except ValueError:
+        arg = repr(tpl)   # comillas sin cerrar: el runtime lo reporta y omite
+    f.write(f'_bnx_run_program({arg}, {str(nombre)!r})\n')
 def _first_parent(parents, empty_nodes):
     """Primer padre con datos: salta los nodos emitidos como DataFrame vacio (p.ej. Table_*
     sin entrada) cuando hay otro padre real que alimenta al mismo componente."""

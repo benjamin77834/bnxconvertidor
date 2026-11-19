@@ -20,6 +20,10 @@ Que resuelve:
 # >>> BEGIN BNX PARAMS RUNTIME
 import os
 import re
+import shlex
+import shutil
+import subprocess
+import sys
 import datetime as _bnx_dtm
 _BNX_MAX_DEPTH = 10
 _BNX_RAW = {}
@@ -544,6 +548,343 @@ def _bnx_filter_split(df, cond, name):
             inner = m.group(1)
             return df.where(inner), df.where("NOT (%s)" % inner)
         raise
+# ---------------------------------------------------------------------------
+# Run_Program de Ab Initio: seguro (sin shell) y OPCIONAL.
+#   * El comando llega como LISTA de tokens de la plantilla (shlex ANTES de sustituir
+#     parametros); cada token se expande por separado: el valor de un parametro nunca
+#     puede partirse en varios argumentos ni introducir ; | && > etc. (no hay shell).
+#   * mv/cp/rm/mkdir/touch/cat/echo/gzip/gunzip se hacen en Python (portables).
+#   * ksh/sh/bash/zsh script -> subprocess con el interprete si existe (en Windows, bash
+#     de Git/WSL; si no hay, se omite con aviso).
+#   * Por defecto NO se ejecuta nada: BNX_RUN_PROGRAMS=1 (o --run-programs) lo activa.
+#   * Con variables sin resolver ($VAR) o vacias NO se ejecuta y se reporta.
+#   * Codigo de retorno != 0 -> aviso y sigue, salvo BNX_RUN_PROGRAMS_ESTRICTO=1.
+# ---------------------------------------------------------------------------
+_BNX_RP_OPS = (";", "&&", "||")
+_BNX_RP_UNRES = re.compile(r"\$\{?[A-Za-z_]")
+_BNX_RP_SHELLS = ("ksh", "sh", "bash", "zsh")
+def _bnx_rp_tokenize(cmd):
+    """Tokens de un comando (comillas respetadas; ; && || | > >> < & salen como tokens
+    aparte). Lanza ValueError si las comillas no cierran."""
+    lex = shlex.shlex(cmd, posix=True, punctuation_chars=True)
+    lex.whitespace_split = True
+    return list(lex)
+def _bnx_rp_flag(name):
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "si")
+def _bnx_rp_on():
+    return _bnx_rp_flag("BNX_RUN_PROGRAMS") or "--run-programs" in sys.argv[1:]
+def _bnx_rp_find_shell(name, nt=None, which=None, exists=None):
+    """Ruta del interprete para `name` (ksh/sh/bash/zsh) o None. En POSIX, si falta ksh/zsh
+    se usa bash y luego sh (los scripts ksh sencillos corren igual). En Windows solo bash
+    (Git for Windows o WSL)."""
+    nt = (os.name == "nt") if nt is None else nt
+    which = which or shutil.which
+    exists = exists or os.path.isfile
+    if nt:
+        p = which("bash")
+        if p:
+            return p
+        for base in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)"),
+                     os.environ.get("LOCALAPPDATA")):
+            if base:
+                for rel in ("Git\\bin\\bash.exe", "Programs\\Git\\bin\\bash.exe"):
+                    c = os.path.join(base, rel)
+                    if exists(c):
+                        return c
+        return None
+    for cand in (name, "bash", "sh"):
+        p = which(cand)
+        if p:
+            return p
+    return None
+def _bnx_rp_split_ops(argv):
+    """[(operador_previo, tokens)] cortando por ; && || (solo tokens de la PLANTILLA)."""
+    out, cur, op = [], [], ";"
+    for t in argv:
+        if t in _BNX_RP_OPS:
+            if cur:
+                out.append((op, cur))
+            cur, op = [], t
+        else:
+            cur.append(t)
+    if cur:
+        out.append((op, cur))
+    return out
+def _bnx_rp_nul(path):
+    return os.devnull if path == "/dev/null" else path
+def _bnx_rp_exec(cmd, plantilla, nombre, extra_env=None):
+    """Ejecuta UN comando simple (tokens ya expandidos). Devuelve el codigo de retorno."""
+    args, redir_out, redir_err, redir_in, err_to_out = [], None, None, None, False
+    i = 0
+    while i < len(cmd):
+        t = cmd[i]
+        if t in (">", ">>") and i + 1 < len(cmd):
+            redir_out = (_bnx_rp_nul(cmd[i + 1]), "a" if t == ">>" else "w")
+            i += 2
+        elif t == "2" and i + 2 < len(cmd) and cmd[i + 1] in (">", ">>"):
+            redir_err = (_bnx_rp_nul(cmd[i + 2]), "a" if cmd[i + 1] == ">>" else "w")
+            i += 3
+        elif t == "2" and i + 2 < len(cmd) and cmd[i + 1] == ">&" and cmd[i + 2] == "1":
+            err_to_out = True
+            i += 3
+        elif t == "<" and i + 1 < len(cmd):
+            redir_in = _bnx_rp_nul(cmd[i + 1])
+            i += 2
+        elif t in ("|", "&", ">", ">>", "<", ">&", "|&", "&>"):
+            print("[!] Run_Program %s: operador de shell '%s' no soportado (no se usa shell); "
+                  "no se ejecuta" % (nombre, t))
+            return 1
+        else:
+            args.append(t)
+            i += 1
+    if not args:
+        return 0
+    name = os.path.basename(args[0]).lower()
+    if name.endswith(".exe"):
+        name = name[:-4]
+    rest = args[1:]
+    opts = [a for a in rest if a.startswith("-") and len(a) > 1]
+    pos = [a for a in rest if not (a.startswith("-") and len(a) > 1)]
+    out = open(redir_out[0], redir_out[1]) if redir_out else None
+    try:
+        def _say(txt):
+            (out or sys.stdout).write(txt)
+        if name == "mv":
+            if len(pos) < 2:
+                print("[!] mv: faltan argumentos")
+                return 1
+            dst, rc = pos[-1], 0
+            if len(pos) > 2 and not os.path.isdir(dst):
+                print("[!] mv: el destino no es un directorio: %s" % dst)
+                return 1
+            for src in pos[:-1]:
+                try:
+                    if not os.path.lexists(src):
+                        print("[!] mv: no existe: %s" % src)
+                        rc = 1
+                        continue
+                    shutil.move(src, dst)
+                    print("[ok] mv %s -> %s" % (src, dst))
+                except (OSError, shutil.Error) as e:
+                    print("[!] mv %s -> %s: %s" % (src, dst, e))
+                    rc = 1
+            return rc
+        if name == "cp":
+            rec = any(o in ("-r", "-R", "-a", "--recursive") or (not o.startswith("--") and ("r" in o or "R" in o or "a" in o))
+                      for o in opts)
+            if len(pos) < 2:
+                print("[!] cp: faltan argumentos")
+                return 1
+            dst, rc = pos[-1], 0
+            if len(pos) > 2 and not os.path.isdir(dst):
+                print("[!] cp: el destino no es un directorio: %s" % dst)
+                return 1
+            for src in pos[:-1]:
+                try:
+                    if os.path.isdir(src):
+                        if not rec:
+                            print("[!] cp: %s es un directorio (usa -r)" % src)
+                            rc = 1
+                            continue
+                        shutil.copytree(src, os.path.join(dst, os.path.basename(src.rstrip("/\\")))
+                                        if os.path.isdir(dst) else dst, dirs_exist_ok=True)
+                    else:
+                        shutil.copy2(src, dst)
+                    print("[ok] cp %s -> %s" % (src, dst))
+                except (OSError, shutil.Error) as e:
+                    print("[!] cp %s -> %s: %s" % (src, dst, e))
+                    rc = 1
+            return rc
+        if name == "rm":
+            rec = any(not o.startswith("--") and ("r" in o or "R" in o) for o in opts) or "--recursive" in opts
+            force = any(not o.startswith("--") and "f" in o for o in opts) or "--force" in opts
+            rc = 0
+            home = os.path.realpath(os.path.expanduser("~"))
+            for target in pos:
+                real = os.path.realpath(target)
+                if not target.strip() or real in (home, os.path.realpath(os.sep), os.path.splitdrive(real)[0] + os.sep):
+                    print("[!] rm: se rechaza borrar %r" % target)
+                    rc = 1
+                    continue
+                try:
+                    if os.path.isdir(target) and not os.path.islink(target):
+                        if not rec:
+                            print("[!] rm: %s es un directorio (usa -r)" % target)
+                            rc = 1
+                            continue
+                        shutil.rmtree(target)
+                    elif os.path.lexists(target):
+                        os.remove(target)
+                    elif not force:
+                        print("[!] rm: no existe: %s" % target)
+                        rc = 1
+                        continue
+                    print("[ok] rm %s" % target)
+                except OSError as e:
+                    print("[!] rm %s: %s" % (target, e))
+                    rc = 1
+            return rc
+        if name == "mkdir":
+            rc = 0
+            for d in [p for p in pos if p]:
+                try:
+                    if "-p" in opts:
+                        os.makedirs(d, exist_ok=True)
+                    else:
+                        os.mkdir(d)
+                    print("[ok] mkdir %s" % d)
+                except OSError as e:
+                    print("[!] mkdir %s: %s" % (d, e))
+                    rc = 1
+            return rc
+        if name == "touch":
+            rc = 0
+            for f_ in pos:
+                try:
+                    with open(f_, "a"):
+                        os.utime(f_, None)
+                except OSError as e:
+                    print("[!] touch %s: %s" % (f_, e))
+                    rc = 1
+            return rc
+        if name == "cat":
+            rc = 0
+            srcs = pos or ([redir_in] if redir_in else [])
+            if not srcs:
+                print("[!] cat sin archivos (leeria stdin): no se ejecuta")
+                return 1
+            for f_ in srcs:
+                try:
+                    with open(f_, "r", errors="replace") as fh:
+                        _say(fh.read())
+                except OSError as e:
+                    print("[!] cat %s: %s" % (f_, e))
+                    rc = 1
+            return rc
+        if name == "echo":
+            _say(" ".join(pos) + ("" if "-n" in opts else "\n"))
+            return 0
+        if name in ("gzip", "gunzip"):
+            import gzip as _gz
+            dec = name == "gunzip" or any(o in ("-d", "--decompress") for o in opts)
+            keep = any(o in ("-k", "--keep") for o in opts)
+            rc = 0
+            for f_ in pos:
+                try:
+                    if dec:
+                        dst = f_[:-3] if f_.lower().endswith(".gz") else f_ + ".out"
+                        with _gz.open(f_, "rb") as a, open(dst, "wb") as b:
+                            shutil.copyfileobj(a, b)
+                    else:
+                        dst = f_ + ".gz"
+                        with open(f_, "rb") as a, _gz.open(dst, "wb") as b:
+                            shutil.copyfileobj(a, b)
+                    if not keep:
+                        os.remove(f_)
+                    print("[ok] %s %s -> %s" % (name, f_, dst))
+                except (OSError, EOFError) as e:
+                    print("[!] %s %s: %s" % (name, f_, e))
+                    rc = 1
+            return rc
+        # --- interpretes de scripts ---
+        env = dict(os.environ)
+        for k, v in list(_BNX_RAW.items()):
+            if k not in env:
+                done = _bnx_value(k, 0, (), None)
+                if isinstance(done, str) and done != "" and "$" not in done:
+                    env[k] = done
+        env.update(extra_env or {})
+        if name in _BNX_RP_SHELLS:
+            if "-c" in rest:
+                # el texto de -c lo interpreta el shell: solo se acepta si -c y su texto son
+                # literales de la plantilla (sin parametros)
+                k = plantilla.index("-c") if "-c" in plantilla else -1
+                if k < 0 or any("$" in t for t in plantilla[k + 1:k + 2]):
+                    print("[!] Run_Program %s: '%s -c' con parametros no se ejecuta (evita inyeccion de "
+                          "comandos); usa un script" % (nombre, name))
+                    return 1
+            sh = _bnx_rp_find_shell(name)
+            if not sh:
+                print("[!] Run_Program %s omitido: no hay interprete %s%s" % (
+                    nombre, name, " (en Windows instala Git Bash o WSL)" if os.name == "nt" else ""))
+                return 0
+            script = next((a for a in rest if not a.startswith("-")), None)
+            if script and "-c" not in rest and not os.path.isfile(script):
+                print("[!] Run_Program %s: no existe el script %s" % (nombre, script))
+                return 127
+            argv2 = [sh] + rest
+        else:
+            exe = args[0] if os.sep in args[0] or "/" in args[0] else shutil.which(args[0])
+            if not exe or not os.path.exists(exe):
+                print("[!] Run_Program %s: comando no encontrado: %s" % (nombre, args[0]))
+                return 127
+            argv2 = [exe] + rest
+        kw = {"env": env}
+        fh_in = open(redir_in) if redir_in else None
+        fh_err = open(redir_err[0], redir_err[1]) if redir_err else None
+        try:
+            if fh_in:
+                kw["stdin"] = fh_in
+            if out is not None:
+                kw["stdout"] = out
+            if fh_err:
+                kw["stderr"] = fh_err
+            elif err_to_out:
+                kw["stderr"] = subprocess.STDOUT
+            sys.stdout.flush()
+            return subprocess.run(argv2, shell=False, **kw).returncode
+        except OSError as e:
+            print("[!] Run_Program %s: %s" % (nombre, e))
+            return 126
+        finally:
+            for h in (fh_in, fh_err):
+                if h:
+                    h.close()
+    finally:
+        if out is not None:
+            out.close()
+def _bnx_run_program(argv, nombre="Run_Program", extra_env=None):
+    """Ejecuta (o, por defecto, omite) el comando de un Run_Program. `argv`: lista de tokens
+    de la plantilla con $VAR/${VAR} (o un str, que se separa con shlex). Devuelve el codigo de
+    retorno, o None si se omitio / no se ejecuto."""
+    if isinstance(argv, str):
+        try:
+            argv = _bnx_rp_tokenize(argv)
+        except ValueError as e:
+            print("[!] Run_Program %s: comando no interpretable (%s); omitido" % (nombre, e))
+            return None
+    argv = list(argv or [])
+    if not argv:
+        return None
+    segs = _bnx_rp_split_ops(argv)
+    empties = []
+    expandidos = []
+    for op, cmd in segs:
+        expandidos.append((op, cmd, [_bnx_expand(t, 0, (), empties) for t in cmd]))
+    texto = " ".join(" ".join(shlex.quote(t) for t in ex) if i == 0 else op + " " + " ".join(shlex.quote(t) for t in ex)
+                     for i, (op, _c, ex) in enumerate(expandidos))
+    if not _bnx_rp_on():
+        print("[~] Run_Program %s omitido (activa BNX_RUN_PROGRAMS=1): %s" % (nombre, texto))
+        return None
+    sin = sorted(set(empties) | set(m.group(0)[1:].strip("{") for ex in expandidos for t in ex[2]
+                                    for m in re.finditer(r"\$\{?[A-Za-z_]\w*", t)))
+    if sin:
+        print("[!] Run_Program %s NO se ejecuta: variables sin resolver o vacias (%s): %s. "
+              "Definelas como variable de entorno o en el pset." % (nombre, ", ".join("$" + v for v in sin), texto))
+        return None
+    rc = 0
+    for op, plant, ex in expandidos:
+        if op == "&&" and rc != 0:
+            continue
+        if op == "||" and rc == 0:
+            continue
+        rc = _bnx_rp_exec(ex, plant, nombre, extra_env)
+    if rc != 0:
+        msg = "[!] Run_Program %s termino con codigo %s: %s" % (nombre, rc, texto)
+        if _bnx_rp_flag("BNX_RUN_PROGRAMS_ESTRICTO"):
+            raise RuntimeError(msg)
+        print(msg + " (continua; BNX_RUN_PROGRAMS_ESTRICTO=1 aborta)")
+    return rc
 # <<< END BNX PARAMS RUNTIME
 
 

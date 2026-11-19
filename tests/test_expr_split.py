@@ -111,3 +111,39 @@ def test_wrap_reformat_safe_col_tambien_neutraliza_invalidas():
     assert "_bnx_safe_col" not in out
     assert 'withColumn("k", lit(None))' in out and "[BNX]" in out
     compile(out, "<wrap>", "exec")
+# --- lote_nov10 / 17_poli_graph_process: $'PARAM' y variables locales tipo registro ---
+from src.codegen.spark_codegen import (
+    _extract_local_vars,
+    _inline_local_vars,
+    _is_untranslatable,
+)
+RECORD_XFR = """out::reformat(in)=
+begin
+    let trailer_type l_trailer = [record record_type 'T',
+                                         csi_id $'TRL_CSI_ID',
+                                         placeholder1 ''
+                                  ];
+    let ufx_trailer_type l_trailer_ufx = [record record_type 'ZZ',
+                                                 number_of_rows '0'
+                                  ];
+   out.whole_record :: if ($'TARGET_DESTINATION' != "UFX")
+                          string_concat(l_trailer.record_type, '|', l_trailer.csi_id, '|', in.record_count)
+                       else string_concat(l_trailer_ufx.record_type, '~', in.record_count);
+end;"""
+def _whole_record():
+    expr = re.search(r"out\.whole_record\s*::\s*(.*?);\s*end;", RECORD_XFR, re.S).group(1)
+    return _translate_dml_expr(_inline_local_vars(expr, _extract_local_vars(RECORD_XFR)))
+def test_parametro_con_comillas_ab_initio_se_normaliza():
+    sql = _translate_dml_expr("if ($'TARGET_DESTINATION' != \"UFX\") 1 else 0")
+    assert "$'" not in sql and "${TARGET_DESTINATION}" in sql
+def test_primera_variable_local_tras_begin_se_captura():
+    assert set(_extract_local_vars(RECORD_XFR)) == {"l_trailer", "l_trailer_ufx"}
+def test_acceso_a_campo_de_registro_local_se_resuelve():
+    sql = _whole_record()
+    assert "[record" not in sql and "$'" not in sql
+    assert "('T')" in sql and "('ZZ')" in sql and "${TRL_CSI_ID}" in sql
+    assert not _is_untranslatable(sql)
+    assert _sql_syntax_problem(sql) is None
+def test_registro_sin_resolver_es_intraducible_y_queda_lit_none():
+    # el registro completo (sin acceso a campo) no es SQL: guardarrail -> lit(None)
+    assert _is_untranslatable("concat(([record a 'x']), 'y')")

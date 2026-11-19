@@ -809,7 +809,7 @@ def generate_glue(dag, output_path, xfr_rules=None, pset_params=None):
                         cmd_clean = re.sub(r'\$\{?(\w+)\}?', r'{PARAMS.\1}', cmd_clean)
                         f.write(f'# Run_Program: shell command from Ab Initio\n')
                         f.write(f'{var_id}_df = {src}  # passthrough data\n')
-                        _emit_os_system(f, cmd_clean)
+                        _emit_os_system(f, cmd_clean, log_name)
                     elif is_run_program:
                         f.write(f'# Run_Program: no commandline extracted\n')
                         f.write(f'{var_id}_df = {src}  # passthrough (Run_Program)\n')
@@ -839,7 +839,7 @@ def generate_glue(dag, output_path, xfr_rules=None, pset_params=None):
                         cmd_clean = re.sub(r'\$\{?AI_SERIAL\}?', f'{{PARAMS.BASE_PATH}}/raw', cmd_clean)
                         cmd_clean = re.sub(r'\$\{?(\w+)\}?', r'{PARAMS.\1}', cmd_clean)
                         f.write(f'# Run_Program: shell command (no data dependency)\n')
-                        _emit_os_system(f, cmd_clean)
+                        _emit_os_system(f, cmd_clean, log_name)
                         f.write(f'{var_id}_df = None  # Run_Program has no dataframe output\n')
                     elif is_run_program_nop:
                         f.write(f'# Run_Program: no commandline extracted from MP\n')
