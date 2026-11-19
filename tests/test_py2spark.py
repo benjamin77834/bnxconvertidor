@@ -60,7 +60,9 @@ def test_merge_to_join():
         'b = pd.read_csv("b.csv")\n'
         'j = a.merge(b, on="id", how="left")\n'
     )
-    assert "a.join(b, on='id', how='left')" in r["code"]
+    # merge -> helper nativo (join + sufijos _x/_y), sin pandas
+    assert "_py2spark_merge(a, b, how='left', on='id')" in r["code"]
+    assert "def _py2spark_merge" in r["code"]
 
 
 def test_sort_values_desc():
@@ -106,8 +108,17 @@ def test_iterrows_marked_unsupported():
 
 
 def test_series_apply_marked_unsupported():
+    r = _conv('import pandas as pd\ndf = pd.read_csv("f.csv")\ndf["u"] = df["x"].apply(lambda v: ext_lib(v))\n')
+    # una funcion externa no tiene equivalente nativo: TODO claro, sin UDF
+    assert any("ext_lib" in u for u in r["unsupported"])
+    assert "# TODO py2spark" in r["code"]
+    assert not [l for l in r["code"].splitlines() if "udf" in l.lower() and not l.lstrip().startswith("#")]
+
+
+def test_series_apply_lambda_translated_native():
     r = _conv('import pandas as pd\ndf = pd.read_csv("f.csv")\ndf["u"] = df["x"].apply(lambda v: v * 2)\n')
-    assert any("apply" in u.lower() for u in r["unsupported"])
+    assert not r["unsupported"]
+    assert "df.withColumn('u', F.col('x') * 2)" in r["code"]
 
 
 def test_invalid_python_not_ok():
@@ -141,7 +152,7 @@ def test_full_pipeline_compiles():
     assert "spark.read" in r["code"]
     assert "df.filter(" in r["code"]
     assert "df.groupBy('region')" in r["code"]
-    assert "df.join(cli, on='cliente_id', how='inner')" in r["code"]
+    assert "_py2spark_merge(df, cli, how='inner', on='cliente_id')" in r["code"]
     assert "j.write.mode('overwrite').parquet('salida')" in r["code"]
 
 

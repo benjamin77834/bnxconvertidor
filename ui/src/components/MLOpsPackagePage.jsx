@@ -709,6 +709,15 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                           {meta.full_env ? ' (con PySpark)' : ' (sin PySpark offline: setup.sh lo baja por internet o usa BNX_SPARK=cluster)'}
                         </div>
                       )}
+                      {meta?.pandas && (
+                        <div data-testid="pandas-razon" style={{ fontSize: 11.5, color: t.muted || '#94a3b8', marginBottom: 2 }}>
+                          🐼 {meta.pandas.pandas || meta.pandas.numpy ? '' : '⛔ '}
+                          {meta.pandas.texto}
+                          {meta.pandas.pandas ? ' (pandas<3, numpy<3)' : ''}
+                          {(meta.pandas.razones || []).filter(r => r.tipo === 'codigo').length > 0 && (
+                            <span style={{ color: t.dim || '#64748b' }}> · el código convertido a PySpark ya no usa pandas</span>)}
+                        </div>
+                      )}
                       {(() => {
                         const f = buildResult.offline_faltan || meta?.offline_faltan || {}
                         const filas = Object.entries(f).flatMap(([s, vs]) => Object.entries(vs).map(([v, e]) => ({ s, v, e })))

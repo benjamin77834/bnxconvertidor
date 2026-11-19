@@ -519,7 +519,7 @@ def preparar_version(version, log=print, cache=None, extra=False):
         if ws:
             log("[pyspark] OK %s (%s)" % (os.path.basename(ws[0]), _mb(os.path.getsize(ws[0]))))
     # (b) resto de dependencias open source: reutiliza la logica del generador
-    # (_seleccionar_wheels baja a mlops_deps/<serie>_dl con --platform manylinux).
+    # (_seleccionar_wheels baja a ciencia/<py>/linux/ con --platform manylinux).
     log("[deps] resolviendo dependencias open source para Linux x86_64 / Python %s ..." % v)
     mp._seleccion_cache.clear()
     mp._descarga_fallida.clear()
@@ -532,7 +532,7 @@ def preparar_version(version, log=print, cache=None, extra=False):
     finally:
         if prev is not None:
             os.environ["BNX_NO_DOWNLOAD"] = prev
-    dl = os.path.join(cache, "mlops_deps", serie + "_dl")
+    dl = os.path.join(cache, "ciencia", v, "linux")
     log("[deps] cache de dependencias: %s" % _mb(_dir_bytes(dl)) if os.path.isdir(dl) else "[deps] (nada bajado)")
     est = estado_version(v, cache, extra=extra)
     log("Resultado Python %s: %s (serie %s en cache: %s)"

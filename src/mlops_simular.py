@@ -57,6 +57,115 @@ def cache_base():
     return os.path.abspath(d)
 
 
+# ---------------------------------------------------------------------------
+# Limpieza de simulaciones viejas (cada paquete distinto monta su carpeta + venv: ~1 GB c/u)
+# ---------------------------------------------------------------------------
+_HASH_DIR = re.compile(r"^[0-9a-f]{16}$")
+
+
+def max_simulaciones():
+    """Cuantas carpetas de simulacion se conservan (BNX_SIMULAR_MAX, default 2). 0 = ninguna inactiva."""
+    try:
+        return max(0, int(os.environ.get("BNX_SIMULAR_MAX", 2)))
+    except (TypeError, ValueError):
+        return 2
+
+
+def _bytes_dir(ruta):
+    total = 0
+    pila = [ruta]
+    while pila:
+        d = pila.pop()
+        try:
+            with os.scandir(d) as it:
+                for e in it:
+                    try:
+                        if e.is_symlink():
+                            continue
+                        if e.is_dir(follow_symlinks=False):
+                            pila.append(e.path)
+                        else:
+                            total += e.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+    return total
+
+
+def _marcar_uso(raiz):
+    try:
+        with open(os.path.join(raiz, ".usado"), "w") as fh:
+            fh.write(str(time.time()))
+    except OSError:
+        pass
+
+
+def _ultimo_uso(raiz):
+    mt = 0.0
+    for n in (".usado", ".montado"):
+        try:
+            mt = max(mt, os.stat(os.path.join(raiz, n)).st_mtime)
+        except OSError:
+            pass
+    if not mt:
+        try:
+            mt = os.stat(raiz).st_mtime
+        except OSError:
+            pass
+    return mt
+
+
+def listar_simulaciones(base=None, con_tamano=True):
+    """[{hash, bytes, usado, activo}] de las carpetas de simulacion, la mas reciente primero."""
+    base = base or cache_base()
+    out = []
+    try:
+        nombres = os.listdir(base)
+    except OSError:
+        return out
+    with _LOCK:
+        activos = set(_ACTIVO.keys())
+    for n in nombres:
+        raiz = os.path.join(base, n)
+        if not (_HASH_DIR.match(n) and os.path.isdir(raiz)):
+            continue            # solo carpetas que creo montar(): nunca otra cosa del directorio
+        out.append({"hash": n, "usado": _ultimo_uso(raiz), "activo": n in activos,
+                    "bytes": _bytes_dir(raiz) if con_tamano else 0})
+    out.sort(key=lambda d: d["usado"], reverse=True)
+    return out
+
+
+def espacio_simulaciones(base=None):
+    sims = listar_simulaciones(base)
+    return {"ok": True, "total": sum(d["bytes"] for d in sims), "carpetas": sims,
+            "max": max_simulaciones()}
+
+
+def limpiar_simulaciones(conservar=None, proteger=(), base=None):
+    """Borra las simulaciones inactivas salvo las `conservar` mas recientes (default BNX_SIMULAR_MAX).
+    Nunca borra la que esta corriendo (ni las de `proteger`). Devuelve {borradas, liberado, conservadas}."""
+    base = base or cache_base()
+    conservar = max_simulaciones() if conservar is None else max(0, int(conservar))
+    sims = listar_simulaciones(base, con_tamano=False)
+    borradas, liberado, conservadas = [], 0, []
+    for i, d in enumerate(sims):
+        with _LOCK:
+            vivo = d["hash"] in _ACTIVO
+        if vivo or d["hash"] in proteger or i < conservar:
+            conservadas.append(d["hash"])
+            continue
+        raiz = os.path.join(base, d["hash"])
+        tam = _bytes_dir(raiz)
+        shutil.rmtree(raiz, ignore_errors=True)
+        if not os.path.exists(raiz):
+            borradas.append(d["hash"])
+            liberado += tam
+        else:
+            conservadas.append(d["hash"])
+    return {"ok": True, "borradas": borradas, "liberado": liberado, "conservadas": conservadas}
+
+
 def hash_zip(path):
     st = os.stat(path)
     clave = (os.path.abspath(path), st.st_mtime, st.st_size)
@@ -282,6 +391,7 @@ def montar(zip_path, base=None):
             os.rename(os.path.join(raiz, tops[0]), pkg)
         with open(marca, "w") as fh:
             fh.write(h)
+    _marcar_uso(raiz)
     return h, pkg
 
 
@@ -703,6 +813,10 @@ def iniciar(token, zip_path, objetivo=None, timeout=None, settings=None):
     if not ok:
         raise SimError(msg, 400)
     h, pkg = montar(zip_path)
+    try:
+        limpiar_simulaciones(proteger=(h,))      # conserva solo las BNX_SIMULAR_MAX mas recientes
+    except Exception:
+        pass
     jobs = listar_jobs(pkg)
     if not jobs:
         raise SimError("el paquete no trae jobs para simular (router.py sin fuentes)")

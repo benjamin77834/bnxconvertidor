@@ -1505,6 +1505,11 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 self._json_response(200, _sim.info(_zip_de(data.get("token"))))
             elif accion == "estado" and self.command == "GET":
                 self._json_response(200, _sim.estado(data.get("run"), data.get("offset", 0)))
+            elif accion == "espacio" and self.command == "GET":
+                self._json_response(200, _sim.espacio_simulaciones())
+            elif accion == "limpiar" and self.command == "POST":
+                # boton 'Limpiar simulaciones': borra todas las inactivas (nunca la que corre)
+                self._json_response(200, _sim.limpiar_simulaciones(conservar=data.get("conservar", 0)))
             elif accion == "iniciar" and self.command == "POST":
                 tok = data.get("token")
                 rid = _sim.iniciar(tok, _zip_de(tok), data.get("job"), data.get("timeout"), data.get("settings"))

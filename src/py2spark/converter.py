@@ -25,8 +25,14 @@
 import ast
 import re
 
+import copy
+
 from . import mllib as _mllib
 from ._unparse import unparse as _unparse
+from . import pandas_ops as _ops
+from .df_ops import DfOps, _strs
+from .pandas_ops import PandasOps, Untr, K as _K, N as _N, Fn as _Fn, meth as _meth, tpl as _tpl, \
+    unslice as _unslice, const as _const, cval as _cval
 
 
 # --------- utilidades de deteccion ---------
@@ -49,7 +55,9 @@ _DF_RETURNING = {
     "drop", "rename", "sort_values", "orderBy", "sort", "head", "limit",
     "fillna", "dropna", "withColumn", "withColumnRenamed", "distinct",
     "drop_duplicates", "assign", "copy", "reset_index", "tail", "sample",
-    "union", "unionByName", "withColumnRenamed",
+    "union", "unionByName", "withColumnRenamed", "dropDuplicates", "unpivot", "toDF",
+    "crossJoin", "melt", "pivot_table", "pivot", "nlargest", "nsmallest", "query",
+    "set_index", "offset",
 }
 
 # Agregaciones pandas -> funciones F.
@@ -137,7 +145,7 @@ def _names_in_target(tgt):
 
 # Accesos de pandas basados en el INDICE de fila / posicion. Spark no tiene
 # indice de fila, asi que estos no son traducibles 1:1.
-_PANDAS_INDEX_ATTRS = {"loc", "iloc", "ix", "at", "iat", "index", "values", "reset_index", "set_index"}
+_PANDAS_INDEX_ATTRS = {"loc", "iloc", "ix", "at", "iat", "index", "values"}
 
 # Atributos de un Bunch de sklearn (fetch_openml/load_*): no existen en Spark.
 _SKLEARN_BUNCH_ATTRS = {"data", "target", "feature_names", "target_names", "DESCR", "frame"}
@@ -229,7 +237,7 @@ def _kw(call, name):
     return None
 
 
-class PandasToSparkTransformer(ast.NodeTransformer):
+class PandasToSparkTransformer(PandasOps, DfOps, ast.NodeTransformer):
     """Reescribe el AST de pandas a PySpark.
 
     Mantiene un conjunto `df_names` con los nombres de variable que son
@@ -272,6 +280,13 @@ class PandasToSparkTransformer(ast.NodeTransformer):
         self.sklearn_pipeline = None
         self.sklearn_emit_var = None
         self.sklearn_suppress = set()
+        # g = df.groupby(...) -> nodo groupby (para g.agg(...), g['x'].sum()...)
+        self.gb_vars = {}
+        # funciones simples (def f(x): return <expr>) -> (param, expr) traducibles en apply/map
+        self.simple_funcs = {}
+        self.needs_merge_helper = False
+        self.needs_groupagg_helper = False
+        self.needs_window = False
 
     # ---- imports: detectar alias de pandas, y neutralizar 'import pandas' ----
     def visit_Import(self, node):
@@ -315,9 +330,23 @@ class PandasToSparkTransformer(ast.NodeTransformer):
 
     # ---- Subscript: df[...] ----
     def visit_Subscript(self, node):
+        node = self.rewrite_loc(node)
+        if not isinstance(node, ast.Subscript):
+            return self.visit(node)
         self.generic_visit(node)
         val = node.value
         sl = node.slice
+        if sl.__class__.__name__ == "Index":     # Python 3.8
+            sl = sl.value
+        # df["c"].str[:3] -> F.substring(...)
+        if isinstance(val, ast.Attribute) and val.attr == "str" and self._is_col(val.value):
+            _rc = val.value
+            if isinstance(_rc, ast.Call) and isinstance(_rc.func, ast.Attribute) and _rc.func.attr == "split" \
+                    and isinstance(_rc.func.value, ast.Name) and _rc.func.value.id == "F" \
+                    and isinstance(sl, ast.Constant) and isinstance(sl.value, int) and sl.value >= 0:
+                return _meth(_rc, "getItem", _K(sl.value))
+            return self.pyx(ast.Subscript(value=_N("__s"), slice=node.slice, ctx=ast.Load()),
+                            {"__s": val.value}, [], False)
         # df["col"]  -> F.col("col")   (solo si `val` es un df conocido)
         if self._is_df(val) and _is_str_const(sl):
             return self._f_col(sl.value)
@@ -338,7 +367,13 @@ class PandasToSparkTransformer(ast.NodeTransformer):
 
     # ---- Call: pd.read_*, df.metodo(...) ----
     def visit_Call(self, node):
+        pre = self.pre_call(node)
+        if pre is not None:
+            return pre
         self.generic_visit(node)
+        post = self.post_call(node)
+        if post is not None:
+            return post
         f = node.func
 
         # pd.read_csv(...) / pd.read_parquet(...)
@@ -348,6 +383,10 @@ class PandasToSparkTransformer(ast.NodeTransformer):
                 self.diag.warn("pd.read_excel -> spark.read.csv (aproximado): Spark no lee "
                                ".xlsx sin conector; ajusta el formato/fuente real del archivo.")
             return self._read(node, _PANDAS_READERS[f.attr])
+
+        if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) \
+                and f.value.id in self.pandas_alias and f.attr in ("read_sql", "read_sql_query", "read_sql_table"):
+            return self._read_sql(node)
 
         # pd.DataFrame(...) -> spark.createDataFrame(...) (aprox)
         if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) \
@@ -416,7 +455,52 @@ class PandasToSparkTransformer(ast.NodeTransformer):
         return node
 
     # ---- Assign: x = pd.read_*  |  df["c"] = expr  |  x = <df>.metodo() ----
+    def visit_AugAssign(self, node):
+        t = node.target
+        if isinstance(t, ast.Subscript) and self._is_df(t.value) and _is_str_const(_unslice(t)):
+            cur = ast.Subscript(value=copy.deepcopy(t.value), slice=t.slice, ctx=ast.Load())
+            return self.visit(ast.Assign(targets=[t], value=ast.BinOp(left=cur, op=node.op, right=node.value)))
+        self.generic_visit(node)
+        return node
+
+    def visit_FunctionDef(self, node):
+        # def f(x): [if ...: return a] return b  ->  traducible en Series.apply(f)
+        self._register_simple_func(node)
+        self.generic_visit(node)
+        return node
+
+    def _register_simple_func(self, node):
+        a = node.args
+        if len(a.args) != 1 or a.vararg or a.kwarg or a.kwonlyargs:
+            return
+        body = [b for b in node.body if not (isinstance(b, ast.Expr) and isinstance(b.value, ast.Constant))]
+
+        def expr_of(stmts, tail):
+            if not stmts:
+                return expr_of(tail, []) if tail else None
+            s0 = stmts[0]
+            if isinstance(s0, ast.Return) and s0.value is not None:
+                return s0.value
+            if isinstance(s0, ast.If):
+                b = expr_of(s0.body, [])
+                o = expr_of(s0.orelse, stmts[1:] + tail)
+                if b is not None and o is not None:
+                    return ast.IfExp(test=s0.test, body=b, orelse=o)
+            return None
+        e = expr_of(body, [])
+        if e is not None:
+            self.simple_funcs[node.name] = (a.args[0].arg, e)
+
     def visit_Assign(self, node):
+        # g = df.groupby(...): recordar el groupby para g.agg(...) / g['x'].sum()
+        if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) \
+                and isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Attribute) \
+                and node.value.func.attr == "groupby" and self._is_df(node.value.func.value):
+            self.gb_vars[node.targets[0].id] = copy.deepcopy(node.value)
+        _rep = self.pre_assign(node)
+        if _rep is not None:
+            return self.visit(_rep) if not (isinstance(_rep, ast.Expr) and isinstance(_rep.value, ast.Name)) else _rep
+        node = self.rewrite_loc(node)
         # --- Patron sklearn Pipeline + ColumnTransformer reconocido ---
         # Si este modulo lo detecto (convert_code), los statements intermedios
         # (sub-pipelines, preprocessor) se neutralizan SIN TODO, y el bloque
@@ -568,6 +652,10 @@ class PandasToSparkTransformer(ast.NodeTransformer):
 
     # ---- Expr suelto: model.fit(...) / model.predict(...) sin asignacion ----
     def visit_Expr(self, node):
+        _ip = self.inplace_expr(node)
+        if _ip is not None:
+            return self.visit(_ip)
+        node = self.rewrite_loc(node)
         # Patron sklearn reconocido: los statements que referencian el modelo
         # suprimido (model.fit(...), print(classification_report(...)) sobre sus
         # predicciones) ya los cubre el bloque unico -> se omiten SIN TODO.
@@ -917,14 +1005,41 @@ class PandasToSparkTransformer(ast.NodeTransformer):
     # =====================================================================
     def _is_df(self, node):
         """True si el nodo evalua (heuristicamente) a un DataFrame Spark."""
+        # spark.read.<...>.csv(path) (lectura ya traducida)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                and node.func.attr in ("csv", "parquet", "json", "orc", "load", "table") \
+                and self._is_spark_read(node):
+            return True
         if isinstance(node, ast.Name):
             return node.id in self.df_names
         # <df>.metodo_que_devuelve_df(...)  -> tambien es df
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
             if node.func.attr in _DF_RETURNING and self._is_df(node.func.value):
                 return True
-        # <df>[...]  (slice de columnas / filtro) sigue siendo df en algunos casos
+        # <df>.groupBy(...).count() -> df (GroupedData.count devuelve DataFrame)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "count" \
+                and isinstance(node.func.value, ast.Call) and isinstance(node.func.value.func, ast.Attribute) \
+                and node.func.value.func.attr == "groupBy":
+            return True
+        # df[[...]] / df[mask] (sin visitar aun) sigue siendo df
+        if isinstance(node, ast.Subscript) and self._is_df(node.value):
+            sl = node.slice
+            if sl.__class__.__name__ == "Index":
+                sl = sl.value
+            return not (isinstance(sl, ast.Constant) and isinstance(sl.value, str)) and not isinstance(sl, ast.Slice)
         return False
+
+    @staticmethod
+    def _is_spark_read(value):
+        cur, seen_read = value, False
+        while isinstance(cur, (ast.Attribute, ast.Call)):
+            if isinstance(cur, ast.Attribute):
+                if cur.attr == "read":
+                    seen_read = True
+                cur = cur.value
+            else:
+                cur = cur.func
+        return isinstance(cur, ast.Name) and cur.id == "spark" and seen_read
 
     def _value_is_df(self, value):
         # spark.read... (aunque haya .option(...).option(...) intermedios) o
@@ -948,7 +1063,7 @@ class PandasToSparkTransformer(ast.NodeTransformer):
             return True
         # _py2spark_df(...) (helper que construye un DataFrame desde pd.DataFrame)
         if isinstance(value, ast.Call) and isinstance(value.func, ast.Name) \
-                and value.func.id == "_py2spark_df":
+                and value.func.id in ("_py2spark_df", "_py2spark_merge", "_py2spark_groupagg"):
             return True
         # <df>.<metodo que devuelve df>(...)
         if isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute) \
@@ -966,31 +1081,73 @@ class PandasToSparkTransformer(ast.NodeTransformer):
         )
 
     def _read(self, node, fmt):
-        # spark.read[.option(header,inferSchema)].<fmt>(path)
+        # spark.read[.option(...)].<fmt>(path)  (+ usecols/nrows/names/dtype/na_values)
         path_arg = node.args[0] if node.args else _kw(node, "filepath_or_buffer") or _kw(node, "path")
         reader = ast.Attribute(value=ast.Name("spark", ast.Load()), attr="read", ctx=ast.Load())
+
+        def _opt(rd, k, v):
+            return ast.Call(func=ast.Attribute(value=rd, attr="option", ctx=ast.Load()),
+                            args=[ast.Constant(k), v], keywords=[])
+        header = _kw(node, "header")
+        no_header = isinstance(header, ast.Constant) and header.value is None
         if fmt == "csv":
-            # .option("header", True).option("inferSchema", True)
-            reader = ast.Call(
-                func=ast.Attribute(value=reader, attr="option", ctx=ast.Load()),
-                args=[ast.Constant("header"), ast.Constant(True)], keywords=[],
-            )
-            reader = ast.Call(
-                func=ast.Attribute(value=reader, attr="option", ctx=ast.Load()),
-                args=[ast.Constant("inferSchema"), ast.Constant(True)], keywords=[],
-            )
-            # sep=... -> .option("sep", ...)
+            reader = _opt(reader, "header", ast.Constant(not no_header))
+            reader = _opt(reader, "inferSchema", ast.Constant(True))
             sep = _kw(node, "sep") or _kw(node, "delimiter")
             if sep is not None:
-                reader = ast.Call(
-                    func=ast.Attribute(value=reader, attr="option", ctx=ast.Load()),
-                    args=[ast.Constant("sep"), sep], keywords=[],
-                )
+                reader = _opt(reader, "sep", sep)
+            enc = _kw(node, "encoding")
+            if enc is not None:
+                reader = _opt(reader, "encoding", enc)
+            nav = _kw(node, "na_values")
+            if nav is not None and _is_str_const(nav):
+                reader = _opt(reader, "nullValue", nav)
+            elif nav is not None:
+                self.diag.warn("read_csv(na_values=<lista>): Spark solo admite un nullValue; "
+                               "se dejo el valor por defecto (cadena vacia = null).")
         call = ast.Call(
             func=ast.Attribute(value=reader, attr=fmt, ctx=ast.Load()),
             args=[path_arg] if path_arg else [], keywords=[],
         )
+        names = _kw(node, "names")
+        if names is not None and isinstance(names, ast.List):
+            call = ast.Call(func=ast.Attribute(value=call, attr="toDF", ctx=ast.Load()),
+                            args=[ast.Starred(value=names, ctx=ast.Load())], keywords=[])
+        elif no_header:
+            self.diag.warn("read_csv(header=None): las columnas quedan como _c0, _c1... (pandas: 0, 1...).")
+        usecols = _kw(node, "usecols")
+        if usecols is not None and _strs(usecols) is not None:
+            call = ast.Call(func=ast.Attribute(value=call, attr="select", ctx=ast.Load()),
+                            args=[ast.Constant(c) for c in _strs(usecols)], keywords=[])
+        dt = _kw(node, "dtype")
+        if isinstance(dt, ast.Dict):
+            for kk, vv in zip(dt.keys, dt.values):
+                st = _astype_to_spark(vv)
+                if _is_str_const(kk) and st is not None:
+                    call = ast.Call(func=ast.Attribute(value=call, attr="withColumn", ctx=ast.Load()),
+                                    args=[kk, ast.Call(func=ast.Attribute(value=self._f_col(kk.value), attr="cast", ctx=ast.Load()),
+                                                       args=[ast.Constant(st)], keywords=[])], keywords=[])
+        nrows = _kw(node, "nrows")
+        if nrows is not None:
+            call = ast.Call(func=ast.Attribute(value=call, attr="limit", ctx=ast.Load()),
+                            args=[nrows], keywords=[])
+        pdates = _kw(node, "parse_dates")
+        if pdates is not None and _strs(pdates):
+            for c in _strs(pdates):
+                call = ast.Call(func=ast.Attribute(value=call, attr="withColumn", ctx=ast.Load()),
+                                args=[ast.Constant(c), _Fn("to_timestamp", self._f_col(c))], keywords=[])
         return call
+
+    def _read_sql(self, node):
+        """pd.read_sql(query, con) -> spark.read.format('jdbc')... (la URL JDBC la pone el usuario)."""
+        q = node.args[0] if node.args else _kw(node, "sql")
+        self.diag.warn("pd.read_sql -> spark.read.format('jdbc'): completa JDBC_URL (y credenciales por "
+                       "env/secret) en el codigo generado.")
+        rd = ast.Attribute(value=ast.Name("spark", ast.Load()), attr="read", ctx=ast.Load())
+        rd = _meth(rd, "format", _K("jdbc"))
+        rd = _meth(rd, "option", _K("url"), _K("jdbc:TODO-reemplaza-por-tu-url-jdbc"))
+        rd = _meth(rd, "option", _K("query"), q)
+        return _meth(rd, "load")
 
     def _pd_dataframe(self, node):
         """pd.DataFrame(...) -> spark.createDataFrame(...) preservando el esquema.
@@ -1107,7 +1264,7 @@ class PandasToSparkTransformer(ast.NodeTransformer):
                 args=[b], keywords=[])
         # funciones matematicas elementwise con equivalente directo en F.
         _np_math = {"log": "log", "log1p": "log1p", "exp": "exp", "sqrt": "sqrt",
-                    "abs": "abs", "floor": "floor", "ceil": "ceil", "round": "round",
+                    "abs": "abs", "floor": "floor", "ceil": "ceil", "round": "bround",
                     "sin": "sin", "cos": "cos", "tan": "tan", "power": "pow"}
         if fn in _np_math and node.args:
             return ast.Call(
@@ -1171,30 +1328,10 @@ class PandasToSparkTransformer(ast.NodeTransformer):
         m = f.attr
         recv = f.value
 
-        # merge -> join
-        if m == "merge":
-            other = node.args[0] if node.args else None
-            on = _kw(node, "on")
-            left_on = _kw(node, "left_on")
-            how = _kw(node, "how")
-            kws = []
-            if on is not None:
-                kws.append(ast.keyword(arg="on", value=on))
-            elif left_on is not None:
-                # left_on/right_on con nombres iguales -> on; si difieren, TODO.
-                right_on = _kw(node, "right_on")
-                if right_on is not None and ast.dump(left_on) == ast.dump(right_on):
-                    kws.append(ast.keyword(arg="on", value=left_on))
-                else:
-                    self.diag.unsup("merge con left_on!=right_on: usa condicion explicita df1.k1==df2.k2 (revisar).")
-                    if left_on is not None:
-                        kws.append(ast.keyword(arg="on", value=left_on))
-            howval = how.value if _is_str_const(how) else "inner"
-            kws.append(ast.keyword(arg="how", value=ast.Constant(howval)))
-            return ast.Call(
-                func=ast.Attribute(value=recv, attr="join", ctx=ast.Load()),
-                args=[other] if other else [], keywords=kws,
-            )
+        # extensiones nativas (merge/melt/pivot/tail/query/assign/loc...)
+        _ext = self.df_method_ext(node, f)
+        if _ext is not None:
+            return _ext
 
         # groupby -> groupBy
         if m == "groupby":
@@ -1203,34 +1340,37 @@ class PandasToSparkTransformer(ast.NodeTransformer):
                 args=node.args, keywords=[k for k in node.keywords if k.arg not in ("as_index", "sort")],
             )
 
-        # sort_values -> orderBy (respeta ascending)
+        # sort_values -> orderBy (ascending bool/lista; pandas deja NaN al final)
         if m == "sort_values":
             by = node.args[0] if node.args else _kw(node, "by")
             asc = _kw(node, "ascending")
+            if asc is None and len(node.args) > 2:
+                asc = node.args[2]
+            names = _strs(by) if by is not None else None
+            if names is None:
+                if by is None:
+                    raise Untr("sort_values sin 'by' (Series.sort_values)", "usa orderBy sobre la columna")
+                return ast.Call(func=ast.Attribute(value=recv, attr="orderBy", ctx=ast.Load()),
+                                args=[by], keywords=[])
+            if isinstance(asc, (ast.List, ast.Tuple)) and len(asc.elts) == len(names) \
+                    and all(isinstance(e, ast.Constant) for e in asc.elts):
+                flags = [bool(e.value) for e in asc.elts]
+            else:
+                flags = [not (isinstance(asc, ast.Constant) and asc.value is False)] * len(names)
             cols = []
-            names = []
-            if _is_str_const(by):
-                names = [by.value]
-            elif isinstance(by, ast.List):
-                names = [e.value for e in by.elts if _is_str_const(e)]
-            descending = (isinstance(asc, ast.Constant) and asc.value is False)
-            for nm in names:
+            for nm, up in zip(names, flags):
                 c = self._f_col(nm)
-                if descending:
-                    c = ast.Call(func=ast.Attribute(value=c, attr="desc", ctx=ast.Load()), args=[], keywords=[])
-                cols.append(c)
-            if not cols and by is not None:
-                cols = [by]
+                # desc ya deja los nulos al final; asc necesita asc_nulls_last (pandas: NaN al final)
+                cols.append(ast.Call(func=ast.Attribute(value=c, attr="asc_nulls_last" if up else "desc", ctx=ast.Load()),
+                                     args=[], keywords=[]))
             return ast.Call(
                 func=ast.Attribute(value=recv, attr="orderBy", ctx=ast.Load()),
                 args=cols, keywords=[],
             )
 
-        # head(n) / tail(n) -> limit(n)
+        # head(n) -> limit(n)
         if m in ("head", "tail"):
             n = node.args[0] if node.args else ast.Constant(5)
-            if m == "tail":
-                self.diag.warn("df.tail(n): Spark no garantiza orden; se traduce como limit(n).")
             return ast.Call(
                 func=ast.Attribute(value=recv, attr="limit", ctx=ast.Load()),
                 args=[n], keywords=[],
@@ -1355,11 +1495,11 @@ class PandasToSparkTransformer(ast.NodeTransformer):
         if m == "agg":
             return self._agg(node, recv)
 
-        # apply / applymap / map / iterrows / itertuples: NO traducible fielmente
-        if m in ("apply", "applymap", "map", "iterrows", "itertuples", "transform", "pipe"):
+        # applymap / map / iterrows / itertuples / transform / pipe: sin equivalente nativo
+        if m in ("applymap", "map", "iterrows", "itertuples", "transform", "pipe"):
             self.diag.unsup(f"df.{m}(...) no es traducible automaticamente a Spark "
                             f"(logica fila-a-fila). Reescribe con funciones de columna "
-                            f"(F.*) o una UDF de Spark.")
+                            f"(F.*) o F.expr('SQL'); no se emite UDF.")
             return node
 
         # metodos que ya existen en Spark con el mismo nombre: dejar igual.
@@ -1423,14 +1563,64 @@ _PREAMBLE = '''\
 # Revisa los comentarios "# TODO py2spark:" donde la traduccion no es 1:1.
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
+from pyspark.sql import Window
 
 spark = SparkSession.builder.appName("py2spark_job").getOrCreate()
 '''
 
 
+_MERGE_HELPER = '''\
+def _py2spark_merge(left, right, on=None, how="inner", left_on=None, right_on=None,
+                    suffixes=("_x", "_y")):
+    """merge de la fuente original -> DataFrame.join. Las columnas NO clave repetidas reciben
+    los sufijos (_x/_y); how outer -> full. Solo usa metadatos (columns), sin accion."""
+    def _l(v):
+        return [] if v is None else ([v] if isinstance(v, str) else list(v))
+    if on is None and left_on is None and right_on is None and how != "cross":
+        on = [c for c in left.columns if c in right.columns]
+    same = on is not None
+    lk, rk = (_l(on), _l(on)) if same else (_l(left_on), _l(right_on))
+    common = [c for c in left.columns if c in right.columns and not (same and c in lk)]
+    for c in common:
+        left = left.withColumnRenamed(c, c + suffixes[0])
+        right = right.withColumnRenamed(c, c + suffixes[1])
+    if how == "cross":
+        return left.crossJoin(right)
+    how = {"outer": "full_outer"}.get(how, how)
+    if same:
+        lcols = list(left.columns)
+        j = left.join(right, on=lk, how=how)
+        return j.select(*lcols, *[c for c in right.columns if c not in lk])   # orden de columnas del original
+    lk = [k + suffixes[0] if k in common else k for k in lk]
+    rk = [k + suffixes[1] if k in common else k for k in rk]
+    cond = None
+    for a, b in zip(lk, rk):
+        c = left[a] == right[b]
+        cond = c if cond is None else (cond & c)
+    return left.join(right, on=cond, how=how)
+'''
+
+_GROUPAGG_HELPER = '''\
+def _py2spark_groupagg(df, keys, fn):
+    """df.groupby(keys).<fn>() de la fuente original sobre TODAS las columnas no clave (nombres
+    originales, no 'sum(x)'). Numericas para sum/mean/std/var/median/prod; todas para
+    count/min/max/first/last/nunique. Solo usa el esquema (sin accion)."""
+    from pyspark.sql import types as T
+    keys = [keys] if isinstance(keys, str) else list(keys)
+    rest = [f for f in df.schema.fields if f.name not in keys]
+    if fn not in ("count", "min", "max", "first", "last", "nunique"):
+        rest = [f for f in rest if isinstance(f.dataType, T.NumericType)]
+    mk = {"sum": F.sum, "mean": F.avg, "std": F.stddev_samp, "var": F.var_samp, "median": F.median,
+          "prod": F.product, "count": F.count, "min": F.min, "max": F.max,
+          "first": lambda c: F.first(c, True), "last": lambda c: F.last(c, True),
+          "nunique": F.countDistinct}[fn]
+    return df.groupBy(*keys).agg(*[mk(F.col(f.name)).alias(f.name) for f in rest])
+'''
+
+
 _ROWS_HELPER = '''\
 def _py2spark_df(data, schema=None, _n_rows=100):
-    """Construye un DataFrame de Spark desde pd.DataFrame(data).
+    """Construye un DataFrame de Spark desde DataFrame(data) de la fuente original.
     Soporta: DataFrame de Spark (se devuelve tal cual), dict {col: secuencia|Column},
     lista de dicts, lista de tuplas/listas, lista de escalares. Si algun valor del
     dict es una Column de Spark (tras traducir np.random.*/np.where), genera
@@ -1548,6 +1738,7 @@ def convert_code(source, add_preamble=True):
             )
 
     new_tree = transformer.visit(tree)
+    _drop_unused_imports(new_tree, ("numpy",))
     ast.fix_missing_locations(new_tree)
 
     try:
@@ -1592,6 +1783,10 @@ def convert_code(source, add_preamble=True):
         # Helper para pd.DataFrame(<variable>): normaliza dict/lista/escalares.
         if transformer.needs_rows_helper:
             preamble = preamble + "\n" + _ROWS_HELPER + "\n"
+        if transformer.needs_merge_helper:
+            preamble = preamble + "\n" + _MERGE_HELPER + "\n"
+        if transformer.needs_groupagg_helper:
+            preamble = preamble + "\n" + _GROUPAGG_HELPER + "\n"
         code = preamble + "\n" + body_code
 
     # Inyectar comentarios TODO por cada 'unsupported' al inicio, para que queden
@@ -1606,6 +1801,33 @@ def convert_code(source, add_preamble=True):
         "warnings": diag.warnings,
         "unsupported": diag.unsupported,
     }
+
+
+def _drop_unused_imports(tree, mods):
+    """Quita `import numpy as np` si ya no queda ningun uso del alias (todo se tradujo a F.*)."""
+    used = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load):
+            used.add(n.id)
+        elif isinstance(n, ast.Name):
+            used.add(n.id)
+
+    class _D(ast.NodeTransformer):
+        def visit_Import(self, node):
+            keep = [a for a in node.names
+                    if not (a.name.split(".")[0] in mods and (a.asname or a.name.split(".")[0]) not in used)]
+            if not keep:
+                return None
+            node.names = keep
+            return node
+
+        def visit_ImportFrom(self, node):
+            if (node.module or "").split(".")[0] in mods \
+                    and not any((a.asname or a.name) in used for a in node.names):
+                return None
+            return node
+    _D().visit(tree)
+    return tree
 
 
 def _ensure_mllib_source(body_code, transformer):

@@ -138,17 +138,15 @@ class S15Aggregate(BaseAggregate):
 _PNL = '''# framework_mlops_v2/aggregates/pnl.py
 """PnL: agregacion por GROUP BY dinamico. Misma logica que el framework original
 pero sobre BaseAggregate, con el query construido de forma explicita."""
-import pandas as pd
 from ..core.base_aggregate import BaseAggregate
 
 
 class PnlAggregate(BaseAggregate):
     def _build_query(self, query_dict, group_by, cols):
-        agg_df = pd.DataFrame(data=query_dict)
-        agg_df = agg_df[agg_df["variable"] != ""]
+        # query_dict = {"variable": [...], "agg": [...]} (config, listas pequenas): Python puro.
+        pares = [(v, a) for v, a in zip(query_dict["variable"], query_dict["agg"]) if v != ""]
         feats = ",".join(
-            "{0}({1}) as {1}".format(it["agg"], it["variable"])
-            for _, it in agg_df.iterrows() if it["variable"] in cols)
+            "{0}({1}) as {1}".format(a, v) for v, a in pares if v in cols)
         g = ",".join(group_by)
         return "SELECT %s,%s FROM tempPnl GROUP BY %s" % (g, feats, g)
 
@@ -258,14 +256,29 @@ class Scorer:
             except Exception as e:
                 logger.warning("No se pudo cargar XGBoost (%s); se usara fallback.", e)
 
-    def score(self, df, feature_cols, out_col="score"):
-        """Devuelve df con la columna de score. Con XGBoost usa el modelo; sin el,
-        un score lineal simple (solo para pruebas)."""
+    def score(self, df, feature_cols, out_col="score", max_rows=1000000):
+        """Devuelve df con la columna de score. Con XGBoost usa el modelo EN EL DRIVER (xgboost no corre
+        en los executors sin Python en los workers); sin el, un score lineal simple (solo para pruebas).
+
+        ADVERTENCIA DE TAMANO: la ruta XGBoost trae al driver SOLO las columnas de features (matriz
+        numerica, sin pandas) hasta `max_rows` filas; si hay mas, falla con un mensaje claro: puntua por
+        lotes (filtra por cohorte/particion) o sube BNX_DRIVER_MEMORY."""
         if self._booster is not None:
-            # En produccion: pasar a pandas por particion / usar un UDF de pandas.
-            import pandas as pd  # noqa: F401
-            logger.info("Scoring con XGBoost: %s", self.model_path)
-            # (placeholder: integrar pandas_udf segun tu infraestructura)
+            import xgboost as xgb
+            rid = "_bnx_rid"
+            base = df.withColumn(rid, F.monotonically_increasing_id())
+            # driver: ids + features (solo lo necesario para puntuar), acotado por max_rows
+            filas = base.select(rid, *[F.col(c).cast("double") for c in feature_cols]).limit(max_rows + 1).collect()
+            if len(filas) > max_rows:
+                raise ValueError("Scoring XGBoost en el driver: mas de %d filas; puntua por lotes "
+                                 "o sube max_rows/BNX_DRIVER_MEMORY" % max_rows)
+            nan = float("nan")
+            matriz = [[nan if r[i + 1] is None else r[i + 1] for i in range(len(feature_cols))] for r in filas]
+            logger.info("Scoring con XGBoost en el driver: %s (%d filas)", self.model_path, len(filas))
+            preds = self._booster.predict(xgb.DMatrix(matriz, feature_names=list(feature_cols)))
+            res = df.sparkSession.createDataFrame(
+                [(r[0], float(p)) for r, p in zip(filas, preds)], [rid, out_col])
+            return base.join(res, on=rid, how="left").drop(rid)
         # Fallback lineal de ejemplo (normaliza una suma de features).
         expr = sum((F.col(c).cast("double") for c in feature_cols), F.lit(0.0))
         return df.withColumn(out_col, (expr / F.lit(float(len(feature_cols) or 1))))
@@ -294,22 +307,28 @@ class MonitorMetrics:
     """
 
     def psi(self, current_df, column, dist_dev, bins=None):
-        """PSI de una columna: suma de (rel_cur - rel_dev)*ln(rel_cur/rel_dev)."""
+        """PSI de una columna: suma de (rel_cur - rel_dev)*ln(rel_cur/rel_dev).
+        Todo en Spark (join de la distribucion de desarrollo con la frecuencia relativa actual y UN
+        agg); al driver solo vuelve el escalar. Sin pandas/numpy."""
+        spark = current_df.sparkSession
         total = current_df.count()
-        if total == 0:
+        if total == 0 or not dist_dev:
             return 0.0
-        # Frecuencia relativa actual por bin (usa los mismos bins del desarrollo).
-        rows = (current_df.groupBy(column).count()
-                .withColumn("rel", F.col("count") / F.lit(float(total)))
-                .collect())
-        rel_cur = {str(r[column]): r["rel"] for r in rows}
-        import math
-        psi = 0.0
-        for b, rel_dev in dist_dev.items():
-            rc = rel_cur.get(str(b), 1e-6) or 1e-6
-            rd = rel_dev or 1e-6
-            psi += (rc - rd) * math.log(rc / rd)
-        return round(psi, 6)
+        eps = 1e-6
+        dev = spark.createDataFrame([(str(k), float(v or eps)) for k, v in dist_dev.items()],
+                                    "bin string, rel_dev double")
+        cur = (current_df.groupBy(F.col(column).cast("string").alias("bin")).count()
+               .withColumn("rel_cur", F.col("count") / F.lit(float(total))))
+        j = dev.join(cur, on="bin", how="left").withColumn(
+            "rc", F.coalesce(F.col("rel_cur"), F.lit(eps)))
+        valor = j.agg(F.sum((F.col("rc") - F.col("rel_dev"))
+                            * F.log(F.col("rc") / F.col("rel_dev"))).alias("psi")).first()[0]   # escalar
+        return round(float(valor or 0.0), 6)
+
+    def quantile_bins(self, df, column, n_bins=10):
+        """Bordes de cubos por cuantiles (approxQuantile, en Spark): sirve para construir dist_dev."""
+        qs = [i / float(n_bins) for i in range(1, n_bins)]
+        return df.approxQuantile(column, qs, 0.001)
 
     def interpret(self, psi_value):
         if psi_value < PSI_STABLE:
@@ -319,19 +338,22 @@ class MonitorMetrics:
         return "inestable"
 
     def dqc(self, df, columns):
-        """Data Quality Check: estadisticos por columna (conteo, media, std,
-        min, max, % nulos)."""
-        out = {}
+        """Data Quality Check: estadisticos por columna (conteo, media, std, min, max, % nulos).
+        UN solo agg para todas las columnas (una pasada); al driver solo vuelve una fila."""
         total = df.count()
+        exprs = []
         for c in columns:
-            agg = df.agg(
-                F.count(F.col(c)).alias("n"),
-                F.mean(F.col(c).cast("double")).alias("mean"),
-                F.stddev(F.col(c).cast("double")).alias("std"),
-                F.min(F.col(c)).alias("min"),
-                F.max(F.col(c)).alias("max"),
-                F.sum(F.col(c).isNull().cast("int")).alias("nulls"),
-            ).collect()[0].asDict()
+            col = F.col(c)
+            exprs += [F.count(col).alias(c + "__n"),
+                      F.mean(col.cast("double")).alias(c + "__mean"),
+                      F.stddev(col.cast("double")).alias(c + "__std"),
+                      F.min(col).alias(c + "__min"),
+                      F.max(col).alias(c + "__max"),
+                      F.sum(col.isNull().cast("int")).alias(c + "__nulls")]
+        fila = df.agg(*exprs).first().asDict() if exprs else {}      # 1 fila (escalares) al driver
+        out = {}
+        for c in columns:
+            agg = {k: fila[c + "__" + k] for k in ("n", "mean", "std", "min", "max", "nulls")}
             agg["null_pct"] = round(100.0 * (agg["nulls"] or 0) / total, 2) if total else 0.0
             out[c] = agg
         return out
@@ -585,6 +607,91 @@ def _detect_extra_imports(source_codes):
     return pkgs
 
 
+# pandas 3 rompe codigo viejo del banco (dtype string por defecto, copy-on-write): se fija <3 en
+# TODOS los lugares (requirements, deps base/condicionales, piezas de ciencia, setup.py).
+_PANDAS_PIN = "pandas>=1.3,<3"
+_NUMPY_PIN = "numpy>=1.21,<3"
+
+
+def _imports_pandas_numpy(code):
+    """{'pandas','numpy'} que importa un fuente Python (AST; regex si no parsea)."""
+    found = set()
+    try:
+        tree = _ast_mod.parse(code or "")
+    except (SyntaxError, ValueError):
+        for m in _re.finditer(r"^\s*(?:import\s+(pandas|numpy)\b|from\s+(pandas|numpy)[\w.]*\s+import\b)",
+                              code or "", _re.M):
+            found.add(m.group(1) or m.group(2))
+        return found
+    for n in _ast_mod.walk(tree):
+        if isinstance(n, _ast_mod.Import):
+            for a in n.names:
+                if a.name.split(".")[0] in ("pandas", "numpy"):
+                    found.add(a.name.split(".")[0])
+        elif isinstance(n, _ast_mod.ImportFrom) and n.level == 0 and (n.module or "").split(".")[0] in ("pandas", "numpy"):
+            found.add(n.module.split(".")[0])
+    return found
+
+
+# Codigo que genera el framework (plantillas): PySpark puro, no cuenta como "codigo que importa pandas".
+_PLANTILLAS_SIN_PANDAS = ("tests/", "bnx_demo/", "framework_mlops_v2/core/", "framework_mlops_v2/features/",
+                          "framework_mlops_v2/monitoring/", "framework_mlops_v2/scoring/",
+                          "framework_mlops_v2/pipeline.py", "framework_mlops_metrics_pkg/", "mex_lib_cs/")
+_PLANTILLAS_RAIZ = ("main.py", "check_env.py", "bnx_sparkconf.py", "setup.py")
+
+
+def decidir_pandas(files, ml_libs=None, extra_steps=False, ciencia=False, codigo_banco=None, max_archivos=6):
+    """Regla de inclusion de pandas/numpy en el paquete (ya no son obligatorias):
+      (a) algun codigo que VIAJA en el paquete los importa (modulos del banco: toolbox/*, bnmxverse/*,
+          utils/*; fuentes copiadas tal cual; mex-lib) o
+      (b) la pila de ciencia esta activada (xgboost/scikit-learn los requieren; tambien extra_steps).
+    files: {ruta_en_el_paquete: codigo}. codigo_banco: {ruta: codigo} de modulos del banco que viajan
+    desde el cache (no estan en `files`). Devuelve {pandas, numpy, razones, texto}."""
+    usan = {}                      # archivo -> {pandas,numpy}
+    for rel, code in list((files or {}).items()) + list((codigo_banco or {}).items()):
+        if not (isinstance(code, str) and rel.endswith(".py")):
+            continue
+        if rel.startswith(_PLANTILLAS_SIN_PANDAS) or rel in _PLANTILLAS_RAIZ:
+            continue
+        mods = _imports_pandas_numpy(code)
+        if mods:
+            usan[rel] = mods
+    ciencia_on = bool(ml_libs) or bool(extra_steps) or bool(ciencia)
+    razones, vistos = [], {}
+    for rel in sorted(usan):
+        nombre = rel
+        for pre in ("bank_src/", "bank_pkg/"):
+            if nombre.startswith(pre):
+                nombre = nombre[len(pre):]
+        if nombre in vistos:                 # el mismo modulo del banco en bank_src/ y en el cache
+            vistos[nombre]["modulos"] = sorted(set(vistos[nombre]["modulos"]) | usan[rel])
+            continue
+        vistos[nombre] = {"tipo": "codigo", "archivo": nombre, "modulos": sorted(usan[rel])}
+        razones.append(vistos[nombre])
+    if ciencia_on:
+        _det = ("pila de ciencia de datos activada" if ciencia else
+                "tu codigo importa %s (la pila de ciencia las instala)" % ", ".join(ml_libs or ["xgboost/scikit-learn"])
+                if ml_libs else "pasos extra (scoring con xgboost/scikit-learn)")
+        razones.append({"tipo": "ciencia", "archivo": None, "modulos": ["pandas", "numpy"],
+                        "detalle": "xgboost/scikit-learn requieren numpy (y pandas): " + _det})
+    todos = set().union(*usan.values()) if usan else set()
+    pandas_ = ciencia_on or "pandas" in todos
+    numpy_ = pandas_ or "numpy" in todos
+    if razones:
+        cod = [r for r in razones if r["tipo"] == "codigo"]
+        partes = []
+        if cod:
+            nombres = [r["archivo"] for r in cod]
+            partes.append("lo importa " + ", ".join(nombres[:max_archivos])
+                          + ("..." if len(nombres) > max_archivos else ""))
+        if ciencia_on:
+            partes.append(razones[-1]["detalle"])
+        texto = "se incluye pandas/numpy: " + "; ".join(partes)
+    else:
+        texto = "no se incluye pandas ni numpy: ningun codigo del paquete los usa"
+    return {"pandas": bool(pandas_), "numpy": bool(numpy_), "razones": razones, "texto": texto}
+
+
 # Librerias de ML que, si el codigo las importa, viajan en requirements.txt y en el
 # vendor/ OFFLINE como pandas/numpy (sin necesitar extra_steps). xgboost y
 # scikit-learn van SIEMPRE juntos: en Mac scikit-learn trae su propia libomp
@@ -648,7 +755,12 @@ def _requirements_extra(pkgs):
     return "\n".join(lines + list(pkgs)) + "\n"
 
 
-def _requirements(include_bank_libs, extra_steps=False, bank_libs=None, ml_libs=None):
+def _requirements(include_bank_libs, extra_steps=False, bank_libs=None, ml_libs=None, pandas_info=None):
+    """requirements.txt. pandas/numpy son CONDICIONALES (ver decidir_pandas): pandas_info = su
+    decision; sin ella se incluyen solo si hay pila de ciencia / pasos extra."""
+    if pandas_info is None:
+        _hay = bool(ml_libs) or bool(extra_steps)
+        pandas_info = {"pandas": _hay, "numpy": _hay, "texto": ""}
     base = [
         "# Framework MLOps v2 — dependencias",
         "# PySpark segun la version de Python (markers de pip): 3.5.x soporta",
@@ -657,11 +769,18 @@ def _requirements(include_bank_libs, extra_steps=False, bank_libs=None, ml_libs=
         'pyspark>=3.5,<3.6 ; python_version < "3.12"',
         'pyspark>=4.0,<4.1 ; python_version >= "3.12" and python_version < "3.14"',
         'pyspark>=4.1,<4.2 ; python_version >= "3.14"',
-        "pandas>=1.3",
-        "numpy>=1.21",
         "pytest>=7.0",
         "chispa>=0.9  # testing de DataFrames Spark",
     ]
+    _txt = pandas_info.get("texto") or ""
+    if pandas_info.get("numpy") or pandas_info.get("pandas"):
+        if pandas_info.get("pandas"):
+            base.append(_PANDAS_PIN + "  # <3: pandas 3 cambia el comportamiento (dtype string, copy-on-write)")
+        base.append(_NUMPY_PIN)
+        if _txt:
+            base.insert(1, "# " + _txt)
+    else:
+        base.insert(1, "# " + (_txt or "pandas/numpy NO se incluyen: ningun codigo del paquete los usa"))
     ml = list(ml_libs or [])
     if extra_steps:
         base += [
@@ -672,10 +791,6 @@ def _requirements(include_bank_libs, extra_steps=False, bank_libs=None, ml_libs=
     # Librerias de ML que importa el codigo subido (offline en vendor/, como pandas).
     for _m in ml:
         base.append(_requisito_xgboost(_ML_REQ.get(_m, _m)))
-    if ml:
-        # Sin tope pip elegiria pandas 3.x (Python 3.12) al resolver la pila: cambia el
-        # comportamiento del codigo pandas del usuario (copy-on-write, dtype string).
-        base.append("pandas<3  # pandas 3 cambia el comportamiento de tu codigo; se mantiene 2.x")
 
     # Librerias INTERNAS del banco detectadas en el codigo original. Se dan de
     # ALTA en requirements.txt para que pip las resuelva desde el Artifactory
@@ -1225,7 +1340,11 @@ if [ -d bank_pkg ]; then export PYTHONPATH="$PWD/bank_pkg:${PYTHONPATH:-}"; fi
 # BNX_SKIP_PREFLIGHT=1 la salta.
 BNX_PY="$PWD/.venv/bin/python"
 if [ "${BNX_SKIP_PREFLIGHT:-0}" != "1" ]; then
-  _NEED="pandas numpy"
+  # pandas/numpy solo se exigen si el paquete los incluye (requirements.txt)
+  _NEED=""
+  for _m in pandas numpy; do
+    if grep -qiE "^[[:space:]]*$_m([[:space:]<>=!~;]|$)" requirements.txt 2>/dev/null; then _NEED="$_NEED $_m"; fi
+  done
   if [ -d bank_src/toolbox ] || [ -d bank_pkg/toolbox ] || [ -d bank_src/jobs ]; then _NEED="$_NEED toolbox"; fi
   # PySpark en el venv solo hace falta fuera del modo cluster (spark-submit del nodo trae el suyo).
   if [ -z "$CLUSTER_SUBMIT" ]; then _NEED="$_NEED pyspark"; fi
@@ -1270,7 +1389,7 @@ EOF_PREFLIGHT
     echo "[run.sh]   1) bash setup.sh            (monta/repara el venv; debe terminar con [OK])" >&2
     echo "[run.sh]   2) revisa vendor/OFFLINE_FALTANTES.txt (wheels que el paquete no pudo traer)" >&2
     echo "[run.sh]   3) $BNX_PY check_env.py --driver   (diagnostico de imports del driver)" >&2
-    echo "[run.sh]   4) $BNX_PY -c 'import pandas'      (debe terminar sin error)" >&2
+    echo "[run.sh]   4) $BNX_PY -c 'import <modulo faltante>'   (debe terminar sin error)" >&2
     echo "[run.sh] No se lanzo Spark. (BNX_SKIP_PREFLIGHT=1 salta esta verificacion)" >&2
     exit 1
   fi
@@ -2706,7 +2825,7 @@ def _kernel_main(args, nombres, correr_agg=False):
     except Exception as e:
         raise SystemExit("[kernel] no se pudo importar toolbox.kernel (%s: %s). Python del driver: %s. "
                          "Monta el entorno con 'bash setup.sh' (toolbox viaja en bank_pkg/ o bank_src/) y "
-                         "revisa: %s -c 'import pandas, numpy'"
+                         "revisa: %s -c 'import toolbox.kernel'"
                          % (type(e).__name__, e, sys.executable, sys.executable))
     if demo:
         base = tempfile.mkdtemp(prefix="bnx_kernel_", dir=work)
@@ -3185,7 +3304,7 @@ workers del cluster **no se tocan**: no llevan venv, ni librerías, ni este paqu
 | Pieza | Dónde vive / corre | Qué necesita |
 |---|---|---|
 | `setup.sh` (crea `.venv` con Python 3.11 y las librerías) | **solo el edge node** | nada en los workers |
-| **Driver** (`main.py`, tus jobs, pandas, xgboost, sklearn...) | el edge node (`--deploy-mode client`) | el `.venv` del edge node |
+| **Driver** (`main.py`, tus jobs, xgboost/sklearn y los módulos del banco que usen pandas...) | el edge node (`--deploy-mode client`) | el `.venv` del edge node |
 | **Executors** | JVM de Spark en los workers (los arranca YARN) | solo Java/Spark del cluster, **sin Python** |
 
 Mientras el código use **SQL / DataFrame** (select, join, groupBy, agg, funciones de
@@ -3256,8 +3375,9 @@ Python 3.11 con las mismas librerías:
 El portal los detecta al generar el paquete (aviso en el reporte, por archivo y línea) y `main.py` los
 vuelve a avisar al arrancar en modo cluster. Qué hacer:
 1. Reescribir con funciones de **Spark SQL / DataFrame** (`when`, `regexp_extract`, `expr`, ventanas...).
-2. O **agregar en Spark y calcular en el driver**: `toPandas()` sobre un resultado **pequeño** y ahí usar pandas/sklearn/xgboost.
-   Cuidado con la memoria: `toPandas()` trae todo al driver; agrega/filtra antes y ajusta `BNX_DRIVER_MEMORY`.
+2. O **agregar en Spark y calcular en el driver** (xgboost/sklearn): trae al driver solo un resultado **pequeño** o una muestra
+   (`.limit(n)`, agregados; `toPandas()` solo sobre eso, nunca sobre tablas grandes). El código que genera el framework no usa pandas; `scoring/scorer.py` pasa a numpy solo las
+   columnas de features y avisa si superan `max_rows`. Ajusta `BNX_DRIVER_MEMORY` si hace falta.
 3. Último recurso (apagado por defecto): `BNX_ENVIAR_VENV=1` empaqueta el `.venv` y lo manda con `--archives`.
    Aun así los nodos necesitan `python3.11` en la misma ruta que el edge node. Solo para quien lo necesite.
 
@@ -3272,12 +3392,12 @@ Ejemplo de ejecución local (para probar sin cluster): `bash run.sh --config cfg
 - `--source job_3` (alias viejo) se muestra como `'job_3' -> 'rps_pivot' (nombre por ruta RPS/pivot)`.
 - Recursos de YARN: salen del `spark.json` de los settings; si no hay, de `spark.conf` del `--config`; si no, solo 3 claves por
   defecto. La línea `[spark-conf] fuentes:` lo dice.
-- `run.sh` verifica antes de lanzar que el python del venv importa `pandas`, `numpy` (y `toolbox`); si falta algo lo dice y no lanza Spark.
+- `run.sh` verifica antes de lanzar que el python del venv importa `pandas`/`numpy` (solo si están en `requirements.txt`: se incluyen únicamente si algún código del paquete los usa) y `toolbox`; si falta algo lo dice y no lanza Spark.
   `setup.sh` termina con la misma verificación (`python check_env.py --driver`) y falla si algo falta.
 - En cluster el **driver** usa el python del venv (`--conf spark.pyspark.driver.python`); los **executors** usan el del cluster.
 - `run.sh` **no reemplaza** la config de Spark del cluster (`/etc/spark3/conf`, `/etc/spark/conf`...): la usa tal cual, o una copia
   completa + `hive-site.xml` si ella no lo trae. El log dice cuál usó y por qué (`BNX_CLUSTER_CONF_DIR=<dir>` para forzar otra).
-- Si sale `No module named 'pandas'`: `.venv/bin/python -c "import pandas, sys; print(sys.executable)"`,
+- Si sale `No module named 'pandas'` (módulos del banco que lo importan): `.venv/bin/python -c "import pandas, sys; print(sys.executable)"`,
   `ls .venv/.bnx_setup_ok` (si no existe, setup.sh no terminó) y `bash setup.sh`.
 '''
 
@@ -3627,7 +3747,15 @@ def verificar_driver():
         except OSError:
             modo = ""
     con_wheel = bool(glob.glob(os.path.join(root, "vendor", "*", "pyspark-*.whl")))
-    reales = ["pandas", "numpy"]
+    # pandas/numpy solo si el paquete los incluye (requirements.txt): ya no son obligatorias
+    reales = []
+    import re
+    try:
+        with open(os.path.join(root, "requirements.txt"), encoding="utf-8") as fh:
+            _rq = [ln.strip().lower() for ln in fh if ln.strip() and not ln.lstrip().startswith("#")]
+        reales = [m for m in ("pandas", "numpy") if any(re.match(m + "($|[ <>=!~;])", ln) for ln in _rq)]
+    except OSError:
+        reales = ["pandas", "numpy"]
     if modo in ("incluido", "servidor") or con_wheel:
         reales.append("pyspark")
     refs = _top_level_imports(descartar=False)
@@ -3741,10 +3869,21 @@ setup(
         'pyspark>=3.5,<3.6 ; python_version < "3.12"',
         'pyspark>=4.0,<4.1 ; python_version >= "3.12" and python_version < "3.14"',
         'pyspark>=4.1,<4.2 ; python_version >= "3.14"',
-        "pandas>=1.3", "numpy>=1.21",
-    ],
+@@PANDAS_REQ@@    ],
 )
 '''
+
+
+def _setup_py(pandas_info=None):
+    """setup.py del framework: pandas/numpy solo si el paquete los necesita (decidir_pandas)."""
+    pi = pandas_info or {}
+    lineas = []
+    if pi.get("pandas"):
+        lineas.append('        "%s",\n' % _PANDAS_PIN)
+    if pi.get("numpy") or pi.get("pandas"):
+        lineas.append('        "%s",\n' % _NUMPY_PIN)
+    return _SETUP.replace("@@PANDAS_REQ@@", "".join(lineas))
+
 
 
 def _safe_name(filename):
@@ -4261,7 +4400,7 @@ def _monitoring_files(target="package"):
                     "framework_mlops_v2.monitoring.monitor_metrics",
                     "framework_mlops_metrics.monitor_metrics"),
             "setup.py": _SETUP_METRICS,
-            "requirements.txt": "pyspark>=3.3,<4.0\npandas>=1.3\npytest>=7.0\n",
+            "requirements.txt": "pyspark>=3.3,<4.0\npytest>=7.0\n",
             "README.md": _README_METRICS,
             "setup.sh": _SETUP_SH,
             "run.sh": _RUN_SH_METRICS,
@@ -4285,7 +4424,6 @@ setup(
         'pyspark>=3.5,<3.6 ; python_version < "3.12"',
         'pyspark>=4.0,<4.1 ; python_version >= "3.12" and python_version < "3.14"',
         'pyspark>=4.1,<4.2 ; python_version >= "3.14"',
-        "pandas>=1.3",
     ],
 )
 '''
@@ -4694,6 +4832,43 @@ def _bank_extracted_pkgs():
     return out
 
 
+def _codigo_banco_que_viaja(bank_libs):
+    """{ruta: codigo} de los modulos del banco que viajan en el paquete DESDE EL CACHE (wheel
+    bnx_bank_pkgcode con toolbox/bnmxverse/utils, mex-lib*, pkgcode/). Solo si el codigo usa libs del
+    banco (si no, no viajan). Sirve para decidir si pandas/numpy hacen falta (decidir_pandas)."""
+    if not bank_libs:
+        return {}
+    out = {}
+    try:
+        sdists, pkgcode = _bank_vendor_files()
+    except Exception:
+        return out
+    for rel, full in pkgcode.items():
+        if rel.endswith(".py"):
+            try:
+                with open(full, encoding="utf-8", errors="replace") as fh:
+                    out[rel.replace(os.sep, "/")] = fh.read()
+            except OSError:
+                pass
+    for w in sdists:
+        if not w.endswith(".whl"):
+            continue
+        try:
+            with zipfile.ZipFile(w) as z:
+                for n in z.namelist():
+                    if n.endswith(".py") and ".dist-info/" not in n:
+                        out.setdefault(n, z.read(n).decode("utf-8", "replace"))
+        except (OSError, zipfile.BadZipFile):
+            pass
+    try:
+        for rel, data in _bank_extracted_pkgs().items():
+            if rel.endswith(".py"):
+                out.setdefault(rel, data.decode("utf-8", "replace"))
+    except Exception:
+        pass
+    return out
+
+
 def _has_bank_libs_cache():
     sdists, pkgcode = _bank_vendor_files()
     return bool(sdists or pkgcode)
@@ -4701,7 +4876,7 @@ def _has_bank_libs_cache():
 # Dependencias del framework a empaquetar OFFLINE (ademas de PySpark+py4j que ya
 # trae el vendor base). pytest/chispa para correr pruebas; xgboost/sklearn solo
 # si el paquete trae pasos extra (scoring).
-_MLOPS_BASE_DEPS = ["pandas>=1.3", "numpy>=1.21", "pytest>=7.0", "chispa>=0.9"]
+_MLOPS_BASE_DEPS = [_PANDAS_PIN, _NUMPY_PIN, "pytest>=7.0", "chispa>=0.9"]
 _MLOPS_EXTRA_DEPS = ["xgboost>=1.7", "scikit-learn>=1.1"]
 
 # Python objetivo por serie (para 'pip download --python-version'): las wheels de
@@ -4723,7 +4898,8 @@ def _fetch_mlops_deps(serie_dir, extra_steps):
     internet o pip falla, devuelve lo que haya en cache (puede ser [])."""
     pyver = _SERIE_PYVER.get(serie_dir, "3.11")
     abi = _SERIE_ABI.get(serie_dir, "cp311")
-    cache = os.path.join(_MLOPS_VENDOR_CACHE, serie_dir + ("_extra" if extra_steps else ""))
+    # layout NUEVO (ciencia/<py>/linux/); mlops_deps/ ya no se crea
+    cache = os.path.join(os.path.dirname(_MLOPS_VENDOR_CACHE), "ciencia", pyver, "linux")
     os.makedirs(cache, exist_ok=True)
     deps = list(_MLOPS_BASE_DEPS) + ([_vm.mapear_requisito(d, "linux") for d in _MLOPS_EXTRA_DEPS]
                                      if extra_steps else [])
@@ -4776,12 +4952,8 @@ def _vendor_files_for_pkg(py_target="all", extra_steps=False):
         base = fetch_vendor_files(only_series=only) or {}
     except Exception:
         return {}
-    # Complementar cada serie con las deps del framework (pandas/numpy/...).
-    for serie_dir in list(base.keys()):
-        try:
-            base[serie_dir] = list(base[serie_dir]) + _fetch_mlops_deps(serie_dir, extra_steps)
-        except Exception:
-            pass
+    # (las deps open source las resuelve _seleccionar_wheels desde requirements.txt: pandas/numpy
+    # solo si el paquete las necesita; ya no se descargan aqui por defecto)
     return base
 
 
@@ -4804,12 +4976,24 @@ def _pool_wheels(serie_dir, extra_steps, incluir_spark, ml=False, plataforma="li
     Lee el layout NUEVO (ciencia/<py>/<plataforma>/, pyspark/<serie>/) y, solo para linux, el
     VIEJO (mlops_deps/*, bank_libs/wheels, <serie>/: eran wheels manylinux)."""
     raiz = os.path.dirname(_MLOPS_VENDOR_CACHE)
-    nuevos = [os.path.join(raiz, "ciencia", v, plataforma)
-              for v in (versiones or _SERIE_VERSIONES.get(serie_dir, []))]
+    ciencia_dirs = [os.path.join(raiz, "ciencia", v, plataforma)
+                    for v in (versiones or _SERIE_VERSIONES.get(serie_dir, []))]
+    nuevos = list(ciencia_dirs)
+    nuevo_spark = os.path.join(raiz, "pyspark", serie_dir)
     if incluir_spark:
-        nuevos.append(os.path.join(raiz, "pyspark", serie_dir))
+        nuevos.append(nuevo_spark)
+
+    def _hay(d):
+        return os.path.isdir(d) and any(f.endswith(".whl") for f in os.listdir(d))
     if plataforma != "linux":
         dirs = nuevos
+    elif ciencia_dirs and all(_hay(d) for d in ciencia_dirs):
+        # PREFIERE la pieza ciencia/<py>/linux del layout nuevo: el layout viejo (mlops_deps/...) solo
+        # se lee cuando falta (no mezcla otra version de pandas/numpy). Siguen el banco y, si no hay
+        # pieza pyspark nueva, el pyspark viejo.
+        dirs = nuevos + [os.path.join(_BANK_LIBS_CACHE, "wheels")]
+        if incluir_spark and not _hay(nuevo_spark):
+            dirs.append(os.path.join(raiz, serie_dir))
     else:
         dirs = nuevos + _pool_dirs_viejos(raiz, serie_dir, extra_steps, ml)
     pool = {}
@@ -4970,14 +5154,11 @@ def _seleccionar_wheels(serie_dir, req_lineas, extra_steps=False, incluir_spark=
         # Al cache le faltan wheels (p.ej. el servidor del portal no tiene cytoolz /
         # unidecode): bajarlas UNA vez, para Linux y esa version de Python, y resolver
         # de nuevo. Sin internet falla rapido y queda el aviso.
-        _legacy = os.path.isdir(_MLOPS_VENDOR_CACHE)      # sin layout viejo: baja al nuevo
-        dl = os.path.join(_MLOPS_VENDOR_CACHE, serie_dir + ("_ciencia" if ml else "_dl"))
-        os.makedirs(dl, exist_ok=True)
+        # La auto-descarga guarda SIEMPRE en el layout nuevo (ciencia/<py>/linux/); nunca recrea mlops_deps/.
         bajo_algo = False
         for v in list(faltan):
-            if not _legacy:
-                dl = os.path.join(os.path.dirname(_MLOPS_VENDOR_CACHE), "ciencia", v, "linux")
-                os.makedirs(dl, exist_ok=True)
+            dl = os.path.join(os.path.dirname(_MLOPS_VENDOR_CACHE), "ciencia", v, "linux")
+            os.makedirs(dl, exist_ok=True)
             # Sin pyspark/py4j: en PyPI pyspark es sdist (no hay wheel binaria) y con
             # --only-binary tumbaria toda la bajada; su wheel ya viene en el cache.
             reqs = _reqs_para(v, req_lineas, incluir_spark=False)
@@ -4990,7 +5171,7 @@ def _seleccionar_wheels(serie_dir, req_lineas, extra_steps=False, incluir_spark=
             _plats = ["manylinux2014_x86_64", "manylinux_2_17_x86_64", "manylinux_2_24_x86_64",
                       "manylinux_2_27_x86_64", "manylinux_2_28_x86_64"]
             _cf = _fijar_pandas_numpy(serie_dir, extra_steps, incluir_spark, v,
-                                      dl if _legacy else _tf.mkdtemp(prefix="bnx_cons_"))
+                                      _tf.mkdtemp(prefix="bnx_cons_"))
             _cons = ["-c", _cf] if _cf else []
             # Todo se baja preferentemente manylinux2014 (glibc 2.17), una plataforma por
             # vez. Excepcion Python >= 3.12: lightgbm 4.x solo existe en manylinux_2_28; se
@@ -5331,7 +5512,10 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     bank_libs = _detect_bank_imports(original_codes)
     extra_pkgs = _detect_extra_imports(original_codes)
     ml_libs = _ml_libs_detectadas(extra_pkgs, ciencia)
-    files["requirements.txt"] = _requirements(include_bank_libs, extra_steps, bank_libs, ml_libs)
+    # pandas/numpy ya no son obligatorias: solo si algun codigo que viaja las importa o hay pila de ciencia.
+    pandas_info = decidir_pandas(files, ml_libs=ml_libs, extra_steps=extra_steps, ciencia=ciencia,
+                                 codigo_banco=_codigo_banco_que_viaja(bank_libs))
+    files["requirements.txt"] = _requirements(include_bank_libs, extra_steps, bank_libs, ml_libs, pandas_info)
     if bank_libs:
         files["requirements-bank.txt"] = _requirements_bank(bank_libs)
     # xgboost/scikit-learn/scipy ya van en requirements.txt (y en vendor/): no se repiten.
@@ -5352,7 +5536,7 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     files["cfg.example.json"] = _CFG_EXAMPLE
     files["NOTAS_EJECUCION.md"] = _NOTAS_EJECUCION
     files["pytest.ini"] = _PYTEST_INI   # pytest solo en tests/, ignora __MACOSX/vendor
-    files["setup.py"] = _SETUP
+    files["setup.py"] = _setup_py(pandas_info)
     files["README.md"] = _readme_custom(
         include_bank_libs, gen_sources, report, extra_steps,
         include_monitoring=include_monitoring, separate_monitoring=separate_monitoring,
@@ -5421,6 +5605,7 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
             _r["workers_python"] = len(workers_python[_r["file"]])
     # Meta: incluye los archivos de CODIGO (editables) para guardarlos por token.
     report.append({"_meta": True, "full_env": bool(full_env),
+                   "pandas": pandas_info,
                    "workers_python": workers_python,
                    "workers_python_aviso": _bsc.AVISO_WORKERS if workers_python else "",
                    "vendor_series": vendor_list,
@@ -5627,7 +5812,7 @@ def build_mlops_package(include_bank_libs=True, extra_steps=False,
         "NOTAS_EJECUCION.md": _NOTAS_EJECUCION,
         "pytest.ini": _PYTEST_INI,
         "README.md": _readme(include_bank_libs),
-        "setup.py": _SETUP,
+        "setup.py": _setup_py(),
     }
     mon_in_pkg = include_monitoring and not separate_monitoring
     files.update(_extra_step_files(

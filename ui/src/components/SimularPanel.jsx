@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import ParquetVisor from './ParquetVisor'
 
 // Simulacion de los jobs de un paquete generado, estilo terminal (solo Mac/Linux con Java; solo localhost).
-// Backend: /mlops/simular/{info,iniciar,estado,cancelar,reiniciar,visor} (src/mlops_simular.py).
+// Backend: /mlops/simular/{info,iniciar,estado,cancelar,reiniciar,visor,espacio,limpiar} (src/mlops_simular.py).
 // El PIVOTE corre siempre primero: 'Simular todos' = pivotes y luego el resto; un job suelto que no es
 // pivote corre antes el pivote de su modelo si su salida aun no esta en demo_out de esta sesion.
 const COLORES = { 30: '#6b7280', 31: '#f87171', 32: '#4ade80', 33: '#fbbf24', 34: '#60a5fa', 35: '#c084fc', 36: '#22d3ee', 37: '#e5e7eb', 90: '#9ca3af' }
@@ -40,6 +40,7 @@ function Linea({ texto }) {
   return <div>{partes.map((p, i) => <span key={i} style={{ color: p.color || undefined, fontWeight: p.bold ? 700 : undefined }}>{p.s}</span>)}</div>
 }
 
+const fmtBytes = (n) => (n >= 1073741824 ? `${(n / 1073741824).toFixed(1)} GB` : `${Math.max(0, Math.round((n || 0) / 1048576))} MB`)
 const fmtSeg = (s) => (s >= 60 ? `${Math.floor(s / 60)} min ${Math.round(s % 60)} s` : `${(s || 0).toFixed(1)} s`)
 const filasDe = (esc) => (esc || []).reduce((n, e) => n + (Number.isInteger(e.filas) ? e.filas : 0), 0)
 const ETIQ = { preparando: 'preparando entorno', corriendo: 'corriendo', ok: 'terminó OK', fallo: 'falló', cancelado: 'cancelado' }
@@ -53,6 +54,7 @@ export default function SimularPanel({ t, apiBase, token }) {
   const [msg, setMsg] = useState('')
   const [copiado, setCopiado] = useState(false)
   const [visor, setVisor] = useState(null)
+  const [espacio, setEspacio] = useState(null)   // {total, carpetas, max}: disco que ocupan las simulaciones (venvs)
   const [settings, setSettings] = useState(() => { try { return localStorage.getItem('bnx_sim_settings') || '' } catch { return '' } })
   const offRef = useRef(0)
   const termRef = useRef(null)
@@ -71,7 +73,14 @@ export default function SimularPanel({ t, apiBase, token }) {
       setInfo(d); setErrorInfo('')
     } catch (e) { setInfo(null); setErrorInfo(e.message) }
   }, [apiBase, token])
-  useEffect(() => { cargarInfo() }, [cargarInfo])
+  const cargarEspacio = useCallback(async () => {
+    try {
+      const r = await fetch(`${apiBase}/mlops/simular/espacio`)
+      const d = await r.json()
+      if (r.ok && d.ok !== false) setEspacio(d)
+    } catch { /* sin espacio: el boton queda sin tamano */ }
+  }, [apiBase])
+  useEffect(() => { cargarInfo(); cargarEspacio() }, [cargarInfo, cargarEspacio])
   useEffect(() => () => clearInterval(timer.current), [])
 
   const sondear = useCallback((id) => {
@@ -84,7 +93,7 @@ export default function SimularPanel({ t, apiBase, token }) {
         offRef.current = d.offset
         if (d.log) setLog(l => l + d.log)
         setRun(d)
-        if (d.terminado) { clearInterval(timer.current); cargarInfo() }
+        if (d.terminado) { clearInterval(timer.current); cargarInfo(); cargarEspacio() }
       } catch (e) { clearInterval(timer.current); setMsg('No se pudo leer el estado: ' + e.message) }
     }
     timer.current = setInterval(tick, 700)
@@ -108,6 +117,15 @@ export default function SimularPanel({ t, apiBase, token }) {
   const reiniciar = async () => {
     try { await post('reiniciar', { token }); setMsg('demo_out reiniciado: la próxima simulación empieza limpia.'); cargarInfo() }
     catch (e) { setMsg(e.message) }
+  }
+  const limpiarSims = async () => {
+    const n = (espacio?.carpetas || []).filter(c => !c.activo).length
+    if (!window.confirm(`Se borran ${n} simulación(es) guardada(s) (${fmtBytes(espacio?.total)}); la que está corriendo no se toca. El entorno se vuelve a montar en la próxima simulación. ¿Continuar?`)) return
+    try {
+      const d = await post('limpiar', { conservar: 0 })
+      setMsg(`Simulaciones limpiadas: ${d.borradas.length} carpeta(s), ${fmtBytes(d.liberado)} liberados.`)
+      cargarEspacio(); cargarInfo()
+    } catch (e) { setMsg(e.message) }
   }
   const copiar = async () => {
     try { await navigator.clipboard.writeText(log) } catch {
@@ -145,6 +163,10 @@ export default function SimularPanel({ t, apiBase, token }) {
           title="Corre todos los jobs: primero los pivote, después el resto" style={b(true, bloqueado)}>▶ Simular todos</button>
         <button onClick={reiniciar} disabled={!info || !info.soportado || activo} aria-label="Reiniciar la carpeta demo_out"
           title="Borra demo_out y el estado de la sesión: empieza limpio" style={b(false, !info || !info.soportado || activo)}>↺ Reiniciar demo_out</button>
+        <button onClick={limpiarSims} disabled={!espacio || !(espacio.carpetas || []).some(c => !c.activo)} aria-label="Limpiar simulaciones guardadas"
+          title={`Borra los entornos de simulación guardados (se conservan automáticamente los ${espacio?.max ?? 2} más recientes; BNX_SIMULAR_MAX). Nunca borra el que está corriendo.`}
+          style={b(false, !espacio || !(espacio.carpetas || []).some(c => !c.activo))}>
+          🧹 Limpiar simulaciones{espacio ? ` (${fmtBytes(espacio.total)} en ${(espacio.carpetas || []).length})` : ''}</button>
         <span style={{ fontSize: 11.5, color: t.muted || '#94a3b8' }}>
           Spark local con datos sintéticos (<code>python main.py --demo</code>). El pivote corre siempre primero.
         </span>

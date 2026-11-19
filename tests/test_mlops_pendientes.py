@@ -44,7 +44,11 @@ def _read(z, files, rel):
 @pytest.mark.skipif(not os.path.isdir(CACHE_WHEELS), reason="sin cache de wheels del banco")
 def test_extra_sin_libs_del_banco_incluye_wheels(tmp_path):
     code = "import pandas as pd\nimport cytoolz\nfrom unidecode import unidecode\ndef run(df):\n    return df\n"
-    z, files, _ = _build(tmp_path, [{"name": "job_1.py", "code": code}])
+    # job_1 usa pandas -> se CONVIERTE (queda PySpark puro); toolbox/read.py (modulo del banco, copia
+    # exacta) importa pandas -> pandas/numpy viajan por esa razon, no por obligacion.
+    banco = "import pandas as pd\ndef leer(p):\n    return pd.read_csv(p)\n"
+    z, files, _ = _build(tmp_path, [{"name": "job_1.py", "code": code},
+                                    {"name": "toolbox/read.py", "code": banco}])
     assert "requirements-extra.txt" in files
     assert "requirements-bank.txt" not in files
     # Las wheels open source van en vendor/<serie>/ (solo lo que pip resolvio), tambien
@@ -53,7 +57,8 @@ def test_extra_sin_libs_del_banco_incluye_wheels(tmp_path):
     assert any(w.startswith("cytoolz-") for w in wheels)
     assert any(w.lower().startswith("unidecode-") for w in wheels)
     assert any(w.startswith("toolz-") for w in wheels)          # dependencia de cytoolz
-    assert any(w.startswith("pandas-") for w in wheels)          # deps del framework
+    assert any(w.startswith("pandas-2.") for w in wheels)        # pandas < 3 (lo importa toolbox/read.py)
+    assert not any(w.startswith("pandas-3") for w in wheels)
     assert not any(w.startswith("pyspark-") for w in wheels)     # ligero: sin PySpark
     assert not any(f.startswith("vendor/bank/") for f in files)  # sin libs internas
 
@@ -221,7 +226,9 @@ def test_versiones_target():
 def test_version_exacta_solo_lo_necesario(tmp_path, tgt, abi, monkeypatch):
     monkeypatch.setenv("BNX_NO_DOWNLOAD", "1")
     code = "import pandas as pd\nimport cytoolz\ndef run(df):\n    return df\n"
-    z, files, _ = _build(tmp_path, [{"name": "job_1.py", "code": code}], py_target=tgt)
+    banco = "import pandas as pd\ndef leer(p):\n    return pd.read_csv(p)\n"
+    z, files, _ = _build(tmp_path, [{"name": "job_1.py", "code": code},
+                                    {"name": "toolbox/read.py", "code": banco}], py_target=tgt)
     whl = [os.path.basename(f) for f in files if f.endswith(".whl")]
     assert _read(z, files, "vendor/PYTHON_TARGET").strip() == tgt[2:]
     assert not any("aarch64" in w for w in whl)                       # solo x86_64
@@ -325,7 +332,8 @@ def test_opcion_ciencia_agrega_toda_la_pila(tmp_path, vendor_falso):
     z, files, _ = _build(tmp_path, [{"name": "job_1.py", "code": PLAIN_JOB}], ciencia=True)
     assert set(PILA) <= _req_names(_read(z, files, "requirements.txt"))
     assert _read(z, files, "requirements.txt").count("lightgbm") >= 2     # marker py<3.12 / >=3.12
-    assert "pandas<3" in _read(z, files, "requirements.txt")
+    assert "pandas>=1.3,<3" in _read(z, files, "requirements.txt")
+    assert "numpy>=1.21,<3" in _read(z, files, "requirements.txt")
 
 
 def test_ml_libs_detectadas_agrupa_libomp():
@@ -371,3 +379,59 @@ def test_tag_github_por_defecto_incluye_pila():
     assert vc.GH_TAG == "vendor-linux-v2" or os.environ.get("BNX_VENDOR_TAG")
     base, extra = vc._reqs_listas()
     assert {"xgboost", "scikit-learn"} <= _req_names("\n".join(base))
+
+
+# --- pandas/numpy CONDICIONALES (la conversion deja PySpark puro) -----------------------
+def test_sin_codigo_que_use_pandas_no_se_incluye(tmp_path, vendor_falso):
+    code = "import pandas as pd\ndf = pd.read_csv('f.csv')\ndf['x'] = df['a'] + 1\n"
+    z, files, _ = _build(tmp_path, [{"name": "job_1.py", "code": code}])
+    req = _read(z, files, "requirements.txt")
+    assert "pandas" not in "".join(l for l in req.splitlines() if not l.startswith("#"))
+    assert "numpy" not in "".join(l for l in req.splitlines() if not l.startswith("#"))
+    assert "no se incluyen" in req or "no se incluye" in req
+    assert "pandas" not in _read(z, files, "setup.py")
+    meta = [r for r in mp.build_package_from_sources(
+        [{"name": "job_1.py", "code": code}], convert_fn=_convert, out_path=str(tmp_path / "m.zip"))[2]
+        if r.get("_meta")][0]
+    assert meta["pandas"]["pandas"] is False and "ningun codigo" in meta["pandas"]["texto"]
+
+
+def test_modulo_del_banco_que_importa_pandas_lo_incluye_con_razon(tmp_path, vendor_falso):
+    banco = "import pandas as pd\nimport numpy as np\ndef leer(p):\n    return pd.read_csv(p)\n"
+    out = tmp_path / "p.zip"
+    _, _, rep = mp.build_package_from_sources(
+        [{"name": "job_1.py", "code": "x = 1\n"}, {"name": "toolbox/read.py", "code": banco},
+         {"name": "toolbox/kernel.py", "code": "import pandas\n"}],
+        convert_fn=_convert, out_path=str(out))
+    meta = [r for r in rep if r.get("_meta")][0]["pandas"]
+    assert meta["pandas"] and meta["numpy"]
+    assert "toolbox/read.py" in meta["texto"] and "toolbox/kernel.py" in meta["texto"]
+    z = zipfile.ZipFile(out)
+    req = z.read("framework_mlops_v2_pkg/requirements.txt").decode()
+    assert "pandas>=1.3,<3" in req and "numpy>=1.21,<3" in req
+    assert "pandas>=1.3,<3" in z.read("framework_mlops_v2_pkg/setup.py").decode()
+
+
+def test_decidir_pandas_regla():
+    d = mp.decidir_pandas({"framework_mlops_v2/aggregates/a.py": "import pyspark\n",
+                           "bnx_demo/fsrutas.py": "import pandas\n",           # plantilla: no cuenta
+                           "framework_mlops_v2/scoring/scorer.py": "import numpy\n"})
+    assert not d["pandas"] and not d["numpy"] and "ningun codigo" in d["texto"]
+    d = mp.decidir_pandas({"bank_src/utils/e.py": "import numpy as np\n"})
+    assert d["numpy"] and not d["pandas"] and "utils/e.py" in d["texto"]
+    d = mp.decidir_pandas({}, ml_libs=["xgboost"])
+    assert d["pandas"] and d["numpy"] and "ciencia" in d["texto"]
+    d = mp.decidir_pandas({"bank_src/x.py": "from pandas import DataFrame\n"})
+    assert d["pandas"] and d["numpy"]
+
+
+def test_pines_pandas_numpy_en_todos_los_lugares():
+    assert mp._PANDAS_PIN == "pandas>=1.3,<3" and mp._NUMPY_PIN == "numpy>=1.21,<3"
+    assert mp._PANDAS_PIN in mp._MLOPS_BASE_DEPS and mp._NUMPY_PIN in mp._MLOPS_BASE_DEPS
+    req = mp._requirements(True, False, ml_libs=list(mp._ML_PIP))           # pieza ciencia (vendor_cache)
+    assert "pandas>=1.3,<3" in req and "numpy>=1.21,<3" in req
+    assert "pandas>=1.3\n" not in req and "numpy>=1.21\n" not in req
+    assert "pandas>=1.3,<3" in mp._setup_py({"pandas": True, "numpy": True})
+    assert "pandas" not in mp._setup_py({"pandas": False, "numpy": False})
+    for src_ in (mp._SETUP_METRICS, mp._setup_py({"pandas": True})):
+        assert "pandas>=1.3\"" not in src_
