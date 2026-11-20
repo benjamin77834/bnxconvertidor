@@ -610,7 +610,30 @@ def _detect_extra_imports(source_codes):
 # pandas 3 rompe codigo viejo del banco (dtype string por defecto, copy-on-write): se fija <3 en
 # TODOS los lugares (requirements, deps base/condicionales, piezas de ciencia, setup.py).
 _PANDAS_PIN = "pandas>=1.3,<3"
-_NUMPY_PIN = "numpy>=1.21,<3"
+# numpy 2.0 elimino numpy.source: mex-libmissingtreatment (banco, no modificable) lo usa y truena
+# con "cannot import name 'source' from 'numpy'". Con Python <= 3.12 hay wheels de numpy 1.x, asi que
+# se fija <2. Python >= 3.13 no tiene numpy 1.x (cp313/cp314): ahi queda <3.
+_NUMPY_PIN_1X = "numpy>=1.21,<2"
+_NUMPY_PIN_2X = "numpy>=1.21,<3"
+_NUMPY_SIN_1X_AVISO = ("numpy 2.x: mex-libmissingtreatment (numpy.source) no funcionara en Python %s "
+                       "(numpy 1.x no tiene wheels para esa version).")
+def _numpy_pins(py_target=None):
+    """Lineas de requirements para numpy segun el/los Python destino. Todo <= 3.12 -> <2; todo
+    >= 3.13 -> <3; mezcla ('all', serie py312plus) -> una linea con marker por rango."""
+    vs = [v for vv in _versiones_target(py_target).values() for v in vv]
+    menores = [int(v.split(".")[1]) for v in vs] or [11]
+    if max(menores) <= 12:
+        return [_NUMPY_PIN_1X]
+    if min(menores) >= 13:
+        return [_NUMPY_PIN_2X]
+    return [_NUMPY_PIN_1X + ' ; python_version < "3.13"', _NUMPY_PIN_2X + ' ; python_version >= "3.13"']
+def _numpy_pin(py_target=None):
+    """Una sola linea de numpy para el destino (en mezcla, la del rango bajo con marker)."""
+    return _numpy_pins(py_target)[0]
+def numpy_aviso_target(py_target=None):
+    """Aviso (o '') de que en algun Python destino numpy 2.x rompe mex-libmissingtreatment."""
+    vs = [v for vv in _versiones_target(py_target).values() for v in vv if int(v.split(".")[1]) >= 13]
+    return _NUMPY_SIN_1X_AVISO % ", ".join(vs) if vs else ""
 
 
 def _imports_pandas_numpy(code):
@@ -755,7 +778,8 @@ def _requirements_extra(pkgs):
     return "\n".join(lines + list(pkgs)) + "\n"
 
 
-def _requirements(include_bank_libs, extra_steps=False, bank_libs=None, ml_libs=None, pandas_info=None):
+def _requirements(include_bank_libs, extra_steps=False, bank_libs=None, ml_libs=None, pandas_info=None,
+                  py_target=None):
     """requirements.txt. pandas/numpy son CONDICIONALES (ver decidir_pandas): pandas_info = su
     decision; sin ella se incluyen solo si hay pila de ciencia / pasos extra."""
     if pandas_info is None:
@@ -776,7 +800,7 @@ def _requirements(include_bank_libs, extra_steps=False, bank_libs=None, ml_libs=
     if pandas_info.get("numpy") or pandas_info.get("pandas"):
         if pandas_info.get("pandas"):
             base.append(_PANDAS_PIN + "  # <3: pandas 3 cambia el comportamiento (dtype string, copy-on-write)")
-        base.append(_NUMPY_PIN)
+        base.extend(_numpy_pins(py_target))
         if _txt:
             base.insert(1, "# " + _txt)
     else:
@@ -4025,14 +4049,14 @@ setup(
 '''
 
 
-def _setup_py(pandas_info=None):
+def _setup_py(pandas_info=None, py_target=None):
     """setup.py del framework: pandas/numpy solo si el paquete los necesita (decidir_pandas)."""
     pi = pandas_info or {}
     lineas = []
     if pi.get("pandas"):
         lineas.append('        "%s",\n' % _PANDAS_PIN)
     if pi.get("numpy") or pi.get("pandas"):
-        lineas.append('        "%s",\n' % _NUMPY_PIN)
+        lineas += ['        "%s",\n' % _n for _n in _numpy_pins(py_target)]
     return _SETUP.replace("@@PANDAS_REQ@@", "".join(lineas))
 
 
@@ -5039,7 +5063,8 @@ def _has_bank_libs_cache():
 # Dependencias del framework a empaquetar OFFLINE (ademas de PySpark+py4j que ya
 # trae el vendor base). pytest/chispa para correr pruebas; xgboost/sklearn solo
 # si el paquete trae pasos extra (scoring).
-_MLOPS_BASE_DEPS = [_PANDAS_PIN, _NUMPY_PIN, "pytest>=7.0", "chispa>=0.9"]
+def _mlops_base_deps(py_target=None):
+    return [_PANDAS_PIN, *_numpy_pins(py_target), "pytest>=7.0", "chispa>=0.9"]
 _MLOPS_EXTRA_DEPS = ["xgboost>=1.7", "scikit-learn>=1.1"]
 
 # Python objetivo por serie (para 'pip download --python-version'): las wheels de
@@ -5064,7 +5089,7 @@ def _fetch_mlops_deps(serie_dir, extra_steps):
     # layout NUEVO (ciencia/<py>/linux/); mlops_deps/ ya no se crea
     cache = os.path.join(os.path.dirname(_MLOPS_VENDOR_CACHE), "ciencia", pyver, "linux")
     os.makedirs(cache, exist_ok=True)
-    deps = list(_MLOPS_BASE_DEPS) + ([_vm.mapear_requisito(d, "linux") for d in _MLOPS_EXTRA_DEPS]
+    deps = _mlops_base_deps(pyver) + ([_vm.mapear_requisito(d, "linux") for d in _MLOPS_EXTRA_DEPS]
                                      if extra_steps else [])
     # Si ya hay wheels en cache, reusar sin re-descargar.
     existing = [os.path.join(cache, f) for f in os.listdir(cache) if f.endswith(".whl")]
@@ -5689,7 +5714,7 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     # pandas/numpy ya no son obligatorias: solo si algun codigo que viaja las importa o hay pila de ciencia.
     pandas_info = decidir_pandas(files, ml_libs=ml_libs, extra_steps=extra_steps, ciencia=ciencia,
                                  codigo_banco=_codigo_banco_que_viaja(bank_libs))
-    files["requirements.txt"] = _requirements(include_bank_libs, extra_steps, bank_libs, ml_libs, pandas_info)
+    files["requirements.txt"] = _requirements(include_bank_libs, extra_steps, bank_libs, ml_libs, pandas_info, py_target)
     if bank_libs:
         files["requirements-bank.txt"] = _requirements_bank(bank_libs)
     # xgboost/scikit-learn/scipy ya van en requirements.txt (y en vendor/): no se repiten.
@@ -5710,7 +5735,7 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     files["cfg.example.json"] = _CFG_EXAMPLE
     files["NOTAS_EJECUCION.md"] = _NOTAS_EJECUCION
     files["pytest.ini"] = _PYTEST_INI   # pytest solo en tests/, ignora __MACOSX/vendor
-    files["setup.py"] = _setup_py(pandas_info)
+    files["setup.py"] = _setup_py(pandas_info, py_target)
     files["README.md"] = _readme_custom(
         include_bank_libs, gen_sources, report, extra_steps,
         include_monitoring=include_monitoring, separate_monitoring=separate_monitoring,
@@ -5789,6 +5814,7 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
                    "modulos_faltantes": modulos_faltantes,
                    "vendor_mb": ULTIMO_VENDOR.get("mb"),
                    "py_target": py_target,
+                   "numpy_aviso": numpy_aviso_target(py_target) if pandas_info.get("numpy") else "",
                    "bank_libs": bank_libs,
                    "bank_verified": bank_verified,
                    "bank_incomplete": bank_incomplete,

@@ -426,11 +426,27 @@ def test_decidir_pandas_regla():
 
 
 def test_pines_pandas_numpy_en_todos_los_lugares():
-    assert mp._PANDAS_PIN == "pandas>=1.3,<3" and mp._NUMPY_PIN == "numpy>=1.21,<3"
-    assert mp._PANDAS_PIN in mp._MLOPS_BASE_DEPS and mp._NUMPY_PIN in mp._MLOPS_BASE_DEPS
-    req = mp._requirements(True, False, ml_libs=list(mp._ML_PIP))           # pieza ciencia (vendor_cache)
-    assert "pandas>=1.3,<3" in req and "numpy>=1.21,<3" in req
-    assert "pandas>=1.3\n" not in req and "numpy>=1.21\n" not in req
+    assert mp._PANDAS_PIN == "pandas>=1.3,<3"
+    # numpy depende del Python destino: 3.11 -> <2 (numpy.source de mex-libmissingtreatment), 3.14 -> <3
+    assert mp._numpy_pins("py3.11") == ["numpy>=1.21,<2"] and mp._numpy_pins("3.12") == ["numpy>=1.21,<2"]
+    assert mp._numpy_pins("py3.14") == ["numpy>=1.21,<3"] and mp._numpy_pins("3.13") == ["numpy>=1.21,<3"]
+    assert len(mp._numpy_pins("all")) == 2 and all(";" in x for x in mp._numpy_pins("all"))
+    assert mp._PANDAS_PIN in mp._mlops_base_deps("3.11") and "numpy>=1.21,<2" in mp._mlops_base_deps("3.11")
+    assert "numpy>=1.21,<3" in mp._mlops_base_deps("3.14") and "numpy>=1.21,<2" not in mp._mlops_base_deps("3.14")
+    assert "3.14" in mp.numpy_aviso_target("py3.14") and "mex-libmissingtreatment" in mp.numpy_aviso_target("py3.14")
+    assert mp.numpy_aviso_target("py3.11") == ""
+    info = {"pandas": True, "numpy": True, "texto": ""}
+    r311 = mp._requirements(True, False, pandas_info=info, py_target="py3.11")
+    r314 = mp._requirements(True, False, pandas_info=info, py_target="py3.14")
+    assert "pandas>=1.3,<3" in r311 and "numpy>=1.21,<2" in r311 and "numpy>=1.21,<3" not in r311
+    assert "numpy>=1.21,<3" in r314 and "numpy>=1.21,<2" not in r314
+    assert "numpy>=1.21\n" not in r311 + r314
+    req = mp._requirements(True, False, ml_libs=list(mp._ML_PIP))           # pieza ciencia (vendor_cache): marker por Python
+    assert "pandas>=1.3,<3" in req and 'numpy>=1.21,<2 ; python_version < "3.13"' in req
+    assert mp._reqs_para("3.11", [l for l in req.splitlines() if l.startswith("numpy")], False) == ["numpy<2,>=1.21"]
+    assert mp._reqs_para("3.14", [l for l in req.splitlines() if l.startswith("numpy")], False) == ["numpy<3,>=1.21"]
+    assert "numpy>=1.21,<2" in mp._setup_py({"pandas": True, "numpy": True}, "py3.11")
+    assert "numpy>=1.21,<3" in mp._setup_py({"pandas": True, "numpy": True}, "py3.14")
     assert "pandas>=1.3,<3" in mp._setup_py({"pandas": True, "numpy": True})
     assert "pandas" not in mp._setup_py({"pandas": False, "numpy": False})
     for src_ in (mp._SETUP_METRICS, mp._setup_py({"pandas": True})):
