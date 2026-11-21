@@ -642,6 +642,196 @@ function GuiaUso({ t, btn, irA, cerrar }) {
   )
 }
 
+// Panel "Entorno de ejecucion" (ZIP offline RHEL 8, Python 3.11 / PySpark 3.5)
+const YARN_CONF_DEFAULTS = [
+  { k: 'spark.yarn.queue',                     v: 'default',  label: 'Cola YARN' },
+  { k: 'spark.executor.instances',             v: '2',        label: 'Executors' },
+  { k: 'spark.executor.cores',                 v: '2',        label: 'Cores/executor' },
+  { k: 'spark.executor.memory',                v: '4g',       label: 'Mem/executor' },
+  { k: 'spark.executor.memoryOverhead',        v: '1g',       label: 'Mem overhead' },
+  { k: 'spark.driver.memory',                  v: '2g',       label: 'Mem driver' },
+  { k: 'spark.sql.shuffle.partitions',         v: '200',      label: 'Shuffle parts' },
+  { k: 'spark.dynamicAllocation.enabled',      v: 'false',    label: 'Dynamic alloc' },
+  { k: 'spark.dynamicAllocation.minExecutors', v: '1',        label: 'Min executors' },
+  { k: 'spark.dynamicAllocation.maxExecutors', v: '10',       label: 'Max executors' },
+]
+
+function EntornoPanel({ t, btn, ej, setEj, flash, guardarSiHaceFalta }) {
+  const [abierto, setAbierto] = usePersist('bnx_orq_col_entorno', false)
+  const [estado, setEstado] = useState(null)
+  const [estadoErr, setEstadoErr] = useState('')
+  const [bajando, setBajando] = useState(false)
+  const [bajandoLog, setBajandoLog] = useState('')
+  const [variante, setVariante] = useState('minimo')
+  const [generando, setGenerando] = useState(false)
+  const [zipRes, setZipRes] = useState(null)   // {token, filename, mb, sha256, download_url}
+  const [zipErr, setZipErr] = useState('')
+  // Conf YARN: se guarda en ej.spark_conf (en la orquestacion)
+  const sparkConf = ej?.spark_conf || {}
+  const setConf = (k, v) => setEj('spark_conf', { ...sparkConf, [k]: v })
+  const [mostrarConf, setMostrarConf] = useState(false)
+
+  const cargarEstado = useCallback(async () => {
+    setEstadoErr('')
+    try {
+      const r = await fetch(`${ORQUESTADOR_URL}/entorno/estado`)
+      const d = await r.json()
+      if (d.ok) setEstado(d)
+      else setEstadoErr(d.error || 'Error al leer el estado')
+    } catch (e) { setEstadoErr(String(e)) }
+  }, [])
+
+  useEffect(() => { if (abierto) cargarEstado() }, [abierto]) // eslint-disable-line
+
+  const bajar = async () => {
+    setBajando(true); setBajandoLog('')
+    try {
+      const r = await fetch(`${ORQUESTADOR_URL}/entorno/bajar`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ desde_github: true }),
+      })
+      const d = await r.json()
+      if (!d.ok) { setBajandoLog('Error: ' + (d.error || 'desconocido')); return }
+      setBajandoLog('Bajando… ver log en la pestaña Librerías/Vendor.')
+      setTimeout(() => { cargarEstado(); setBajando(false) }, 3000)
+    } catch (e) { setBajandoLog('Error de red: ' + e.message) }
+    finally { if (!bajando) setBajando(false) }
+  }
+
+  const generarZip = async () => {
+    setGenerando(true); setZipRes(null); setZipErr('')
+    try {
+      await guardarSiHaceFalta()
+      const r = await fetch(`${ORQUESTADOR_URL}/entorno/zip`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ variante, spark_conf: Object.keys(sparkConf).length ? sparkConf : null }),
+      })
+      const d = await r.json()
+      if (!d.ok) { setZipErr(d.error || 'Error al generar'); return }
+      setZipRes(d)
+      flash('ok', `ZIP generado: ${d.filename} (${d.mb} MB)`)
+    } catch (e) { setZipErr(String(e)) }
+    setGenerando(false)
+  }
+
+  const inp = { ...btn(false), width: '100%', boxSizing: 'border-box', textAlign: 'left', fontSize: 11 }
+  const pyspark = estado?.pyspark || {}
+  const ciencia = estado?.ciencia || {}
+
+  return (
+    <div style={{ marginTop: 14, color: t.text, fontSize: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: abierto ? 6 : 0 }}>
+        <ToggleBtn abierto={abierto} onClick={() => setAbierto(v => !v)} label="entorno de ejecucion" btn={btn} controls="orq-entorno-panel" />
+        <strong>Entorno de ejecución</strong>
+        <span style={{ color: t.muted, fontSize: 11 }}>Python 3.11 / PySpark 3.5</span>
+      </div>
+      {abierto && (
+        <div id="orq-entorno-panel" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {/* Estado del cache */}
+          <div style={{ fontSize: 11, color: t.muted }}>
+            Cache para RHEL 8 Linux x86_64:
+          </div>
+          {estadoErr && <div style={{ color: '#f87171', fontSize: 11 }}>{estadoErr}</div>}
+          {estado && (
+            <div style={{ fontSize: 11, display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <div>
+                <span style={{ color: pyspark.ok ? '#22c55e' : '#f87171' }}>
+                  {pyspark.ok ? '✅' : '✖'} PySpark+py4j</span>
+                {pyspark.ok
+                  ? <span style={{ color: t.muted }}> {pyspark.mb} MB ({pyspark.wheels?.length || 0} wheels)</span>
+                  : <span style={{ color: '#f87171' }}> FALTA: {(pyspark.falta || []).join(', ')}</span>}
+              </div>
+              <div>
+                <span style={{ color: ciencia.ok ? '#22c55e' : '#fca5a5' }}>
+                  {ciencia.ok ? '✅' : '⚠'} Ciencia Linux</span>
+                {ciencia.ok
+                  ? <span style={{ color: t.muted }}> {ciencia.mb} MB ({ciencia.n_wheels} wheels)</span>
+                  : <span style={{ color: '#fca5a5' }}> {(ciencia.falta || []).join(', ')} (opcional)</span>}
+              </div>
+            </div>
+          )}
+          {!estado && !estadoErr && (
+            <div style={{ color: t.muted, fontSize: 11 }}>Cargando estado…</div>
+          )}
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <button style={{ ...btn(false), padding: '3px 8px', fontSize: 11 }}
+              onClick={cargarEstado}>↻ Actualizar</button>
+            <button style={{ ...btn(false), padding: '3px 8px', fontSize: 11 }}
+              onClick={bajar} disabled={bajando} title="Baja pyspark-py3.11.zip + ciencia-linux-py3.11.zip desde GitHub">
+              {bajando ? 'Bajando…' : '⬇ Bajar desde GitHub'}</button>
+          </div>
+          {bajandoLog && <div style={{ color: '#fca5a5', fontSize: 11 }}>{bajandoLog}</div>}
+
+          {/* Variante */}
+          <div style={{ marginTop: 4 }}>
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>Variante del ZIP</div>
+            <label style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 2 }}>
+              <input type="radio" name="orq-variante" value="minimo" checked={variante === 'minimo'}
+                onChange={() => setVariante('minimo')} />
+              <span><b>Mínimo</b> — PySpark + pandas + pyarrow + pytest + deps</span>
+            </label>
+            <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <input type="radio" name="orq-variante" value="completo" checked={variante === 'completo'}
+                onChange={() => setVariante('completo')} />
+              <span><b>Completo</b> — + xgboost, scikit-learn, scipy, joblib</span>
+            </label>
+          </div>
+
+          {/* Configuracion YARN (colapsable) */}
+          <div>
+            <button style={{ ...btn(false), padding: '2px 8px', fontSize: 11 }}
+              onClick={() => setMostrarConf(v => !v)}
+              aria-expanded={mostrarConf}>
+              {mostrarConf ? '▾' : '▸'} Recursos YARN (bnx_spark_resources.conf)
+            </button>
+            {mostrarConf && (
+              <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <div style={{ color: t.muted, fontSize: 10 }}>
+                  Se incluyen en el ZIP como <code>bnx_spark_resources.conf</code>. Se activan con <code>BNX_SPARK=cluster bash run.sh job.py</code>.
+                </div>
+                {YARN_CONF_DEFAULTS.map(({ k, v: defVal, label }) => (
+                  <label key={k} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <span style={{ width: 110, color: t.muted, flexShrink: 0 }}>{label}</span>
+                    <input value={sparkConf[k] !== undefined ? sparkConf[k] : defVal}
+                      onChange={e => setConf(k, e.target.value)}
+                      style={{ ...inp, width: 100 }} />
+                  </label>
+                ))}
+                <button style={{ ...btn(false), padding: '2px 8px', fontSize: 11, marginTop: 2 }}
+                  onClick={() => setEj('spark_conf', {})}>↺ Resetear a defaults</button>
+              </div>
+            )}
+          </div>
+
+          {/* Generar ZIP */}
+          <button style={{ ...btn(true), fontSize: 12, marginTop: 2 }}
+            onClick={generarZip} disabled={generando || !estado}
+            title={!estado ? 'Actualiza el estado primero' : `Genera bnx_orq_env_py3.11_linux.zip (variante ${variante})`}>
+            {generando ? '⏳ Generando ZIP…' : `📦 Generar entorno ZIP (${variante})`}
+          </button>
+          {zipErr && <div style={{ color: '#f87171', fontSize: 11 }}>{zipErr}</div>}
+          {zipRes && (
+            <div style={{ fontSize: 11, display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <div style={{ color: '#22c55e' }}>✅ {zipRes.filename} · {zipRes.mb} MB</div>
+              <div style={{ color: t.muted, wordBreak: 'break-all' }}>sha256: {zipRes.sha256?.slice(0, 20)}…</div>
+              <a href={`${ORQUESTADOR_URL.replace('/api/orquestador', '')}${zipRes.download_url}`}
+                download={zipRes.filename} style={{ color: '#818cf8', textDecoration: 'underline' }}>
+                📥 Descargar {zipRes.filename}</a>
+              <div style={{ color: t.muted }}>
+                En RHEL 8: <code>unzip {zipRes.filename} &amp;&amp; bash setup.sh</code>
+                {' '}luego: <code>bash run.sh job_spark.py</code>
+              </div>
+            </div>
+          )}
+          <div style={{ color: t.muted, fontSize: 10, marginTop: 2 }}>
+            Para YARN: <code>BNX_SPARK=cluster bash run.sh job.py</code> — edita <code>bnx_spark_resources.conf</code> para queue/memoria/cores.
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function OrquestadorPage({ theme }) {
   const t = theme || {}
   const [tab, setTab] = useState('orq')
@@ -1426,6 +1616,8 @@ export default function OrquestadorPage({ theme }) {
                   onChange={(n) => mutate(p => { p.ejecucion = { ...(p.ejecucion || {}), params: n }; if (!Object.keys(n).length) delete p.ejecucion.params })}
                   guardarSiHaceFalta={async () => { if (dirty) { await post('save', { file, plan }); setDirty(false); await loadPlan(file) } }}
                   flash={flash} /></div>}
+              {plan && <EntornoPanel t={t} btn={btn} ej={ej} setEj={setEj} flash={flash}
+                guardarSiHaceFalta={async () => { if (dirty) { await post('save', { file, plan }); setDirty(false); await loadPlan(file) } }} />}
             </div>}
             {!form && sel && (
               <div style={{ fontSize: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
