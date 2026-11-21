@@ -177,3 +177,33 @@ def test_pins_linux_se_traducen_por_plataforma(monkeypatch, tmp_path):
     monkeypatch.delenv("BNX_XGBOOST_GPU", raising=False)
     vm.descargar_con_huecos(["xgboost>=1"], "3.11", "macos", str(tmp_path), pins={"xgboost-cpu": "3.2.0"})
     assert "xgboost==3.2.0" in visto["cons"] and "xgboost-cpu" not in visto["cons"]
+
+
+def test_pieza_con_tag_propio_se_baja_de_otro_release(tmp_path, monkeypatch):
+    """vendor-v4 solo sube lo que cambio: las demas piezas del manifiesto llevan "tag": "vendor-v3" y se
+    bajan de ese release (no se vuelven a subir 1.5 GB)."""
+    import json
+    visitadas = []
+
+    class _Falso(vm.OrigenGithub):
+        def get_bytes(self, nombre):
+            visitadas.append((self.tag, nombre))
+            if nombre == vm.MANIFEST:
+                return json.dumps({"formato": 3, "tag": "vendor-v4", "piezas": [
+                    {"nombre": "pyspark", "python": "3.11", "plataforma": "any", "archivo": "pyspark-py3.11.zip",
+                     "bytes": 1, "sha256": "a" * 64, "tag": "vendor-v3"},
+                    {"nombre": "ciencia", "python": "3.11", "plataforma": "linux", "archivo": "ciencia-linux-py3.11.zip",
+                     "bytes": 1, "sha256": "b" * 64}]}).encode()
+            raise OSError("sin SHA256SUMS")
+
+        def get_file(self, nombre, destino, log=print):
+            visitadas.append((self.tag, nombre))
+            open(destino, "wb").write(b"x")
+            return "no-coincide"          # el sha falla: solo nos interesa DE DONDE se pidio
+
+    monkeypatch.setattr(vm, "OrigenGithub", _Falso)
+    vm.bajar_piezas(_Falso("vendor-v4"), [("pyspark", "3.11", "any"), ("ciencia", "3.11", "linux")],
+                    str(tmp_path / "cache"), log=lambda *a: None)
+    pedidos = [x for x in visitadas if x[1].endswith(".zip")]
+    assert ("vendor-v3", "pyspark-py3.11.zip") in pedidos      # pieza con tag propio -> release anterior
+    assert ("vendor-v4", "ciencia-linux-py3.11.zip") in pedidos  # sin tag -> el release actual

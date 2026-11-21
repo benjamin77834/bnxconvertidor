@@ -33,7 +33,7 @@ MANIFEST = "vendor-manifest.json"
 SUMS = "SHA256SUMS"
 PY_VERSIONES = vc.VERSIONES_DEFAULT          # 3.11 y 3.14 (3.8/3.12 = legado, sin assets)
 BOOTSTRAP_NECESARIO = ("setuptools", "wheel")   # setup.sh hace 'pip install --no-build-isolation -e .'
-GH_TAG_MODULAR = os.environ.get("BNX_VENDOR_TAG_MODULAR") or "vendor-v3"
+GH_TAG_MODULAR = os.environ.get("BNX_VENDOR_TAG_MODULAR") or "vendor-v4"
 
 # Servidor del banco: RHEL 8 x86_64 (glibc 2.28). Solo wheels manylinux con glibc <= 2.28; NUNCA
 # manylinux_2_31/2_34+ ni musllinux (pip con --platform explicito solo acepta estas etiquetas).
@@ -897,11 +897,17 @@ def bajar_piezas(origen, piezas, cache, log=print):
         if not esperado:
             res[arch] = "sin sha256 en el manifiesto"
             continue
+        # Una pieza puede vivir en OTRO release (campo "tag" del manifiesto): asi un release nuevo solo
+        # sube lo que cambio (p.ej. vendor-v4 = ciencia-linux-py3.11 con numpy 1.x) y reusa el resto de vendor-v3.
+        origen_p = origen
+        if m.get("tag") and isinstance(origen, OrigenGithub) and m["tag"] != origen.tag:
+            origen_p = OrigenGithub(m["tag"])
         fd, tmp = tempfile.mkstemp(prefix="bnx_pz_", suffix=".zip", dir=cache)
         os.close(fd)
         try:
-            log("[%s] bajando %s (%.1f MB) ..." % (tipo, m["archivo"], (m.get("bytes") or 0) / 1048576.0))
-            real = origen.get_file(m["archivo"], tmp, log)
+            log("[%s] bajando %s (%.1f MB)%s ..." % (tipo, m["archivo"], (m.get("bytes") or 0) / 1048576.0,
+                                                   " de %s" % origen_p.tag if origen_p is not origen else ""))
+            real = origen_p.get_file(m["archivo"], tmp, log)
             if real != esperado or (m["archivo"] in sums and sums[m["archivo"]] != real):
                 res[arch] = "sha256 no coincide: no se importa"
                 log("[%s] ERROR: sha256 no coincide (%s...). No se importa." % (tipo, real[:12]))

@@ -6,7 +6,7 @@ preparar_vendor.py — Baja/genera el cache de vendor DENTRO del venv (.venv/bnx
 USO:
     .venv/bin/python preparar_vendor.py --python 3.11             # default (3.11 o 3.14; 3.8/3.12 = legado)
     .venv/bin/python preparar_vendor.py --python 3.11 --python 3.14
-    .venv/bin/python preparar_vendor.py --desde-github --python 3.14 [--tag vendor-v3]
+    .venv/bin/python preparar_vendor.py --desde-github --python 3.14 [--tag vendor-v4]
     .venv/bin/python preparar_vendor.py --zip ~/Downloads/ciencia-linux-py3.11.zip   (o banco.zip)
     .venv/bin/python preparar_vendor.py --estado [--json] [--python 3.14]
 
