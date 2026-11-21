@@ -90,6 +90,37 @@ function MonitorRecursos({ t, muestras, eventos, nucleos, ncpu }) {
     </div>)
 }
 const filaRec = (r) => r && r.cpu_prom !== undefined
+// Tarjetas de "qué falta" (bank_compat): una ROJA por cada componente de una librería del banco que falta o falla
+// (con dónde cargarlo y los pasos), y una ÁMBAR con los parches BNX aplicados (no validados contra la salida original).
+function TarjetasFaltantes({ t, items }) {
+  const lista = Array.isArray(items) ? items : []
+  const faltas = lista.filter(f => f.tipo !== 'parcheado')
+  const parches = lista.filter(f => f.tipo === 'parcheado')
+  if (!lista.length) return null
+  const copiar = (txt) => { try { navigator.clipboard.writeText(txt) } catch { /* sin portapapeles */ } }
+  return (
+    <div role="region" aria-label="Componentes de librerías del banco que faltan o fueron parchados" style={{ display: 'grid', gap: 8, marginBottom: 8 }}>
+      {faltas.map((f, i) => (
+        <div key={`f${i}`} role="alert" style={{ border: '2px solid #ef4444', background: '#450a0a', borderRadius: 8, padding: '8px 12px' }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <strong style={{ color: '#fecaca', fontSize: 13 }}>⛔ FALTA {f.componente}</strong>
+            <span style={{ color: '#fca5a5', fontSize: 12 }}>job <code>{f.job}</code> · librería <code>{f.libreria} {f.version || ''}</code></span>
+            <button onClick={() => copiar(f.texto)} aria-label={`Copiar el mensaje de ${f.componente}`}
+              style={{ marginLeft: 'auto', fontSize: 11, padding: '2px 8px', borderRadius: 6, border: '1px solid #ef4444', background: 'transparent', color: '#fecaca', cursor: 'pointer' }}>⧉ Copiar</button>
+          </div>
+          <pre style={{ margin: '6px 0 0', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12, color: '#fee2e2', fontFamily: 'ui-monospace, Menlo, Consolas, monospace' }}>{f.texto}</pre>
+        </div>))}
+      {parches.length > 0 && (
+        <details style={{ border: '2px solid #f59e0b', background: '#451a03', borderRadius: 8, padding: '8px 12px' }}>
+          <summary style={{ cursor: 'pointer', color: '#fde68a', fontWeight: 700, fontSize: 13 }}>
+            ⚠ {parches.length} parche(s) BNX aplicados sobre librerías del banco (NO validado contra la salida original)</summary>
+          <ul style={{ margin: '6px 0 0', paddingLeft: 18, fontSize: 12, color: '#fef3c7' }}>
+            {parches.map((f, i) => <li key={i}><code>{f.job}</code>: {f.texto}{f.por_que ? ` — ${f.por_que}` : ''}</li>)}
+          </ul>
+          <div style={{ fontSize: 11.5, color: '#fcd34d', marginTop: 4 }}>Pide al equipo dueño las librerías completas y cárgalas en Framework MLOps v2 → Librerías / Vendor → Banco.</div>
+        </details>)}
+    </div>)
+}
 export default function SimularPanel({ t, apiBase, token }) {
   const [info, setInfo] = useState(null)
   const [errorInfo, setErrorInfo] = useState('')
@@ -362,6 +393,7 @@ export default function SimularPanel({ t, apiBase, token }) {
             <button onClick={copiar} aria-label="Copiar el log al portapapeles" style={b(false, !log)} disabled={!log}>
               {copiado ? '✓ Copiado' : '⧉ Copiar log'}</button>
           </div>
+          {run && <TarjetasFaltantes t={t} items={run.faltantes} />}
           <div ref={termRef} role="log" aria-label="Salida de la simulación" aria-live="off" tabIndex={0} onScroll={onScroll}
             style={{
               background: '#0b0f14', color: '#d1d5db', fontFamily: 'ui-monospace, Menlo, Consolas, monospace', fontSize: 12,

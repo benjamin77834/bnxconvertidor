@@ -295,7 +295,9 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
         # Estado/log incremental de una ejecucion del orquestador (?run=ID&offset=N)
-        if path in ("/orquestador/estado", "/api/orquestador/estado"):
+        # y estado del entorno del Orquestador (ZIP offline).
+        if path in ("/orquestador/estado", "/api/orquestador/estado",
+                    "/orquestador/entorno/estado", "/api/orquestador/entorno/estado"):
             self._orquestador_seguro(path)
             return
 
@@ -1044,7 +1046,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 separate_monitoring=separate_monitoring, full_env=full_env,
                 py_target=py_target, out_path=zip_path, registry=registry,
                 plataformas=plataformas, spark_modo=spark_modo,
-                ciencia=ciencia)
+                ciencia=ciencia, max_recurso_mb=data.get("max_recurso_mb"))
             # Entorno Linux INCOMPLETO (faltan wheels de deps/ciencia/banco/PySpark incluido): NO se entrega
             # en silencio un paquete sin librerias. Se bloquea salvo confirmacion explicita.
             _m0 = next((r for r in report if r.get("_meta")), {})
@@ -1154,6 +1156,10 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             state = json.load(fh)
         items = []
         for path, content in (state.get("code_files") or {}).items():
+            if isinstance(content, str) and content.startswith("bnx-b64:"):    # recurso binario del banco
+                items.append({"path": path, "content": "(binario, %d KB)" % (len(content) * 3 // 4096),
+                              "editable": False})
+                continue
             items.append({"path": path, "content": content,
                           "editable": path.endswith((".py", ".txt", ".md", ".sh", ".cfg", ".ini"))})
         for path, content in (state.get("sep_files") or {}).items():
@@ -4147,6 +4153,15 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._json_response(200, {"jobs": jobs})
             return
 
+        # ---- Entorno del Orquestador (ZIP offline Python 3.11 / PySpark 3.5) ----
+        # IMPORTANTE: se chequea ANTES de la accion "estado" de orq_runner para que
+        # /entorno/estado no caiga en el handler de ejecucion real.
+        _entorno_sufijos = ("/entorno/estado", "/entorno/bajar", "/entorno/zip")
+        _entorno_match = next((s for s in _entorno_sufijos if path.rstrip("/").endswith(s)), None)
+        if _entorno_match:
+            self._handle_orq_entorno(_entorno_match.lstrip("/"), data)
+            return
+
         # ---- Ejecucion REAL en segundo plano (solo desde esta maquina) ----
         if action in ("preflight", "ejecutar", "estado", "cancelar", "activo"):
             from src import orq_runner as _rn
@@ -4393,6 +4408,79 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         self._json_response(404, {"error": "accion desconocida"})
+
+    def _handle_orq_entorno(self, action, data=None):
+        """Endpoints del 'Entorno del Orquestador' (ZIP offline RHEL 8 Python 3.11):
+          GET  orquestador/entorno/estado   — estado del cache (pyspark/ciencia/banco)
+          POST orquestador/entorno/bajar    — lanza bajada del vendor (como /vendor/prepare)
+          POST orquestador/entorno/zip      — genera el ZIP; responde token + descarga por /export/download
+        'data' ya fue leido por _handle_orquestador; NO releer self.rfile.
+        """
+        if data is None:
+            data = {}
+        from src import orq_entorno as _oe
+        if action == "entorno/estado":
+            try:
+                est = _oe.estado_cache()
+                self._json_response(200, {"ok": True, **est})
+            except Exception as e:
+                self._json_response(500, {"ok": False, "error": str(e)})
+            return
+
+        # Las acciones de escritura son solo desde localhost
+        bloqueo = self._orq_local_only()
+        if bloqueo:
+            self._json_response(403, {"ok": False, "error": bloqueo})
+            return
+
+        if action == "entorno/bajar":
+            # Lanza la bajada del vendor (pyspark-py3.11.zip + ciencia-linux-py3.11.zip)
+            # usando el mismo job/log que el boton 'Bajar desde GitHub' de MLOps.
+            cmd = [sys.executable, "-B",
+                   os.path.join(os.path.dirname(os.path.abspath(__file__)), "preparar_vendor.py"),
+                   "--python", "3.11", "--plataformas", "linux"]
+            if data.get("desde_github"):
+                cmd.append("--desde-github")
+            st, payload = self._vendor_job_lanzar(cmd, ["3.11"])
+            self._json_response(st, payload)
+            return
+
+        if action == "entorno/zip":
+            # Genera el ZIP offline y lo deja en /tmp/bnx_bundles/<token>.zip
+            variante = str(data.get("variante") or "minimo")
+            if variante not in ("minimo", "completo"):
+                variante = "minimo"
+            spark_conf = data.get("spark_conf") if isinstance(data.get("spark_conf"), dict) else None
+            logs = []
+            try:
+                zip_data, sha256, nombre = _oe.generar_zip(
+                    variante=variante, spark_conf=spark_conf,
+                    log=lambda m: logs.append(m))
+                import uuid as _uuid
+                token = _uuid.uuid4().hex
+                tmpdir = os.path.join(tempfile.gettempdir(), "bnx_bundles")
+                os.makedirs(tmpdir, exist_ok=True)
+                zip_path = os.path.join(tmpdir, token + ".zip")
+                name_path = os.path.join(tmpdir, token + ".name")
+                with open(zip_path, "wb") as fh:
+                    fh.write(zip_data)
+                with open(name_path, "w", encoding="utf-8") as fh:
+                    fh.write(nombre)
+                mb = round(len(zip_data) / 1048576.0, 1)
+                self._json_response(200, {
+                    "ok": True, "token": token, "filename": nombre,
+                    "size": len(zip_data), "mb": mb, "sha256": sha256,
+                    "variante": variante,
+                    "download_url": f"/export/download?token={token}",
+                    "log": logs,
+                })
+            except (BrokenPipeError, ConnectionResetError):
+                raise
+            except Exception as e:
+                self._json_response(500, {"ok": False, "error": str(e), "log": logs})
+            return
+
+        self._json_response(404, {"ok": False, "error": "accion desconocida"})
 
     def _handle_quality_get(self):
         """Devuelve el reporte COMPLETO de un id (para reimprimir en la GUI)."""

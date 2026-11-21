@@ -886,7 +886,7 @@ def _bank_pkg_name(mod):
     return _BANK_MODULE_TO_PKG.get(mod, mod)
 
 
-def _requirements_bank(bank_libs):
+def _requirements_bank(bank_libs, con_compat=None):
     """Archivo SOLO con las librerias internas del banco (nombres de paquete pip),
     para instalarlas OFFLINE desde vendor/bank/ o desde el Artifactory privado.
     Los modulos de PYTHONPATH (toolbox, ...) NO van aqui; se montan via bank_pkg."""
@@ -897,10 +897,17 @@ def _requirements_bank(bank_libs):
         if m in _BANK_PATH_MODULES or _is_stdlib_module(m):
             continue
         name = _bank_pkg_name(m)
-        if name in _BANK_PKG_INCOMPLETE:
+        if isinstance(con_compat, dict):          # modulo -> paquete pip segun el diagnostico (cualquier libreria)
+            for _pip, _tops in con_compat.items():
+                if m in _tops:
+                    name = _pip
+        if name in _BANK_PKG_INCOMPLETE and not con_compat:
             if name not in [n for n, _ in incomplete]:
                 incomplete.append((name, _BANK_PKG_INCOMPLETE[name]))
         elif name not in verified:
+            verified.append(name)
+    for name in (list(con_compat) if con_compat else []):     # con bank_compat: TODAS las mex-lib del cache se instalan
+        if name not in verified:
             verified.append(name)
     head = [
         "# Librerias INTERNAS del banco detectadas en tu codigo original.",
@@ -1838,6 +1845,10 @@ for _cand in (os.path.join(_here, "bank_pkg"),
     if os.path.isdir(_cand) and _cand not in sys.path:
         sys.path.insert(0, _cand)
 
+try:
+    import bank_compat as _bc   # diagnostico/parches de las librerias del banco + mensajes de "que falta"
+except Exception:
+    _bc = None
 try:
     from pyspark.sql import SparkSession
     from pyspark.sql.types import (StructType, StructField, StringType,
@@ -2854,11 +2865,26 @@ def _bank_launcher():
     return _BANK_MAIN[0]
 
 
+def _bin_path_recursos(settings_dir, real_settings):
+    """BIN_PATH de profile.sh: carpeta que contiene static/ y opt/ (modelos .xgb, profile.sh...).
+    Preferencia: el bin/ del banco (padre de --settings) si trae esos recursos; si no, bank_src/ del paquete
+    (donde viajan). Sin recursos en ninguno: el padre de --settings (REAL) o bank_src/ (DEMO), como antes.
+    Evita rutas como '//static/modelo.xgb' cuando --settings es '/bnx_settings' (padre = '/')."""
+    cands = []
+    if real_settings and settings_dir:
+        cands.append(os.path.dirname(os.path.abspath(settings_dir)))
+    cands.append(_bank_src)
+    for c in cands:
+        # /opt existe en cualquier Linux: solo cuenta opt/profile.sh (el de bin/opt del banco)
+        if os.path.isdir(os.path.join(c, "static")) or os.path.isfile(os.path.join(c, "opt", "profile.sh")):
+            return c
+    return cands[0]
+
+
 def _kernel_entorno(args, settings_dir, real_settings, env, fid, model, job):
     """Variables de entorno de bin/opt/profile.sh que usan toolbox y los jobs."""
     import time
-    bin_path = os.environ.get("BIN_PATH") or (
-        os.path.dirname(os.path.abspath(settings_dir)) if real_settings else _bank_src)
+    bin_path = os.environ.get("BIN_PATH") or _bin_path_recursos(settings_dir, real_settings)
     root_local = os.environ.get("ROOT_LOCAL") or os.path.dirname(os.path.abspath(bin_path))
     app = "%s_%s_%s" % (os.environ.get("LOCAL_DIR") or "bnx", model or "x", job)
     log_dir = os.path.join(os.environ.get("LOG_PATH") or os.path.join(_here, "logs"),
@@ -2907,6 +2933,25 @@ def _kernel_lanzar(entry, env, fid, cohort, verbose):
         raise
 
 
+def _compat_estado():
+    """Tabla OK/PARCHEABLE/BLOQUEADO de las librerias del banco y si los parches estan activos."""
+    if _bc is None:
+        return
+    rep = _bc.cargar_reporte()
+    if not rep:
+        return
+    r = rep.get("resumen") or {}
+    if not (r.get("PARCHEABLE") or r.get("BLOQUEADO")):
+        return
+    activo = _bc.activo_por_modo()
+    print("[compat] librerias del banco: %d OK, %d PARCHEABLE, %d BLOQUEADO | parches BNX: %s" % (
+        r.get("OK", 0), r.get("PARCHEABLE", 0), r.get("BLOQUEADO", 0),
+        "ACTIVOS (demo/simulacion; no validado contra la salida original)" if activo else
+        "INACTIVOS (modo real: BNX_BANK_COMPAT=1 los activa; " + _bc.AVISO_REAL + ")"))
+    for t in _bc.tabla_estados(rep):
+        if t["estado"] != "OK":
+            print("[compat]   %-11s %s %s%s" % (t["estado"], t["libreria"], t["version"],
+                                                 "" if t["usada"] else " (el modelo no la usa)"))
 def _info_python():
     """Python del driver y lo que el cluster pudo haber fijado (diagnostico de 'No module named ...')."""
     print("[python] driver=%s (%s) | PYSPARK_PYTHON=%s | PYSPARK_DRIVER_PYTHON=%s" % (
@@ -2949,6 +2994,12 @@ def _kernel_main(args, nombres, correr_agg=False):
                 "  Se busco settings (carpeta con spark.json) en: %s\\n"
                 % (motivo_modo, ", ".join(probados[:8]) or "(sin candidatos)"))
             raise SystemExit(2)
+    os.environ["BNX_MODO"] = "demo" if demo else "real"   # bank_compat: parches activos solo en demo (o BNX_BANK_COMPAT=1)
+    if _bc is not None:
+        try:
+            _bc.instalar()      # parches de las librerias del banco (tambien para imports directos de lib_*)
+        except Exception as _e_bc:
+            print("[compat] aviso: no se pudieron instalar los parches (%s: %s)" % (type(_e_bc).__name__, str(_e_bc)[:120]))
     env = (args.env or ("uat" if demo else "")).lower()
     if not env:
         raise SystemExit("[kernel] falta --env (prod|uat|sbx): es el ambiente de los settings del banco")
@@ -2966,7 +3017,13 @@ def _kernel_main(args, nombres, correr_agg=False):
     if demo:
         print("  [demo] config: " + _demo_resumen())
     _info_python()
+    _compat_estado()
     print("=" * 64)
+    if _bc is not None and not args.source:
+        try:
+            _bc.limpiar_faltantes(None)
+        except Exception:
+            pass
     try:
         import toolbox.kernel as _tk
     except Exception as e:
@@ -3023,6 +3080,12 @@ def _kernel_main(args, nombres, correr_agg=False):
         try:
             log_file = _kernel_entorno(args, settings_dir, not (demo and settings_dir_demo),
                                        env, fid, e.get("model"), e.get("job") or n)
+            os.environ["BNX_JOB_ID"] = n    # nombre del job para los mensajes de bank_compat (rps_datapull)
+            if _bc is not None:
+                try:
+                    _bc.limpiar_faltantes(n)
+                except Exception:
+                    pass
             ret = _kernel_lanzar(e, env, fid, cohort, args.verbose)
             dt = time.time() - t0
             print("[kernel] FIN OK %s en %.1f s | log: %s%s" % (
@@ -3033,17 +3096,29 @@ def _kernel_main(args, nombres, correr_agg=False):
         except (Exception, SystemExit) as ex:
             dt = time.time() - t0
             cola = " | ".join(l.strip() for l in traceback.format_exc().strip().splitlines()[-6:])
-            print("[kernel] FIN ERROR %s en %.1f s: %s: %s" % (n, dt, type(ex).__name__, str(ex)[:300]))
-            _hint = _hint_clave_faltante(ex, settings_dir, env, e)
-            if _hint:
-                print(_hint)
-            print("         traceback (corto): %s" % cola[:900])
+            _falta = None
+            if _bc is not None:
+                try:
+                    _falta = _bc.traducir_excepcion(ex, n)
+                except Exception:
+                    _falta = None
+            if _falta:
+                _corto = "FALTA %s (libreria %s %s)" % (_falta.get("componente"), _falta.get("libreria"),
+                                                       _falta.get("version") or "")
+                print("[kernel] FIN ERROR %s en %.1f s: %s" % (n, dt, _corto))
+                print(_bc.bloque_terminal(_bc.registrar_faltante(_falta, job=n)))
+            else:
+                print("[kernel] FIN ERROR %s en %.1f s: %s: %s" % (n, dt, type(ex).__name__, str(ex)[:300]))
+                _hint = _hint_clave_faltante(ex, settings_dir, env, e)
+                if _hint:
+                    print(_hint)
+                print("         traceback (corto): %s" % cola[:900])
             if log_file:
                 print("         log: %s" % log_file)
             fail += 1
             fallidos.add(n)
             _mon_fin(n, "ERROR")
-            resumen.append((n, "ERROR", dt, "%s: %s" % (type(ex).__name__, str(ex)[:160])))
+            resumen.append((n, "ERROR", dt, (_corto if _falta else "%s: %s" % (type(ex).__name__, str(ex)[:160]))))
     print("=" * 64)
     for n, est, dt, det in resumen:
         print("  %-8s %-28s %6.1f s  %s" % (est, n, dt, det))
@@ -3053,6 +3128,8 @@ def _kernel_main(args, nombres, correr_agg=False):
     _imprimir_tiempos()
     if demo and _demo_mod() is not None:
         _demo_mod().reporte()
+        if _bc is not None:
+            _bc.anexar_a_reporte_demo(os.path.join(_demo_out_dir(), "REPORTE_DEMO.json"))
         _demo_mod().desactivar()
     try:
         act = SparkSession.getActiveSession()
@@ -3521,6 +3598,12 @@ bash run.sh --config cfg.json --extract-only
 BNX_DRIVER_MEMORY=16g bash run.sh --config cfg.json
 ```
 
+### Librerías del banco incompletas (bank_compat)
+`bank_compat_report.json` (y `python bank_compat.py` / `python check_env.py`) dice, por cada librería mex-lib del banco, si está
+OK, es PARCHEABLE (la capa BNX resuelve imports/firmas rotos) o BLOQUEADO (falta lógica que tu modelo SÍ usa).
+Los parches se activan solos en DEMO/SIMULACIÓN; en modo REAL solo con `BNX_BANK_COMPAT=1` (NO validado contra la salida
+original: pide las librerías completas al equipo dueño). Cuando algo falta, el runner imprime QUÉ falta, DÓNDE cargarlo y los
+PASOS, y lo deja en el log del job, en `logs/BNX_FALTANTES.json` y en `demo_out/REPORTE_DEMO.json`.
 ### Cómo leer la tabla de tiempos
 Al final de cada corrida sale `TABLA DE TIEMPOS` con `master` y `applicationId`, y una fila por etapa:
 `preflight` (consulta al catálogo, sin leer datos), `extract` (query + write a parquet, con particiones del
@@ -3619,8 +3702,22 @@ Cada clase se carga de forma independiente: si su libreria no esta instalada o e
 incompleta, ese nombre queda como un PLACEHOLDER que falla con un mensaje claro
 SOLO al usarlo (instanciarlo); el import de mex_lib_cs nunca se cae por una sola
 libreria. mex_lib_cs.disponibles() dice cuales cargaron.
+
+Compatibilidad (bank_compat.py + bank_compat_report.json, junto a main.py): en DEMO/SIMULACION se registran,
+ANTES de importar cada libreria, los parches del reporte (stubs que FALLAN al usarse, paquetes perezosos, alias de
+modulos movidos, shims de APIs eliminadas, adaptadores de firma). En modo REAL solo con BNX_BANK_COMPAT=1.
 """
 import importlib
+
+try:
+    import bank_compat as _bc
+except Exception:  # paquete viejo sin bank_compat: la fachada funciona como antes
+    _bc = None
+if _bc is not None:
+    try:
+        _bc.instalar()
+    except Exception:
+        pass
 
 # (nombre exportado, modulo de origen, de donde sale)
 _EXPORTS = (
@@ -3636,9 +3733,14 @@ _EXPORTS = (
 )
 
 
-def _placeholder(nombre, modulo, origen, causa):
-    msg = ("mex_lib_cs.%s no esta disponible: no se pudo importar '%s' (%s). %s"
-           % (nombre, modulo, origen, causa))
+def _placeholder(nombre, modulo, origen, error):
+    if _bc is not None:
+        try:
+            return _bc.placeholder(nombre, modulo, origen, error)
+        except Exception:
+            pass
+    msg = ("mex_lib_cs.%s no esta disponible: no se pudo importar '%s' (%s). %s: %s"
+           % (nombre, modulo, origen, type(error).__name__, error))
 
     class _Faltante(object):
         __bnx_missing__ = True
@@ -3653,9 +3755,15 @@ def _placeholder(nombre, modulo, origen, causa):
 
 def _cargar(nombre, modulo, origen):
     try:
-        return getattr(importlib.import_module(modulo), nombre)
+        obj = getattr(importlib.import_module(modulo), nombre)
     except Exception as e:  # modulo ausente, incompleto o con dependencia faltante
-        return _placeholder(nombre, modulo, origen, "%s: %s" % (type(e).__name__, e))
+        return _placeholder(nombre, modulo, origen, e)
+    if _bc is not None:
+        try:
+            obj = _bc.adaptar_firma(nombre, obj)
+        except Exception:
+            pass
+    return obj
 
 
 for _nombre, _modulo, _origen in _EXPORTS:
@@ -3850,6 +3958,17 @@ def _probar_xgboost():
     return ""
 
 
+os.environ["BNX_CHECK_ENV"] = "1"    # bank_compat: importar los jobs aqui no registra parches como si fuera una corrida
+def _resumen_compat():
+    """Resumen OK/PARCHEABLE/BLOQUEADO de las librerias del banco (bank_compat_report.json) si el paquete lo trae."""
+    try:
+        sys.path.insert(0, _project_root())
+        import bank_compat
+        rep = bank_compat.cargar_reporte(os.path.join(_project_root(), "bank_compat_report.json"))
+        if rep:
+            print(bank_compat.resumen_texto(rep))
+    except Exception:
+        pass
 def _probar_jobs():
     """Importa cada aggregate del paquete. Devuelve [(job, error)] de los que fallan."""
     import importlib
@@ -3986,6 +4105,7 @@ def main():
         print("== Verificacion de dependencias (check_env.py) ==")
         print("Python:", sys.version.split()[0], "| venv:", sys.prefix)
         print("Instaladas OK (%d): %s" % (len(ok), ", ".join(ok) or "-"))
+        _resumen_compat()
 
     # Import REAL de los jobs: detecta faltantes INDIRECTOS (un modulo del banco que
     # a su vez importa otro que no esta, p.ej. bnmxverse -> mex_lib_cs, o
@@ -4284,6 +4404,63 @@ def _ruta_settings(raw_name):
         return None
     rel = partes[dirs.index("settings") + 1:]
     return "/".join(rel) if rel else None
+# Recursos NO Python del proyecto del banco que el codigo lee en tiempo de ejecucion
+# (modelos .xgb/.pkl, bin/opt/profile.sh, tablas...). Viajan EXACTOS en bank_src/ con la ruta relativa a bin/
+# (bank_src/static/modelo.xgb) y el runner apunta BIN_PATH a bank_src/. Son datos INTERNOS del banco:
+# solo existen en el paquete generado.
+EXT_RECURSOS = (".xgb", ".pkl", ".pickle", ".joblib", ".bin", ".model", ".json", ".txt", ".csv", ".parquet",
+                ".sh", ".yaml", ".yml", ".cfg", ".ini", ".npy", ".npz", ".onnx", ".pmml")
+_DIRS_NO_RECURSO = ("settings", "jobs", "toolbox", "utils", "bnmxverse", "logs", "__pycache__", "tests", ".git",
+                    "node_modules")
+_BIN_PREFIX = "bnx-b64:"
+try:
+    MAX_RECURSO_MB = float(os.environ.get("BNX_MAX_RECURSO_MB") or 100)
+except ValueError:
+    MAX_RECURSO_MB = 100.0
+
+
+def _ruta_recurso(raw_name):
+    """Ruta relativa a bin/ ('static/rpsv2_all_versions.xgb', 'opt/profile.sh') si raw_name es un RECURSO no Python
+    del proyecto (bin/static/**, bin/opt/**, cualquier bin/<dato>/**); None si no (codigo, settings, otra cosa)."""
+    partes = _partes_ruta(raw_name)
+    if len(partes) < 2 or ".." in partes or partes[-1].lower().endswith(".py") \
+            or not partes[-1].lower().endswith(EXT_RECURSOS):
+        return None
+    dirs = [d.lower() for d in partes[:-1]]
+    if "settings" in dirs:
+        return None
+    ini = None
+    for i, d in enumerate(dirs):
+        if d == "bin":
+            ini = i + 1                      # la ultima carpeta 'bin' manda
+    if ini is None:                          # carpeta subida sin 'bin/': desde static/ u opt/
+        for i, d in enumerate(dirs):
+            if d in ("static", "opt"):
+                ini = i
+                break
+    if ini is None or ini >= len(partes) - 1:
+        return None
+    rel = partes[ini:]
+    if rel[0].lower() in _DIRS_NO_RECURSO or any(x.lower() in ("__pycache__", ".git") for x in rel):
+        return None
+    return "/".join(rel)
+
+
+def recurso_a_contenido(item):
+    """Contenido para guardar en code_files: texto tal cual o 'bnx-b64:<base64>' si es binario."""
+    if item.get("b64"):
+        return _BIN_PREFIX + str(item["b64"])
+    return item.get("code") or ""
+
+
+def contenido_a_bytes(content):
+    """Valor a escribir en el ZIP para un valor de code_files (texto, o bytes si es un binario codificado)."""
+    if isinstance(content, str) and content.startswith(_BIN_PREFIX):
+        import base64
+        return base64.b64decode(content[len(_BIN_PREFIX):])
+    return content
+
+
 def _es_main_banco(raw_name, code):
     """main.py del banco (class Launcher que arma el Kernel de toolbox): NO es un job."""
     partes = _partes_ruta(raw_name)
@@ -4779,7 +4956,8 @@ def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all",
     bank_sdists, bank_pkgcode = ([], {})
     bank_extracted = {}
     if uses_bank:
-        bank_sdists, bank_pkgcode = _bank_vendor_files()
+        _todas_bank = "bank_compat_report.json" in (code_files or {})   # compat activa: se instalan TODAS las mex-lib
+        bank_sdists, bank_pkgcode = _bank_vendor_files(_todas_bank)
         # vendor/bank/ SOLO lleva las mex-lib* del banco. Las deps open source del
         # stack (cytoolz/unidecode/pandas cp38/...) ya van en vendor/<serie>/ con
         # solo lo que pip resolvio (antes se metian TODAS: ~350 MB).
@@ -4787,7 +4965,7 @@ def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all",
         # Ademas de los sdist (que pip instala), extraemos las mex-lib verificadas
         # como CODIGO en pkgcode/ para que funcionen por PYTHONPATH sin pip/build
         # (fallback a prueba de fallos en Windows/Python 3.8).
-        bank_extracted = _bank_extracted_pkgs()
+        bank_extracted = _bank_extracted_pkgs(_todas_bank)
     # mex-lib que pide requirements-bank.txt y que NO hay en el cache (no irian en vendor/bank/)
     _bk = [_re.split(r"[<>=!~ ;\[]", ln.strip(), maxsplit=1)[0] for ln in
            (code_files or {}).get("requirements-bank.txt", "").splitlines()
@@ -4804,7 +4982,7 @@ def zip_from_files(code_files, sep_files=None, full_env=False, py_target="all",
         if arc in seen_arc:
             return
         seen_arc.add(arc)
-        z.writestr(arc, content)
+        z.writestr(arc, contenido_a_bytes(content))
 
     def _put_bin(z, arc, fpath, stored=False):
         if arc in seen_arc:
@@ -4921,7 +5099,7 @@ from src import vendor_modular as _vm   # piezas modulares: pyspark / ciencia / 
 _BANK_LIBS_CACHE = _vc.banco_dir()
 
 
-def _bank_vendor_files():
+def _bank_vendor_files(todas=False):
     """Devuelve ({sdist .tar.gz}, {pkgcode: rutas de modulos}) de las librerias
     internas del banco presentes en cache. Solo incluye los sdist VERIFICADOS
     (_BANK_PKG_VERIFIED): los incompletos en origen se omiten del vendor. Si no
@@ -4944,7 +5122,7 @@ def _bank_vendor_files():
             # se omiten del vendor porque les falta codigo).
             if low.startswith("mex"):
                 pkg = (f.split("-2.")[0] if "-2." in f else f.rsplit("-", 1)[0]).replace("_", "-")
-                if pkg in _BANK_PKG_VERIFIED:
+                if todas or pkg in _BANK_PKG_VERIFIED:   # todas: con bank_compat las incompletas tambien se instalan
                     sdists.append(os.path.join(whl_dir, f))
                 continue
             # Cualquier OTRA wheel/sdist en bank_libs/wheels es una DEP del stack
@@ -4967,7 +5145,56 @@ def _bank_vendor_files():
     return sdists, pkgcode
 
 
-def _bank_extracted_pkgs():
+from src import bank_compat as _bcm   # diagnostico + capa de compatibilidad de las librerias del banco
+
+
+def _bank_compat_fuente():
+    """Texto de src/bank_compat.py: viaja en el paquete como bank_compat.py (analisis + runtime, solo stdlib)."""
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "bank_compat.py"), "r", encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _compat_analizar(files, py_target):
+    """Reporte de compatibilidad de TODAS las librerias del banco del cache contra el codigo/config del modelo
+    (los archivos bank_src/** que viajan, mas toolbox/bnmxverse/utils de la wheel pkgcode). None si no hay cache."""
+    try:
+        codigos = dict((p, c) for p, c in files.items()
+                       if p.startswith("bank_src/") and p.endswith(".py") and isinstance(c, str))
+        cfgs = dict((p, c) for p, c in files.items()
+                    if p.startswith("bank_src/settings/") and p.endswith(".json") and isinstance(c, str))
+        dirs = [os.path.join(_BANK_LIBS_CACHE, "wheels")]
+        if not os.path.isdir(dirs[0]):
+            return None
+        # toolbox/bnmxverse/utils de la wheel pkgcode que el codigo subido importa (transitivamente) tambien es
+        # codigo del modelo (p.ej. bnmxverse/data_pull.py llama a las mex-lib); lo que nadie importa no cuenta.
+        for lib in _bcm.cargar_librerias(dirs):
+            if lib.nombre.startswith("bnx-bank"):
+                pendientes, vistos = list(codigos.values()), set()
+                while pendientes:
+                    tree = _ast_mod.parse(pendientes.pop())
+                    for nd in _ast_mod.walk(tree):
+                        mods = []
+                        if isinstance(nd, _ast_mod.Import):
+                            mods = [a_.name for a_ in nd.names]
+                        elif isinstance(nd, _ast_mod.ImportFrom) and not nd.level and nd.module:
+                            mods = [nd.module] + [nd.module + "." + a_.name for a_ in nd.names]
+                        for mod in mods:
+                            if mod in lib.mods and mod not in vistos:
+                                vistos.add(mod)
+                                rel = lib.mods[mod]["rel"]
+                                if "bank_src/" + rel not in codigos:
+                                    codigos["vendor/bank/pkgcode/" + rel] = lib.mods[mod]["texto"]
+                                    pendientes.append(lib.mods[mod]["texto"])
+        vs = [v for vv in _versiones_target(py_target).values() for v in vv]
+        menores = [int(v.split(".")[1]) for v in vs] or [11]
+        vers = {"numpy": "1.26.4" if max(menores) <= 12 else "2.2.0", "python": vs[0] if len(vs) == 1 else "multiple"}
+        rep = _bcm.analizar(dirs, codigos, cfgs, vers)
+        return rep if rep.get("librerias") else None
+    except Exception:
+        return None
+
+
+def _bank_extracted_pkgs(todas=False):
     """Extrae el MODULO IMPORTABLE de cada sdist mex-lib VERIFICADO (lib_extract,
     lib_generate_pivot, ...) y lo devuelve como {ruta_relativa: bytes}, listo para
     colocarlo en pkgcode/ del paquete. Asi las mex-lib funcionan por PYTHONPATH
@@ -4983,7 +5210,7 @@ def _bank_extracted_pkgs():
         if not f.endswith(".tar.gz"):
             continue
         pkg = (f.split("-2.")[0] if "-2." in f else f.rsplit("-", 1)[0]).replace("_", "-")
-        if pkg not in _BANK_PKG_VERIFIED or pkg.lower() in _wh:
+        if not (todas or pkg in _BANK_PKG_VERIFIED) or pkg.lower() in _wh:
             continue          # con wheel instalable no hace falta el codigo extraido (fallback)
         # Modulo importable esperado (lib_extract, etc.) via el mapeo conocido.
         top = None
@@ -5450,7 +5677,8 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
                                extra_steps=False, include_monitoring=False,
                                separate_monitoring=False, full_env=False,
                                py_target="all", out_path=None, registry=None,
-                               ciencia=False, plataformas=("linux",), spark_modo=None):
+                               ciencia=False, plataformas=("linux",), spark_modo=None,
+                               max_recurso_mb=None):
     """Arma el Framework v2 EMPAQUETADO con la logica del usuario dentro.
     ciencia: si True agrega la PILA DE CIENCIA DE DATOS (xgboost, lightgbm, scikit-learn,
         scipy, statsmodels, matplotlib, seaborn, joblib, threadpoolctl + transitivas) a
@@ -5505,6 +5733,27 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
                 report.append({"name": raw_name, "source": None, "ok": True, "role": "settings", "verbatim": True,
                                "file": "bank_src/settings/" + _rel_set, "todos": [], "warnings": 0,
                                "unsupported": 0, "nota": "settings del banco: la simulacion/demo los usa con --settings"})
+            continue
+        # (0b) RECURSO no Python (bin/static/*.xgb, bin/opt/profile.sh...): EXACTO a bank_src/<ruta bajo bin/>.
+        _rel_rec = _ruta_recurso(raw_name)
+        if _rel_rec:
+            _cont = recurso_a_contenido(item)
+            _tam = (len(_cont) - len(_BIN_PREFIX)) * 3 // 4 if _cont.startswith(_BIN_PREFIX) \
+                else len(_cont.encode("utf-8"))
+            _lim = float(item.get("max_mb") or max_recurso_mb or MAX_RECURSO_MB)
+            if not _cont:
+                report.append({"name": raw_name, "ok": False, "role": "recurso", "reason": "vacio"})
+            elif _tam > _lim * 1048576:
+                report.append({"name": raw_name, "ok": False, "role": "recurso", "size": _tam,
+                               "reason": "recurso de %.1f MB supera el limite de %.0f MB (BNX_MAX_RECURSO_MB / "
+                                         "campo 'limite' de la UI)" % (_tam / 1048576.0, _lim)})
+            else:
+                files["bank_src/" + _rel_rec] = _cont
+                report.append({"name": raw_name, "source": None, "ok": True, "role": "recurso", "verbatim": True,
+                               "file": "bank_src/" + _rel_rec, "size": _tam, "todos": [], "warnings": 0,
+                               "unsupported": 0,
+                               "nota": "recurso del banco (bin/%s): BIN_PATH apunta a bank_src/ en el paquete"
+                                       % _rel_rec})
             continue
         if pandas_code.strip():
             original_codes.append(pandas_code)
@@ -5710,13 +5959,27 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     # intentan aparte desde el Artifactory (sin abortar si no hay acceso).
     bank_libs = _detect_bank_imports(original_codes)
     extra_pkgs = _detect_extra_imports(original_codes)
+    # Diagnostico de compatibilidad de las librerias del banco (bank_compat): reporte + capa de parches.
+    _compat_rep, _compat_libs = None, None
+    if bank_libs:
+        _compat_rep = _compat_analizar(files, py_target)
+        if _compat_rep:
+            files["bank_compat_report.json"] = _bcm.reporte_a_json(_compat_rep)
+            files["bank_compat.py"] = _bank_compat_fuente()
+            _compat_libs = dict((l["libreria"], l["paquetes"]) for l in _compat_rep["librerias"]
+                                if l["libreria"].startswith("mex-lib"))
+            for _m in _compat_rep.get("dependencias_terceros", []):    # deps de terceros de las mex-lib (cytoolz...)
+                for _dep in _EXTRA_DEPS.get(_m, []) + [_m]:
+                    _pn = _EXTRA_PIP.get(_dep)
+                    if _pn and _pn not in extra_pkgs:
+                        extra_pkgs.append(_pn)
     ml_libs = _ml_libs_detectadas(extra_pkgs, ciencia)
     # pandas/numpy ya no son obligatorias: solo si algun codigo que viaja las importa o hay pila de ciencia.
     pandas_info = decidir_pandas(files, ml_libs=ml_libs, extra_steps=extra_steps, ciencia=ciencia,
                                  codigo_banco=_codigo_banco_que_viaja(bank_libs))
     files["requirements.txt"] = _requirements(include_bank_libs, extra_steps, bank_libs, ml_libs, pandas_info, py_target)
     if bank_libs:
-        files["requirements-bank.txt"] = _requirements_bank(bank_libs)
+        files["requirements-bank.txt"] = _requirements_bank(bank_libs, _compat_libs)
     # xgboost/scikit-learn/scipy ya van en requirements.txt (y en vendor/): no se repiten.
     extra_pkgs = [p for p in extra_pkgs if p not in _ML_PIP
                   and not (extra_steps and p in ("xgboost", "scikit-learn"))]
@@ -5772,7 +6035,7 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     # "No module named ...". Se avisa en el portal para que los suban.
     _cache_code = os.path.join(_BANK_LIBS_CACHE, "pkgcode")
     modulos_faltantes = {}
-    for _cod in original_codes + [c for p, c in files.items() if p.startswith("bank_src/")]:
+    for _cod in original_codes + [c for p, c in files.items() if p.startswith("bank_src/") and p.endswith(".py")]:
         for pkg, mod in _imports_paquete_modulo(_cod):
             if pkg in _NO_PAQUETE_BANCO or _is_stdlib_module(pkg) or pkg == "mex_lib_cs":
                 continue
@@ -5813,11 +6076,18 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
                    "offline_faltan": json.loads(json.dumps(ULTIMO_FALTAN_OFFLINE)),
                    "modulos_faltantes": modulos_faltantes,
                    "vendor_mb": ULTIMO_VENDOR.get("mb"),
+                   "recursos": [{"file": r["file"], "size": r.get("size", 0)} for r in report
+                                if r.get("role") == "recurso" and r.get("ok")],
+                   "recursos_mb": round(sum(r.get("size", 0) for r in report
+                                            if r.get("role") == "recurso" and r.get("ok")) / 1048576.0, 2),
                    "py_target": py_target,
                    "numpy_aviso": numpy_aviso_target(py_target) if pandas_info.get("numpy") else "",
                    "bank_libs": bank_libs,
                    "bank_verified": bank_verified,
                    "bank_incomplete": bank_incomplete,
+                   "compat": ({"resumen": _compat_rep.get("resumen"), "tabla": _bcm.tabla_estados(_compat_rep),
+                               "texto": _bcm.resumen_texto(_compat_rep), "entorno": _compat_rep.get("entorno")}
+                              if _compat_rep else None),
                    "_code_files": files, "_sep_files": sep_files})
     return zip_result, "framework_mlops_v2.zip", report
 
@@ -5828,6 +6098,9 @@ def _readme_custom(include_bank_libs, sources, report, extra_steps=False,
     rows = "\n".join(
         (f"- `{r.get('file')}` ← {r['name']} (módulo de apoyo, copia exacta; no está en el REGISTRY)"
          if r.get("role") == "apoyo" else
+         f"- `{r.get('file')}` ← {r['name']} (recurso del banco, {round(r.get('size', 0) / 1024.0)} KB; "
+         f"`BIN_PATH` apunta a `bank_src/`)" if r.get("role") == "recurso" and r.get("ok") else
+         f"- {r['name']} ⚠️ recurso NO incluido: {r.get('reason', '')}" if r.get("role") == "recurso" else
          f"- `{r.get('source')}` ← {r['name']} (job del banco `run(kernel)`: lo ejecuta `main.py` con `toolbox.Kernel`; "
          f"`python main.py --source {r.get('source')}`)"
          if r.get("kind") == "kernel" else

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, Fragment } from 'react'
 import { COMPILE_URL } from '../config'
 import OrdenFuentesPanel from './OrdenFuentesPanel'
 import VendorLibrariesTab from './VendorLibrariesTab'
@@ -43,6 +43,8 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
   }, [])
   // Archivos sueltos sin carpeta (job.py x8 se pisarian y perderian su ruta): aviso para subir la carpeta.
   const [avisoRuta, setAvisoRuta] = useState('')
+  const [avisoRecursos, setAvisoRecursos] = useState('')
+  const [maxRecMb, setMaxRecMb] = useState(100)    // limite por recurso no Python (modelos .xgb, bin/static, bin/opt...)
 
   // Entrada del usuario: codigo pegado + archivos de carpeta.
   const [pasted, setPasted] = useState('')
@@ -105,18 +107,53 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
       setVendorJob({ ...(d.job || {}), running: true, log: '' })
     } catch (e) { setVendorErr(String(e)) }
   }
+  // Recursos no Python del proyecto del banco (bin/static/*.xgb, bin/opt/profile.sh...): viajan EXACTOS en bank_src/.
+  // Espejo de _ruta_recurso() de src/mlops_pkg.py. Son datos INTERNOS: solo van al paquete generado.
+  const EXT_RECURSO = /\.(xgb|pkl|pickle|joblib|bin|model|json|txt|csv|parquet|sh|ya?ml|cfg|ini|npy|npz|onnx|pmml)$/i
+  const esRecurso = (path) => {
+    const partes = String(path || '').replace(/\\/g, '/').split('/').filter(Boolean)
+    if (partes.length < 2 || partes.includes('..') || !EXT_RECURSO.test(partes[partes.length - 1])) return false
+    const dirs = partes.slice(0, -1).map(d => d.toLowerCase())
+    if (dirs.includes('settings')) return false
+    let ini = dirs.lastIndexOf('bin') + 1
+    if (ini === 0) ini = dirs.findIndex(d => d === 'static' || d === 'opt')
+    if (ini < 0 || ini >= partes.length - 1) return false
+    return !['settings', 'jobs', 'toolbox', 'utils', 'bnmxverse', 'logs', '__pycache__', 'tests', '.git', 'node_modules'].includes(dirs[ini])
+  }
+  const tamFuente = (f) => f.b64 ? Math.floor(f.b64.length * 3 / 4) : (f.code || '').length
+  const recursos = files.filter(f => f.b64)
+  const recursosMb = recursos.reduce((a, f) => a + tamFuente(f), 0) / 1048576
   // Lee los .py de una carpeta o seleccion de archivos.
   const onPickFiles = async (fileList) => {
     // .py/.txt y, dentro de una carpeta 'settings', la config del banco (.json/.yaml/.yml/.cfg/.ini: spark.json, jobs.json, <modelo>/<job>.json)
-    const arr = Array.from(fileList || []).filter(f => /\.(py|txt)$/i.test(f.name) ||
-      (/\.(json|ya?ml|cfg|ini)$/i.test(f.name) && /(^|\/)settings\//i.test(f.webkitRelativePath || f.path || '')))
-    const read = await Promise.all(arr.map(f => new Promise(resolve => {
+    const rutaDe = (f) => f.webkitRelativePath || f.path || f.name
+    const todos = Array.from(fileList || [])
+    const avisosRec = []
+    const recs = todos.filter(f => esRecurso(rutaDe(f)))
+    const bigs = recs.filter(f => f.size > maxRecMb * 1048576)
+    bigs.forEach(f => avisosRec.push(`${rutaDe(f)} (${(f.size / 1048576).toFixed(1)} MB) supera el límite de ${maxRecMb} MB: omitido`))
+    const arr = todos.filter(f => !recs.includes(f) && (/\.(py|txt)$/i.test(f.name) ||
+      (/\.(json|ya?ml|cfg|ini)$/i.test(f.name) && /(^|\/)settings\//i.test(rutaDe(f)))))
+    const leerRec = (f) => new Promise(resolve => {
       const r = new FileReader()
-      r.onload = () => resolve({ name: f.webkitRelativePath || f.path || f.name, code: String(r.result || '') })
+      r.onload = () => resolve({ name: rutaDe(f), b64: String(r.result || '').split(',')[1] || '' })
+      r.onerror = () => resolve(null)
+      r.readAsDataURL(f)
+    })
+    const readRec = await Promise.all(recs.filter(f => !bigs.includes(f)).map(leerRec))
+    const readTxt = await Promise.all(arr.map(f => new Promise(resolve => {
+      const r = new FileReader()
+      r.onload = () => resolve({ name: rutaDe(f), code: String(r.result || '') })
       r.onerror = () => resolve(null)
       r.readAsText(f)
     })))
-    const sinRuta = read.filter(x => x && !x.name.includes('/'))
+    const read = [...readTxt, ...readRec]
+    const totRec = readRec.reduce((a, x) => a + (x && x.b64 ? x.b64.length * 3 / 4 : 0), 0) / 1048576
+    setAvisoRecursos(readRec.length || avisosRec.length
+      ? `${readRec.length} recurso(s) no Python incluidos (${totRec.toFixed(2)} MB; modelos/estáticos del banco: van solo al paquete generado, nunca a git).` +
+        (avisosRec.length ? ' ⚠ ' + avisosRec.join('; ') : '')
+      : '')
+    const sinRuta = readTxt.filter(x => x && !x.name.includes('/'))
     const dup = sinRuta.filter((x, i) => sinRuta.findIndex(y => y.name === x.name) !== i).map(x => x.name)
     setAvisoRuta(sinRuta.some(x => /^(job|main)\.py$/i.test(x.name)) || dup.length
       ? 'Archivos sin carpeta: ' + (dup.length ? `hay nombres repetidos (${[...new Set(dup)].join(', ')}) y solo se conserva uno. ` : '') +
@@ -180,7 +217,7 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
           full_env: fullEnv, spark_modo: sparkVar, variantes: sparkVar === 'ambas' ? 'ambas' : undefined,
           generar_sin_offline: sinOffline,
           plataformas: Object.keys(platExtra).filter(k => platExtra[k]),
-          py_target: pyTarget, registry,
+          py_target: pyTarget, registry, max_recurso_mb: maxRecMb,
         }),
       })
       const data = await res.json()
@@ -397,8 +434,8 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                   onChange={e => onPickFiles(e.target.files)} />
               </label>
               <label style={{ ...uploadBtn(t) }}>
-                📄 Archivos .py
-                <input type="file" accept=".py,.txt" multiple style={{ display: 'none' }}
+                📄 Archivos .py / recursos
+                <input type="file" accept=".py,.txt,.xgb,.pkl,.joblib,.bin,.model,.json,.csv,.parquet,.sh" multiple style={{ display: 'none' }}
                   onChange={e => onPickFiles(e.target.files)} />
               </label>
               {files.length > 0 && (
@@ -408,6 +445,14 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                 }}>Quitar todos</button>
               )}
             </div>
+            <label title="Tamaño máximo por recurso no Python (modelos .xgb/.pkl, bin/static, bin/opt…). Los más grandes se omiten con aviso."
+              style={{ fontSize: 11.5, color: t.muted || '#94a3b8', display: 'flex', alignItems: 'center', gap: 6 }}>
+              Límite por recurso (MB)
+              <input type="number" min="1" value={maxRecMb} onChange={e => setMaxRecMb(Math.max(1, Number(e.target.value) || 100))}
+                style={{ width: 70, padding: '3px 6px', borderRadius: 6, fontSize: 12, background: t.codeBg || '#081220',
+                         color: t.text || '#e2e8f0', border: `1px solid ${t.border || '#334155'}` }} />
+            </label>
+            {avisoRecursos && <div role="status" style={{ fontSize: 11.5, color: '#2dd4bf', padding: 6, borderRadius: 6, border: '1px solid #14b8a655' }}>📦 {avisoRecursos}</div>}
             {avisoRuta && <div role="alert" style={{ fontSize: 11.5, color: '#fbbf24', padding: 6, borderRadius: 6, border: '1px solid #f59e0b55' }}>⚠ {avisoRuta}</div>}
             <div style={{
               flex: 1, minHeight: 120, maxHeight: 180, overflow: 'auto', padding: 8, borderRadius: 8,
@@ -423,12 +468,14 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                     <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11.5 }}>
                       <span style={{ color: '#22c55e' }}>•</span>
                       <span style={{ color: t.text || '#e2e8f0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
+                      {f.b64 ? <span title="Recurso no Python del banco (bin/static, bin/opt…): va EXACTO a bank_src/ y BIN_PATH apunta ahí"
+                        style={{ marginLeft: 'auto', color: '#2dd4bf', whiteSpace: 'nowrap' }}>recurso</span> :
                       <label title="Marcado = job (entra al REGISTRY del router). Desmarcado = módulo de apoyo (utils, settings, toolbox…): se copia EXACTO a bank_src/ sin convertir. Se recuerda para la próxima vez."
                         style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 4, color: esJob(f) ? '#22c55e' : (t.muted || '#94a3b8'), whiteSpace: 'nowrap', cursor: 'pointer' }}>
                         <input type="checkbox" checked={esJob(f)} onChange={e => marcarJob(f.name, e.target.checked)} />
                         {esJob(f) ? 'job' : 'apoyo'}
-                      </label>
-                      <span style={{ color: t.dim || '#64748b' }}>{(f.code.length / 1024).toFixed(1)} KB</span>
+                      </label>}
+                      <span style={{ color: t.dim || '#64748b' }}>{(tamFuente(f) / 1024).toFixed(1)} KB</span>
                       <button onClick={() => setFiles(prev => prev.filter((_, k) => k !== i))}
                         style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', fontSize: 12 }}>✕</button>
                     </div>
@@ -687,6 +734,13 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                           {(meta.vendor_series || []).length ? ` (${meta.vendor_series.join(', ')})` : ''}. Monta con <code>bash setup.sh</code>.
                         </div>
                       )}
+                      {(meta?.recursos || []).length > 0 && (
+                        <div style={{ fontSize: 11.5, color: '#2dd4bf', marginBottom: 2 }}>
+                          📦 Recursos del banco incluidos en <code>bank_src/</code> ({meta.recursos.length} archivo(s), {meta.recursos_mb} MB;
+                          el runner fija <code>BIN_PATH</code> ahí):
+                          {meta.recursos.map(r => <div key={r.file}>· <code>{r.file}</code> ({(r.size / 1024).toFixed(1)} KB)</div>)}
+                        </div>
+                      )}
                       {Object.keys(meta?.modulos_faltantes || {}).length > 0 && (
                         <div style={{ fontSize: 11.5, color: '#fca5a5', marginBottom: 2, padding: 8, borderRadius: 6,
                                       border: '1px solid #ef444455' }}>
@@ -695,6 +749,41 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
                           archivos (se acomodan solos en su paquete) o cárgalos en <b>📚 Librerías del banco</b>:
                           {Object.entries(meta.modulos_faltantes).map(([p, ms]) =>
                             <div key={p}>· <code>{p}</code>: {ms.map(m => `${m}.py`).join(', ')}</div>)}
+                        </div>
+                      )}
+                      {meta?.compat && (meta.compat.tabla || []).length > 0 && (
+                        <div data-testid="compat-banco" style={{ fontSize: 11.5, marginBottom: 6, padding: 8, borderRadius: 6,
+                                      border: `1px solid ${(meta.compat.resumen?.BLOQUEADO ? '#ef4444' : meta.compat.resumen?.PARCHEABLE ? '#f59e0b' : '#22c55e')}77`,
+                                      color: t.text || '#e2e8f0' }}>
+                          <div style={{ fontWeight: 700, marginBottom: 4 }}>
+                            🔧 Compatibilidad de librerías del banco: {meta.compat.resumen?.OK || 0} OK · {meta.compat.resumen?.PARCHEABLE || 0} PARCHEABLE · {meta.compat.resumen?.BLOQUEADO || 0} BLOQUEADO
+                          </div>
+                          <table style={{ borderCollapse: 'collapse', fontSize: 11.5 }}>
+                            <tbody>
+                              {meta.compat.tabla.map(r => (
+                                <Fragment key={r.libreria}>
+                                  <tr>
+                                    <td style={{ padding: '1px 10px 1px 0', fontWeight: 700,
+                                                 color: r.estado === 'OK' ? '#4ade80' : r.estado === 'PARCHEABLE' ? '#fbbf24' : '#f87171' }}>{r.estado}</td>
+                                    <td style={{ padding: '1px 10px 1px 0' }}><code>{r.libreria}</code> {r.version}</td>
+                                    <td style={{ padding: '1px 0', color: t.dim || '#94a3b8' }}>
+                                      {r.usada ? '' : 'el modelo no la usa · '}{r.parches ? `${r.parches} parche(s)` : ''}{r.parches && r.bloqueos ? ' · ' : ''}{r.bloqueos ? `${r.bloqueos} bloqueo(s)` : ''}</td>
+                                  </tr>
+                                  {(r.detalle || []).map(d => (
+                                    <tr key={d.id}>
+                                      <td />
+                                      <td colSpan={2} style={{ padding: '0 0 2px 10px', color: d.estado === 'BLOQUEADO' ? '#fca5a5' : '#fcd34d' }}>
+                                        [{d.estado}] <code>{d.que}</code>: {d.por_que}</td>
+                                    </tr>))}
+                                </Fragment>))}
+                            </tbody>
+                          </table>
+                          {(meta.compat.resumen?.PARCHEABLE || meta.compat.resumen?.BLOQUEADO) ? (
+                            <div style={{ marginTop: 4, color: '#fbbf24' }}>
+                              Los parches se activan solos en DEMO/SIMULACIÓN; en REAL solo con <code>BNX_BANK_COMPAT=1</code>.
+                              Parches BNX sobre librerías del banco: NO validado contra la salida original. Pide al equipo dueño las librerías completas
+                              (Framework MLOps v2 → Librerías / Vendor → Banco, o <code>python preparar_vendor.py --bank-libs &lt;carpeta|zip&gt;</code>).
+                            </div>) : null}
                         </div>
                       )}
                       {Object.keys(meta?.workers_python || {}).length > 0 && (

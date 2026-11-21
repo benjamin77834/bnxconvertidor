@@ -700,6 +700,18 @@ class Run(object):
             if e.get("ev") == "fin" and e.get("job"):
                 self.recursos[e["job"]] = e.get("stats") or {}
 
+    def faltantes(self):
+        """Faltantes/parches de librerias del banco que dejo el runner (logs/BNX_FALTANTES.json del paquete): lo
+        que la pantalla muestra como tarjetas. [] si no hay."""
+        ruta = os.path.join(self.pkg, "logs", "BNX_FALTANTES.json")
+        try:
+            with open(ruta, "r", encoding="utf-8") as fh:
+                d = json.load(fh)
+            lista = d.get("faltantes", []) if isinstance(d, dict) else []
+        except (OSError, ValueError):
+            return []
+        return [f for f in lista if isinstance(f, dict)][:50]
+
     def muestras(self, moff=0, maximo=600):
         """(muestras y marcas nuevas desde el byte `moff`, nuevo offset) del monitor de recursos."""
         try:
@@ -722,7 +734,7 @@ class Run(object):
                     "monitor": mon, "monitor_offset": moff2, "recursos": dict(self.recursos),
                     "donde": self.donde, "encabezado": self.encabezado, "imagen": self.imagen, "env": self.env,
                     "demo_conf": (re.findall(r"\[demo\] config: (demo: [^\n]*)", self.log) or [""])[-1],
-                    "check_env": self.check_env}
+                    "check_env": self.check_env, "faltantes": self.faltantes()}
 
 
 def _stream(run, cmd, cwd, env, timeout):
@@ -1566,6 +1578,7 @@ def _cli(argv=None):
     p.add_argument("zip")
     p.add_argument("--job", default="todos")
     p.add_argument("--settings", default=None, help="carpeta bin/settings local (solo lectura)")
+    p.add_argument("--env", default=None, choices=("uat", "prod", "sbx"), help="ambiente de los settings del banco")
     p.add_argument("--timeout", type=int, default=None)
     p.add_argument("--donde", default="linux", choices=("linux", "mac"))
     p = sub.add_parser("cluster", help="BNX_SPARK=cluster bash run.sh con spark3-submit FALSO")
@@ -1586,7 +1599,7 @@ def _cli(argv=None):
                 return 0 if d["estado"] == "ok" else 1
             time.sleep(1)
     if a.cmd == "simular":
-        rid = iniciar("cli", os.path.abspath(a.zip), a.job, a.timeout, a.settings, a.donde)
+        rid = iniciar("cli", os.path.abspath(a.zip), a.job, a.timeout, a.settings, a.donde, a.env)
         off = 0
         while True:
             d = estado(rid, off)
