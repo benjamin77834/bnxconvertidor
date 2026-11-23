@@ -1218,6 +1218,8 @@ def formatear(info, job=None):
     ver = (" " + info["version"]) if info.get("version") else ""
     if info.get("tipo") == "parcheado":
         return "PARCHEADO: %s (no validado)" % info.get("componente", "")
+    if info.get("tipo") == "executors":
+        return _formatear_executors(info, job)
     donde = [d.format(lib=lib) for d in DONDE_CARGARLO]
     if info.get("tipo") == "dependencia":
         donde = ["(1) agregar la dependencia al vendor del paquete: python preparar_vendor.py --extra "
@@ -1247,6 +1249,67 @@ def formatear(info, job=None):
     return "\n".join(ls)
 
 
+def _formatear_executors(info, job):
+    n = info.get("necesita") or {}
+    lugar = ("%s:%s" % (n["archivo"], n.get("linea", ""))) if n.get("archivo") else "(UDF no identificada en el codigo del paquete)"
+    detalle = n.get("condicion")
+    mod = info.get("modulo", "?")
+    return "\n".join([
+        "FALTA %s en los EXECUTORS (Python de los workers del cluster)" % mod,
+        "  Lo necesita: %s -> %s%s" % (job, lugar, (" (%s)" % detalle) if detalle else ""),
+        "  Por que: el job ejecuta Python en los workers (UDF) y el Python de los nodos no tiene las librerias del paquete",
+        "  Donde/como: (1) dejar BNX_DEPS_EXECUTORS=1 (por defecto) para enviar las librerias del venv con el job (--archives ...#bnxdeps; no instala nada en los nodos)",
+        "              (2) BNX_EXECUTOR_PYTHON=/usr/bin/python3.11 si los nodos lo tienen",
+        "              (3) BNX_SPARK=local para correr en el edge (local[*], sin YARN)",
+        "              (4) reemplazar la UDF por funciones de Spark (ej. quita_acentos: lower(translate(coalesce(c,''), 'áéíóúüñÁÉÍÓÚÜÑ', 'aeiouunAEIOUUN')))",
+        "              (5) BNX_UDF_NATIVAS=1: el framework cambia las UDF simples (quita_acentos, rmeans, rt_mod...) por expresiones nativas de Spark sin tocar el codigo del banco",
+        "  Pasos: 1) volver a correr con BNX_SPARK=cluster bash run.sh (sin BNX_DEPS_EXECUTORS=0): hace el probe y envia las librerias; "
+        "2) si el probe dice que el Python de los nodos no es %s, usar (2), (3) o (4); 3) volver a correr %s." % (
+            info.get("python_venv") or "el del paquete", job)])
+_RX_WORKER = re.compile(r"worker\.py|cloudpickle|PythonException|pyspark\.zip")
+_RX_MOD_WORKER = re.compile(r"(?:ModuleNotFoundError|ImportError): No module named '([\w.]+)'")
+def _udfs_detectadas():
+    """UDF detectadas por run.sh (.bnx_workers_python.json) -> [(archivo, linea)], las .register primero."""
+    aqui = _aqui()
+    cand = [os.environ.get("BNX_WORKERS_JSON") or "", os.path.join(aqui, ".bnx_workers_python.json"),
+            os.path.join(os.path.dirname(aqui), ".bnx_workers_python.json"),
+            os.path.join(os.getcwd(), ".bnx_workers_python.json")]
+    for c in cand:
+        if c and os.path.isfile(c):
+            try:
+                with io.open(c, "r", encoding="utf-8") as fh:
+                    hs = json.load(fh).get("hallazgos", [])
+            except (OSError, ValueError):
+                continue
+            udf = [h for h in hs if "udf" in h.get("patron", "")]
+            udf.sort(key=lambda h: 0 if ".register" in h.get("codigo", "") else 1)
+            return [(h["archivo"], h["linea"]) for h in (udf or hs)]
+    return []
+def traducir_error_executor(ex, job=None):
+    """PythonException de un WORKER (worker.py/cloudpickle) con 'No module named X' -> info tipo 'executors'
+    (mismo formato de faltantes). None si el error no es de ese tipo."""
+    if isinstance(ex, str):
+        texto = ex
+    else:
+        partes, vistos, e = [], set(), ex
+        while e is not None and id(e) not in vistos:
+            vistos.add(id(e))
+            partes.append(str(e))
+            e = e.__cause__ or e.__context__
+        texto = "\n".join(partes)
+    m = _RX_MOD_WORKER.search(texto)
+    if not m or not _RX_WORKER.search(texto):
+        return None
+    mod = m.group(1)
+    udfs = _udfs_detectadas()
+    necesita = {}
+    if udfs:
+        necesita = {"archivo": udfs[0][0], "linea": udfs[0][1]}
+        if len(udfs) > 1:
+            necesita["condicion"] = "tambien: " + ", ".join("%s:%s" % u for u in udfs[1:3])
+    return {"componente": mod, "modulo": mod, "libreria": "Python de los executors", "version": None,
+            "necesita": necesita, "tipo": "executors", "python_venv": "%d.%d" % sys.version_info[:2],
+            "por_que": "el job ejecuta Python en los workers (UDF) y el Python de los nodos no tiene las librerias del paquete"}
 class BNXFaltaComponente(ImportError):
     """Falta un componente de una libreria del banco. str(e) es el mensaje completo en espanol."""
 
@@ -1435,6 +1498,9 @@ def traducir_excepcion(ex, job=None):
     import traceback
     if isinstance(ex, BNXFaltaComponente):
         return ex.info
+    _inf_ex = traducir_error_executor(ex, job)
+    if _inf_ex is not None:
+        return _inf_ex
     rep = cargar_reporte()
     try:
         frames = traceback.extract_tb(ex.__traceback__)
@@ -1741,6 +1807,10 @@ def _shim_fn(modulo, nombre, hallazgo):
 
 def instalar(reporte=None, forzar=None):
     """Registra los parches del reporte. Idempotente. Devuelve True si quedaron activos."""
+    try:
+        instalar_udf_nativas()      # UDF simples -> expresiones nativas (BNX_UDF_NATIVAS=1), independiente del reporte
+    except Exception:
+        pass
     if _ESTADO["instalado"]:
         return _ESTADO["activo"]
     _ESTADO["instalado"] = True
@@ -1923,6 +1993,787 @@ def placeholder(nombre, modulo, origen, excepcion):
     _Faltante.__name__ = nombre
     _Faltante.__qualname__ = nombre
     return _Faltante
+
+
+# =====================================================================================================
+# UDF NATIVAS: UDF de Python "simples" -> expresion NATIVA de Spark (no hay Python en los executors)
+# =====================================================================================================
+# Una UDF de Python corre en el Python de CADA worker y cloudpickle importa ahi lo que use la funcion
+# (numpy, unidecode...). Si el cuerpo es una expresion simple (if/return, asignaciones, aritmetica,
+# comparaciones, x[i], np.mean/sum/min/max sobre arrays, float()/int(), lower/upper/strip/replace,
+# unidecode(x)) se traduce por AST a una expresion de Spark SQL / Column y NO se registra la UDF:
+#   * uso en SQL (spark.sql / selectExpr / expr / filter('...')): el texto se reescribe antes de ejecutarse
+#   * uso via DataFrame (udf_obj(col)): devuelve un Column nativo
+# Activo con BNX_UDF_NATIVAS=1 (run.sh lo pone en modo cluster cuando el probe dice que el Python de los
+# executors no sirve). Lo que no se puede traducir se queda como UDF de Python (via --archives + probe).
+# Diferencias conocidas: unidecode translitera TODO Unicode (emojis, griego, cirilico, CJK, '€'->'EUR');
+# la version nativa solo quita acentos/diacriticos latinos (Latin-1 + Latin Extended-A/B) y algunas
+# ligaduras; el resto queda igual. Errores de Python (division entre 0, None en aritmetica) dan NULL en Spark.
+_MULTI_ACENTOS = (("\u00df", "ss"), ("\u1e9e", "SS"), ("\u00e6", "ae"), ("\u00c6", "AE"), ("\u0153", "oe"),
+                  ("\u0152", "OE"), ("\u00fe", "th"), ("\u00de", "Th"), ("\u0133", "ij"), ("\u0132", "IJ"))
+_EXTRA_ACENTOS = {"\u00d8": "O", "\u00f8": "o", "\u00d0": "D", "\u00f0": "d", "\u0110": "D", "\u0111": "d",
+                  "\u0141": "L", "\u0142": "l", "\u0131": "i", "\u0126": "H", "\u0127": "h", "\u0166": "T",
+                  "\u0167": "t", "\u017f": "s", "\u00aa": "a", "\u00ba": "o", "\u00bf": "?", "\u00a1": "!",
+                  "\u00a0": " ", "\u00b4": "'"}
+def _tabla_acentos():
+    import unicodedata
+    multi = set(m for m, _ in _MULTI_ACENTOS)
+    orig, dest = [], []
+    for cp in range(0xC0, 0x250):
+        ch = chr(cp)
+        if ch in _EXTRA_ACENTOS or ch in multi:
+            continue
+        base = "".join(c for c in unicodedata.normalize("NFKD", ch) if not unicodedata.combining(c))
+        if len(base) == 1 and ord(base) < 128 and base.isalpha():
+            orig.append(ch)
+            dest.append(base)
+    for k in sorted(_EXTRA_ACENTOS):
+        orig.append(k)
+        dest.append(_EXTRA_ACENTOS[k])
+    return "".join(orig), "".join(dest)
+ACENTOS_ORIG, ACENTOS_DEST = _tabla_acentos()
+_NATIVAS = {}           # nombre (minusculas) -> _UdfNativa registradas en esta sesion
+class _NoNativa(Exception):
+    pass
+_FN_QUAL = {"numpy.mean": "mean", "numpy.average": "mean", "numpy.sum": "sum", "numpy.min": "amin",
+            "numpy.amin": "amin", "numpy.max": "amax", "numpy.amax": "amax", "numpy.abs": "abs",
+            "numpy.absolute": "abs", "numpy.sqrt": "sqrt", "math.sqrt": "sqrt", "numpy.log": "log",
+            "math.log": "log", "numpy.exp": "exp", "math.exp": "exp", "unidecode.unidecode": "sin_acentos",
+            "unidecode.unidecode_expect_ascii": "sin_acentos", "unidecode.unidecode_expect_nonascii": "sin_acentos"}
+_FN_BUILTIN = {"float": "cast_double", "int": "cast_long", "abs": "abs", "sum": "sum", "round": "bround",
+               "min": "least", "max": "greatest"}
+_METODOS = {"lower": "lower", "upper": "upper", "strip": "strip", "lstrip": "lstrip", "rstrip": "rstrip",
+            "replace": "replace"}
+_FN_STR = ("sin_acentos", "lower", "upper", "strip", "lstrip", "rstrip", "replace", "concat")
+_TIPOS_OK = {"string": "string", "double": "double", "float": "float", "int": "int", "integer": "int",
+             "bigint": "bigint", "long": "bigint", "boolean": "boolean", "smallint": "smallint", "tinyint": "tinyint"}
+_TIPOS_AST = {"StringType": "string", "DoubleType": "double", "FloatType": "float", "IntegerType": "int",
+              "LongType": "bigint", "BooleanType": "boolean", "ShortType": "smallint", "ByteType": "tinyint"}
+def _tipo_retorno(rt):
+    """None -> 'string' (default de Spark); DataType o DDL simple -> nombre SQL; complejo -> None."""
+    if rt is None:
+        return "string"
+    s = rt if isinstance(rt, str) else (rt.simpleString() if hasattr(rt, "simpleString") else None)
+    return _TIPOS_OK.get((s or "").strip().lower())
+def _const(v):
+    return ("const", v)
+def _slice_val(sub):
+    s = sub.slice
+    if s.__class__.__name__ == "Index":     # Python 3.8
+        s = s.value
+    return s
+class _Traductor(object):
+    def __init__(self, params, resolver):
+        self.params = list(params)
+        self.resolver = resolver
+        self.usa = set()
+        self.arrays = set()      # params usados como array (x[i], np.mean(x), filtros...)
+        self.lvars = 0
+    def nombre_fn(self, func):
+        if isinstance(func, ast.Name):
+            r = self.resolver(func.id) if func.id not in self.params else None
+            if r is None:
+                if func.id == "len":
+                    return None
+                if func.id in _FN_BUILTIN:
+                    return _FN_BUILTIN[func.id]
+                raise _NoNativa("funcion %s" % func.id)
+            if r[0] == "fn" and r[1] in _FN_QUAL:
+                return _FN_QUAL[r[1]]
+            raise _NoNativa("funcion %s" % func.id)
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) and func.value.id not in self.params:
+            r = self.resolver(func.value.id)
+            if r is not None and r[0] == "mod":
+                q = "%s.%s" % (r[1], func.attr)
+                if q in _FN_QUAL:
+                    return _FN_QUAL[q]
+                raise _NoNativa("funcion %s" % q)
+        return None
+    def expr(self, n, env):
+        if isinstance(n, ast.Constant):
+            if n.value is None or isinstance(n.value, (bool, int, float, str)):
+                return _const(n.value)
+            raise _NoNativa("constante %r" % (n.value,))
+        if isinstance(n, ast.ListComp):
+            if len(n.generators) != 1 or not isinstance(n.generators[0].target, ast.Name) \
+                    or getattr(n.generators[0], "is_async", 0):
+                raise _NoNativa("comprension compleja")
+            g = n.generators[0]
+            arr = self._arr(self.expr(g.iter, env))
+            self.lvars += 1
+            lv = ("lvar", "bnx_v%d" % self.lvars)
+            env2 = dict(env)
+            env2[g.target.id] = lv
+            if g.ifs:
+                conds = [self.test(c, env2) for c in g.ifs]
+                arr = ("hof", "filter", arr, lv[1], conds[0] if len(conds) == 1 else ("and", conds))
+            if not (isinstance(n.elt, ast.Name) and n.elt.id == g.target.id):
+                arr = ("hof", "transform", arr, lv[1], self.expr(n.elt, env2))
+            return arr
+        if isinstance(n, ast.Name):
+            if n.id in env:
+                return env[n.id]
+            if n.id in self.params:
+                return ("param", self.params.index(n.id))
+            r = self.resolver(n.id)
+            if r is not None and r[0] == "const":
+                return _const(r[1])
+            raise _NoNativa("nombre libre %s" % n.id)
+        if isinstance(n, ast.UnaryOp):
+            a = self.expr(n.operand, env)
+            if isinstance(n.op, ast.USub):
+                return ("neg", a)
+            if isinstance(n.op, ast.UAdd):
+                return a
+            if isinstance(n.op, ast.Not):
+                return ("not", self.test(n.operand, env))
+            raise _NoNativa("operador unario")
+        if isinstance(n, ast.BinOp):
+            a, b = self.expr(n.left, env), self.expr(n.right, env)
+            ops = {ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/", ast.Mod: "pmod", ast.Pow: "pow"}
+            op = ops.get(type(n.op))
+            if op is None:
+                raise _NoNativa("operador %s" % type(n.op).__name__)
+            if op == "+" and "s" in (_tipo(a), _tipo(b)):
+                return ("fn", "concat", [a, b])
+            if "s" in (_tipo(a), _tipo(b)):
+                raise _NoNativa("aritmetica con texto")
+            return ("bin", op, a, b)
+        if isinstance(n, (ast.Compare, ast.BoolOp)):
+            return self.test(n, env)
+        if isinstance(n, ast.IfExp):
+            return ("case", self.test(n.test, env), self.expr(n.body, env), self.expr(n.orelse, env))
+        if isinstance(n, ast.Subscript):
+            i = _slice_val(n)
+            if isinstance(i, ast.UnaryOp) and isinstance(i.op, ast.USub) and isinstance(i.operand, ast.Constant):
+                i = ast.Constant(-i.operand.value)
+            if not (isinstance(i, ast.Constant) and type(i.value) is int):
+                raise _NoNativa("indice no constante")
+            return ("idx", self._arr(self.expr(n.value, env)), i.value)
+        if isinstance(n, ast.Call):
+            if n.keywords or any(isinstance(a, ast.Starred) for a in n.args):
+                raise _NoNativa("llamada con keywords/*args")
+            fn = self.nombre_fn(n.func)
+            if fn is None and isinstance(n.func, ast.Attribute):
+                m = _METODOS.get(n.func.attr)
+                if m is None:
+                    raise _NoNativa("metodo .%s" % n.func.attr)
+                obj = self.expr(n.func.value, env)
+                args = [self.expr(a, env) for a in n.args]
+                if m == "replace":
+                    if len(args) != 2 or not all(a[0] == "const" and isinstance(a[1], str) for a in args):
+                        raise _NoNativa("replace no literal")
+                elif args:
+                    raise _NoNativa(".%s con argumentos" % m)
+                self.usa.add(m)
+                return ("fn", m, [obj] + args)
+            if fn is None and isinstance(n.func, ast.Name) and n.func.id == "len" and self.resolver("len") is None:
+                if len(n.args) != 1:
+                    raise _NoNativa("len con varios argumentos")
+                a = self.expr(n.args[0], env)
+                if _tipo(a) == "s":
+                    self.usa.add("length")
+                    return ("fn", "length", [a])
+                self.usa.add("size")
+                return ("fn", "size", [self._arr(a)])
+            args = [self.expr(a, env) for a in n.args]
+            if fn in ("mean", "sum", "amin", "amax") and len(args) == 1:
+                args = [self._arr(args[0])]
+            if fn in ("least", "greatest"):
+                if len(args) == 1:
+                    fn = "amin" if fn == "least" else "amax"
+                    args = [self._arr(args[0])]
+                elif len(args) < 2:
+                    raise _NoNativa("min/max sin argumentos")
+            elif fn == "bround":
+                if len(args) != 2 or not (args[1][0] == "const" and type(args[1][1]) is int):
+                    raise _NoNativa("round sin decimales constantes")
+            elif len(args) != 1:
+                raise _NoNativa("%s con %d argumentos" % (fn, len(args)))
+            self.usa.add(fn)
+            return ("fn", fn, args)
+        raise _NoNativa("expresion %s" % type(n).__name__)
+    def _arr(self, ir):
+        """Marca que `ir` se usa como array; un param solo puede ser array si no se usa como texto."""
+        if ir[0] == "param":
+            self.arrays.add(ir[1])
+        elif _tipo(ir) not in ("a", "?"):
+            raise _NoNativa("se usa como array algo que no lo es")
+        return ir
+    def test(self, n, env):
+        if isinstance(n, ast.BoolOp):
+            return ("and" if isinstance(n.op, ast.And) else "or", [self.test(v, env) for v in n.values])
+        if isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.Not):
+            return ("not", self.test(n.operand, env))
+        if isinstance(n, ast.Constant) and isinstance(n.value, bool):
+            return _const(n.value)
+        if isinstance(n, ast.Compare):
+            partes, izq = [], n.left
+            for op, der in zip(n.ops, n.comparators):
+                es_none = lambda x: isinstance(x, ast.Constant) and x.value is None
+                if isinstance(op, (ast.Is, ast.Eq, ast.IsNot, ast.NotEq)) and (es_none(der) or es_none(izq)):
+                    lado = izq if es_none(der) else der
+                    t = ("isnull", self.expr(lado, env))
+                    partes.append(t if isinstance(op, (ast.Is, ast.Eq)) else ("not", t))
+                else:
+                    cmp = {ast.Eq: "=", ast.NotEq: "<>", ast.Lt: "<", ast.LtE: "<=", ast.Gt: ">", ast.GtE: ">="}.get(type(op))
+                    if cmp is None:
+                        raise _NoNativa("comparacion %s" % type(op).__name__)
+                    partes.append(("cmp", cmp, self.expr(izq, env), self.expr(der, env)))
+                izq = der
+            return partes[0] if len(partes) == 1 else ("and", partes)
+        raise _NoNativa("condicion por 'verdad' (if x:) no traducible")
+    def bloque(self, stmts, env):
+        for i, s in enumerate(stmts):
+            if isinstance(s, ast.Pass) or (isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant)
+                                           and isinstance(s.value.value, str)):
+                continue
+            if isinstance(s, (ast.Assign, ast.AnnAssign)):
+                tg = s.targets if isinstance(s, ast.Assign) else [s.target]
+                if len(tg) != 1 or not isinstance(tg[0], ast.Name) or s.value is None:
+                    raise _NoNativa("asignacion compleja")
+                env = dict(env)
+                env[tg[0].id] = self.expr(s.value, env)
+                continue
+            if isinstance(s, ast.Return):
+                return self.expr(s.value, env) if s.value is not None else _const(None)
+            if isinstance(s, ast.If):
+                resto = list(stmts[i + 1:])
+                return ("case", self.test(s.test, env), self.bloque(list(s.body) + resto, env),
+                        self.bloque(list(s.orelse) + resto, env))
+            raise _NoNativa("sentencia %s" % type(s).__name__)
+        raise _NoNativa("la funcion no termina en return")
+def _tipo(ir):
+    k = ir[0]
+    if k == "const":
+        v = ir[1]
+        return "s" if isinstance(v, str) else ("?" if v is None else ("b" if isinstance(v, bool) else "n"))
+    if k == "fn":
+        if ir[1] in _FN_STR:
+            return "s"
+        return "n"
+    if k in ("bin", "neg"):
+        return "n"
+    if k == "hof":
+        return "a"
+    if k in ("cmp", "and", "or", "not", "isnull"):
+        return "b"
+    if k == "case":
+        ts = set(t for t in (_tipo(ir[2]), _tipo(ir[3])) if t != "?")
+        return ts.pop() if len(ts) == 1 else "?"
+    return "?"
+def _q(s):
+    return "'%s'" % s.replace("\\", "\\\\").replace("'", "\\'")
+def _sql(ir, args):
+    k = ir[0]
+    if k == "param":
+        return "(%s)" % args[ir[1]]
+    if k == "lvar":
+        return ir[1]
+    if k == "hof":
+        return "%s(%s, %s -> %s)" % (ir[1], _sql(ir[2], args), ir[3], _sql(ir[4], args))
+    if k == "const":
+        v = ir[1]
+        if v is None:
+            return "NULL"
+        if isinstance(v, bool):
+            return "true" if v else "false"
+        if isinstance(v, int):
+            return str(v)
+        if isinstance(v, float):
+            return "CAST('%r' AS DOUBLE)" % v
+        return _q(v)
+    if k == "neg":
+        return "(- %s)" % _sql(ir[1], args)
+    if k == "bin":
+        a, b = _sql(ir[2], args), _sql(ir[3], args)
+        if ir[1] == "pmod":
+            return "pmod(%s, %s)" % (a, b)
+        if ir[1] == "pow":
+            return "power(%s, %s)" % (a, b)
+        return "(%s %s %s)" % (a, ir[1], b)
+    if k == "cmp":
+        return "(%s %s %s)" % (_sql(ir[2], args), ir[1], _sql(ir[3], args))
+    if k == "isnull":
+        return "(%s IS NULL)" % _sql(ir[1], args)
+    if k == "not":
+        return "(NOT %s)" % _sql(ir[1], args)
+    if k in ("and", "or"):
+        return "(%s)" % (" %s " % k.upper()).join(_sql(x, args) for x in ir[1])
+    if k == "case":
+        return "CASE WHEN %s THEN %s ELSE %s END" % tuple(_sql(x, args) for x in ir[1:])
+    if k == "idx":
+        a = _sql(ir[1], args)
+        return ("%s[%d]" % (a, ir[2])) if ir[2] >= 0 else ("element_at(%s, %d)" % (a, ir[2]))
+    fn, xs = ir[1], [_sql(x, args) for x in ir[2]]
+    agg = "aggregate(%s, CAST(0 AS DOUBLE), (bnx_acc, bnx_e) -> bnx_acc + bnx_e)"
+    if fn == "mean":
+        return "(%s / size(%s))" % (agg % xs[0], xs[0])
+    if fn == "sum":
+        return agg % xs[0]
+    if fn == "sin_acentos":
+        t = xs[0]
+        for m, r in _MULTI_ACENTOS:
+            t = "replace(%s, %s, %s)" % (t, _q(m), _q(r))
+        return "translate(%s, %s, %s)" % (t, _q(ACENTOS_ORIG), _q(ACENTOS_DEST))
+    if fn in ("strip", "lstrip", "rstrip"):
+        rx = {"strip": "^\\s+|\\s+$", "lstrip": "^\\s+", "rstrip": "\\s+$"}[fn]
+        return "regexp_replace(%s, %s, '')" % (xs[0], _q(rx))
+    simple = {"amin": "array_min", "amax": "array_max", "abs": "abs", "sqrt": "sqrt", "log": "ln", "exp": "exp",
+              "lower": "lower", "upper": "upper", "least": "least", "greatest": "greatest", "bround": "bround",
+              "replace": "replace", "concat": "concat", "size": "size", "length": "length"}
+    if fn in simple:
+        return "%s(%s)" % (simple[fn], ", ".join(xs))
+    if fn == "cast_double":
+        return "CAST(%s AS DOUBLE)" % xs[0]
+    if fn == "cast_long":
+        return "CAST(%s AS BIGINT)" % xs[0]
+    raise _NoNativa("sin traduccion SQL para %s" % fn)
+def _col(ir, cols, lv=None):
+    from pyspark.sql import functions as F
+    lv = lv or {}
+    _c = _col
+    def _col_(x, c):
+        return _c(x, c, lv)
+    k = ir[0]
+    if k == "param":
+        return cols[ir[1]]
+    if k == "lvar":
+        return lv[ir[1]]
+    if k == "hof":
+        arr = _col_(ir[2], cols)
+        def body(v):
+            d = dict(lv)
+            d[ir[3]] = v
+            return _c(ir[4], cols, d)
+        return (F.filter if ir[1] == "filter" else F.transform)(arr, body)
+    if k == "const":
+        v = ir[1]
+        return F.lit(v).cast("double") if isinstance(v, float) else F.lit(v)
+    if k == "neg":
+        return -_col_(ir[1], cols)
+    if k == "bin":
+        a, b = _col_(ir[2], cols), _col_(ir[3], cols)
+        return {"+": lambda: a + b, "-": lambda: a - b, "*": lambda: a * b, "/": lambda: a / b,
+                "pmod": lambda: F.pmod(a, b), "pow": lambda: F.pow(a, b)}[ir[1]]()
+    if k == "cmp":
+        a, b = _col_(ir[2], cols), _col_(ir[3], cols)
+        return {"=": lambda: a == b, "<>": lambda: a != b, "<": lambda: a < b, "<=": lambda: a <= b,
+                ">": lambda: a > b, ">=": lambda: a >= b}[ir[1]]()
+    if k == "isnull":
+        return _col_(ir[1], cols).isNull()
+    if k == "not":
+        return ~_col_(ir[1], cols)
+    if k in ("and", "or"):
+        xs = [_col_(x, cols) for x in ir[1]]
+        r = xs[0]
+        for x in xs[1:]:
+            r = (r & x) if k == "and" else (r | x)
+        return r
+    if k == "case":
+        return F.when(_col_(ir[1], cols), _col_(ir[2], cols)).otherwise(_col_(ir[3], cols))
+    if k == "idx":
+        a = _col_(ir[1], cols)
+        return a.getItem(ir[2]) if ir[2] >= 0 else F.element_at(a, ir[2])
+    fn, xs = ir[1], [_col_(x, cols) for x in ir[2]]
+    def agg(a):
+        return F.aggregate(a, F.lit(0.0).cast("double"), lambda acc, e: acc + e)
+    if fn == "mean":
+        return agg(xs[0]) / F.size(xs[0])
+    if fn == "sum":
+        return agg(xs[0])
+    if fn == "sin_acentos":
+        t = xs[0]
+        for m, r in _MULTI_ACENTOS:
+            t = F.regexp_replace(t, m, r)
+        return F.translate(t, ACENTOS_ORIG, ACENTOS_DEST)
+    if fn in ("strip", "lstrip", "rstrip"):
+        rx = {"strip": r"^\s+|\s+$", "lstrip": r"^\s+", "rstrip": r"\s+$"}[fn]
+        return F.regexp_replace(xs[0], rx, "")
+    if fn == "replace":
+        a, b = ir[2][1][1], ir[2][2][1]
+        return F.regexp_replace(xs[0], "\\Q%s\\E" % a.replace("\\E", "\\E\\\\E\\Q"),
+                                b.replace("\\", "\\\\").replace("$", "\\$"))
+    if fn == "bround":
+        return F.bround(xs[0], ir[2][1][1])
+    simple = {"amin": F.array_min, "amax": F.array_max, "abs": F.abs, "sqrt": F.sqrt, "log": F.log, "exp": F.exp,
+              "lower": F.lower, "upper": F.upper, "least": F.least, "greatest": F.greatest, "concat": F.concat,
+              "size": F.size, "length": F.length}
+    if fn in simple:
+        return simple[fn](*xs)
+    if fn == "cast_double":
+        return xs[0].cast("double")
+    if fn == "cast_long":
+        return xs[0].cast("bigint")
+    raise _NoNativa("sin traduccion Column para %s" % fn)
+class _UdfNativa(object):
+    """Reemplazo de una UDF: se llama como la UDF (Column) y sabe escribirse en SQL."""
+    def __init__(self, nombre, params, ir, rt, usa):
+        self.nombre, self.params, self.ir, self.rt, self.usa = nombre, list(params), ir, rt, sorted(usa)
+        self.__name__ = nombre
+        self.evalType = None
+    def sql(self, args):
+        return "CAST(%s AS %s)" % (_sql(self.ir, args), self.rt.upper())
+    def __call__(self, *cols):
+        from pyspark.sql import functions as F
+        cs = [F.col(c) if isinstance(c, str) else c for c in cols]
+        if len(cs) != len(self.params):
+            raise TypeError("%s() recibe %d argumento(s), no %d" % (self.nombre, len(self.params), len(cs)))
+        c = _col(self.ir, cs).cast(self.rt)
+        if all(isinstance(x, str) for x in cols):
+            c = c.alias("%s(%s)" % (self.nombre, ", ".join(cols)))
+        return c
+    def describir(self):
+        fns = {"sin_acentos": "translate", "mean": "aggregate/size", "sum": "aggregate", "amin": "array_min",
+               "amax": "array_max", "cast_double": "cast", "cast_long": "cast", "strip": "regexp_replace",
+               "lstrip": "regexp_replace", "rstrip": "regexp_replace", "bround": "bround", "log": "ln"}
+        usa = []
+        for u in self.usa:                    # orden: primero translate (acentos) y luego el resto
+            x = fns.get(u, u)
+            if x not in usa:
+                usa.append(x)
+        usa = sorted(usa, key=lambda x: (x != "translate", x)) or ["case/aritmetica"]
+        return "UDF %s -> expresion nativa Spark (%s), sin Python en los workers" % (self.nombre, "/".join(usa))
+def _nodo_funcion(tree, nombre=None, nargs=None):
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and (nombre is None or n.name == nombre):
+            return n
+    lams = [n for n in ast.walk(tree) if isinstance(n, ast.Lambda) and (nargs is None or len(n.args.args) == nargs)]
+    return lams[0] if len(lams) == 1 else None
+def nativizar_nodo(fn, resolver, rt=None, nombre=None):
+    """FunctionDef/Lambda (AST) -> _UdfNativa. Lanza _NoNativa con el motivo si no es traducible."""
+    tipo = _tipo_retorno(rt)
+    if tipo is None:
+        raise _NoNativa("tipo de retorno complejo (%s)" % (rt,))
+    a = fn.args
+    if a.vararg or a.kwarg or a.kwonlyargs or a.defaults or getattr(a, "posonlyargs", None):
+        raise _NoNativa("argumentos con *args/**kw/defaults")
+    if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and fn.decorator_list and not all(
+            "udf" in ast.dump(d) for d in fn.decorator_list):
+        raise _NoNativa("funcion decorada")
+    params = [x.arg for x in a.args]
+    tr = _Traductor(params, resolver)
+    ir = tr.expr(fn.body, {}) if isinstance(fn, ast.Lambda) else tr.bloque(list(fn.body), {})
+    if _param_como_texto(ir, tr.arrays):
+        raise _NoNativa("un argumento se usa como array y como texto")
+    t = _tipo(ir)
+    if (tipo == "string" and t in ("n", "b")) or (tipo != "string" and tipo != "boolean" and t == "s"):
+        raise _NoNativa("el tipo de la expresion no coincide con el tipo de retorno %s" % tipo)
+    if tipo == "string" and t == "?" and "sin_acentos" not in tr.usa:
+        raise _NoNativa("retorno string sin tipo seguro")
+    nat = _UdfNativa(nombre or getattr(fn, "name", "udf"), params, ir, tipo, tr.usa)
+    _sql(ir, ["x%d" % i for i in range(len(params))])     # valida que hay traduccion SQL
+    return nat
+def _param_como_texto(ir, arrays):
+    if not isinstance(ir, tuple):
+        return False
+    if ir[0] == "fn" and ir[1] in _FN_STR + ("length",) and any(
+            isinstance(x, tuple) and x[0] == "param" and x[1] in arrays for x in ir[2]):
+        return True
+    return any(_param_como_texto(x, arrays) for x in ir[1:] if isinstance(x, tuple)) or any(
+        _param_como_texto(y, arrays) for x in ir[1:] if isinstance(x, list) for y in x)
+def _resolver_runtime(f):
+    import types as _types
+    g = dict(getattr(f, "__globals__", None) or {})
+    code = getattr(f, "__code__", None)
+    if code is not None and getattr(f, "__closure__", None):
+        for n, c in zip(code.co_freevars, f.__closure__):
+            try:
+                g[n] = c.cell_contents
+            except ValueError:
+                pass
+    def r(nombre):
+        if nombre not in g:
+            return None
+        v = g[nombre]
+        if isinstance(v, _types.ModuleType):
+            return ("mod", v.__name__)
+        if isinstance(v, (bool, int, float, str)):
+            return ("const", v)
+        if callable(v):
+            return ("fn", "%s.%s" % (getattr(v, "__module__", "") or "", getattr(v, "__name__", "")))
+        return None
+    return r
+def _resolver_estatico(tree):
+    m = {}
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Import):
+            for a in n.names:
+                m[a.asname or a.name.split(".")[0]] = ("mod", a.name if a.asname else a.name.split(".")[0])
+        elif isinstance(n, ast.ImportFrom) and n.module and not n.level:
+            for a in n.names:
+                m[a.asname or a.name] = ("fn", "%s.%s" % (n.module, a.name))
+    for n in getattr(tree, "body", []):
+        if (isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name)
+                and isinstance(n.value, ast.Constant) and isinstance(n.value.value, (bool, int, float, str))):
+            m[n.targets[0].id] = ("const", n.value.value)
+    return m.get
+def nativizar(f, returnType=None, nombre=None):
+    """Funcion Python -> _UdfNativa (o _NoNativa). Lee el codigo fuente con inspect (no la ejecuta)."""
+    import inspect
+    import textwrap
+    try:
+        src = textwrap.dedent(inspect.getsource(f))
+    except (OSError, TypeError):
+        raise _NoNativa("sin codigo fuente")
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        raise _NoNativa("codigo fuente no parseable (lambda en medio de una linea)")
+    es_lambda = getattr(f, "__name__", "") == "<lambda>"
+    nodo = _nodo_funcion(tree, None if es_lambda else f.__name__,
+                         f.__code__.co_argcount if es_lambda else None)
+    if nodo is None:
+        raise _NoNativa("no se encontro la definicion")
+    return nativizar_nodo(nodo, _resolver_runtime(f), returnType, nombre or getattr(f, "__name__", "udf"))
+def _rt_ast(n):
+    if n is None:
+        return None
+    if isinstance(n, ast.Constant) and isinstance(n.value, str):
+        return n.value
+    c = n.func if isinstance(n, ast.Call) else n
+    nm = c.attr if isinstance(c, ast.Attribute) else getattr(c, "id", None)
+    return _TIPOS_AST.get(nm, "complejo")
+def analizar_udfs_fuente(texto):
+    """Analisis ESTATICO de un .py: cada registro/creacion de UDF -> {"linea","nombre","nativa","motivo"}."""
+    try:
+        tree = ast.parse(texto or "")
+    except (SyntaxError, ValueError):
+        return []
+    res = _resolver_estatico(tree)
+    out = []
+    def evaluar(linea, nombre, fn_nodo, rt):
+        if fn_nodo is None:
+            out.append({"linea": linea, "nombre": nombre, "nativa": False, "motivo": "no se encontro la funcion"})
+            return
+        try:
+            nativizar_nodo(fn_nodo, res, rt, nombre)
+            out.append({"linea": linea, "nombre": nombre, "nativa": True, "motivo": ""})
+        except _NoNativa as e:
+            out.append({"linea": linea, "nombre": nombre, "nativa": False, "motivo": str(e)})
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr in ("register", "registerFunction") \
+                and isinstance(n.func.value, ast.Attribute) and n.func.value.attr == "udf" or (
+                isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "registerFunction"):
+            if len(n.args) < 2:
+                continue
+            nombre = n.args[0].value if isinstance(n.args[0], ast.Constant) else "?"
+            kw = dict((k.arg, k.value) for k in n.keywords)
+            rt = _rt_ast(n.args[2] if len(n.args) > 2 else kw.get("returnType"))
+            f = n.args[1]
+            nodo = f if isinstance(f, ast.Lambda) else (_nodo_funcion(tree, f.id) if isinstance(f, ast.Name) else None)
+            evaluar(n.lineno, str(nombre), nodo, rt)
+        elif isinstance(n, ast.Call) and ((isinstance(n.func, ast.Name) and n.func.id == "udf") or (
+                isinstance(n.func, ast.Attribute) and n.func.attr == "udf")) and n.args:
+            f = n.args[0]
+            kw = dict((k.arg, k.value) for k in n.keywords)
+            rt = _rt_ast(n.args[1] if len(n.args) > 1 else kw.get("returnType"))
+            if isinstance(f, ast.Lambda):
+                evaluar(n.lineno, "<lambda>", f, rt)
+            elif isinstance(f, ast.Name):
+                evaluar(n.lineno, f.id, _nodo_funcion(tree, f.id), rt)
+        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for d in n.decorator_list:
+                dd = d.func if isinstance(d, ast.Call) else d
+                if (getattr(dd, "id", None) or getattr(dd, "attr", None)) == "udf":
+                    rt = None
+                    if isinstance(d, ast.Call):
+                        kw = dict((k.arg, k.value) for k in d.keywords)
+                        rt = _rt_ast(d.args[0] if d.args else kw.get("returnType"))
+                    evaluar(n.lineno, n.name, n, rt)
+    return out
+def udf_nativas_activas():
+    return os.environ.get("BNX_UDF_NATIVAS", "").strip().lower() in ("1", "true", "si", "yes", "on")
+def _intentar_nativa(f, returnType, nombre):
+    func, rt = f, returnType
+    if hasattr(f, "func") and hasattr(f, "evalType"):          # ya es UserDefinedFunction
+        if f.evalType != 100:                                   # pandas_udf / arrow: no se toca
+            return None
+        func, rt = f.func, f.returnType
+    import types as _types
+    if not isinstance(func, _types.FunctionType):
+        return None
+    try:
+        nat = nativizar(func, rt, nombre)
+    except _NoNativa as e:
+        clave = ("udf_python", nombre)
+        if clave not in _ESTADO["avisados"]:
+            _ESTADO["avisados"].add(clave)
+            print("[compat] UDF %s: se queda en Python en los workers (%s)" % (nombre, e))
+        return None
+    except Exception:
+        return None
+    msg = nat.describir()
+    print("[compat] " + msg)
+    avisar_parche(msg, extra="unidecode translitera mas que acentos (emojis, otros alfabetos); la version nativa solo "
+                             "quita diacriticos latinos" if "sin_acentos" in nat.usa else
+                  "errores de Python (division entre 0, None) dan NULL en Spark")
+    return nat
+def _es_sql_id(c):
+    return c.isalnum() or c == "_"
+def _fin_literal(t, i):
+    q = t[i]
+    j = i + 1
+    while j < len(t):
+        if t[j] == "\\" and q != "`":
+            j += 2
+            continue
+        if t[j] == q:
+            return j + 1
+        j += 1
+    return len(t)
+def _args_llamada(t, i):
+    """t[i] == '(' -> ([args texto], indice tras ')') o None si no cierra."""
+    prof, j, ini, args = 0, i, i + 1, []
+    while j < len(t):
+        c = t[j]
+        if c in "'\"`":
+            j = _fin_literal(t, j)
+            continue
+        if c == "(":
+            prof += 1
+        elif c == ")":
+            prof -= 1
+            if prof == 0:
+                args.append(t[ini:j])
+                if len(args) == 1 and not args[0].strip():
+                    args = []
+                return args, j + 1
+        elif c == "," and prof == 1:
+            args.append(t[ini:j])
+            ini = j + 1
+        j += 1
+    return None
+def reescribir_sql(texto, nativas=None):
+    """Reemplaza las llamadas a UDF nativizadas (nombre(args)) por su expresion nativa. Respeta literales y
+    comentarios; si el numero de argumentos no cuadra deja la llamada tal cual."""
+    nat = _NATIVAS if nativas is None else nativas
+    if not nat or not isinstance(texto, str):
+        return texto
+    rx = re.compile(r"(%s)\s*\(" % "|".join(re.escape(n) for n in sorted(nat, key=len, reverse=True)), re.I)
+    out, i, n = [], 0, len(texto)
+    while i < n:
+        c = texto[i]
+        if c in "'\"`":
+            j = _fin_literal(texto, i)
+            out.append(texto[i:j])
+            i = j
+            continue
+        if texto.startswith("--", i):
+            j = texto.find("\n", i)
+            j = n if j < 0 else j
+            out.append(texto[i:j])
+            i = j
+            continue
+        if texto.startswith("/*", i):
+            j = texto.find("*/", i + 2)
+            j = n if j < 0 else j + 2
+            out.append(texto[i:j])
+            i = j
+            continue
+        m = rx.match(texto, i) if (i == 0 or not (_es_sql_id(texto[i - 1]) or texto[i - 1] == ".")) else None
+        if m:
+            u = nat[m.group(1).lower()]
+            r = _args_llamada(texto, m.end() - 1)
+            if r is not None and len(r[0]) == len(u.params):
+                out.append(u.sql([reescribir_sql(a, nat).strip() for a in r[0]]))
+                i = r[1]
+                continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+def instalar_udf_nativas(forzar=None):
+    """Engancha UDFRegistration.register, F.udf, SparkSession.sql, F.expr, selectExpr y filter/where. Idempotente."""
+    if _ESTADO.get("udf_hooks"):
+        return True
+    if not (forzar if forzar is not None else udf_nativas_activas()):
+        return False
+    try:
+        from pyspark.sql import udf as _udfmod, SparkSession
+        from pyspark.sql import functions as F
+        from pyspark.sql import dataframe as _dfmod
+        from pyspark.sql.types import DataType
+    except Exception:
+        return False
+    _ESTADO["udf_hooks"] = True
+    _ESTADO["udf_orig"] = []
+    def _p(obj, attr, nuevo):
+        _ESTADO["udf_orig"].append((obj, attr, obj.__dict__.get(attr)))
+        setattr(obj, attr, nuevo)
+    orig_reg = _udfmod.UDFRegistration.register
+    def register(self, name, f, returnType=None):
+        nat = _intentar_nativa(f, returnType, name)
+        if nat is None:
+            return orig_reg(self, name, f, returnType)
+        _NATIVAS[name.lower()] = nat
+        return nat
+    _p(_udfmod.UDFRegistration, "register", register)
+    orig_sql = SparkSession.sql
+    def sql(self, sqlQuery, *a, **k):
+        return orig_sql(self, reescribir_sql(sqlQuery), *a, **k)
+    _p(SparkSession, "sql", sql)
+    clases = [_dfmod.DataFrame]
+    try:
+        from pyspark.sql.classic import dataframe as _cdf     # Spark 4
+        clases.append(_cdf.DataFrame)
+    except Exception:
+        pass
+    for cls in clases:
+        if "selectExpr" in cls.__dict__:
+            def _mk_sel(o):
+                def selectExpr(self, *expr):
+                    if len(expr) == 1 and isinstance(expr[0], list):
+                        expr = tuple(expr[0])
+                    return o(self, *[reescribir_sql(e) for e in expr])
+                return selectExpr
+            _p(cls, "selectExpr", _mk_sel(cls.__dict__["selectExpr"]))
+        for nm in ("filter", "where"):
+            if nm in cls.__dict__:
+                def _mk_f(o):
+                    def filtro(self, condition):
+                        return o(self, reescribir_sql(condition) if isinstance(condition, str) else condition)
+                    return filtro
+                _p(cls, nm, _mk_f(cls.__dict__[nm]))
+    mods = [F]
+    try:
+        from pyspark.sql.functions import builtin as _b       # Spark 4
+        mods.append(_b)
+    except Exception:
+        pass
+    for mod in mods:
+        o_expr = mod.expr
+        def _mk_e(o):
+            def expr(s):
+                return o(reescribir_sql(s))
+            return expr
+        _p(mod, "expr", _mk_e(o_expr))
+        o_udf = mod.udf
+        def _mk_u(o):
+            def udf(f=None, returnType=None, **kw):
+                if f is None or isinstance(f, (str, DataType)):
+                    rt = f if f is not None else returnType
+                    return lambda func: udf(func, rt, **kw)
+                if not kw.get("useArrow"):
+                    nat = _intentar_nativa(f, returnType, getattr(f, "__name__", "udf"))
+                    if nat is not None:
+                        return nat
+                return o(f, returnType, **kw) if returnType is not None else o(f, **kw)
+            return udf
+        _p(mod, "udf", _mk_u(o_udf))
+    return True
+def desinstalar_udf_nativas():
+    """Deshace los enganches de instalar_udf_nativas (tests)."""
+    for obj, attr, orig in reversed(_ESTADO.get("udf_orig") or []):
+        if orig is None:
+            try:
+                delattr(obj, attr)
+            except AttributeError:
+                pass
+        else:
+            setattr(obj, attr, orig)
+    _ESTADO["udf_orig"] = []
+    _ESTADO["udf_hooks"] = False
+    _NATIVAS.clear()
 
 
 def main(argv=None):

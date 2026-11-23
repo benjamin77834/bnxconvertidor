@@ -660,7 +660,7 @@ def _imports_pandas_numpy(code):
 _PLANTILLAS_SIN_PANDAS = ("tests/", "bnx_demo/", "framework_mlops_v2/core/", "framework_mlops_v2/features/",
                           "framework_mlops_v2/monitoring/", "framework_mlops_v2/scoring/",
                           "framework_mlops_v2/pipeline.py", "framework_mlops_metrics_pkg/", "mex_lib_cs/")
-_PLANTILLAS_RAIZ = ("main.py", "check_env.py", "bnx_sparkconf.py", "setup.py")
+_PLANTILLAS_RAIZ = ("main.py", "check_env.py", "bnx_sparkconf.py", "probe_workers.py", "setup.py")
 
 
 def decidir_pandas(files, ml_libs=None, extra_steps=False, ciencia=False, codigo_banco=None, max_archivos=6):
@@ -1574,11 +1574,90 @@ if [ -n "$CLUSTER_SUBMIT" ]; then
     ARCH_ARGS=(--archives ".bnx_venv.tar.gz#bnxenv" \
       --conf "spark.pyspark.python=./bnxenv/.venv/bin/python")
   fi
+  # Python en los EXECUTORS (UDF/rdd/pandas_udf...): SIN instalar nada en los otros nodos.
+  # Si el codigo (modelo + bank_src + wheels del banco) ejecuta Python en los workers, se envia
+  # el site-packages del venv con el job (--archives <tgz>#bnxdeps + executorEnv.PYTHONPATH) tras
+  # un PROBE (mini job en YARN) que comprueba que el Python de los executors es de la misma
+  # version menor. BNX_DEPS_EXECUTORS=0 lo desactiva; BNX_EXECUTOR_PYTHON=/ruta/python3.11 fija
+  # el Python de los executors; BNX_PROBE_IGNORAR=1 sigue aunque el probe diga que no sirve.
+  DEPS_ARGS=()
+  if [ -n "${BNX_EXECUTOR_PYTHON:-}" ]; then
+    DEPS_ARGS+=(--conf "spark.pyspark.python=$BNX_EXECUTOR_PYTHON")
+    echo "[run.sh] python de los EXECUTORS: $BNX_EXECUTOR_PYTHON (BNX_EXECUTOR_PYTHON)"
+  fi
+  if [ "${BNX_DEPS_EXECUTORS:-1}" = "0" ]; then
+    echo "[run.sh] BNX_DEPS_EXECUTORS=0: no se envian librerias a los executors (los workers usan su Python tal cual)"
+  elif [ "${BNX_ENVIAR_VENV:-0}" = "1" ]; then
+    :   # el venv completo ya viaja con BNX_ENVIAR_VENV
+  elif [ -f bnx_sparkconf.py ]; then
+    mkdir -p .bnx_tmp
+    _WS=0
+    python bnx_sparkconf.py --scan-workers --out .bnx_workers_python.json --wheels .venv/bnx_vendor_cache/banco/wheels bank_src framework_mlops_v2 || _WS=$?
+    if [ "${BNX_DEPS_FORZAR:-0}" = "1" ]; then _WS=10; fi
+    if [ "$_WS" = "10" ]; then
+      _DE=0
+      python bnx_sparkconf.py --empaquetar-deps --dir .bnx_deps --mods numpy,pandas,unidecode,dateutil,cytoolz --out .bnx_tmp/deps.env || _DE=$?
+      if [ "$_DE" != "0" ] || [ ! -f .bnx_tmp/deps.env ]; then
+        echo "[run.sh] AVISO: no se pudo empaquetar el site-packages del venv; los executors usaran su Python tal cual." >&2
+      else
+        . ./.bnx_tmp/deps.env
+        _EPP="./bnxdeps"
+        _PREV=$(grep -h '^spark[.]executorEnv[.]PYTHONPATH=' .bnx_spark_conf.properties 2>/dev/null | tail -1 | cut -d= -f2-)
+        if [ -z "$_PREV" ] && [ -n "${SPARK_CONF_DIR:-}" ]; then
+          _PREV=$(grep -hE '^[[:space:]]*spark[.]executorEnv[.]PYTHONPATH' "$SPARK_CONF_DIR/spark-defaults.conf" 2>/dev/null | tail -1 | sed -E 's/^[^[:space:]=]+[[:space:]=]+//')
+        fi
+        if [ -n "$_PREV" ]; then _EPP="./bnxdeps:$_PREV"; fi
+        echo "[run.sh] el codigo ejecuta Python en los WORKERS (UDF...): se envia el site-packages del venv ($BNX_DEPS_MB MB, Python $BNX_DEPS_MINOR, sin pyspark/py4j) con el job; NO se instala nada en los nodos"
+        echo "[run.sh]   --archives $BNX_DEPS_TGZ#bnxdeps  spark.executorEnv.PYTHONPATH=$_EPP"
+        DEPS_ARGS+=(--archives "$BNX_DEPS_TGZ#bnxdeps" --conf "spark.executorEnv.PYTHONPATH=$_EPP")
+        _PK="${BNX_DEPS_HASH}_$(printf '%s' "${BNX_EXECUTOR_PYTHON:-}|${BNX_MASTER:-yarn}" | cksum | cut -d' ' -f1)"
+        _PF=".bnx_tmp/probe_$_PK.json"
+        _PR=0
+        if [ -f "$_PF" ] && [ "${BNX_PROBE_FORZAR:-0}" != "1" ] && [ -z "$(find "$_PF" -mmin +"${BNX_PROBE_TTL_MIN:-720}" 2>/dev/null)" ]; then
+          python bnx_sparkconf.py --probe-estado --out "$_PF" || _PR=$?
+        else
+          echo "[run.sh] PROBE de los executors (mini job en YARN: Python y librerias que ven los workers)..."
+          rm -f "$_PF"
+          "$CLUSTER_SUBMIT" --master "${BNX_MASTER:-yarn}" --deploy-mode client \
+            --driver-java-options "$JOPTS" \
+            --conf "spark.pyspark.driver.python=$PWD/.venv/bin/python" \
+            ${CONF_ARGS[@]+"${CONF_ARGS[@]}"} \
+            --conf spark.dynamicAllocation.initialExecutors=1 --conf spark.dynamicAllocation.minExecutors=1 \
+            --conf spark.dynamicAllocation.maxExecutors=2 \
+            ${DEPS_ARGS[@]+"${DEPS_ARGS[@]}"} \
+            bnx_sparkconf.py --probe --mods="$BNX_DEPS_MODS" --out "$_PF" || _PR=$?
+        fi
+        if [ "$_PR" = "3" ] && [ "${BNX_UDF_NATIVAS:-auto}" != "0" ]; then
+          # El Python de los executors no sirve: las UDF simples se cambian por expresiones nativas de
+          # Spark (bank_compat, sin tocar el codigo del banco). Si TODO el Python en workers detectado
+          # se puede cambiar, el job corre sin Python en los workers.
+          export BNX_UDF_NATIVAS=1
+          if python bnx_sparkconf.py --workers-nativos --out .bnx_workers_python.json; then
+            echo "[run.sh] el Python de los executors no sirve, pero TODAS las UDF detectadas se cambian por expresiones nativas de Spark (BNX_UDF_NATIVAS=1): se sigue sin Python en los workers"
+            _PR=0
+          fi
+        fi
+        if [ "$_PR" = "3" ]; then
+          if [ "${BNX_PROBE_IGNORAR:-0}" = "1" ]; then
+            echo "[run.sh] AVISO: el probe dice que los executors no sirven; BNX_PROBE_IGNORAR=1: se sigue bajo tu riesgo." >&2
+          else
+            echo "[run.sh] No se lanza el job. (BNX_PROBE_FORZAR=1 repite el probe; BNX_DEPS_EXECUTORS=0 omite todo esto)" >&2
+            exit 1
+          fi
+        elif [ "$_PR" != "0" ]; then
+          echo "[run.sh] AVISO: no se pudo completar el probe de los executors (codigo $_PR); se sigue con las librerias enviadas." >&2
+        fi
+      fi
+    else
+      echo "[run.sh] sin Python en workers detectado (udf/rdd/pandas_udf): no se envian librerias a los executors"
+    fi
+  fi
   exec "$CLUSTER_SUBMIT" --master "${BNX_MASTER:-yarn}" --deploy-mode client \
     --driver-java-options "$JOPTS" \
     --conf "spark.pyspark.driver.python=$PWD/.venv/bin/python" \
     ${CONF_ARGS[@]+"${CONF_ARGS[@]}"} \
     ${ARCH_ARGS[@]+"${ARCH_ARGS[@]}"} \
+    ${DEPS_ARGS[@]+"${DEPS_ARGS[@]}"} \
     --conf spark.io.compression.codec="${BNX_IO_CODEC:-lz4}" \
     --conf spark.shuffle.mapStatus.compression.codec="${BNX_IO_CODEC:-lz4}" \
     main.py "$@"
@@ -1602,6 +1681,45 @@ fi
 exec python main.py "$@"
 '''
 
+_PROBE_WORKERS_PY = '''# -*- coding: utf-8 -*-
+"""probe_workers.py - que Python ven los EXECUTORS de YARN (no instala nada, no toca datos).
+Correr con el spark3-submit del cluster, SIN exportar PYSPARK_PYTHON (asi se ve el default del cluster):
+  spark3-submit --master yarn --deploy-mode client probe_workers.py
+y de nuevo forzando Python 3.11 en los nodos:
+  spark3-submit --master yarn --deploy-mode client --conf spark.pyspark.python=/usr/bin/python3.11 probe_workers.py
+Imprime el conjunto de (python, version mayor.menor, numpy importable, pandas importable) de ~8 particiones.
+Compatible con Python 3.6+ (puede correr con el Python del cluster)."""
+from __future__ import print_function
+import sys
+from pyspark.sql import SparkSession
+def _w(_):
+    import sys as _s
+    def _ok(m):
+        try:
+            __import__(m)
+            return True
+        except Exception:
+            return False
+    return (_s.executable, "%d.%d" % _s.version_info[:2], "numpy=%s" % _ok("numpy"), "pandas=%s" % _ok("pandas"))
+def main():
+    spark = SparkSession.builder.appName("bnx_probe_workers").getOrCreate()
+    sc = spark.sparkContext
+    print("[probe_workers] DRIVER: %s (Python %d.%d) master=%s" % (sys.executable, sys.version_info[0], sys.version_info[1], sc.master))
+    try:
+        res = sorted(set(sc.parallelize(range(8), 8).map(_w).collect()))
+    except Exception as e:
+        print("[probe_workers] ERROR en los executors: %s" % str(e)[-1500:])
+        print("[probe_workers] Si dice 'different version': el Python de los nodos NO es el del driver (ver NOTAS_EJECUCION.md).")
+        spark.stop()
+        return 1
+    print("[probe_workers] EXECUTORS (python, version, numpy, pandas):")
+    for r in res:
+        print("[probe_workers]   %s" % (r,))
+    spark.stop()
+    return 0
+if __name__ == "__main__":
+    sys.exit(main())
+'''
 from src.spark_server_sh import SPARK_CFG_SH as _SPARK_CFG_SH
 with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "bnx_sparkconf.py"), encoding="utf-8") as _fh:
     _SPARKCONF_PY = _fh.read()   # viaja en la raiz del paquete (run.sh y main.py lo usan)
@@ -3613,6 +3731,44 @@ muchos archivos pequeños = demasiadas particiones; `preflight` lento = problema
 Para contar filas escritas (una pasada extra, apagada por defecto): `BNX_CONTAR_FILAS=1`.
 Para saltar el chequeo previo del catálogo: `BNX_PREFLIGHT=0`.
 
+### Python en los executors: librerías enviadas con el job (sin instalar en los nodos)
+Caso real: `PythonException ... worker.py ... cloudpickle.loads ... ModuleNotFoundError: No module named 'numpy'`. El
+código del banco registra UDF (`udf.register("quita_acentos", ...)`, y las mex-lib: feature_engineering, group_by...). Esas
+funciones corren en el **Python de los workers**, que no tiene las librerías del `.venv` (el venv solo lo usa el driver).
+**Qué hace `run.sh` solo** (modo cluster, `BNX_DEPS_EXECUTORS=1` por defecto): si detecta Python en workers (modelo, `bank_src`
+y wheels del banco; resultado en `.bnx_workers_python.json`) empaqueta **solo el site-packages** del venv (sin intérprete, sin
+`pyspark`/`py4j`, sin `__pycache__`) en `.bnx_deps/bnxdeps-<hash>.tar.gz` (cacheado por hash del venv), lo envía con
+`--archives <tgz>#bnxdeps` y fija `spark.executorEnv.PYTHONPATH=./bnxdeps` (antepone; conserva lo que ya fije el cluster).
+Es temporal (vive en el contenedor YARN del job): **no se instala nada en los nodos**.
+Solo funciona si el Python de los executors es de la **misma versión menor (3.11)** que el venv. Por eso antes hace un
+**probe** (mini job en YARN, cacheado 12 h en `.bnx_tmp/probe_*.json`; `BNX_PROBE_FORZAR=1` lo repite). Si no coincide, **no corre
+el job a ciegas**: imprime las opciones y sale (`BNX_PROBE_IGNORAR=1` sigue igual).
+**Comandos para Angel** (en el edge, sin exportar `PYSPARK_PYTHON`):
+1. `spark3-submit --master yarn --deploy-mode client probe_workers.py` (Python por defecto del cluster)
+2. `spark3-submit --master yarn --deploy-mode client --conf spark.pyspark.python=/usr/bin/python3.11 probe_workers.py`
+Resultado y qué hacer:
+- (1) imprime versión `3.11` y `numpy=False`: todo listo, `BNX_SPARK=cluster bash run.sh ...` envía las librerías.
+- (1) falla con "different version" o imprime otra versión, y (2) imprime `3.11`: usar `BNX_EXECUTOR_PYTHON=/usr/bin/python3.11 BNX_SPARK=cluster bash run.sh ...`.
+- Ninguna da 3.11: preguntar a plataforma qué Python 3.11 hay en los nodos (otra ruta); o reescribir la UDF con funciones de Spark SQL
+  (`quita_acentos` → `lower(translate(coalesce(c,''), 'áéíóúüñÁÉÍÓÚÜÑ', 'aeiouunAEIOUUN'))`); plan B: `BNX_SPARK=local bash run.sh ...` en el edge.
+- Desactivar todo: `BNX_DEPS_EXECUTORS=0`. Forzar el envío aunque no se detecte UDF: `BNX_DEPS_FORZAR=1`.
+Si aun así falla en runtime con ese error, el framework lo traduce a "FALTA <módulo> en los EXECUTORS" (terminal, log, `BNX_FALTANTES.json`, pantalla).
+**Qué UDF pedía numpy en el caso de RPS:** `rmeans` de la mex-lib *feature engineering* (`base_features.py` /
+`feature_engineering_standard.py`: `np.mean(x)`), activada por `"rmeans"` en `config_custom.json`. cloudpickle manda la
+función por valor y en el worker importa sus globales (`np`). `quita_acentos` (data_pull) pediría `unidecode`, no numpy.
+El error salió del `worker.py` del executor, que antes de leer la UDF ya validó que su Python es de la misma versión menor que
+el driver: lo más probable es que el probe salga bien y baste con enviar el site-packages.
+**UDF nativas (`BNX_UDF_NATIVAS=1`; run.sh lo activa solo si el probe dice que el Python de los executors no sirve):**
+`bank_compat` intercepta `udf.register` / `F.udf` / `@udf` y, si el cuerpo de la función es simple (if/return,
+asignaciones, aritmética, comparaciones, `x[i]`, `np.mean/sum/min/max` sobre arrays, `[v for v in x if ...]`, `len`,
+`float/int`, `lower/upper/strip/replace`, `unidecode(x)`), NO registra la UDF de Python: la cambia por una expresión nativa de
+Spark (`translate`, `aggregate`, `filter`, `CASE WHEN`...). En SQL (`spark.sql`, `selectExpr`, `expr`, `filter('...')`) se
+reescribe el texto; vía DataFrame devuelve un `Column`. No se toca el código del banco. En el log:
+`[compat] UDF quita_acentos -> expresion nativa Spark (translate/lower), sin Python en los workers` y en `BNX_FALTANTES.json`
+como PARCHEADO (no validado). Se cambian `quita_acentos`, `rmeans`, `rt_mod`, `df_mod`; `incremental` (bucle) se queda en
+Python (no usa numpy). Diferencias: `unidecode` translitera todo Unicode (emojis, griego, cirílico, `€`→`EUR`); la versión
+nativa solo quita diacríticos latinos (Latin-1, Latin Extended-A/B, ß/æ/œ/ø/ł...). Errores de Python (índice fuera de rango,
+división entre 0) siguen la regla de Spark (`spark.sql.ansi.enabled`: error o NULL).
 ### Cuándo SÍ hace falta Python en los workers
 Estos patrones ejecutan Python **dentro de los executors** y fallan en YARN si los nodos no tienen
 Python 3.11 con las mismas librerías:
@@ -5995,6 +6151,7 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     files["setup.sh"] = _SETUP_SH
     files["run.sh"] = _RUN_SH
     files["bnx_sparkconf.py"] = _SPARKCONF_PY
+    files["probe_workers.py"] = _PROBE_WORKERS_PY
     files["cfg.example.json"] = _CFG_EXAMPLE
     files["NOTAS_EJECUCION.md"] = _NOTAS_EJECUCION
     files["pytest.ini"] = _PYTEST_INI   # pytest solo en tests/, ignora __MACOSX/vendor
@@ -6281,6 +6438,7 @@ def build_mlops_package(include_bank_libs=True, extra_steps=False,
         "setup.sh": _SETUP_SH,
         "run.sh": _RUN_SH,
         "bnx_sparkconf.py": _SPARKCONF_PY,
+        "probe_workers.py": _PROBE_WORKERS_PY,
         "cfg.example.json": _CFG_EXAMPLE,
         "NOTAS_EJECUCION.md": _NOTAS_EJECUCION,
         "pytest.ini": _PYTEST_INI,

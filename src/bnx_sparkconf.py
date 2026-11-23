@@ -271,7 +271,8 @@ _PATRONES_WORKERS = (
 )
 _ML_IMPORT = re.compile(r"^\s*(?:import|from)\s+(sklearn|xgboost|lightgbm|scipy|statsmodels)\b", re.M)
 AVISO_WORKERS = ("este job ejecuta Python en los workers: en YARN fallara si los nodos no tienen "
-                 "Python 3.11 con estas librerias; alternativas: reescribir con funciones de Spark SQL, "
+                 "Python 3.11 con estas librerias (run.sh en modo cluster las envia con el job: BNX_DEPS_EXECUTORS=1, "
+                 "BNX_EXECUTOR_PYTHON=/ruta/python3.11); alternativas: reescribir con funciones de Spark SQL, "
                  "o hacer el calculo en el driver tras agregar (toPandas sobre un resultado pequeno)")
 
 
@@ -294,6 +295,240 @@ def detectar_python_en_workers(code):
     return hallazgos
 
 
+# ---------------------------------------------------------------------------
+# Dependencias Python para los EXECUTORS (sin instalar nada en los otros nodos)
+# ---------------------------------------------------------------------------
+# Si el job ejecuta Python en los workers (UDF...), cloudpickle importa en CADA executor los
+# modulos que usa la funcion (numpy, unidecode...). run.sh empaqueta el site-packages del venv
+# (sin interprete, sin pyspark/py4j) en un .tar.gz, lo envia con --archives <tgz>#bnxdeps y pone
+# spark.executorEnv.PYTHONPATH=./bnxdeps. Solo sirve si el Python de los executors es de la
+# MISMA version menor que el del venv: antes se hace un PROBE (mini job en YARN).
+_EXCLUIR_DEPS = ("pyspark", "py4j")
+DEPS_ALIAS = "bnxdeps"
+def _es_excluido(nombre):
+    if nombre == "__pycache__" or nombre.endswith(".pyc"):
+        return True
+    return nombre.lower().replace("_", "-").split("-")[0].split(".")[0] in _EXCLUIR_DEPS
+def site_packages():
+    import sysconfig
+    return os.environ.get("BNX_DEPS_SITE_PACKAGES") or sysconfig.get_paths()["purelib"]
+def minor_actual():
+    return "%d.%d" % sys.version_info[:2]
+def hash_venv(sp=None):
+    """Hash estable del contenido instalado (nombre-version de cada dist-info + version menor de Python)."""
+    import hashlib
+    sp = sp or site_packages()
+    h = hashlib.sha1(minor_actual().encode())
+    for n in sorted(os.listdir(sp)):
+        if n.endswith((".dist-info", ".egg-info")) and not _es_excluido(n):
+            h.update(n.encode())
+    return h.hexdigest()[:12]
+def empaquetar_deps(destino, sp=None):
+    """Crea (o reutiliza) <destino>/bnxdeps-<hash>.tar.gz con el CONTENIDO de site-packages en la raiz,
+    sin pyspark/py4j/__pycache__. Devuelve (ruta, hash, mb, reutilizado)."""
+    import tarfile
+    sp = sp or site_packages()
+    hv = hash_venv(sp)
+    os.makedirs(destino, exist_ok=True)
+    ruta = os.path.join(destino, "bnxdeps-%s.tar.gz" % hv)
+    if os.path.isfile(ruta) and os.path.getsize(ruta) > 0:
+        return ruta, hv, os.path.getsize(ruta) / 1048576.0, True
+    def filtro(ti):
+        return None if any(_es_excluido(parte) for parte in ti.name.split("/")) else ti
+    tmp = ruta + ".tmp"
+    with tarfile.open(tmp, "w:gz") as tf:
+        for n in sorted(os.listdir(sp)):
+            if not _es_excluido(n):
+                tf.add(os.path.join(sp, n), arcname=n, filter=filtro)
+    os.replace(tmp, ruta)
+    for viejo in os.listdir(destino):
+        if viejo.startswith("bnxdeps-") and viejo.endswith(".tar.gz") and viejo != os.path.basename(ruta):
+            try:
+                os.remove(os.path.join(destino, viejo))
+            except OSError:
+                pass
+    return ruta, hv, os.path.getsize(ruta) / 1048576.0, False
+def escanear_workers(raices=(), wheels_dir=None):
+    """Busca Python en workers en el codigo del modelo/bank_src (raices) y dentro de las wheels del banco.
+    -> [{"archivo","linea","patron","codigo"}]. Archivos de wheels: 'wheel.whl!ruta/interna.py'."""
+    import zipfile
+    out = []
+    try:
+        import bank_compat as _bcn          # junto a este archivo en el paquete: analisis de UDF nativizables
+        _udfs = getattr(_bcn, "analizar_udfs_fuente", None)
+    except Exception:
+        _udfs = None
+    def agregar(nombre, texto):
+        hs = detectar_python_en_workers(texto)
+        nat = {}
+        if hs and _udfs is not None:
+            try:
+                nat = dict((u["linea"], u) for u in _udfs(texto))
+            except Exception:
+                nat = {}
+        for h in hs:
+            r = {"archivo": nombre, "linea": h["linea"], "patron": h["patron"], "codigo": h["codigo"]}
+            u = nat.get(h["linea"])
+            r["nativa"] = bool(u and u.get("nativa") and h["patron"] == "udf")
+            if u:
+                r["udf"] = u.get("nombre")
+                if not u.get("nativa"):
+                    r["motivo"] = u.get("motivo")
+            out.append(r)
+    for raiz in raices:
+        for base, dirs, files in os.walk(raiz):
+            dirs[:] = [d for d in dirs if d not in ("__pycache__", ".venv", ".git", "logs")]
+            for f in sorted(files):
+                if f.endswith(".py"):
+                    fp = os.path.join(base, f)
+                    try:
+                        with open(fp, encoding="utf-8", errors="replace") as fh:
+                            agregar(os.path.relpath(fp), fh.read())
+                    except OSError:
+                        pass
+    if wheels_dir and os.path.isdir(wheels_dir):
+        for w in sorted(os.listdir(wheels_dir)):
+            if not w.endswith(".whl"):
+                continue
+            try:
+                with zipfile.ZipFile(os.path.join(wheels_dir, w)) as z:
+                    for n in sorted(z.namelist()):
+                        if n.endswith(".py"):
+                            agregar("%s!%s" % (w, n), z.read(n).decode("utf-8", "replace"))
+            except (OSError, zipfile.BadZipFile):
+                pass
+    return out
+_RX_VERSION_WORKER = re.compile(r"Python in worker has different version\D*([\d.]+)\D+than that in driver\D*([\d.]+)")
+def _mensaje_opciones(minor_venv, motivo, detalle=""):
+    ej = ("from pyspark.sql import functions as F\n"
+          "        ORIG, DEST = 'áéíóúüñÁÉÍÓÚÜÑ', 'aeiouunAEIOUUN'\n"
+          "        df = df.withColumn(c, F.lower(F.translate(F.coalesce(F.col(c), F.lit('')), ORIG, DEST)))\n"
+          "        # en SQL: lower(translate(coalesce(col, ''), 'áéíóúüñÁÉÍÓÚÜÑ', 'aeiouunAEIOUUN'))")
+    return "\n".join([
+        "!" * 72,
+        "[BNX] LOS EXECUTORS NO PUEDEN EJECUTAR LAS UDF DE ESTE PAQUETE: " + motivo,
+        detalle,
+        "El paquete trae Python %s; los workers de YARN deben tener la MISMA version menor." % minor_venv,
+        "No se corre el job a ciegas (fallaria a mitad con 'No module named ...'). Opciones:",
+        "  (i)   Si los nodos tienen Python %s:  BNX_EXECUTOR_PYTHON=/usr/bin/python%s BNX_SPARK=cluster bash run.sh ..." % (minor_venv, minor_venv),
+        "  (ii)  Correr ese job en el edge, sin YARN:  BNX_SPARK=local bash run.sh ...   (local[*])",
+        "  (iii) Reescribir la UDF con funciones de Spark SQL. quita_acentos:",
+        "        " + ej,
+        "  (iv)  BNX_UDF_NATIVAS=1 cambia las UDF simples por expresiones nativas de Spark (run.sh lo hace solo",
+        "        si TODAS las detectadas se pueden cambiar; ver la lista de arriba)",
+        "  (forzar, bajo tu riesgo: BNX_PROBE_IGNORAR=1; desactivar todo: BNX_DEPS_EXECUTORS=0)",
+        "!" * 72]).replace("\n\n", "\n")
+def evaluar_probe(res, minor_venv, mods=()):
+    """res = {"ok":bool, "workers":[{python,version,mods}], "error": str} -> (estado, mensaje).
+    estado: True (usable), False (NO usable), None (no se pudo saber)."""
+    if res.get("workers"):
+        w = res["workers"][0]
+        vers = ".".join(str(x) for x in w.get("version", [])[:2])
+        if vers != minor_venv:
+            return False, _mensaje_opciones(minor_venv, "Python %s en los workers (%s)" % (vers, w.get("python")))
+        falta = [m for m in mods if not (w.get("mods") or {}).get(m)]
+        if falta:
+            return False, _mensaje_opciones(minor_venv, "Python %s en los workers pero no importa %s con bnxdeps"
+                                            % (vers, ", ".join(falta)), "python de los workers: %s" % w.get("python"))
+        return True, "executors OK: %s (Python %s), importan %s con ./%s" % (w.get("python"), vers, ", ".join(mods) or "-", DEPS_ALIAS)
+    err = res.get("error") or ""
+    m = _RX_VERSION_WORKER.search(err)
+    if m:
+        return False, _mensaje_opciones(minor_venv, "Python %s en los workers, %s en el driver" % (m.group(1), m.group(2)))
+    return None, "no se pudo comprobar el Python de los executors: %s" % (err.strip().splitlines()[-1][:200] if err.strip() else "sin detalle")
+def ejecutar_probe(salida, mods, minor_venv):
+    """Corre DENTRO de spark-submit (driver): mini job que reporta el Python de los executors."""
+    res = {"minor_venv": minor_venv, "mods_pedidos": list(mods), "ts": __import__("time").time()}
+    try:
+        from pyspark.sql import SparkSession
+        spark = SparkSession.builder.appName("bnx_probe_executors").getOrCreate()
+        mods_l = list(mods)
+        def _w(_):
+            import sys, importlib, socket
+            r = {"python": sys.executable, "version": list(sys.version_info[:3]), "host": socket.gethostname(), "mods": {}}
+            for m in mods_l:
+                try:
+                    r["mods"][m] = getattr(importlib.import_module(m), "__file__", None) or "ok"
+                except Exception as e:
+                    r["mods"][m] = None
+                    r["err_" + m] = repr(e)[:200]
+            return r
+        res["workers"] = spark.sparkContext.parallelize(range(2), 2).map(_w).collect()
+        spark.stop()
+    except Exception as e:
+        res["error"] = str(e)[-3000:]
+    estado, msg = evaluar_probe(res, minor_venv, mods)
+    res["estado"], res["mensaje"] = estado, msg
+    if estado is not None:   # lo desconocido no se cachea
+        try:
+            with open(salida, "w", encoding="utf-8") as fh:
+                json.dump(res, fh, ensure_ascii=False, indent=1)
+        except OSError:
+            pass
+    print("[probe] " + msg)
+    return 0 if estado is not False else 3
+def _cli_deps(argv):
+    """Modos de run.sh: --scan-workers | --empaquetar-deps | --probe | --probe-estado | --workers-nativos."""
+    ap = argparse.ArgumentParser(description="Dependencias Python para los executors")
+    g = ap.add_mutually_exclusive_group(required=True)
+    g.add_argument("--scan-workers", action="store_true")
+    g.add_argument("--empaquetar-deps", action="store_true")
+    g.add_argument("--probe", action="store_true")
+    g.add_argument("--probe-estado", action="store_true")
+    g.add_argument("--workers-nativos", action="store_true")
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--wheels")
+    ap.add_argument("--dir", default=".bnx_deps")
+    ap.add_argument("--mods", default="")
+    ap.add_argument("raices", nargs="*")
+    a = ap.parse_args(argv)
+    mods = [m for m in a.mods.split(",") if m]
+    if a.scan_workers:
+        hs = escanear_workers([r for r in a.raices if os.path.isdir(r)], a.wheels)
+        with open(a.out, "w", encoding="utf-8") as fh:
+            json.dump({"hallazgos": hs}, fh, ensure_ascii=False, indent=1)
+        archivos = sorted(set(h["archivo"] for h in hs))
+        print("[deps] Python en workers: %d uso(s) en %d archivo(s)" % (len(hs), len(archivos)))
+        for h in hs[:4]:
+            print("[deps]   %s:%d (%s)" % (h["archivo"], h["linea"], h["patron"]))
+        return 10 if hs else 0
+    if a.empaquetar_deps:
+        import shlex
+        sp = site_packages()
+        ruta, hv, mb, reus = empaquetar_deps(a.dir, sp)
+        presentes = [m for m in (mods or ["numpy"]) if os.path.exists(os.path.join(sp, m)) or os.path.exists(os.path.join(sp, m + ".py"))]
+        with open(a.out, "w", encoding="utf-8") as fh:
+            for k, v in (("BNX_DEPS_TGZ", ruta), ("BNX_DEPS_HASH", hv), ("BNX_DEPS_MINOR", minor_actual()),
+                         ("BNX_DEPS_MB", "%.0f" % mb), ("BNX_DEPS_MODS", ",".join(presentes)),
+                         ("BNX_DEPS_REUSO", "1" if reus else "0")):
+                fh.write("%s=%s\n" % (k, shlex.quote(v)))
+        return 0
+    if a.probe:
+        return ejecutar_probe(a.out, mods, minor_actual())
+    if a.workers_nativos:
+        try:
+            with open(a.out, encoding="utf-8") as fh:
+                hs = json.load(fh).get("hallazgos", [])
+        except (OSError, ValueError):
+            return 2
+        nat = [h for h in hs if h.get("nativa")]
+        resto = [h for h in hs if not h.get("nativa")]
+        print("[deps] UDF que se cambian por expresiones nativas de Spark (BNX_UDF_NATIVAS=1): %d" % len(nat))
+        for h in nat[:8]:
+            print("[deps]   %s %s:%d" % (h.get("udf") or "", h["archivo"], h["linea"]))
+        if resto:
+            print("[deps] Python en workers que NO se puede cambiar por expresiones nativas: %d" % len(resto))
+            for h in resto[:8]:
+                print("[deps]   %s:%d (%s%s)" % (h["archivo"], h["linea"], h["patron"],
+                                              (": " + h["motivo"]) if h.get("motivo") else ""))
+        return 0 if not resto else 4
+    try:
+        with open(a.out, encoding="utf-8") as fh:
+            res = json.load(fh)
+    except (OSError, ValueError):
+        return 2
+    print("[probe] (cache) " + res.get("mensaje", ""))
+    return 3 if res.get("estado") is False else 0
 # ---------------------------------------------------------------------------
 # Tabla de tiempos
 # ---------------------------------------------------------------------------
@@ -337,6 +572,9 @@ def tabla_tiempos(filas, master=None, app_id=None, resumen_cpu=None):
 # CLI (lo usa run.sh)
 # ---------------------------------------------------------------------------
 def main(argv=None):
+    _av = sys.argv[1:] if argv is None else list(argv)
+    if _av and _av[0] in ("--scan-workers", "--empaquetar-deps", "--probe", "--probe-estado", "--workers-nativos"):
+        return _cli_deps(_av)
     ap = argparse.ArgumentParser(description="Conf de Spark para run.sh")
     ap.add_argument("--modo", choices=("cluster", "local"), required=True)
     ap.add_argument("--out", required=True)

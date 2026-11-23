@@ -338,6 +338,45 @@ vuelve a avisar al arrancar en modo cluster. Qué hacer:
 2. O **agregar en Spark y calcular en el driver**: `toPandas()` sobre un resultado **pequeño** y ahí usar pandas/sklearn/xgboost.
    Cuidado con la memoria: `toPandas()` trae todo al driver; agrega/filtra antes y ajusta `BNX_DRIVER_MEMORY`.
 3. Último recurso (apagado por defecto): `BNX_ENVIAR_VENV=1` empaqueta el `.venv` y lo manda con `--archives`.
+
+### Python en los executors: librerías enviadas con el job (sin instalar en los nodos)
+Caso real: `PythonException ... worker.py ... cloudpickle.loads ... ModuleNotFoundError: No module named 'numpy'`. El
+código del banco registra UDF (`udf.register("quita_acentos", ...)`, y las mex-lib: feature_engineering, group_by...). Esas
+funciones corren en el **Python de los workers**, que no tiene las librerías del `.venv` (el venv solo lo usa el driver).
+**Qué hace `run.sh` solo** (modo cluster, `BNX_DEPS_EXECUTORS=1` por defecto): si detecta Python en workers (modelo, `bank_src`
+y wheels del banco; resultado en `.bnx_workers_python.json`) empaqueta **solo el site-packages** del venv (sin intérprete, sin
+`pyspark`/`py4j`, sin `__pycache__`) en `.bnx_deps/bnxdeps-<hash>.tar.gz` (cacheado por hash del venv), lo envía con
+`--archives <tgz>#bnxdeps` y fija `spark.executorEnv.PYTHONPATH=./bnxdeps` (antepone; conserva lo que ya fije el cluster).
+Es temporal (vive en el contenedor YARN del job): **no se instala nada en los nodos**.
+Solo funciona si el Python de los executors es de la **misma versión menor (3.11)** que el venv. Por eso antes hace un
+**probe** (mini job en YARN, cacheado 12 h en `.bnx_tmp/probe_*.json`; `BNX_PROBE_FORZAR=1` lo repite). Si no coincide, **no corre
+el job a ciegas**: imprime las opciones y sale (`BNX_PROBE_IGNORAR=1` sigue igual).
+**Comandos para Angel** (en el edge, sin exportar `PYSPARK_PYTHON`):
+1. `spark3-submit --master yarn --deploy-mode client probe_workers.py` (Python por defecto del cluster)
+2. `spark3-submit --master yarn --deploy-mode client --conf spark.pyspark.python=/usr/bin/python3.11 probe_workers.py`
+Resultado y qué hacer:
+- (1) imprime versión `3.11` y `numpy=False`: todo listo, `BNX_SPARK=cluster bash run.sh ...` envía las librerías.
+- (1) falla con "different version" o imprime otra versión, y (2) imprime `3.11`: usar `BNX_EXECUTOR_PYTHON=/usr/bin/python3.11 BNX_SPARK=cluster bash run.sh ...`.
+- Ninguna da 3.11: preguntar a plataforma qué Python 3.11 hay en los nodos (otra ruta); o reescribir la UDF con funciones de Spark SQL
+  (`quita_acentos` → `lower(translate(coalesce(c,''), 'áéíóúüñÁÉÍÓÚÜÑ', 'aeiouunAEIOUUN'))`); plan B: `BNX_SPARK=local bash run.sh ...` en el edge.
+- Desactivar todo: `BNX_DEPS_EXECUTORS=0`. Forzar el envío aunque no se detecte UDF: `BNX_DEPS_FORZAR=1`.
+Si aun así falla en runtime con ese error, el framework lo traduce a "FALTA <módulo> en los EXECUTORS" (terminal, log, `BNX_FALTANTES.json`, pantalla).
+**Qué UDF pedía numpy en el caso de RPS:** `rmeans` de la mex-lib *feature engineering* (`base_features.py` /
+`feature_engineering_standard.py`: `np.mean(x)`), activada por `"rmeans"` en `config_custom.json`. cloudpickle manda la
+función por valor y en el worker importa sus globales (`np`). `quita_acentos` (data_pull) pediría `unidecode`, no numpy.
+El error salió del `worker.py` del executor, que antes de leer la UDF ya validó que su Python es de la misma versión menor que
+el driver: lo más probable es que el probe salga bien y baste con enviar el site-packages.
+**UDF nativas (`BNX_UDF_NATIVAS=1`; run.sh lo activa solo si el probe dice que el Python de los executors no sirve):**
+`bank_compat` intercepta `udf.register` / `F.udf` / `@udf` y, si el cuerpo de la función es simple (if/return,
+asignaciones, aritmética, comparaciones, `x[i]`, `np.mean/sum/min/max` sobre arrays, `[v for v in x if ...]`, `len`,
+`float/int`, `lower/upper/strip/replace`, `unidecode(x)`), NO registra la UDF de Python: la cambia por una expresión nativa de
+Spark (`translate`, `aggregate`, `filter`, `CASE WHEN`...). En SQL (`spark.sql`, `selectExpr`, `expr`, `filter('...')`) se
+reescribe el texto; vía DataFrame devuelve un `Column`. No se toca el código del banco. En el log:
+`[compat] UDF quita_acentos -> expresion nativa Spark (translate/lower), sin Python en los workers` y en `BNX_FALTANTES.json`
+como PARCHEADO (no validado). Se cambian `quita_acentos`, `rmeans`, `rt_mod`, `df_mod`; `incremental` (bucle) se queda en
+Python (no usa numpy). Diferencias: `unidecode` translitera todo Unicode (emojis, griego, cirílico, `€`→`EUR`); la versión
+nativa solo quita diacríticos latinos (Latin-1, Latin Extended-A/B, ß/æ/œ/ø/ł...). Errores de Python (índice fuera de rango,
+división entre 0) siguen la regla de Spark (`spark.sql.ansi.enabled`: error o NULL).
    Aun así los nodos necesitan `python3.11` en la misma ruta que el edge node. Solo para quien lo necesite.
 
 Ejemplo de ejecución local (para probar sin cluster): `bash run.sh --config cfg.json --extract-only`.

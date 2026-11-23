@@ -195,7 +195,8 @@ def test_run_sh_sintaxis_y_conf_en_cluster(tmp_path, settings):
     fake.write_text('#!/bin/bash\nfor a in "$@"; do echo "ARG:$a"; done\n')
     fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
     env = {k: v for k, v in os.environ.items() if not k.startswith(("BNX_", "SPARK_", "CONF_PATH"))}
-    env.update(BNX_SPARK="cluster", BNX_SPARK_SUBMIT=str(fake), HADOOP_CONF_DIR="/x", BNX_SPARK_CONF="spark.executor.memory=20g")
+    env.update(BNX_SPARK="cluster", BNX_SPARK_SUBMIT=str(fake), HADOOP_CONF_DIR="/x", BNX_SPARK_CONF="spark.executor.memory=20g",
+               BNX_DEPS_EXECUTORS="0")
     r = subprocess.run(["bash", "run.sh", "--settings", settings, "--env", "uat", "--extract-only"],
                        cwd=pkg, env=env, capture_output=True, text=True, timeout=120)
     args = [l[4:] for l in r.stdout.splitlines() if l.startswith("ARG:")]

@@ -207,7 +207,7 @@ def preparar_runtime(tmp_path, rep):
 def correr(tmp_path, rep, env_extra):
     pkg, lib, conf, logs = preparar_runtime(tmp_path, rep)
     env = dict(os.environ)
-    for k in ("BNX_MODO", "BNX_SIMULACION", "BNX_BANK_COMPAT"):
+    for k in ("BNX_MODO", "BNX_SIMULACION", "BNX_BANK_COMPAT", "BNX_CHECK_ENV"):
         env.pop(k, None)
     env.update({"T_PKG": str(pkg), "T_LIB": str(lib), "CONF_PATH": str(conf), "BNX_JOB_ID": "fake_demo",
                 "LOG_FILE_PATH": str(logs / "bnx_fake_demo.log"), "PYTHONPATH": ""})
