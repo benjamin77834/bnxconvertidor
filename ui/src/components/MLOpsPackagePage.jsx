@@ -3,6 +3,7 @@ import { COMPILE_URL } from '../config'
 import OrdenFuentesPanel from './OrdenFuentesPanel'
 import VendorLibrariesTab from './VendorLibrariesTab'
 import SimularPanel from './SimularPanel'
+import GuiaYarnPanel from './GuiaYarnPanel'
 // Seccion "Framework MLOps v2": genera un PAQUETE NUEVO y mejorado del framework
 // (sin tocar el del banco) y lo empaqueta en un ZIP con entorno virtual (run.sh
 // crea el venv + instala + prueba), ejemplos y pruebas reales.
@@ -891,6 +892,7 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
 
             {/* SIMULAR los jobs del paquete (terminal en vivo; el pivote siempre primero) */}
             {buildResult.edit_token && <SimularPanel t={t} apiBase={API_BASE} token={buildResult.edit_token} />}
+            <GuiaYarnPanel t={t} fuente={(() => { const j = files.find(f => esJob(f)); return j ? j.name.split('/').pop().replace(/\.(py|txt)$/i, '') : '' })()} />
             {/* FIRMA Y DESPLIEGUE: gobierno del paquete PySpark */}
             <div style={{ marginTop: 14, borderTop: `1px solid ${t.border || '#334155'}`, paddingTop: 12 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>

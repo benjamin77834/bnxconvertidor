@@ -360,3 +360,17 @@ def test_runner_jdbc_secuencia_derby(tmp_path):
     # falla: la tabla ya existe -> codigo != 0
     r2 = subprocess.run(cmd, env=env, cwd=str(tmp_path), capture_output=True, text=True, timeout=300)
     assert r2.returncode != 0
+def test_guardar_quita_params_vacios_pero_no_los_ausentes():
+    # La GUI manda params={} para quitar los overrides (si la clave falta, el servidor la conserva)
+    base = _plan()
+    base["ejecucion"]["params"] = {"A": "1"}
+    base["steps"][0]["params"] = {"X": "1"}
+    ent = _ent(base)
+    ent["ejecucion"] = {"modo": "python"}
+    del ent["steps"][0]["params"]
+    n = o.fusionar_edicion(base, ent)
+    assert n["ejecucion"]["params"] == {"A": "1"} and n["steps"][0]["params"] == {"X": "1"}
+    ent["ejecucion"] = {"params": {}}
+    ent["steps"][0]["params"] = {}
+    n = o.fusionar_edicion(base, ent)
+    assert "params" not in n["ejecucion"] and "params" not in n["steps"][0]

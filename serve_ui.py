@@ -4024,7 +4024,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             data = {k: v[0] for k, v in _pqs(urlparse(self.path).query).items()}
         root = os.path.dirname(os.path.abspath(__file__))
         action = path.rstrip("/").rsplit("/", 1)[-1]
-        orq_re = r"orquestacion_[\w.\-]+\.json"
+        orq_re = r"orquestacion_[\w.\-()]+\.json"
 
         if action == "list":
             plans = [os.path.relpath(f, root) for f in sorted(

@@ -1613,7 +1613,7 @@ export default function OrquestadorPage({ theme }) {
               {plan && editable && <div style={{ marginTop: 14, color: t.text }}>
                 <ParamsPanel key={`plan-${file}`} t={t} btn={btn} post={post} file={file} paso={null}
                   overrides={plan.ejecucion?.params}
-                  onChange={(n) => mutate(p => { p.ejecucion = { ...(p.ejecucion || {}), params: n }; if (!Object.keys(n).length) delete p.ejecucion.params })}
+                  onChange={(n) => mutate(p => { p.ejecucion = { ...(p.ejecucion || {}), params: n } })}
                   guardarSiHaceFalta={async () => { if (dirty) { await post('save', { file, plan }); setDirty(false); await loadPlan(file) } }}
                   flash={flash} /></div>}
               {plan && <EntornoPanel t={t} btn={btn} ej={ej} setEj={setEj} flash={flash}
@@ -1648,7 +1648,7 @@ export default function OrquestadorPage({ theme }) {
                     {sel.params && Object.keys(sel.params).length > 0 ? ` (${Object.keys(sel.params).length} override)` : ''}</summary>
                   <ParamsPanel key={`${file}-${sel.id}`} t={t} btn={btn} post={post} file={file} paso={sel.id}
                     overrides={sel.params}
-                    onChange={(n) => mutate(p => { const st = p.steps.find(x => x.id === sel.id); if (Object.keys(n).length) st.params = n; else delete st.params })}
+                    onChange={(n) => mutate(p => { const st = p.steps.find(x => x.id === sel.id); if (Object.keys(n).length) st.params = n; else st.params = {} })}
                     guardarSiHaceFalta={async () => { if (dirty) { await post('save', { file, plan }); setDirty(false); await loadPlan(file) } }}
                     flash={flash} /></details>}
                 {sel.action?.target && <div style={{ wordBreak: 'break-all', color: t.muted }}>{sel.action.target}</div>}
