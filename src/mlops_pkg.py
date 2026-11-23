@@ -1365,6 +1365,42 @@ if [ "$BNX_SPARK_SERVIDOR" = "1" ]; then
   echo "[run.sh] PySpark del SERVIDOR: SPARK_HOME=$SPARK_HOME (Spark ${BNX_SPARK_VERSION:-?})"
 fi
 
+# bash run.sh --limpiar-deps-hdfs : borra en BNX_DEPS_HDFS los bnxdeps_*.tgz que NO son del venv actual
+# (pide confirmacion en tty; sin tty solo lista, salvo BNX_LIMPIAR_SI=1). No lanza el job.
+if [ "${1:-}" = "--limpiar-deps-hdfs" ]; then
+  if [ -z "${BNX_DEPS_HDFS:-}" ]; then
+    echo "[run.sh] Indica la carpeta: BNX_DEPS_HDFS=hdfs:///user/<usuario>/bnx/deps bash run.sh --limpiar-deps-hdfs" >&2
+    exit 1
+  fi
+  if ! command -v hdfs >/dev/null 2>&1; then echo "[run.sh] 'hdfs' no esta en el PATH." >&2; exit 1; fi
+  mkdir -p .bnx_tmp
+  python bnx_sparkconf.py --empaquetar-deps --dir .bnx_deps --mods numpy --out .bnx_tmp/deps_hdfs.env >/dev/null
+  . ./.bnx_tmp/deps_hdfs.env
+  _HD="${BNX_DEPS_HDFS%/}"
+  _ACTUAL="bnxdeps_${BNX_DEPS_HASH}.tgz"
+  _LS=$(hdfs dfs -ls "$_HD" 2>/dev/null | awk '{print $NF}' | grep '/bnxdeps_[^/]*[.]tgz$' || true)
+  _VIEJOS=""
+  echo "[run.sh] versiones en $_HD (actual: $_ACTUAL):"
+  for _f in $_LS; do
+    if [ "$(basename "$_f")" = "$_ACTUAL" ]; then echo "   $_f   <- actual"; else echo "   $_f"; _VIEJOS="$_VIEJOS $_f"; fi
+  done
+  if [ -z "$_VIEJOS" ]; then echo "[run.sh] no hay versiones viejas que borrar."; exit 0; fi
+  _OK=0
+  if [ "${BNX_LIMPIAR_SI:-0}" = "1" ]; then
+    _OK=1
+  elif [ -t 0 ]; then
+    printf "[run.sh] Borrar las versiones viejas (sin '<- actual')? [s/N] "
+    read -r _R || _R=""
+    case "$_R" in s|S|y|Y|si|SI) _OK=1 ;; esac
+  else
+    echo "[run.sh] sin terminal: no se borra nada (BNX_LIMPIAR_SI=1 para confirmar)."
+  fi
+  if [ "$_OK" = "1" ]; then
+    for _f in $_VIEJOS; do hdfs dfs -rm -skipTrash "$_f" || echo "[run.sh] AVISO: no se pudo borrar $_f" >&2; done
+  fi
+  exit 0
+fi
+
 @@LIBOMP@@
 bnx_libomp_fix
 
@@ -1607,9 +1643,32 @@ if [ -n "$CLUSTER_SUBMIT" ]; then
           _PREV=$(grep -hE '^[[:space:]]*spark[.]executorEnv[.]PYTHONPATH' "$SPARK_CONF_DIR/spark-defaults.conf" 2>/dev/null | tail -1 | sed -E 's/^[^[:space:]=]+[[:space:]=]+//')
         fi
         if [ -n "$_PREV" ]; then _EPP="./bnxdeps:$_PREV"; fi
-        echo "[run.sh] el codigo ejecuta Python en los WORKERS (UDF...): se envia el site-packages del venv ($BNX_DEPS_MB MB, Python $BNX_DEPS_MINOR, sin pyspark/py4j) con el job; NO se instala nada en los nodos"
-        echo "[run.sh]   --archives $BNX_DEPS_TGZ#bnxdeps  spark.executorEnv.PYTHONPATH=$_EPP"
-        DEPS_ARGS+=(--archives "$BNX_DEPS_TGZ#bnxdeps" --conf "spark.executorEnv.PYTHONPATH=$_EPP")
+        # BNX_DEPS_HDFS=<dir hdfs>: el tgz se sube UNA vez a HDFS (bnxdeps_<hash>.tgz) y YARN lo localiza
+        # en cada contenedor: todos los nodos usan EXACTAMENTE el mismo archivo y no se sube en cada corrida.
+        _ASRC="$BNX_DEPS_TGZ"
+        if [ -n "${BNX_DEPS_HDFS:-}" ]; then
+          _HD="${BNX_DEPS_HDFS%/}"
+          _HF="$_HD/bnxdeps_${BNX_DEPS_HASH}.tgz"
+          if ! command -v hdfs >/dev/null 2>&1; then
+            echo "[run.sh] AVISO: BNX_DEPS_HDFS definido pero 'hdfs' no esta en el PATH; las librerias se envian desde el edge." >&2
+          elif hdfs dfs -test -e "$_HF"; then
+            echo "[run.sh] librerias de executors: $_HF (reutilizado, $BNX_DEPS_MB MB)"
+            _ASRC="$_HF"
+          elif hdfs dfs -mkdir -p "$_HD" && hdfs dfs -put -f "$BNX_DEPS_TGZ" "$_HF.part" && hdfs dfs -chmod 644 "$_HF.part" && hdfs dfs -mv "$_HF.part" "$_HF"; then
+            echo "[run.sh] librerias de executors: $_HF (subido ahora, $BNX_DEPS_MB MB)"
+            _ASRC="$_HF"
+          else
+            hdfs dfs -rm -f -skipTrash "$_HF.part" >/dev/null 2>&1 || true
+            echo "[run.sh] AVISO: no se pudo subir las librerias a $_HD; se envian desde el edge." >&2
+          fi
+        fi
+        if [ "$_ASRC" = "$BNX_DEPS_TGZ" ]; then
+          echo "[run.sh] el codigo ejecuta Python en los WORKERS (UDF...): se envia el site-packages del venv desde el edge ($BNX_DEPS_MB MB, Python $BNX_DEPS_MINOR, sin pyspark/py4j) con el job; NO se instala nada en los nodos"
+        else
+          echo "[run.sh] el codigo ejecuta Python en los WORKERS (UDF...): los nodos toman las librerias de HDFS (Python $BNX_DEPS_MINOR, sin pyspark/py4j); NO se instala nada en los nodos"
+        fi
+        echo "[run.sh]   --archives $_ASRC#bnxdeps  spark.executorEnv.PYTHONPATH=$_EPP"
+        DEPS_ARGS+=(--archives "$_ASRC#bnxdeps" --conf "spark.executorEnv.PYTHONPATH=$_EPP")
         _PK="${BNX_DEPS_HASH}_$(printf '%s' "${BNX_EXECUTOR_PYTHON:-}|${BNX_MASTER:-yarn}" | cksum | cut -d' ' -f1)"
         _PF=".bnx_tmp/probe_$_PK.json"
         _PR=0
@@ -3753,6 +3812,14 @@ Resultado y qué hacer:
   (`quita_acentos` → `lower(translate(coalesce(c,''), 'áéíóúüñÁÉÍÓÚÜÑ', 'aeiouunAEIOUUN'))`); plan B: `BNX_SPARK=local bash run.sh ...` en el edge.
 - Desactivar todo: `BNX_DEPS_EXECUTORS=0`. Forzar el envío aunque no se detecte UDF: `BNX_DEPS_FORZAR=1`.
 Si aun así falla en runtime con ese error, el framework lo traduce a "FALTA <módulo> en los EXECUTORS" (terminal, log, `BNX_FALTANTES.json`, pantalla).
+**Librerías UNA vez en HDFS (Cloudera YARN, mismas versiones en todos los nodos):** con `BNX_DEPS_HDFS=<carpeta hdfs>` `run.sh` sube el
+`.tgz` a `<carpeta>/bnxdeps_<hash12>.tgz` (hash del venv) solo si no existe (`hdfs dfs -test -e`; si falta: `-mkdir -p` y `-put`, permisos 644)
+y usa `--archives hdfs://.../bnxdeps_<hash>.tgz#bnxdeps`. YARN lo localiza en cada contenedor: **todos los nodos reciben el mismo archivo**, no se
+sube desde el edge en cada corrida y no se instala nada. Log: `[run.sh] librerias de executors: hdfs:///.../bnxdeps_<hash>.tgz (reutilizado|subido ahora, N MB)`.
+Si `hdfs` no está en el PATH o el `put` falla, avisa y envía desde el edge como antes. Comando recomendado:
+`BNX_SPARK=cluster BNX_DEPS_HDFS=hdfs:///user/<usuario>/bnx/deps bash run.sh --settings ... --env ... --source <job>`
+Si el venv cambia, se sube otra versión (otro hash). Para borrar las viejas: `BNX_DEPS_HDFS=hdfs:///user/<usuario>/bnx/deps bash run.sh --limpiar-deps-hdfs`
+(lista y pide confirmación en terminal; conserva la del venv actual).
 **Qué UDF pedía numpy en el caso de RPS:** `rmeans` de la mex-lib *feature engineering* (`base_features.py` /
 `feature_engineering_standard.py`: `np.mean(x)`), activada por `"rmeans"` en `config_custom.json`. cloudpickle manda la
 función por valor y en el worker importa sus globales (`np`). `quita_acentos` (data_pull) pediría `unidecode`, no numpy.

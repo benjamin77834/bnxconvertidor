@@ -228,3 +228,95 @@ def test_probe_malo_pero_todas_las_udf_nativizables_sigue_con_udf_nativas(tmp_pa
     # BNX_UDF_NATIVAS=0: no se intenta y el probe malo detiene la corrida
     r, args, _ = _run(tmp_path, pkg, FAKE_PROBE="bad", BNX_UDF_NATIVAS="0", BNX_PROBE_FORZAR="1")
     assert r.returncode == 1 and not args
+
+
+# ---------------------------------------------------------------- librerias en HDFS (BNX_DEPS_HDFS)
+FAKE_HDFS = '''#!/bin/bash
+echo "hdfs $*" >> "$FAKE_HDFS_LOG"
+m() { echo "$FAKE_HDFS_ROOT/$(echo "${1#hdfs://}" | tr / %)"; }
+shift   # dfs
+op="$1"; shift
+case "$op" in
+  -test) [ -e "$(m "$2")" ] ;;
+  -mkdir) mkdir -p "$FAKE_HDFS_ROOT" ;;
+  -put) [ "$1" = "-f" ] && shift; if [ "$FAKE_HDFS_PUT" = "fail" ]; then exit 1; fi; cp "$1" "$(m "$2")" ;;
+  -chmod) [ -e "$(m "$2")" ] ;;
+  -mv) mv "$(m "$1")" "$(m "$2")" ;;
+  -rm) for a in "$@"; do case "$a" in -*) ;; *) rm -f "$(m "$a")" ;; esac; done ;;
+  -ls) for f in "$FAKE_HDFS_ROOT"/*; do [ -e "$f" ] && echo "-rw-r--r-- 3 u g 10 2025-01-01 00:00 $(basename "$f" | tr % /)" ; done; true ;;
+esac
+'''
+
+
+def _hdfs_env(tmp_path, **extra):
+    d = tmp_path / "hbin"
+    d.mkdir(exist_ok=True)
+    h = d / "hdfs"
+    h.write_text(FAKE_HDFS)
+    h.chmod(h.stat().st_mode | stat.S_IEXEC)
+    root = tmp_path / "hroot"
+    root.mkdir(exist_ok=True)
+    env = dict(PATH=str(d) + os.pathsep + os.environ["PATH"], FAKE_HDFS_LOG=str(tmp_path / "hdfs.log"),
+               FAKE_HDFS_ROOT=str(root), BNX_DEPS_HDFS="hdfs:///user/u/bnx/deps")
+    env.update(extra)
+    return env
+
+
+def test_run_sh_trae_logica_hdfs(tmp_path):
+    pkg = _pkg(tmp_path)
+    assert subprocess.run(["bash", "-n", os.path.join(pkg, "run.sh")]).returncode == 0
+    for frase in ("BNX_DEPS_HDFS", "--limpiar-deps-hdfs", "hdfs dfs -test -e", "hdfs dfs -put -f", "(subido ahora,", "(reutilizado,"):
+        assert frase in mp._RUN_SH
+    notas = open(os.path.join(pkg, "NOTAS_EJECUCION.md"), encoding="utf-8").read()
+    assert "BNX_DEPS_HDFS=hdfs:///user/<usuario>/bnx/deps" in notas and "--limpiar-deps-hdfs" in notas
+
+
+def test_run_sh_hdfs_sube_una_vez_y_reutiliza(tmp_path):
+    pkg = _pkg(tmp_path)
+    env = _hdfs_env(tmp_path)
+    r, args, _ = _run(tmp_path, pkg, **env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    hlog = (tmp_path / "hdfs.log").read_text()
+    assert "-put -f" in hlog and "-mkdir -p hdfs:///user/u/bnx/deps" in hlog
+    assert "librerias de executors: hdfs:///user/u/bnx/deps/bnxdeps_" in r.stdout and "(subido ahora," in r.stdout
+    arch = args[args.index("--archives") + 1]
+    assert arch.startswith("hdfs:///user/u/bnx/deps/bnxdeps_") and arch.endswith(".tgz#bnxdeps")
+    assert len(os.listdir(tmp_path / "hroot")) == 1
+    # segunda corrida: ya esta en HDFS -> sin put
+    (tmp_path / "hdfs.log").unlink()
+    r2, args2, _ = _run(tmp_path, pkg, **env)
+    assert r2.returncode == 0, r2.stdout + r2.stderr
+    hlog2 = (tmp_path / "hdfs.log").read_text()
+    assert "-put" not in hlog2 and "-test -e" in hlog2 and "(reutilizado," in r2.stdout
+    assert args2[args2.index("--archives") + 1] == arch
+
+
+def test_run_sh_hdfs_cae_al_edge_sin_hdfs_o_si_falla_el_put(tmp_path):
+    pkg = _pkg(tmp_path)
+    r, args, _ = _run(tmp_path, pkg, BNX_DEPS_HDFS="hdfs:///user/u/bnx/deps")     # sin hdfs en el PATH
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "'hdfs' no esta en el PATH" in r.stderr
+    assert args[args.index("--archives") + 1].endswith(".tar.gz#bnxdeps")
+    r, args, _ = _run(tmp_path, pkg, **_hdfs_env(tmp_path, FAKE_HDFS_PUT="fail"))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "no se pudo subir las librerias" in r.stderr
+    assert args[args.index("--archives") + 1].endswith(".tar.gz#bnxdeps")
+
+
+def test_limpiar_deps_hdfs_borra_solo_las_viejas(tmp_path):
+    pkg = _pkg(tmp_path)
+    env = _hdfs_env(tmp_path)
+    _run(tmp_path, pkg, **env)
+    root = tmp_path / "hroot"
+    actual = os.listdir(root)[0]
+    (root / "%user%u%bnx%deps%bnxdeps_viejo.tgz").write_text("x")
+    envp = {k: v for k, v in os.environ.items() if not k.startswith(("BNX_", "SPARK_"))}
+    envp.update(env, BNX_DEPS_SITE_PACKAGES=_fake_sp(tmp_path))
+    r = subprocess.run(["bash", "run.sh", "--limpiar-deps-hdfs"], cwd=pkg, env=envp, capture_output=True, text=True,
+                       stdin=subprocess.DEVNULL, timeout=120)
+    assert r.returncode == 0 and "sin terminal" in r.stdout and len(os.listdir(root)) == 2     # sin tty no borra
+    envp["BNX_LIMPIAR_SI"] = "1"
+    r = subprocess.run(["bash", "run.sh", "--limpiar-deps-hdfs"], cwd=pkg, env=envp, capture_output=True, text=True,
+                       stdin=subprocess.DEVNULL, timeout=120)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert os.listdir(root) == [actual]

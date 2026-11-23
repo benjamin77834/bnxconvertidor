@@ -361,6 +361,14 @@ Resultado y qué hacer:
   (`quita_acentos` → `lower(translate(coalesce(c,''), 'áéíóúüñÁÉÍÓÚÜÑ', 'aeiouunAEIOUUN'))`); plan B: `BNX_SPARK=local bash run.sh ...` en el edge.
 - Desactivar todo: `BNX_DEPS_EXECUTORS=0`. Forzar el envío aunque no se detecte UDF: `BNX_DEPS_FORZAR=1`.
 Si aun así falla en runtime con ese error, el framework lo traduce a "FALTA <módulo> en los EXECUTORS" (terminal, log, `BNX_FALTANTES.json`, pantalla).
+**Librerías UNA vez en HDFS (Cloudera YARN, mismas versiones en todos los nodos):** con `BNX_DEPS_HDFS=<carpeta hdfs>` `run.sh` sube el
+`.tgz` a `<carpeta>/bnxdeps_<hash12>.tgz` (hash del venv) solo si no existe (`hdfs dfs -test -e`; si falta: `-mkdir -p` y `-put`, permisos 644)
+y usa `--archives hdfs://.../bnxdeps_<hash>.tgz#bnxdeps`. YARN lo localiza en cada contenedor: **todos los nodos reciben el mismo archivo**, no se
+sube desde el edge en cada corrida y no se instala nada. Log: `[run.sh] librerias de executors: hdfs:///.../bnxdeps_<hash>.tgz (reutilizado|subido ahora, N MB)`.
+Si `hdfs` no está en el PATH o el `put` falla, avisa y envía desde el edge como antes. Comando recomendado:
+`BNX_SPARK=cluster BNX_DEPS_HDFS=hdfs:///user/<usuario>/bnx/deps bash run.sh --settings ... --env ... --source <job>`
+Si el venv cambia, se sube otra versión (otro hash). Para borrar las viejas: `BNX_DEPS_HDFS=hdfs:///user/<usuario>/bnx/deps bash run.sh --limpiar-deps-hdfs`
+(lista y pide confirmación en terminal; conserva la del venv actual).
 **Qué UDF pedía numpy en el caso de RPS:** `rmeans` de la mex-lib *feature engineering* (`base_features.py` /
 `feature_engineering_standard.py`: `np.mean(x)`), activada por `"rmeans"` en `config_custom.json`. cloudpickle manda la
 función por valor y en el worker importa sus globales (`np`). `quita_acentos` (data_pull) pediría `unidecode`, no numpy.
