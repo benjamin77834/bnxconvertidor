@@ -14,6 +14,8 @@ import PipelinePage from './components/PipelinePage'
 import GraphLibrary from './components/GraphLibrary'
 import GrafosPage from './components/GrafosPage'
 import OrquestadorPage from './components/OrquestadorPage'
+import MigracionGrafosPage from './components/MigracionGrafosPage'
+import PresentacionPage from './components/PresentacionPage'
 import BankLibsPage from './components/BankLibsPage'
 import EmulatorPage from './components/EmulatorPage'
 import ModelFrameworkPage from './components/ModelFrameworkPage'
@@ -772,6 +774,8 @@ export default function App() {
         { id: 'designer', label: '🎨 Designer' },
         { id: 'grafos', label: '📁 Grafos' },
         { id: 'orquestador', label: '🧭 Orquestador' },
+        { id: 'migracion', label: '🚚 Migración de grafos' },
+        { id: 'presentacion', label: '📽️ Presentación' },
       ],
     },
     {
@@ -1141,6 +1145,10 @@ export default function App() {
           <BankLibsPage theme={t} />
         ) : page === 'orquestador' ? (
           <OrquestadorPage theme={t} />
+        ) : page === 'migracion' ? (
+          <MigracionGrafosPage theme={t} onIrOrquestador={() => setPage('orquestador')} />
+        ) : page === 'presentacion' ? (
+          <PresentacionPage theme={t} />
         ) : page === 'grafos' ? (
           <GrafosPage theme={t} onLoadToCompiler={(g) => {
             setEditorMp(g.mp || '')

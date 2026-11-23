@@ -14,3 +14,7 @@ export const LIBRARY_URL = `${API_URL}/library`
 
 // Orquestador de planes Ab Initio (dry-run y ejecución real en segundo plano)
 export const ORQUESTADOR_URL = `${API_URL}/orquestador`
+// Migración de grafos: tablero de avance, participantes y exportación
+export const MIGRACION_URL = `${API_URL}/migracion`
+// Presentación ejecutiva (vista previa, PowerPoint y PDF)
+export const PRESENTACION_URL = `${API_URL}/presentacion`

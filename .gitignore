@@ -77,3 +77,12 @@ drivers/*.jar
 # Descargas del vendor: clave hasheada y archivos generados (normalmente en <cache>/_descargas, fuera de git)
 _descargas/
 .bnx_descargas.json
+
+# Datos del seguimiento de migracion de grafos (personas y estados del usuario)
+data/migracion_grafos.json
+
+# Presentacion ejecutiva generada (pptx/pdf con nombres de proyectos y grafos)
+data/presentacion/
+
+# Reportes de investigacion de agentes (pueden contener nombres de tablas del banco)
+.agents/

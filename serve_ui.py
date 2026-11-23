@@ -201,6 +201,10 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._datos_subir_seguro()
         elif path.startswith("/orquestador/") or path.startswith("/api/orquestador/"):
             self._orquestador_seguro(path)
+        elif path.startswith(("/migracion/", "/api/migracion/")):
+            self._migracion_seguro(path)
+        elif path.startswith(("/presentacion/", "/api/presentacion/")):
+            self._presentacion_seguro(path)
         elif path.startswith(("/mlops/simular/", "/api/mlops/simular/")):
             self._handle_mlops_simular(path)
         elif path in ("/mlops/package/orden", "/api/mlops/package/orden"):
@@ -301,6 +305,14 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._orquestador_seguro(path)
             return
 
+        # Migracion de grafos (lotes, grafos, resumen, personas, exportar)
+        if path.startswith(("/migracion/", "/api/migracion/")):
+            self._migracion_seguro(path)
+            return
+        # Presentacion ejecutiva (vista previa, PowerPoint y PDF)
+        if path.startswith(("/presentacion/", "/api/presentacion/")):
+            self._presentacion_seguro(path)
+            return
         # Simulacion de jobs del paquete (estado/log incremental, info): solo localhost.
         if path.startswith(("/mlops/simular/", "/api/mlops/simular/")):
             self._handle_mlops_simular(path)
@@ -3808,6 +3820,86 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                     "ok": False, "error": f"{type(e).__name__}: {str(e)[:500]}",
                     "traceback": tb[-1500:]})
             except Exception:  # la respuesta ya estaba a medias
+                pass
+
+    def _migracion_seguro(self, path):
+        """Pestana 'Migracion de grafos': logica en src/migracion_grafos.py. Siempre responde JSON
+        (o el archivo exportado). Las escrituras y los datos de personas: solo desde esta maquina."""
+        try:
+            from src import migracion_grafos as _mg
+            action = path.rstrip("/").rsplit("/", 1)[-1]
+            if self.command == "GET":
+                q = urlparse(self.path).query
+                data = {k: v[0] for k, v in parse_qs(q).items()}
+            else:
+                n = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(n) if n else b""
+                try:
+                    data = json.loads(body.decode("utf-8", errors="replace")) if body else {}
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    data = {}
+            if action in _mg.ACCIONES_ESCRITURA or action in ("personas", "exportar"):
+                err = self._orq_local_only()
+                if err:
+                    self._json_response(403, {"ok": False, "error": err})
+                    return
+            if action in _mg.ACCIONES_ESCRITURA and self.command != "POST":
+                self._json_response(405, {"ok": False, "error": "use POST para %s" % action})
+                return
+            status, res = _mg.handle(action, data)
+            if status == 200 and res.get("binario"):
+                cont, nombre, ctype = res["binario"]
+                self._binary_response(cont, nombre, ctype)
+                return
+            self._json_response(status, res)
+        except (BrokenPipeError, ConnectionResetError):
+            raise
+        except Exception as e:  # noqa: BLE001
+            import traceback as _tb
+            tb = _tb.format_exc()
+            print(f"[!] Error en {path}:\n{tb}")
+            try:
+                self._json_response(500, {"ok": False, "error": f"{type(e).__name__}: {str(e)[:500]}"})
+            except Exception:
+                pass
+    def _presentacion_seguro(self, path):
+        """Pestana 'Presentacion': logica en src/presentacion.py. Descargar guarda una copia en
+        data/presentacion/, asi que solo se acepta desde esta maquina."""
+        try:
+            from src import presentacion as _pr
+            action = path.rstrip("/").rsplit("/", 1)[-1]
+            if self.command == "GET":
+                q = urlparse(self.path).query
+                data = {k: v[0] for k, v in parse_qs(q).items()}
+            else:
+                n = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(n) if n else b""
+                try:
+                    data = json.loads(body.decode("utf-8", errors="replace")) if body else {}
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    data = {}
+            if action in _pr.ACCIONES_ESCRITURA:
+                err = self._orq_local_only()
+                if err:
+                    self._json_response(403, {"ok": False, "error": err})
+                    return
+                if self.command != "POST":
+                    self._json_response(405, {"ok": False, "error": "use POST para %s" % action})
+                    return
+            status, res = _pr.handle(action, data)
+            if status == 200 and res.get("binario"):
+                cont, nombre, ctype = res["binario"]
+                self._binary_response(cont, nombre, ctype)
+                return
+            self._json_response(status, res)
+        except (BrokenPipeError, ConnectionResetError):
+            raise
+        except Exception as e:  # noqa: BLE001
+            import traceback as _tb
+            print(f"[!] Error en {path}:\n{_tb.format_exc()}")
+            try:
+                self._json_response(500, {"ok": False, "error": f"{type(e).__name__}: {str(e)[:500]}"})
+            except Exception:
                 pass
 
     def _orq_local_only(self):

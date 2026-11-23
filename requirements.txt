@@ -26,3 +26,6 @@ pyyaml>=6,<7
 cryptography>=42
 xgboost>=2,<4
 scikit-learn>=1.3
+# Pestana "Presentacion" (descarga PowerPoint y PDF). Si faltan, la pestana avisa que instalar.
+python-pptx>=1.0
+reportlab>=4
