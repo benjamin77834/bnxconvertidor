@@ -4313,6 +4313,31 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._json_response(400, {"error": "archivo invalido (debe ser output/**/orquestacion_*.json)"})
             return
 
+        if action in ("ubicacion", "abrir_carpeta"):
+            # Donde viven en disco el plan y su DAG de Airflow (siempre en output/<proyecto>/).
+            # 'abrir_carpeta' lanza el explorador del SO: solo desde esta maquina y solo dentro de output/.
+            if not os.path.isfile(fp):
+                self._json_response(404, {"error": "no existe"})
+                return
+            carpeta = os.path.dirname(fp)
+            if action == "abrir_carpeta":
+                bloqueo = self._orq_local_only()
+                if bloqueo:
+                    self._json_response(403, {"ok": False, "error": bloqueo})
+                    return
+                st, res = _orq_abrir_carpeta(root, carpeta)
+                self._json_response(st, res)
+                return
+            with open(fp, "r", encoding="utf-8") as f:
+                plan = json.load(f)
+            try:
+                dag = os.path.join(carpeta, re.sub(r"[^\w.\-]", "_", "dag_" + _orq.dag_id_de(plan)[len("bnx_"):] + ".py"))
+            except (ValueError, KeyError, TypeError):
+                dag = ""
+            self._json_response(200, {"ok": True, "plan": fp, "carpeta": carpeta, "dag": dag,
+                                      "dag_existe": bool(dag) and os.path.isfile(dag)})
+            return
+
         if action in ("params", "pset_exportar"):
             # Parametros del pset del plan / de un paso (solo lectura de abinitio/) y export del
             # .pset editado a output/<proyecto>/psets_editados/ (nunca sobre el original).
@@ -5690,6 +5715,37 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
 #   (el sync de ARRANQUE siempre se intenta, con reintentos; BNX_SKIP_* ya no lo apaga)
 #   BNX_LIBRARY_SYNC_EVERY   (minutos entre syncs periodicos; 0 = apagado) default: 10
 # ============================================================
+def _orq_abrir_carpeta(root, carpeta):
+    """Abre `carpeta` en el explorador del SO. Solo carpetas reales dentro de <root>/output
+    (realpath: sin traversal ni symlinks hacia afuera). Lista de argumentos, sin shell.
+    Devuelve (status_http, dict)."""
+    import subprocess as _sp
+    import shutil as _sh
+    base = os.path.realpath(os.path.join(root, "output"))
+    real = os.path.realpath(carpeta) if isinstance(carpeta, str) and carpeta else ""
+    if not real or not (real == base or real.startswith(base + os.sep)):
+        return 400, {"ok": False, "error": "solo se pueden abrir carpetas dentro de output/"}
+    if not os.path.isdir(real):
+        return 404, {"ok": False, "error": "la carpeta no existe", "carpeta": real}
+    if sys.platform == "darwin":
+        cmd = ["open", real]
+    elif os.name == "nt":
+        cmd = ["explorer", real]
+    else:
+        cmd = ["xdg-open", real]
+    if os.name != "nt" and not _sh.which(cmd[0]):
+        return 501, {"ok": False, "error": "no hay '%s' en este equipo: abre la carpeta a mano" % cmd[0],
+                     "carpeta": real}
+    try:
+        r = _sp.run(cmd, timeout=15, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+    except (OSError, _sp.SubprocessError) as e:
+        return 501, {"ok": False, "error": "no se pudo abrir el explorador: %s" % e, "carpeta": real}
+    # explorer.exe devuelve 1 aunque abra la carpeta
+    if r.returncode != 0 and os.name != "nt":
+        return 500, {"ok": False, "error": "el explorador devolvio codigo %s" % r.returncode, "carpeta": real}
+    return 200, {"ok": True, "carpeta": real}
+
+
 def _library_s3_config():
     """Devuelve (profile, bucket, prefix) de la biblioteca en S3."""
     profile = os.environ.get("BNX_AWS_PROFILE", "monkeyapp")

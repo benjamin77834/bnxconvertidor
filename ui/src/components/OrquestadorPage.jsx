@@ -862,6 +862,7 @@ export default function OrquestadorPage({ theme }) {
   const [procLog, setProcLog] = useState(null)  // {ok, log}
   const [processing, setProcessing] = useState(false)
   const [code, setCode] = useState(null)      // {name,size,truncated,code}
+  const [ubic, setUbic] = useState(null)      // {plan, carpeta, dag, dag_existe}: donde esta en disco
   const [componiendo, setComponiendo] = useState(false)   // panel "Plan de planes"
   const [creando, setCreando] = useState(false)           // panel "Nueva orquestación"
   const [form, setForm] = useState(null)                  // formulario de paso: {id?} (manual)
@@ -1070,6 +1071,20 @@ export default function OrquestadorPage({ theme }) {
       const d = await post('airflow', { file })
       setCode({ name: d.name, size: d.code.length, truncated: false, code: d.code, descargable: true })
     } catch (e) { flash('err', `No se pudo generar el DAG: ${e.message}`) }
+  }
+
+  // ---- ubicacion en disco del plan y su DAG ----
+  useEffect(() => {
+    let vivo = true
+    setUbic(null)
+    if (!file) return undefined
+    post('ubicacion', { file }).then(d => { if (vivo) setUbic(d) }).catch(() => {})
+    return () => { vivo = false }
+  }, [file, code?.name])
+
+  const abrirCarpeta = async () => {
+    try { await post('abrir_carpeta', { file }); flash('ok', 'Carpeta abierta en el explorador.') }
+    catch (e) { flash('err', `No se pudo abrir la carpeta (copia la ruta): ${e.message}`) }
   }
 
   const descargarTexto = (name, text) => {
@@ -1428,6 +1443,23 @@ export default function OrquestadorPage({ theme }) {
               <button style={btn(componiendo)} onClick={() => setComponiendo(v => !v)} disabled={!file}
                 title="Une 2 o más planes de este proyecto en un plan de planes">🧩 Plan de planes</button>
             </div>
+            {ubic && (
+              <div style={{ margin: '0 12px 6px', fontSize: 11, color: t.muted, display: 'flex', flexDirection: 'column', gap: 3 }}>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <span>📁 Plan guardado en:</span>
+                  <code style={{ wordBreak: 'break-all', userSelect: 'all' }}>{ubic.plan}</code>
+                  <button style={btn(false)} onClick={() => navigator.clipboard?.writeText(ubic.plan)}>Copiar</button>
+                  <button style={btn(false)} onClick={abrirCarpeta}
+                    title={`Abre ${ubic.carpeta} en el explorador de archivos (solo desde este equipo)`}>📂 Abrir carpeta</button>
+                </div>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <span>🌀 DAG Airflow {ubic.dag_existe ? 'guardado en:' : '(aún no generado en disco; con "DAG Airflow" lo ves y lo descargas) se guardaría en:'}</span>
+                  <code style={{ wordBreak: 'break-all', userSelect: 'all' }}>{ubic.dag}</code>
+                  <button style={btn(false)} onClick={() => navigator.clipboard?.writeText(ubic.dag)}>Copiar</button>
+                </div>
+                <div>Carpeta: <code style={{ wordBreak: 'break-all' }}>{ubic.carpeta}</code></div>
+              </div>
+            )}
             {creando && (
               <NuevaPanel t={t} btn={btn} card={card}
                 proyectos={[...new Set([...projects.map(p => p.name), ...files.map(f => f.split('/')[1]).filter(Boolean)])]}
