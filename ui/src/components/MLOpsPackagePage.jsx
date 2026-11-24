@@ -892,7 +892,12 @@ export default function MLOpsPackagePage({ theme, onEmulate }) {
 
             {/* SIMULAR los jobs del paquete (terminal en vivo; el pivote siempre primero) */}
             {buildResult.edit_token && <SimularPanel t={t} apiBase={API_BASE} token={buildResult.edit_token} />}
-            <GuiaYarnPanel t={t} fuente={(() => { const j = files.find(f => esJob(f)); return j ? j.name.split('/').pop().replace(/\.(py|txt)$/i, '') : '' })()} />
+            <GuiaYarnPanel t={t} fuentes={(() => {
+              // nombres REALES de --source: jobs del banco (run(kernel)) primero; si no hay, las fuentes convertidas
+              const rep = (buildResult.report || []).filter(r => !r._meta && r.ok !== false && r.source)
+              const k = rep.filter(r => r.job_kernel).map(r => r.source)
+              return [...new Set(k.length ? k : rep.map(r => r.source))]
+            })()} />
             {/* FIRMA Y DESPLIEGUE: gobierno del paquete PySpark */}
             <div style={{ marginTop: 14, borderTop: `1px solid ${t.border || '#334155'}`, paddingTop: 12 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>

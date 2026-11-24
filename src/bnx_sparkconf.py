@@ -475,6 +475,7 @@ def _cli_deps(argv):
     g.add_argument("--empaquetar-deps", action="store_true")
     g.add_argument("--probe", action="store_true")
     g.add_argument("--probe-estado", action="store_true")
+    g.add_argument("--probe-python", action="store_true")
     g.add_argument("--workers-nativos", action="store_true")
     ap.add_argument("--out", required=True)
     ap.add_argument("--wheels")
@@ -505,6 +506,17 @@ def _cli_deps(argv):
         return 0
     if a.probe:
         return ejecutar_probe(a.out, mods, minor_actual())
+    if a.probe_python:
+        # Python de los executors que dejo el probe SIN librerias enviadas (solo si fue usable): lo imprime
+        try:
+            with open(a.out, encoding="utf-8") as fh:
+                res = json.load(fh)
+            if res.get("estado") is True and res.get("workers") and res["workers"][0].get("python"):
+                print(res["workers"][0]["python"])
+                return 0
+        except (OSError, ValueError):
+            pass
+        return 2
     if a.workers_nativos:
         try:
             with open(a.out, encoding="utf-8") as fh:
@@ -573,7 +585,8 @@ def tabla_tiempos(filas, master=None, app_id=None, resumen_cpu=None):
 # ---------------------------------------------------------------------------
 def main(argv=None):
     _av = sys.argv[1:] if argv is None else list(argv)
-    if _av and _av[0] in ("--scan-workers", "--empaquetar-deps", "--probe", "--probe-estado", "--workers-nativos"):
+    if _av and _av[0] in ("--scan-workers", "--empaquetar-deps", "--probe", "--probe-estado", "--probe-python",
+                                  "--workers-nativos"):
         return _cli_deps(_av)
     ap = argparse.ArgumentParser(description="Conf de Spark para run.sh")
     ap.add_argument("--modo", choices=("cluster", "local"), required=True)

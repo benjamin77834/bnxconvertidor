@@ -135,11 +135,19 @@ def _pkg(tmp_path, fuentes=None):
 FAKE = '''#!/bin/bash
 if [[ " $* " == *" --probe "* ]]; then
   echo "PROBE-CALL: $*" >> "$FAKE_LOG"
+  SIN_LIBS=1; [[ " $* " == *" --archives "* ]] && SIN_LIBS=0
   while [ $# -gt 0 ]; do if [ "$1" = "--out" ]; then OUT="$2"; fi; shift; done
+  if [ "$SIN_LIBS" = "1" ]; then   # probe SIN enviar librerias: los executors ya traen (o no) numpy/pandas
+    if [ "$FAKE_EXEC" = "ok" ]; then
+      echo '{"estado": true, "workers": [{"python": "/opt/parcel/bin/python", "version": [3, 11, 5], "mods": {"numpy": "ok", "pandas": "ok"}}], "mensaje": "ok"}' > "$OUT"; exit 0
+    fi
+    echo '{"estado": false, "mensaje": "sin numpy"}' > "$OUT"; exit 3
+  fi
   if [ "$FAKE_PROBE" = "bad" ]; then echo '{"estado": false, "mensaje": "malo"}' > "$OUT"; echo "[probe] Python 3.6 en los workers"; exit 3; fi
   echo '{"estado": true, "mensaje": "ok"}' > "$OUT"; exit 0
 fi
 echo "ENV:BNX_UDF_NATIVAS=${BNX_UDF_NATIVAS:-}"
+echo "ENV:PYSPARK_PYTHON=${PYSPARK_PYTHON:-}"
 for a in "$@"; do echo "ARG:$a"; done
 '''
 
@@ -178,7 +186,7 @@ def test_run_sh_trae_probe_y_pasa_archives_y_pythonpath(tmp_path):
     assert args[-1] == "--extract-only" and "main.py" in args
     # segunda corrida: el resultado del probe esta cacheado
     r2, args2, log2 = _run(tmp_path, pkg, BNX_EXECUTOR_PYTHON="/usr/bin/python3.11")
-    assert r2.returncode == 0 and "(cache)" in r2.stdout and log2.count("PROBE-CALL") == 1
+    assert r2.returncode == 0 and "(cache)" in r2.stdout and log2.count("PROBE-CALL") == 2    # sin librerias + con librerias; nada nuevo
 
 
 def test_run_sh_no_corre_si_el_probe_dice_que_no_y_se_puede_forzar(tmp_path):
@@ -320,3 +328,51 @@ def test_limpiar_deps_hdfs_borra_solo_las_viejas(tmp_path):
                        stdin=subprocess.DEVNULL, timeout=120)
     assert r.returncode == 0, r.stdout + r.stderr
     assert os.listdir(root) == [actual]
+
+
+# ---------------------------------------------------------------- python de los executors que ya tienen numpy/pandas
+def test_executors_con_numpy_usan_su_python_y_no_se_envia_el_venv(tmp_path):
+    pkg = _pkg(tmp_path)
+    r, args, log = _run(tmp_path, pkg, FAKE_EXEC="ok")
+    assert r.returncode == 0, r.stdout + r.stderr
+    confs = [args[j + 1] for j, a in enumerate(args) if a == "--conf"]
+    assert "--archives" not in args and "bnxdeps" not in " ".join(args)
+    assert "spark.pyspark.python=/opt/parcel/bin/python" in confs
+    assert "spark.executorEnv.PYSPARK_PYTHON=/opt/parcel/bin/python" in confs
+    assert "spark.pyspark.driver.python=%s/.venv/bin/python" % pkg in confs      # el driver sigue con el venv
+    assert "ENV:PYSPARK_PYTHON=/opt/parcel/bin/python" in r.stdout
+    assert "NO se envia el venv" in r.stdout and log.count("PROBE-CALL") == 1
+    r2, args2, log2 = _run(tmp_path, pkg, FAKE_EXEC="ok")                          # el probe queda en cache
+    assert r2.returncode == 0 and log2.count("PROBE-CALL") == 1 and "--archives" not in args2
+    # BNX_DEPS_ENVIAR=1: se envia el venv igual (sin el atajo)
+    r3, args3, _ = _run(tmp_path, pkg, FAKE_EXEC="ok", BNX_DEPS_ENVIAR="1")
+    assert r3.returncode == 0 and "--archives" in args3
+
+
+def test_bnx_executor_python_se_respeta_y_se_comprueba_sin_enviar_el_venv(tmp_path):
+    pkg = _pkg(tmp_path)
+    r, args, log = _run(tmp_path, pkg, FAKE_EXEC="ok", BNX_EXECUTOR_PYTHON="/opt/parcel/bin/python")
+    assert r.returncode == 0, r.stdout + r.stderr
+    confs = [args[j + 1] for j, a in enumerate(args) if a == "--conf"]
+    assert confs.count("spark.pyspark.python=/opt/parcel/bin/python") == 1
+    assert "spark.executorEnv.PYSPARK_PYTHON=/opt/parcel/bin/python" in confs and "--archives" not in args
+    assert "spark.pyspark.python=/opt/parcel/bin/python" in log          # el probe ya corrio con ese python
+
+
+def test_sin_numpy_en_los_executors_sigue_enviando_el_venv(tmp_path):
+    pkg = _pkg(tmp_path)
+    r, args, _ = _run(tmp_path, pkg)                                       # el probe sin librerias dice que no
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "se envian las librerias del venv" in r.stdout and "--archives" in args
+    assert "ENV:PYSPARK_PYTHON=" in r.stdout and "ENV:PYSPARK_PYTHON=/" not in r.stdout
+
+
+def test_probe_workers_imprime_la_linea_bnx_executor_python():
+    ns = {"__name__": "probe_test"}
+    exec(compile(mp._PROBE_WORKERS_PY, "probe_workers.py", "exec"), ns)       # no necesita pyspark para importarse
+    ok = [("/opt/parcel/bin/python", "3.11", "numpy=True", "pandas=True")]
+    lineas = ns["recomendacion"](ok, "3.11")
+    assert "[probe_workers]   BNX_EXECUTOR_PYTHON=/opt/parcel/bin/python" in lineas
+    malo = [("/usr/bin/python3", "3.6", "numpy=False", "pandas=True")]
+    assert not [l for l in ns["recomendacion"](malo, "3.11") if "BNX_EXECUTOR_PYTHON=/" in l.split("Ejemplo")[0]]
+    assert "enviara las librerias del venv" in " ".join(ns["recomendacion"](malo, "3.11"))

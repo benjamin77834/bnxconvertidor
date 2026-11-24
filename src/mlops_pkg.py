@@ -1618,7 +1618,8 @@ if [ -n "$CLUSTER_SUBMIT" ]; then
   # el Python de los executors; BNX_PROBE_IGNORAR=1 sigue aunque el probe diga que no sirve.
   DEPS_ARGS=()
   if [ -n "${BNX_EXECUTOR_PYTHON:-}" ]; then
-    DEPS_ARGS+=(--conf "spark.pyspark.python=$BNX_EXECUTOR_PYTHON")
+    DEPS_ARGS+=(--conf "spark.pyspark.python=$BNX_EXECUTOR_PYTHON" --conf "spark.executorEnv.PYSPARK_PYTHON=$BNX_EXECUTOR_PYTHON")
+    export PYSPARK_PYTHON="$BNX_EXECUTOR_PYTHON"   # el DRIVER sigue con PYSPARK_DRIVER_PYTHON (venv)
     echo "[run.sh] python de los EXECUTORS: $BNX_EXECUTOR_PYTHON (BNX_EXECUTOR_PYTHON)"
   fi
   if [ "${BNX_DEPS_EXECUTORS:-1}" = "0" ]; then
@@ -1630,6 +1631,41 @@ if [ -n "$CLUSTER_SUBMIT" ]; then
     _WS=0
     python bnx_sparkconf.py --scan-workers --out .bnx_workers_python.json --wheels .venv/bnx_vendor_cache/banco/wheels bank_src framework_mlops_v2 || _WS=$?
     if [ "${BNX_DEPS_FORZAR:-0}" = "1" ]; then _WS=10; fi
+    # Si los executors YA tienen Python de la misma version con numpy/pandas (p.ej. el python de un parcel de
+    # conda de Cloudera, o el de BNX_EXECUTOR_PYTHON) se usa ESE python y NO se envia el venv. Un mini job
+    # (probe) lo comprueba sin enviar nada. BNX_DEPS_ENVIAR=1 (o BNX_DEPS_FORZAR=1) se salta este atajo y
+    # envia siempre las librerias del venv; BNX_EXECUTOR_MODS=numpy,pandas,<otras> cambia lo exigido.
+    if [ "$_WS" = "10" ] && [ "${BNX_DEPS_FORZAR:-0}" != "1" ] && [ "${BNX_DEPS_ENVIAR:-0}" != "1" ]; then
+      _XK="$(printf '%s|%s|%s' "${BNX_EXECUTOR_PYTHON:-}" "${BNX_MASTER:-yarn}" "${BNX_EXECUTOR_MODS:-numpy,pandas}" | cksum | cut -d' ' -f1)"
+      _XF=".bnx_tmp/probe_sinlibs_$_XK.json"
+      _XR=0
+      if [ -f "$_XF" ] && [ "${BNX_PROBE_FORZAR:-0}" != "1" ] && [ -z "$(find "$_XF" -mmin +"${BNX_PROBE_TTL_MIN:-720}" 2>/dev/null)" ]; then
+        python bnx_sparkconf.py --probe-estado --out "$_XF" || _XR=$?
+      else
+        echo "[run.sh] PROBE de los executors SIN enviar librerias (mini job en YARN: Python y numpy/pandas que ya tienen los nodos)..."
+        rm -f "$_XF"
+        "$CLUSTER_SUBMIT" --master "${BNX_MASTER:-yarn}" --deploy-mode client \
+          --driver-java-options "$JOPTS" \
+          --conf "spark.pyspark.driver.python=$PWD/.venv/bin/python" \
+          ${CONF_ARGS[@]+"${CONF_ARGS[@]}"} \
+          --conf spark.dynamicAllocation.initialExecutors=1 --conf spark.dynamicAllocation.minExecutors=1 \
+          --conf spark.dynamicAllocation.maxExecutors=2 \
+          ${DEPS_ARGS[@]+"${DEPS_ARGS[@]}"} \
+          bnx_sparkconf.py --probe --mods="${BNX_EXECUTOR_MODS:-numpy,pandas}" --out "$_XF" >.bnx_tmp/probe_sinlibs.log 2>&1 || _XR=$?
+      fi
+      _XPY=""
+      if [ "$_XR" = "0" ] && [ -f "$_XF" ]; then _XPY="$(python bnx_sparkconf.py --probe-python --out "$_XF" 2>/dev/null || true)"; fi
+      if [ -n "$_XPY" ]; then
+        if [ -z "${BNX_EXECUTOR_PYTHON:-}" ]; then DEPS_ARGS+=(--conf "spark.pyspark.python=$_XPY"); fi
+        DEPS_ARGS+=(--conf "spark.executorEnv.PYSPARK_PYTHON=$_XPY")
+        export PYSPARK_PYTHON="$_XPY"   # el DRIVER sigue con PYSPARK_DRIVER_PYTHON (venv)
+        echo "[run.sh] los EXECUTORS ya tienen un Python con numpy/pandas (misma version que el driver): $_XPY"
+        echo "[run.sh]   se usan tal cual (spark.pyspark.python + PYSPARK_PYTHON) y NO se envia el venv. (BNX_DEPS_ENVIAR=1 lo envia igual)"
+        _WS=11
+      else
+        echo "[run.sh] los executors no tienen ese Python con numpy/pandas (ver .bnx_tmp/probe_sinlibs.log): se envian las librerias del venv."
+      fi
+    fi
     if [ "$_WS" = "10" ]; then
       _DE=0
       python bnx_sparkconf.py --empaquetar-deps --dir .bnx_deps --mods numpy,pandas,unidecode,dateutil,cytoolz --out .bnx_tmp/deps.env || _DE=$?
@@ -1707,6 +1743,8 @@ if [ -n "$CLUSTER_SUBMIT" ]; then
           echo "[run.sh] AVISO: no se pudo completar el probe de los executors (codigo $_PR); se sigue con las librerias enviadas." >&2
         fi
       fi
+    elif [ "$_WS" = "11" ]; then
+      :   # los executors usan su propio Python (arriba): nada que empaquetar
     else
       echo "[run.sh] sin Python en workers detectado (udf/rdd/pandas_udf): no se envian librerias a los executors"
     fi
@@ -1750,7 +1788,6 @@ Imprime el conjunto de (python, version mayor.menor, numpy importable, pandas im
 Compatible con Python 3.6+ (puede correr con el Python del cluster)."""
 from __future__ import print_function
 import sys
-from pyspark.sql import SparkSession
 def _w(_):
     import sys as _s
     def _ok(m):
@@ -1760,7 +1797,27 @@ def _w(_):
         except Exception:
             return False
     return (_s.executable, "%d.%d" % _s.version_info[:2], "numpy=%s" % _ok("numpy"), "pandas=%s" % _ok("pandas"))
+def recomendacion(res, minor_driver=None):
+    """Lineas con el BNX_EXECUTOR_PYTHON exacto a usar, segun lo que vieron los executors.
+    res = [(python, 'M.m', 'numpy=True', 'pandas=True'), ...]"""
+    buenos = []
+    for r in res:
+        if r[2] == "numpy=True" and r[3] == "pandas=True" and (minor_driver is None or r[1] == minor_driver):
+            if r[0] not in buenos:
+                buenos.append(r[0])
+    if not buenos:
+        return ["[probe_workers] Ningun Python de los executors tiene numpy y pandas con la version del driver"
+                + ("" if minor_driver is None else " (%s)" % minor_driver) + ".",
+                "[probe_workers] run.sh enviara las librerias del venv con el job (no se instala nada en los nodos);",
+                "[probe_workers] o prueba otro Python con --conf spark.pyspark.python=<ruta> y vuelve a correr este probe."]
+    out = ["[probe_workers] Los executors YA tienen Python con numpy y pandas. Usa EXACTAMENTE esta variable:",
+           "[probe_workers]   BNX_EXECUTOR_PYTHON=%s" % buenos[0]]
+    if len(buenos) > 1:
+        out.append("[probe_workers]   (otras rutas validas en otros nodos: %s)" % ", ".join(buenos[1:]))
+    out.append("[probe_workers] Ejemplo:  BNX_EXECUTOR_PYTHON=%s BNX_SPARK=cluster bash run.sh --settings <ruta>/bin/settings --env prod --source <job>" % buenos[0])
+    return out
 def main():
+    from pyspark.sql import SparkSession
     spark = SparkSession.builder.appName("bnx_probe_workers").getOrCreate()
     sc = spark.sparkContext
     print("[probe_workers] DRIVER: %s (Python %d.%d) master=%s" % (sys.executable, sys.version_info[0], sys.version_info[1], sc.master))
@@ -1774,6 +1831,8 @@ def main():
     print("[probe_workers] EXECUTORS (python, version, numpy, pandas):")
     for r in res:
         print("[probe_workers]   %s" % (r,))
+    for l in recomendacion(res, "%d.%d" % sys.version_info[:2]):
+        print(l)
     spark.stop()
     return 0
 if __name__ == "__main__":
@@ -2368,10 +2427,50 @@ def _resolver_source(nombre, src_cfg, bank_fmt, registry=None):
         "[source] ERROR: '%s' no es una tabla del config ni un job del REGISTRY.\\n"
         "  Tablas del config: %s\\n"
         "  Jobs del REGISTRY: %s\\n"
-        "  Jobs del banco (run(kernel)): %s"
+        "  Jobs del banco (run(kernel)): %s\\n"
+        "  Usa el NOMBRE DEL JOB del banco (p.ej. rps_datapull), no el nombre de un archivo (main.py, job.py)."
         % (crudo, ", ".join(map(str, src_cfg or {})) or "(ninguna)",
            ", ".join(map(str, registry or {})) or "(ninguno)",
            ", ".join(map(str, globals().get("KERNEL") or {})) or "(ninguno)"))
+
+
+def _validar_source_antes_de_spark(args):
+    """--source que no es job del banco: se valida ANTES de crear la SparkSession (en YARN cada sesion
+    pide executors; un nombre mal escrito no debe lanzar un job de 50 executors para fallar al final)."""
+    tablas = []
+    if args.config:
+        cfg = _load_config(args.config)
+        if _is_bank_settings(cfg):
+            return          # las tablas salen de tables_info del ambiente: se valida mas adelante
+        tablas = list((cfg.get("sources") or {}).keys())
+    norm = os.path.splitext(os.path.basename(str(args.source).strip().rstrip("/")))[0].strip().lower()
+    if norm in set(str(k).lower() for k in tablas) | set(str(k).lower() for k in REGISTRY):
+        return
+    _resolver_source(args.source, dict((t, {}) for t in tablas), False)    # imprime las opciones y se detiene
+
+
+def _tmp_spark_base(spark, args, work):
+    """Carpeta de temporales de Spark (el DEMO escribe parquet ahi) -> (ruta, remota, de_donde).
+    Disco local (defaultFS file:/ o master local): carpeta de trabajo local (main.py le pone file:// si el
+    defaultFS es HDFS). En el CLUSTER (HDFS) NUNCA
+    la carpeta del paquete del edge (un /data/1/... sin permiso): BNX_HDFS_TMP > --base-path >
+    BNX_BASE_PATH > el HOME del usuario en HDFS (/user/<usuario>)."""
+    fs_def = _default_fs(spark)
+    master = str(spark.sparkContext.master)
+    if fs_def.startswith("file:") or master.startswith("local"):
+        return os.path.abspath(work), False, "disco local"
+    for v, o in ((os.environ.get("BNX_HDFS_TMP"), "BNX_HDFS_TMP"),
+                 (getattr(args, "base_path", None), "--base-path"),
+                 (os.environ.get("BNX_BASE_PATH"), "BNX_BASE_PATH")):
+        if v and str(v).strip():
+            suf = "" if o == "BNX_HDFS_TMP" else "/.bnx_tmp"
+            return str(v).strip().rstrip("/") + suf, True, o
+    try:
+        fs, _p = _fs_path(spark, "/")
+        home = str(fs.getHomeDirectory().toString())
+    except Exception:
+        home = "/user/%s" % (os.environ.get("USER") or os.environ.get("LOGNAME") or "usuario")
+    return home.rstrip("/") + "/.bnx_tmp", True, "HOME del usuario en HDFS"
 
 
 def _cargar_orden(path=None):
@@ -2534,6 +2633,7 @@ def _ensure_parquet_codec(spark, out_dir):
         if "ermission" in causa or "AccessControl" in causa:
             print("[aviso] SIN PERMISO de escritura en %s: %s" % (_fs_uri(spark, out_dir), causa))
             print("        Revisa base_path/--base-path (debe ser una ruta HDFS donde puedas escribir).")
+            print("        Para los temporales del DEMO: BNX_HDFS_TMP=/user/<usuario>/bnx_tmp (o --base-path <ruta HDFS>).")
             return
         print("[aviso] no se pudo escribir parquet con el codec por defecto: %s" % causa)
         print("        Se prueba 'uncompressed'.")
@@ -3346,9 +3446,13 @@ def main():
     # Jobs del banco (def run(kernel)): los corre el runner con toolbox.kernel.Kernel.
     kernel_sel, correr_agg = _kernel_seleccion(args)
     kernel_rc = 0
+    if args.source and not kernel_sel:
+        _validar_source_antes_de_spark(args)
     if kernel_sel:
         kernel_rc = _kernel_main(args, kernel_sel, correr_agg)
-        if not correr_agg:
+        _pidio_real = bool(args.settings or args.env or args.cohort or args.fid or os.environ.get("CONF_PATH"))
+        if not correr_agg or (not args.config and not args.demo and _pidio_real):
+            # con --settings/--env (sin --config) NO se encadena el DEMO sintetico de los aggregates
             raise SystemExit(kernel_rc)
     demo = not args.config
     cfg = {} if demo else _load_config(args.config)
@@ -3360,6 +3464,7 @@ def main():
     jopts = ("-Djava.io.tmpdir=%s -Dorg.xerial.snappy.tempdir=%s -Djna.tmpdir=%s"
              % (work, work, work))
     cluster = os.environ.get("BNX_CLUSTER_SPARK") == "1"
+    base_remota = False
     builder = SparkSession.builder.appName(scfg_spark.get("app_name", "framework_mlops_v2"))
     if cluster:
         # Lanzado con el spark-submit del cluster: master/conf/metastore vienen de
@@ -3427,8 +3532,9 @@ def main():
     print("  por que: %s" % ("sin --config" if demo else "se indico --config %s" % args.config))
     if args.demo and args.config:
         print("  AVISO: --demo solo aplica a los jobs de kernel; con --config estas fuentes usan datos REALES.")
-    if demo and (args.env or args.cohort or args.fid):
-        print("  AVISO: --env/--cohort/--fid se ignoran sin --config: esto es DEMO (para datos reales indica --config).")
+    if demo and (args.env or args.cohort or args.fid or args.settings):
+        print("  AVISO: --settings/--env/--cohort/--fid se ignoran sin --config: esto es DEMO de aggregates "
+              "(jobs del banco: --source <job>, p.ej. --source rps_datapull; tablas con settings: --config <json>).")
     _info_python()
     print("=" * 64)
     _report_optimizations()
@@ -3437,11 +3543,17 @@ def main():
         synth = _synthetic_df(spark)
         print("\\nENTRADA sintetica (%d filas):" % synth.count())
         synth.show(5, truncate=False)
-        base = tempfile.mkdtemp(prefix="bnx_main_", dir=work)
-        prev = os.path.join(base, "datapull")
-        os.makedirs(prev, exist_ok=True)
+        _tb, base_remota, _tb_origen = _tmp_spark_base(spark, args, work)
+        if base_remota:
+            base = "%s/bnx_main_%d_%d" % (_tb, os.getpid(), int(time.time()))
+            print("[demo] temporales en HDFS: %s (origen: %s)" % (base, _tb_origen))
+        else:
+            base = tempfile.mkdtemp(prefix="bnx_main_", dir=work)
+        _base_dir = base if (base_remota or _default_fs(spark).startswith("file:")) else "file://" + base
+        prev = _base_dir + "/datapull"
+        _fs_mkdirs(spark, prev)
         for s in REGISTRY:
-            synth.write.mode("overwrite").parquet(os.path.join(prev, s))
+            synth.write.mode("overwrite").parquet(prev + "/" + s)
         _patch_reads(spark, synth)
         src_cfg = {s: {"table_name": s} for s in REGISTRY}
     elif bank_fmt:
@@ -3585,7 +3697,10 @@ def main():
     if demo:
         print("Modo DEMO con datos sinteticos. Para datos reales: python main.py --config cfg.json")
     if base:
-        shutil.rmtree(base, ignore_errors=True)
+        if demo and base_remota:
+            _fs_delete(spark, base)
+        else:
+            shutil.rmtree(base, ignore_errors=True)
     spark.stop()
     raise SystemExit(0 if (fail == 0 and not kernel_rc) else 1)
 
@@ -3806,12 +3921,20 @@ el job a ciegas**: imprime las opciones y sale (`BNX_PROBE_IGNORAR=1` sigue igua
 1. `spark3-submit --master yarn --deploy-mode client probe_workers.py` (Python por defecto del cluster)
 2. `spark3-submit --master yarn --deploy-mode client --conf spark.pyspark.python=/usr/bin/python3.11 probe_workers.py`
 Resultado y qué hacer:
+- (1) imprime versión `3.11` y `numpy=True pandas=True`: los nodos YA tienen todo. El probe imprime la línea exacta `BNX_EXECUTOR_PYTHON=<ruta>`;
+  úsala: `BNX_EXECUTOR_PYTHON=<ruta> BNX_SPARK=cluster bash run.sh --settings <ruta>/bin/settings --env prod --source <job>`.
+  `run.sh` fija `spark.pyspark.python` y `PYSPARK_PYTHON` de los executors (el driver sigue con el venv) y **no envía el venv**. Aunque no
+  exportes la variable, `run.sh` hace ese mismo probe y usa el Python de los nodos si ve numpy/pandas (`BNX_DEPS_ENVIAR=1` envía el venv igual;
+  `BNX_EXECUTOR_MODS=numpy,pandas,<otra>` cambia lo que exige).
 - (1) imprime versión `3.11` y `numpy=False`: todo listo, `BNX_SPARK=cluster bash run.sh ...` envía las librerías.
 - (1) falla con "different version" o imprime otra versión, y (2) imprime `3.11`: usar `BNX_EXECUTOR_PYTHON=/usr/bin/python3.11 BNX_SPARK=cluster bash run.sh ...`.
 - Ninguna da 3.11: preguntar a plataforma qué Python 3.11 hay en los nodos (otra ruta); o reescribir la UDF con funciones de Spark SQL
   (`quita_acentos` → `lower(translate(coalesce(c,''), 'áéíóúüñÁÉÍÓÚÜÑ', 'aeiouunAEIOUUN'))`); plan B: `BNX_SPARK=local bash run.sh ...` en el edge.
 - Desactivar todo: `BNX_DEPS_EXECUTORS=0`. Forzar el envío aunque no se detecte UDF: `BNX_DEPS_FORZAR=1`.
 Si aun así falla en runtime con ese error, el framework lo traduce a "FALTA <módulo> en los EXECUTORS" (terminal, log, `BNX_FALTANTES.json`, pantalla).
+**Job del banco o DEMO:** `--source` es el NOMBRE DEL JOB del banco (p.ej. `rps_datapull`), no un archivo (`main.py`). Con `--settings` + `--env`
+corre el job real; un nombre inválido se detiene al inicio listando los válidos (no levanta Spark). Los temporales del DEMO en YARN van al HOME del
+usuario en HDFS (`/user/<usuario>/.bnx_tmp`), nunca a la carpeta del paquete; cámbialo con `BNX_HDFS_TMP=/user/<usuario>/bnx_tmp` o `--base-path <ruta HDFS>`.
 **Librerías UNA vez en HDFS (Cloudera YARN, mismas versiones en todos los nodos):** con `BNX_DEPS_HDFS=<carpeta hdfs>` `run.sh` sube el
 `.tgz` a `<carpeta>/bnxdeps_<hash12>.tgz` (hash del venv) solo si no existe (`hdfs dfs -test -e`; si falta: `-mkdir -p` y `-put`, permisos 644)
 y usa `--archives hdfs://.../bnxdeps_<hash>.tgz#bnxdeps`. YARN lo localiza en cada contenedor: **todos los nodos reciben el mismo archivo**, no se
