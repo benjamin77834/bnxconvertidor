@@ -45,10 +45,11 @@ function Lamina({ s, ancho }) {
 }
 
 const CAMPOS = [
-  ['n_simple', 'Grafos Simple'], ['n_medio', 'Grafos Medio'], ['n_alto', 'Grafos Alto'],
+  ['n_simple', 'Grafos Simple'], ['n_medio', 'Grafos Medio'], ['n_alto', 'Grafos Alto'], ['n_alto_plan', 'Grafos Alto con plan/pset'],
   ['horas_simple', 'Horas por grafo Simple'], ['horas_medio', 'Horas por grafo Medio'],
   ['auto_simple', '% automático Simple'], ['auto_medio', '% automático Medio'], ['auto_alto', '% automático Alto'],
-  ['alto_horas', 'Horas esfuerzo Alto (2 sem = 80)'],
+  ['alto_horas', 'Horas Alto con plan/pset (2 sem = 80)'],
+  ['alto_sin_plan_horas', 'Horas Alto SIN plan/pset (PENDIENTE DE CONFIRMAR)'],
   ['horas_semana', 'Horas por persona por semana'], ['equipo', 'Personas en el equipo'],
   ['manual_simple', 'Todo manual: h por grafo Simple'], ['manual_medio', 'Todo manual: h por grafo Medio'],
   ['manual_alto', 'Todo manual: h Alto'],
@@ -179,20 +180,24 @@ export default function PresentacionPage({ theme: t }) {
               </div>
               <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>Estimación de esfuerzo</div>
               <div style={{ fontSize: 12, marginBottom: 8 }}>
-                Las 2 semanas de Alto son:{' '}
+                Las 2 semanas de Alto con plan/pset son:{' '}
                 <select style={inp} value={params.alto_modo} onChange={(e) => setP('alto_modo', e.target.value)}>
                   <option value="por_grafo">por grafo</option>
                   <option value="total">total</option>
                 </select>
               </div>
               {CAMPOS.map(([k, label]) => (
-                <label key={k} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12, marginBottom: 4 }}>
-                  <span>{label}</span>
+                <label key={k} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12, marginBottom: 4, gap: 6 }}>
+                  <span style={k === 'alto_sin_plan_horas' ? { color: '#e8a317', fontWeight: 600 } : undefined}>{label}</span>
                   <input type="number" min="0" step="any" style={{ ...inp, width: 80 }}
                     placeholder={vista && vista.params ? String(vista.params[k]) : ''} value={params[k] ?? ''}
                     onChange={(e) => setP(k, e.target.value)} />
                 </label>
               ))}
+              <div style={{ color: '#e8a317', fontSize: 11, marginTop: 4 }}>
+                Pendiente de confirmar: las horas de un grafo complejo sin plan/pset no están decididas. El valor por defecto (40 h) es un supuesto; las 80 h (2 semanas) aplican solo a los muy complejos con plan/pset.
+                {real && ` Hoy: ${real.Alto === 0 ? 'ningún grafo Alto' : `${vista.datos.total.alto_con_plan} Alto con plan/pset, ${vista.datos.total.alto_sin_plan} sin plan/pset, ${vista.datos.total.alto_sin_dato} sin dato`}.`}
+              </div>
               <div style={{ color: t.muted, fontSize: 11, marginTop: 4 }}>
                 Vacío = valor por defecto (los grafos Simple/Medio/Alto salen de lo convertido: {real ? `${real.Simple}/${real.Medio}/${real.Alto}` : '…'}). Escribe otros números para proyectar al portafolio total.
               </div>

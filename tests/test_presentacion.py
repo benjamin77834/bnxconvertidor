@@ -57,6 +57,7 @@ def test_proyecto_invalido(tmp_path, monkeypatch):
 
 
 def _est(**kw):
+    kw.setdefault("n_alto_plan", 2)
     return pr.estimar(pr.normalizar_params(dict(n_simple=5, n_medio=3, n_alto=2, **kw)))
 
 
@@ -82,6 +83,29 @@ def test_estimacion_sin_alto_y_validacion():
                  {"horas_simple": -1}):
         with pytest.raises(pr.PresentacionError):
             pr.normalizar_params(malo)
+
+
+def test_alto_con_y_sin_plan():
+    e = _est(alto_modo="por_grafo", n_alto_plan=1)
+    assert (e["alto_plan"], e["alto_sin_plan"]) == (1, 1)
+    assert e["horas_alto_plan"] == 80.0 and e["horas_alto_sin_plan"] == 40.0 and e["horas"]["Alto"] == 120.0
+    e = _est(alto_modo="por_grafo", n_alto_plan=1, alto_sin_plan_horas=10)
+    assert e["horas"]["Alto"] == 90.0
+    with pytest.raises(pr.PresentacionError):
+        pr.normalizar_params({"n_alto": 1, "n_alto_plan": 2})
+
+
+def test_alto_plan_pset_desde_abinitio(tmp_path, monkeypatch):
+    n = _proyecto(tmp_path, monkeypatch)
+    ab = tmp_path / "abinitio" / n
+    (ab / "1_b.mp").write_text("NODE Input_File_a : SOURCE\nNODE Join_x : JOIN\nNODE Output_File_b : SINK\n"
+                               "Input_File_a -> Join_x\nJoin_x -> Output_File_b\n", encoding="utf-8")
+    (ab / "b.pset").write_text("!prototype|x|||$AI_MP/b.mp\n", encoding="utf-8")
+    p = pr._proyecto(n)
+    assert dict((g, c) for g, _n, c in p["_graficos"]) == {"a.mp": False, "b.mp": True}
+    os.remove(str(ab / "a.mp"))  # sin .mp no se puede clasificar: sin dato
+    p = pr._proyecto(n)
+    assert dict((g, c) for g, _n, c in p["_graficos"])["a.mp"] is None
 
 
 def test_parametros_por_defecto_son_los_reales():

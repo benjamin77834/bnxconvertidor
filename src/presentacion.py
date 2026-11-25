@@ -96,6 +96,17 @@ def _norm(nombre):
     return pset_map._norm_name(nombre).lower()
 
 
+def _con_plan_pset(mapa):
+    """Grafos (nombre normalizado en minusculas) que instancia algun pset o usa algun plan, segun pset_map."""
+    if not mapa:
+        return set()
+    con = {k.lower() for k, v in mapa["instances"].items() if v}
+    for e in mapa["edges"]:
+        if e["type"] == "usa" and mapa["nodes"].get(e["from"], {}).get("kind") == "plan":
+            con.add(e["to"].lower())
+    return con
+
+
 def _proyecto(nombre):
     if not re.match(r"^[\w.\-]+$", nombre or "") or nombre in (".", ".."):
         raise PresentacionError("proyecto invalido: %r" % (nombre,))
@@ -111,6 +122,13 @@ def _proyecto(nombre):
          "niveles": {"Simple": 0, "Medio": 0, "Alto": 0}, "sin_clasificar": 0,
          "orquestaciones": 0, "dags": 0, "salidas_ok": 0, "psets_ligados": 0,
          "sin_pset": 0, "faltantes": 0, "_graficos": []}
+    mapa = None
+    if os.path.isdir(ab):
+        try:
+            mapa = pset_map.scan(ab)
+        except Exception:  # noqa: BLE001
+            mapa = None
+    con_plan = _con_plan_pset(mapa)
     for f in conv:
         mp = os.path.join(ab, f["grafo"])
         nivel = None
@@ -123,7 +141,7 @@ def _proyecto(nombre):
             p["niveles"][nivel] += 1
         else:
             p["sin_clasificar"] += 1
-        p["_graficos"].append((_norm(f["grafo"]), nivel))
+        p["_graficos"].append((_norm(f["grafo"]), nivel, (_norm(f["grafo"]) in con_plan) if (mapa and nivel) else None))
     try:
         names = os.listdir(out)
     except OSError:
@@ -131,9 +149,8 @@ def _proyecto(nombre):
     p["orquestaciones"] = sum(1 for n in names if n.startswith("orquestacion_") and n.endswith(".json"))
     p["dags"] = sum(1 for n in names if n.startswith("dag_") and n.endswith(".py"))
     p["salidas_ok"] = _contar_salidas_ok(out)
-    if os.path.isdir(ab):
+    if mapa:
         try:
-            mapa = pset_map.scan(ab)
             p["psets_ligados"] = sum(len(v) for v in mapa["instances"].values())
             p["sin_pset"] = len(mapa["graphs_without_pset"])
             p["faltantes"] = len(mapa["missing"])
@@ -149,14 +166,18 @@ def recolectar(proyectos):
     ps, vistos = [], {}
     for n in proyectos:
         p = _proyecto(str(n))
-        for nm, nivel in p.pop("_graficos"):
-            vistos.setdefault(nm, nivel)
+        for nm, nivel, con in p.pop("_graficos"):
+            if nm not in vistos or (vistos[nm][1] is None and con is not None):
+                vistos[nm] = (nivel, con)
         ps.append(p)
     niv = {k: 0 for k in mg.NIVELES}
     sin = 0
-    for nivel in vistos.values():
+    alto = {"con": 0, "sin": 0, "sd": 0}  # Alto: con plan/pset, sin plan/pset, sin dato
+    for nivel, con in vistos.values():
         if nivel in niv:
             niv[nivel] += 1
+            if nivel == "Alto":
+                alto["sd" if con is None else ("con" if con else "sin")] += 1
         else:
             sin += 1
     accs = []
@@ -173,6 +194,7 @@ def recolectar(proyectos):
             "convertidos": len(vistos),
             "accuracy": acc_total,
             "niveles": niv,
+            "alto_con_plan": alto["con"], "alto_sin_plan": alto["sin"], "alto_sin_dato": alto["sd"],
             "clasificados": clasif,
             "sin_clasificar": sin,
             "porcentajes": {k: (round(100.0 * v / clasif, 1) if clasif else None) for k, v in niv.items()},
@@ -195,12 +217,14 @@ PARAMS_BASE = {
     "horas_simple": 2.0, "horas_medio": 2.0,            # horas de 1 persona por grafo tras el convertidor
     "auto_simple": 80.0, "auto_medio": 80.0, "auto_alto": 30.0,  # % que deja listo el convertidor
     "alto_modo": "por_grafo",                            # "por_grafo" o "total" (punto abierto)
-    "alto_horas": 80.0,                                  # 2 semanas x 40 h de 1 persona
+    "alto_horas": 80.0,                                  # 2 semanas x 40 h de 1 persona, solo muy complejos con plan/pset
+    "n_alto_plan": None,                                 # None = los Alto con plan/pset reales
+    "alto_sin_plan_horas": 40.0,                         # PENDIENTE DE CONFIRMAR: complejo sin plan/pset (supuesto: 1 semana)
     "horas_semana": 40.0, "equipo": 1.0,
     "manual_simple": 10.0, "manual_medio": 10.0,         # supuesto: todo a mano, horas por grafo
     "manual_alto": 114.0,                                # supuesto: en el mismo modo que alto_horas
 }
-_ENTEROS = ("n_simple", "n_medio", "n_alto")
+_ENTEROS = ("n_simple", "n_medio", "n_alto", "n_alto_plan")
 _PORC = ("auto_simple", "auto_medio", "auto_alto")
 MODOS = ("total", "por_grafo")
 
@@ -232,10 +256,17 @@ def normalizar_params(entrada, reales=None):
     if p["equipo"] < 1:
         raise PresentacionError("'equipo' debe ser al menos 1")
     base = (reales or {}).get("niveles", {})
+    reales_t = reales or {}
     for k, nv in zip(_ENTEROS, mg.NIVELES):
         if p[k] is None:
             p[k] = base.get(nv, 0)
         p[k] = int(round(p[k]))
+    if p["n_alto_plan"] is None:
+        p["n_alto_plan"] = reales_t.get("alto_con_plan", 0)
+    p["n_alto_plan"] = int(round(p["n_alto_plan"]))
+    if p["n_alto_plan"] > p["n_alto"]:
+        raise PresentacionError("'n_alto_plan' no puede superar a los grafos Alto")
+    p["n_alto_sin_dato"] = min(reales_t.get("alto_sin_dato", 0), p["n_alto"] - p["n_alto_plan"])
     return p
 
 
@@ -243,15 +274,21 @@ def estimar(p):
     """Horas, semanas y ahorro. p viene de normalizar_params."""
     n = {"Simple": p["n_simple"], "Medio": p["n_medio"], "Alto": p["n_alto"]}
     por_grafo = p["alto_modo"] == "por_grafo"
-    h = {"Simple": n["Simple"] * p["horas_simple"], "Medio": n["Medio"] * p["horas_medio"],
-         "Alto": (n["Alto"] * p["alto_horas"]) if por_grafo else (p["alto_horas"] if n["Alto"] else 0.0)}
+    n_plan = p["n_alto_plan"]
+    n_sin = n["Alto"] - n_plan  # complejos sin plan/pset (incluye los sin dato)
+
+    def _grupo(cant, horas):
+        return (cant * horas) if por_grafo else (horas if cant else 0.0)
+    h_plan, h_sin = _grupo(n_plan, p["alto_horas"]), _grupo(n_sin, p["alto_sin_plan_horas"])
+    h = {"Simple": n["Simple"] * p["horas_simple"], "Medio": n["Medio"] * p["horas_medio"], "Alto": h_plan + h_sin}
     m = {"Simple": n["Simple"] * p["manual_simple"], "Medio": n["Medio"] * p["manual_medio"],
          "Alto": (n["Alto"] * p["manual_alto"]) if por_grafo else (p["manual_alto"] if n["Alto"] else 0.0)}
     total, manual = sum(h.values()), sum(m.values())
     sem_persona = total / p["horas_semana"]
     ahorro = manual - total
     return {
-        "grafos": n, "horas": {k: round(v, 1) for k, v in h.items()}, "horas_total": round(total, 1),
+        "grafos": n, "alto_plan": n_plan, "alto_sin_plan": n_sin,
+        "horas_alto_plan": round(h_plan, 1), "horas_alto_sin_plan": round(h_sin, 1), "horas": {k: round(v, 1) for k, v in h.items()}, "horas_total": round(total, 1),
         "horas_manual": {k: round(v, 1) for k, v in m.items()}, "horas_manual_total": round(manual, 1),
         "semanas_persona": round(sem_persona, 2),
         "semanas_calendario": round(sem_persona / p["equipo"], 2),
@@ -497,8 +534,11 @@ def laminas_grafos(datos, est, p, fecha_corte):
     t = datos["total"]
     nproj = len(datos["proyectos"])
     por_grafo = p["alto_modo"] == "por_grafo"
-    alto_txt = ("%s h por cada grafo complejo" % _num(p["alto_horas"]) if por_grafo
-                else "%s h en total para todos los grafos complejos" % _num(p["alto_horas"]))
+    alto_txt = ("%s h por cada grafo muy complejo con plan/pset" % _num(p["alto_horas"]) if por_grafo
+                else "%s h en total para los grafos muy complejos con plan/pset" % _num(p["alto_horas"]))
+    sin_txt = ("%s h por cada grafo complejo sin plan/pset (pendiente de confirmar)" % _num(p["alto_sin_plan_horas"]) if por_grafo
+               else "%s h en total para los grafos complejos sin plan/pset (pendiente de confirmar)" % _num(p["alto_sin_plan_horas"]))
+    sd = p["n_alto_sin_dato"]
     nconv = t["convertidos"]
     titulo = "Migración de grafos Ab Initio → PySpark"
     titular = ("Reducimos el riesgo y el costo de depender de Ab Initio: %d grafos ya están convertidos a PySpark" % nconv
@@ -521,8 +561,9 @@ def laminas_grafos(datos, est, p, fecha_corte):
     necesita = [
         "Confirmar el alcance: cuántos grafos tiene el portafolio completo, para proyectar la estimación (hoy se usan los ya convertidos).",
         "Asignar %s persona(s) a la revisión humana, empezando por los grafos de complejidad alta." % _num(p["equipo"]),
-        "Decidir cómo leer las 2 semanas de los grafos complejos: por grafo o en total (esta versión usa: %s)."
+        "Decidir cómo leer las 2 semanas de los grafos muy complejos con plan/pset: por grafo o en total (esta versión usa: %s)."
         % ("por grafo" if por_grafo else "en total"),
+        "Confirmar las horas de un grafo complejo sin plan/pset (pendiente; esta versión supone %s h)." % _num(p["alto_sin_plan_horas"]),
     ]
     pie1 = "Cifras reales de los reportes de conversión y del clasificador de complejidad. Fecha de corte: %s" % fecha_corte
     s1 = {"n": 1, "titulo": "Mensaje ejecutivo", "pie": pie1,
@@ -543,24 +584,29 @@ def laminas_grafos(datos, est, p, fecha_corte):
     tabla = {"cols": ["Nivel", "Grafos", "Auto.", "Horas"], "pesos": [1.3, 1, 1, 1],
              "filas": [["Simple", g["Simple"], "%s%%" % _num(p["auto_simple"]), _num(h["Simple"])],
                        ["Medio", g["Medio"], "%s%%" % _num(p["auto_medio"]), _num(h["Medio"])],
-                       ["Alto", g["Alto"], "%s%%" % _num(p["auto_alto"]), _num(h["Alto"])],
+                       ["Alto c/plan·pset", est["alto_plan"], "%s%%" % _num(p["auto_alto"]), _num(est["horas_alto_plan"])],
+                       ["Alto s/plan·pset", est["alto_sin_plan"], "%s%%" % _num(p["auto_alto"]), _num(est["horas_alto_sin_plan"])],
                        ["Total", sum(g.values()), "", _num(est["horas_total"])]]}
-    yy = _tabla(P, 330, 108, 300, tabla, 24, 11)
+    yy = _tabla(P, 330, 108, 300, tabla, 22, 10)
     resumen = ["%s semanas-persona · %s semanas calendario con %s persona(s)." % (
                    _num(est["semanas_persona"]), _num(est["semanas_calendario"]), _num(p["equipo"])),
-               "Alto: %s." % alto_txt]
-    P.append(_txt(330, yy + 10, 300, 322 - yy - 10, resumen, 11, COL_TEXTO, bullets=True))
+               "Muy complejo con plan/pset: %d grafos, %s." % (est["alto_plan"], alto_txt),
+               "Complejo sin plan/pset: %d grafos%s, %s." % (
+                   est["alto_sin_plan"], " (%d %s)" % (sd, SIN_DATO) if sd else "", sin_txt),
+               "Básicos y medios: %d grafos, %s h de 1 persona por grafo." % (g["Simple"] + g["Medio"], _num(p["horas_simple"]))]
+    P.append(_txt(330, yy + 8, 300, 322 - yy - 8, resumen, _ajustar(resumen, 288, 322 - yy - 8, 11, 7, 1.2, 6), COL_TEXTO, bullets=True))
     _barras(P, 650, 82, 270, 240, {
         "series": [("Todo manual", "#9aa5b1"), ("Con convertidor", COL_ACENTO)],
         "categorias": [(nv, [est["horas_manual"][nv], h[nv]]) for nv in ("Simple", "Medio", "Alto")]})
     nsm = g["Simple"] + g["Medio"]
     pasos = [("Alcance", "Confirmar el portafolio completo y cargarlo en el seguimiento de migración."),
              ("Simples y medios", "Convertir y revisar %d grafos: ~%s h de 1 persona por grafo para llegar al 100%%." % (nsm, _num(p["horas_simple"]))),
-             ("Complejos", "Revisión dedicada de %d grafos: %s." % (g["Alto"], alto_txt)),
+             ("Complejos", "Revisión dedicada: %d muy complejos con plan/pset (%s h) y %d complejos sin plan/pset (%s h, pendiente de confirmar)." % (
+                 est["alto_plan"], _num(p["alto_horas"]), est["alto_sin_plan"], _num(p["alto_sin_plan_horas"]))),
              ("Validación", "Ejecutar los planes con el Orquestador sobre datos reales y registrar la evidencia.")]
     _pasos(P, 340, 144, pasos)
-    pie2 = ("Supuestos editables: Simple y Medio %s h por grafo; todo manual = horas / (1 − %% automático). Alto: %s (modo: %s). %s h por persona por semana. "
-            "Fecha de corte: %s" % (_num(p["horas_simple"]), alto_txt, "por grafo" if por_grafo else "total",
+    pie2 = ("Supuestos editables: Simple y Medio %s h por grafo; todo manual = horas / (1 − %% automático). Alto: %s; %s (modo: %s). %s h por persona por semana. "
+            "Fecha de corte: %s" % (_num(p["horas_simple"]), alto_txt, sin_txt, "por grafo" if por_grafo else "total",
                                     _num(p["horas_semana"]), fecha_corte))
     _pie(P, pie2)
     s2 = {"n": 2, "titulo": "Cómo lo logramos y plan", "pie": pie2, "prims": P}
