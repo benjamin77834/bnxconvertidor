@@ -5,6 +5,7 @@ cancelar (mata el arbol), solo localhost, Windows y el payload que manda la UI (
 import ast
 import json
 import os
+import pathlib
 import sys
 import time
 import types
@@ -226,6 +227,14 @@ def test_orden_todos_respeta_depends_on_y_pivot_true():
     assert all(r.index(p) < r.index("rps_target") for p in ("rps_pivot", "ccp_pivot", "ccp_datapull"))
 
 
+def test_orden_todos_datapull_antes_que_score_del_mismo_modelo():
+    jobs = _jobs() + [{"name": "rps_datapull", "kind": "kernel", "model": "rps", "job": "datapull",
+                       "ruta": "rps/datapull"}]
+    r = sim.orden_todos(jobs)
+    assert r.index("rps_datapull") < r.index("rps_target") and r.index("rps_datapull") < r.index("rps_score")
+    assert r[:3] == ["rps_pivot", "ccp_pivot", "liabilities_pivot"]
+
+
 def test_orden_ciclo_es_error():
     with pytest.raises(sim.SimError):
         sim.orden_todos(_jobs(), {"rps_score": {"depends_on": ["rps_target"]},
@@ -286,6 +295,9 @@ def test_todos_usa_continuar_si_falla_y_muestra_pivotes_primero(entorno):
     assert d["plan"][:2] == ["rps_pivot", "ccp_pivot"]
     assert "[orden] pivotes primero: rps_pivot, ccp_pivot" in d["log"]
     assert [r["job"] for r in d["resumen"]][:2] == ["rps_pivot", "ccp_pivot"]
+    ult = json.loads((pathlib.Path(sim.cache_base()) / sim.ULTIMA).read_text(encoding="utf-8"))
+    assert ult["total"] == len(d["resumen"]) and ult["ok"] == sum(r["estado"] == "OK" for r in d["resumen"])
+    assert [j["job"] for j in ult["jobs"]] == [r["job"] for r in d["resumen"]]
 
 
 @posix

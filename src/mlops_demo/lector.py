@@ -18,9 +18,16 @@ def spark_activa():
     return SparkSession.getActiveSession() or SparkSession.getDefaultSession()
 
 
+def _es_lib(ruta):
+    """Archivo de una libreria del banco instalada (requirements-bank.txt) o de la capa de compatibilidad."""
+    return any(ruta == d or ruta.startswith(d + os.sep) for d in E.get("lib_dirs") or ())
+
+
 def sitio(profundidad=2):
-    """(archivo, linea) del codigo del banco que hizo la lectura (primer marco 'de negocio')."""
-    f, cand = sys._getframe(profundidad), None
+    """(archivo, linea, libs) del codigo del banco que hizo la lectura (primer marco 'de negocio').
+    libs = ((archivo, linea), ...) de las librerias del banco que estan en medio (p. ej. un metodo de
+    una libreria pip que lee un parquet con columnas que el job no menciona)."""
+    f, cand, libs = sys._getframe(profundidad), None, []
     while f is not None:
         ruta = os.path.abspath(f.f_code.co_filename)
         partes = ruta.replace("\\", "/").split("/")
@@ -28,16 +35,22 @@ def sitio(profundidad=2):
                 and (any(ruta.startswith(os.path.abspath(d)) for d in E["bank_dirs"])
                      or any(p.startswith(m) for p in partes for m in _MARCAS)):
             if "toolbox" not in partes:
-                return ruta, f.f_lineno
-            cand = cand or (ruta, f.f_lineno)
+                return ruta, f.f_lineno, tuple(libs)
+            cand = cand or (ruta, f.f_lineno, tuple(libs))
+        elif _es_lib(ruta) and len(libs) < 6:
+            libs.append((ruta, f.f_lineno))
         f = f.f_back
-    return cand
+    return cand or (libs[0] + (tuple(libs),) if libs else None)
 
 
 def columnas_sitio(st):
     if not st:
         return []
-    return analisis.columnas_lectura(st[0], st[1])
+    libs = st[2] if len(st) > 2 else ()
+    cols = [] if libs and (st[0], st[1]) == libs[0] else analisis.columnas_lectura(st[0], st[1])
+    for ruta, ln in libs:
+        cols = _unir(cols, analisis.columnas_funcion(ruta, ln))
+    return cols
 
 
 def buscar_demo_data(nombre):

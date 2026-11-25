@@ -319,6 +319,15 @@ def orden_todos(jobs, orden=None):
             deps[n] = []
         else:
             deps[n] = list(pivotes)
+            # el datapull de un modelo antes que sus otros jobs no pivote (target/score leen su salida)
+            j = next(x for x in jobs if x["name"] == n)
+            if j.get("model") and str(j.get("job") or "").lower() != "datapull":
+                for x in jobs:
+                    d = x["name"]
+                    if (d != n and d not in pivotes and x.get("model") == j["model"]
+                            and str(x.get("job") or "").lower() == "datapull"
+                            and n not in ((orden.get(d) or {}).get("depends_on") or [])):
+                        deps[n].append(d)
     pendientes = {n: len(set(deps[n])) for n in nombres}
     hijos = {n: [] for n in nombres}
     for n in nombres:
@@ -925,6 +934,8 @@ def _ejecutar(run, jobs, orden, usar_settings):
             malos = [r for r in run.resumen if r["estado"] != "OK"]
             run.estado = "ok" if not malos and not fallo else "fallo"
         _imprimir_resumen(run)
+        if run.objetivo is None and run.estado in ("ok", "fallo"):
+            _guardar_ultima(run)
     except SimError as e:
         run.linea("[ERROR] %s" % e)
         run.estado = "fallo"
@@ -936,6 +947,32 @@ def _ejecutar(run, jobs, orden, usar_settings):
         with _LOCK:
             if _ACTIVO.get(run.hash) == run.id:
                 del _ACTIVO[run.hash]
+
+
+ULTIMA = "ULTIMA_SIMULACION.json"
+
+
+def _guardar_ultima(run):
+    """Resultado por job de la ultima simulacion de TODOS los jobs, en <carpeta de simulaciones>/ULTIMA
+    (fuera de git). Lo lee la Presentacion ejecutiva (KPI 'Simulacion por job')."""
+    jobs = []
+    for r in run.resumen:
+        filas = sum(e["filas"] for e in r.get("escrituras") or [] if isinstance(e.get("filas"), int))
+        jobs.append({"job": r["job"], "estado": r["estado"], "seg": r.get("seg"), "filas": filas,
+                     "salidas": len(r.get("escrituras") or []), "detalle": r.get("detalle") or ""})
+    d = {"fecha": time.strftime("%Y-%m-%d %H:%M", time.localtime(run.t1 or time.time())),
+         "donde": run.donde, "entorno": run.encabezado, "env": run.env, "paquete": run.hash,
+         "estado": run.estado, "ok": sum(1 for j in jobs if j["estado"] == "OK"), "total": len(jobs),
+         "jobs": jobs}
+    ruta = os.path.join(os.path.dirname(os.path.dirname(run.pkg)), ULTIMA)
+    try:
+        tmp = ruta + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(d, fh, indent=1, ensure_ascii=False)
+        os.replace(tmp, ruta)
+        run.linea("[sim] resultado guardado en %s (lo usa la Presentación ejecutiva)" % ruta)
+    except OSError as e:
+        run.linea("[sim] aviso: no se pudo guardar %s: %s" % (ruta, e))
 
 
 def _imprimir_resumen(run):

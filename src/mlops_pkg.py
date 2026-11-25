@@ -2540,7 +2540,7 @@ def _cargar_orden(path=None):
     return src
 
 
-def _orden_dependencias(fuentes, src_cfg, orden=None):
+def _orden_dependencias(fuentes, src_cfg, orden=None, modelos=None):
     """Orden de ejecucion por DEPENDENCIAS. Devuelve (fuentes_ordenadas, deps_explicitas).
 
     - depends_on de cada fuente: el del cfg.json si lo trae; si no, el de orden.json.
@@ -2548,6 +2548,8 @@ def _orden_dependencias(fuentes, src_cfg, orden=None):
       las fuentes SIN depends_on explicito van despues de los pivotes (como siempre).
       Esa dependencia implicita solo ORDENA: si el pivote falla, las demas siguen
       (comportamiento historico).
+    - modelos = {job: (modelo, tipo)} (jobs del banco): el datapull de un modelo corre antes que
+      sus otros jobs no pivote (target/score/... leen lo que escribe el datapull). Solo ordena.
     - Solo las dependencias EXPLICITAS hacen que una fuente se salte si su
       dependencia fallo.
     - Sin depends_on en ningun lado el resultado es identico a _orden_pivote_primero.
@@ -2594,6 +2596,13 @@ def _orden_dependencias(fuentes, src_cfg, orden=None):
             deps_todas[s] = []
         else:
             deps_todas[s] = list(pivotes)   # implicita: solo ordena
+            mt = (modelos or {}).get(s) or (None, None)
+            if mt[0] and str(mt[1]).lower() != "datapull":
+                for d in fuentes:
+                    md = (modelos or {}).get(d) or (None, None)
+                    if (d != s and d not in pivotes and md[0] == mt[0] and str(md[1]).lower() == "datapull"
+                            and s not in explicitas.get(d, [])):
+                        deps_todas[s].append(d)
     # Kahn estable: entre las listas para correr, primero pivotes y luego orden original
     pendientes = {s: len(set(deps_todas[s])) for s in fuentes}
     hijos = {s: [] for s in fuentes}
@@ -3396,7 +3405,9 @@ def _kernel_main(args, nombres, correr_agg=False):
     if args.source:
         lista, deps = list(nombres), {}
     else:
-        lista, deps = _orden_dependencias(list(nombres), {}, _aplicar_alias(_cargar_orden(args.orden)))
+        lista, deps = _orden_dependencias(list(nombres), {}, _aplicar_alias(_cargar_orden(args.orden)),
+                                          modelos=dict((n, (entradas[n].get("model"), entradas[n].get("job")))
+                                                       for n in nombres))
     ok = fail = skip = 0
     resumen = []
     fallidos = set()

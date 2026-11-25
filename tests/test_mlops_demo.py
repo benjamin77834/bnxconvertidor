@@ -2,6 +2,7 @@
 Fuentes FALSAS pequenas, sin red: columnas inferidas del SQL/AST, joins con filas, rutas del cluster a
 demo_out/, tablas Hive locales, shim hdfs, demo_data del usuario y modo real sin parches."""
 import ast
+import json
 import os
 import re
 import shutil
@@ -131,6 +132,52 @@ def test_select_estrella_usa_las_columnas_del_codigo(demo, spark):
     df = ns["run"](spark)
     assert {"saldo", "limite", "mop"} <= set(df.columns)
     assert df.count() > 0
+
+
+def test_lectura_dentro_de_libreria_del_banco_suma_sus_columnas(demo, spark, tmp_path):
+    """El job llama a una libreria pip del banco que lee un parquet y usa columnas que el job no
+    menciona (selectExpr(lista)): el dato sintetico debe traerlas."""
+    lib = tmp_path / "site" / "lib_sintetica"
+    lib.mkdir(parents=True)
+    lf = lib / "core.py"
+    lf.write_text("def leer(spark, ruta):\n"
+                  "    df = spark.read.parquet(ruta)\n"
+                  "    return df\n"
+                  "def calcular(spark, ruta):\n"
+                  "    q = ['bigint(id_cli) as id_cli', \"to_date(fec_alta_x) as fec_alta_x\", 'periodo_x']\n"
+                  "    return leer(spark, ruta).selectExpr(q)\n")
+    jf = demo / "bank_src" / "jobs" / "usa_lib.py"
+    jf.write_text("def run(spark, lib):\n"
+                  "    return lib['calcular'](spark, '/data/fuente/preparada/tabla_x')\n")
+    analisis._CACHE.clear()
+    analisis.precargar([str(demo / "bank_src")])
+    E["lib_dirs"] = [str(lib)]
+    ns_lib, ns = {}, {}
+    exec(compile(lf.read_text(), str(lf), "exec"), ns_lib)
+    exec(compile(jf.read_text(), str(jf), "exec"), ns)
+    df = ns["run"](spark, ns_lib)
+    assert df.columns == ["id_cli", "fec_alta_x", "periodo_x"] and df.count() == 20
+
+
+def test_registro_settings_bloque_de_agregacion(tmp_path):
+    (tmp_path / "m.json").write_text(json.dumps({"prod": {"fuente_x": {"group_by": {
+        "table_name": "tabla_agg_x", "group_by_key": ["id_x", "periodo_x"],
+        "query_dict": {"variable": ["monto_x", "", "saldo_x"], "agg": ["sum", "", "max"]}}}}}))
+    assert analisis.registro_settings(str(tmp_path))["tabla_agg_x"] == ["id_x", "periodo_x", "monto_x", "saldo_x"]
+
+
+def test_lectura_de_ruta_sin_datos_usa_columnas_del_registro(demo, spark):
+    E["registro"]["tabla_agg_y"] = ["id_y", "monto_y"]
+    df = spark.read.parquet("/data/fuente/missing_treatment/tabla_agg_y")
+    assert {"id_y", "monto_y"} <= set(df.columns)
+
+
+def test_dirs_librerias_de_requirements_bank(tmp_path):
+    (tmp_path / "requirements-bank.txt").write_text("# comentario\npytest>=1\nno-existe-xyz\n")
+    (tmp_path / "bank_compat.py").write_text("")
+    d = dm.dirs_librerias(str(tmp_path))
+    assert any(os.path.basename(x) == "_pytest" or os.path.basename(x) == "pytest" for x in d)
+    assert d[-1] == str(tmp_path / "bank_compat.py")
 
 
 def test_lectura_de_parquet_sin_datos_infiere_columnas_del_job(demo, spark):

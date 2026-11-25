@@ -201,6 +201,26 @@ def test_mlops_lee_simulacion(tmp_path, monkeypatch):
     assert "1 de 2" in pr.texto_plano(lam)
 
 
+def test_mlops_lee_ultima_simulacion_linux_por_job(tmp_path, monkeypatch):
+    _mlops_cache(tmp_path, monkeypatch)
+    viejo = tmp_path / "sim" / "h" / "pkg" / "demo_out"
+    viejo.mkdir(parents=True)
+    (viejo / "REPORTE_DEMO.json").write_text(json.dumps({"jobs": [{"job": "a", "escrituras": []}]}))
+    lx = tmp_path / "sim_linux"
+    lx.mkdir()
+    (lx / "ULTIMA_SIMULACION.json").write_text(json.dumps({
+        "fecha": "2025-02-03 10:00", "donde": "linux", "env": "prod", "jobs": [
+            {"job": "m_pivot", "estado": "OK", "seg": 1.0, "filas": 3},
+            {"job": "m_datapull", "estado": "OK", "seg": 2.0, "filas": 0},
+            {"job": "m_score", "estado": "ERROR", "seg": 3.0, "filas": 1}]}), encoding="utf-8")
+    s = pr.recolectar_mlops()["simulacion"]
+    assert (s["ok"], s["jobs"], s["fecha"], s["donde"]) == (2, 3, "2025-02-03", "Linux RHEL 8")
+    assert [j["estado"] for j in s["detalle"]] == ["OK", "OK", "ERROR"]
+    *_x, lam = pr.preparar({"tipo": "mlops"})
+    txt = pr.texto_plano(lam)
+    assert "2 de 3" in txt and "jobs OK en la última simulación" in txt
+
+
 def test_handle_descargar_y_errores(tmp_path, monkeypatch):
     n = _proyecto(tmp_path, monkeypatch)
     monkeypatch.setenv("BNX_PRESENTACION_DIR", str(tmp_path / "salida"))

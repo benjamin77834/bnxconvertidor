@@ -74,6 +74,8 @@ def _sintetica_ruta(paths, st, esquema=None):
     sp = lector.spark_activa()
     cols = [f.name for f in esquema.fields] if esquema is not None and hasattr(esquema, "fields") \
         else lector.columnas_sitio(st)
+    if esquema is None:     # columnas que los settings declaran para esa tabla (p. ej. bloque de agregacion)
+        cols = lector._unir(cols, E["registro"].get(re.split(r"[\\/]+", paths[0].rstrip("/\\"))[-1].lower(), []))
     cols = [c for c in cols if c] or ["id", "valor", "fecha"]
     if "features_vector" in cols or paths[0].rstrip("/\\").endswith("vector_assembler"):
         df = _vector_features(sp, paths, cols)

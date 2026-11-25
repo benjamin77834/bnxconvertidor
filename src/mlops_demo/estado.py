@@ -12,6 +12,7 @@ E = {
     "cohort": None,
     "job": "",
     "bank_dirs": [],
+    "lib_dirs": [],        # librerias del banco instaladas (requirements-bank.txt) + bank_compat.py
     "settings_dir": None,
     "demo_data": [],       # carpetas con demo_data/<tabla>.parquet|csv
     "raices": [],          # raices absolutas de cluster sacadas de los settings
@@ -40,7 +41,7 @@ def env_int(nombre, defecto):
 
 
 def reset():
-    for k in ("lecturas", "escrituras", "comandos", "bank_dirs", "demo_data", "raices"):
+    for k in ("lecturas", "escrituras", "comandos", "bank_dirs", "lib_dirs", "demo_data", "raices"):
         E[k] = []
     for k in ("registro", "features", "tablas_prod", "rutas_prod", "orig", "inventadas"):
         E[k] = {}

@@ -38,6 +38,7 @@ class Archivo(object):
         self.attrs = set()
         self.llamados = set()   # id() de los Attribute que son el func de una Call
         self.bases_no = set()   # nombres importados / funciones / clases: sus atributos no son columnas
+        self.listas = {}        # variable -> [cadenas] de 'x = ["expr", ...]' (para selectExpr(x))
 
     def todas(self):
         return set(c for c in (self.cols | self.attrs) if c not in _NO_COL)
@@ -146,6 +147,16 @@ def _llamada(a, c):
         _ids(a, c.args[0])
     if nm in ("filter", "where", "selectExpr", "expr") and c.args:
         for x in c.args:
+            if isinstance(x, ast.Starred):
+                x = x.value
+            if isinstance(x, ast.Name) and x.id in a.listas:      # selectExpr(query), query = ["...", ...]
+                for s in a.listas[x.id]:
+                    _agregar_expr(a, s)
+            elif isinstance(x, (ast.List, ast.Tuple)):
+                for e in x.elts:
+                    s = _const_str(e)
+                    if s:
+                        _agregar_expr(a, s)
             s = _const_str(x)
             if s:
                 _agregar_expr(a, s)
@@ -291,6 +302,12 @@ def analizar_archivo(ruta):
                 a.bases_no.add(n.name)
                 if not isinstance(n, ast.ClassDef):
                     a.bases_no.update(x.arg for x in n.args.args if x.arg in _OBJ_CONOCIDOS)
+            elif isinstance(n, ast.Assign) and isinstance(n.value, (ast.List, ast.Tuple)):
+                strs = [s for s in (_const_str(e) for e in n.value.elts) if s]
+                if strs:
+                    for tg in n.targets:
+                        if isinstance(tg, ast.Name):
+                            a.listas.setdefault(tg.id, []).extend(strs)
         for n in ast.walk(tree):
             if isinstance(n, ast.Call):
                 _llamada(a, n)
@@ -300,6 +317,43 @@ def analizar_archivo(ruta):
         pass
     _CACHE[ruta] = a
     return a
+
+
+_CACHE_FN = {}
+
+
+def columnas_funcion(ruta, lineno):
+    """Columnas que usa la funcion (la mas interna) que contiene `lineno` en `ruta`. Para marcos de
+    librerias del banco: lo que esa funcion hace con el dato (p. ej. selectExpr(query)), sin sumar
+    todo el archivo."""
+    ruta = os.path.abspath(ruta)
+    try:
+        if ruta not in _CACHE_FN:
+            with open(ruta, encoding="utf-8", errors="replace") as fh:
+                tree = ast.parse(fh.read())
+            fns = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+            _CACHE_FN[ruta] = (tree, fns, {})
+        tree, fns, memo = _CACHE_FN[ruta]
+    except (OSError, SyntaxError, ValueError, RecursionError):
+        _CACHE_FN[ruta] = (None, [], {})
+        return []
+    dentro = [f for f in fns if f.lineno <= lineno <= max(getattr(x, "lineno", f.lineno) for x in ast.walk(f))]
+    if not dentro:
+        return []
+    fn = max(dentro, key=lambda f: f.lineno)
+    if fn.lineno not in memo:
+        base = analizar_archivo(ruta)
+        a = Archivo()
+        a.listas, a.bases_no = base.listas, base.bases_no
+        for n in ast.walk(fn):
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute):
+                a.llamados.add(id(n.func))
+        for n in ast.walk(fn):
+            if isinstance(n, ast.Call):
+                _llamada(a, n)
+            _otros(a, n)
+        memo[fn.lineno] = sorted(a.todas())
+    return list(memo[fn.lineno])
 
 
 def columnas_lectura(ruta, lineno):
@@ -357,6 +411,12 @@ def registro_settings(settings_dir):
                     if isinstance(x, str):
                         cs.extend(sqlmini.ids_expresion(x.replace("{}", "x")))
                 _add((db + "." if db else "") + o["table"], cs)
+            qd = o.get("query_dict")
+            if isinstance(o.get("table_name"), str) and isinstance(qd, dict):
+                # bloque de agregacion: {"table_name": t, "group_by_key": [...], "query_dict": {"variable": [...]}}
+                cs = [x for x in (o.get("group_by_key") or []) if isinstance(x, str)]
+                cs += [x for x in (qd.get("variable") or []) if isinstance(x, str) and _IDENT.match(x)]
+                _add(o["table_name"], cs)
             ln, tn, sv = o.get("libname"), o.get("table_name"), o.get("select_variables")
             if isinstance(ln, list) and isinstance(tn, list) and isinstance(sv, list):
                 for l, t, s in zip(ln, tn, sv):

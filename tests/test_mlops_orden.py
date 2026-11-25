@@ -98,6 +98,22 @@ def test_dependencia_ausente_se_ignora_con_aviso(ns, capsys):
     assert "no_existe" in capsys.readouterr().out
 
 
+def test_jobs_del_banco_datapull_antes_que_score_del_mismo_modelo(ns):
+    nombres = ["m1_pivot", "m1_score", "m1_datapull", "m2_score", "m2_pivot", "m2_datapull"]
+    mod = dict((n, tuple(n.split("_"))) for n in nombres)
+    orden, explicitas = ns["_orden_dependencias"](list(nombres), {}, {}, modelos=mod)
+    assert orden[:2] == ["m1_pivot", "m2_pivot"] and explicitas == {}
+    assert orden.index("m1_datapull") < orden.index("m1_score")
+    assert orden.index("m2_datapull") < orden.index("m2_score")
+    # sin modelos (fuentes de aggregates): el orden de siempre
+    assert ns["_orden_dependencias"](list(nombres), {}, {})[0] == [
+        "m1_pivot", "m2_pivot", "m1_score", "m1_datapull", "m2_score", "m2_datapull"]
+    # un depends_on explicito del datapull sobre el score se respeta (sin ciclo)
+    o2, _ = ns["_orden_dependencias"](list(nombres), {}, {"m1_datapull": {"depends_on": ["m1_score"]}},
+                                      modelos=mod)
+    assert o2.index("m1_score") < o2.index("m1_datapull")
+
+
 def test_cargar_orden(ns, tmp_path):
     here = ns["_tmp_here"]
     assert ns["_cargar_orden"]() == {}                      # sin archivo: orden de siempre

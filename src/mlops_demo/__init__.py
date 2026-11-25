@@ -11,6 +11,7 @@ importa ni se parchea. No modifica el codigo del banco: parchea PySpark/os/subpr
   desactivar()       -> quita los parches
 """
 import os
+import re
 import shutil
 
 from . import analisis, estado, reporte as _rep, rutas
@@ -27,6 +28,7 @@ def iniciar(pkg, bank_dirs=(), settings_dir=None, cohort=None, limpiar=True, fil
     E["estricto"] = os.environ.get("BNX_DEMO_ESTRICTO", "") == "1"
     E["cohort"] = cohort
     E["bank_dirs"] = [os.path.abspath(d) for d in bank_dirs if d and os.path.isdir(d)]
+    E["lib_dirs"] = dirs_librerias(E["pkg"])
     E["settings_dir"] = settings_dir
     dd = [os.environ.get("BNX_DEMO_DATA"), os.path.join(E["pkg"], "demo_data")]
     E["demo_data"] = [d for d in dd if d and os.path.isdir(d)]
@@ -44,6 +46,56 @@ def iniciar(pkg, bank_dirs=(), settings_dir=None, cohort=None, limpiar=True, fil
                 E["tablas_prod"]["%s.%s" % (db, t)] = {"dest": os.path.join(hive, db, t),
                                                        "job": "corrida previa", "filas": None}
     return E["out"]
+
+
+def _nombres_requirements(ruta):
+    out = []
+    try:
+        with open(ruta, encoding="utf-8") as fh:
+            for linea in fh:
+                n = re.split(r"[\s;<>=!~\[#]", linea.strip(), 1)[0]
+                if n and not n.startswith("-"):
+                    out.append(n)
+    except OSError:
+        pass
+    return out
+
+
+def dirs_librerias(pkg):
+    """Carpetas de las librerias del banco instaladas (las de requirements-bank.txt, via top_level.txt
+    de su distribucion) y la capa de compatibilidad bank_compat.py. El DEMO suma las columnas que ese
+    codigo usa al generar datos sinteticos de lecturas que pasan por ellas."""
+    out = []
+    try:
+        from importlib import metadata as _md
+    except ImportError:     # Python < 3.8
+        _md = None
+    for nombre in _nombres_requirements(os.path.join(pkg, "requirements-bank.txt")) if _md else []:
+        dist = None
+        for n in (nombre, nombre.replace("-", "_")):
+            try:
+                dist = _md.distribution(n)
+                break
+            except Exception:
+                continue
+        if dist is None:
+            continue
+        tops = [t.strip() for t in (dist.read_text("top_level.txt") or "").splitlines() if t.strip()]
+        if not tops:     # wheel sin top_level.txt: primeras carpetas de sus archivos (RECORD)
+            tops = sorted(set(str(f).replace("\\", "/").split("/")[0] for f in (dist.files or [])
+                              if "/" in str(f).replace("\\", "/") and ".dist-info" not in str(f)
+                              and not str(f).startswith("..")))
+        for t in tops:
+            try:
+                d = os.path.abspath(str(dist.locate_file(t)))
+            except Exception:
+                continue
+            if os.path.isdir(d) and d not in out:
+                out.append(d)
+    compat = os.path.join(pkg, "bank_compat.py")
+    if os.path.isfile(compat):
+        out.append(os.path.abspath(compat))
+    return out
 
 
 def activar():

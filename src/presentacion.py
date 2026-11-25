@@ -367,8 +367,37 @@ def _ruta_cache_mlops():
     return os.path.join(_dir_salida(), "mlops_datos.json")
 
 
+def _ultima_registrada(bases):
+    """ULTIMA_SIMULACION.json mas reciente (la escribe la simulacion de todos los jobs, Mac o Linux)."""
+    mejor, mt = None, -1.0
+    for b in bases:
+        ruta = os.path.join(b, "ULTIMA_SIMULACION.json")
+        try:
+            t = os.path.getmtime(ruta)
+        except OSError:
+            continue
+        if t > mt:
+            mejor, mt = ruta, t
+    if not mejor:
+        return None
+    try:
+        with open(mejor, "r", encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return None
+    jobs = [j for j in (d.get("jobs") or []) if isinstance(j, dict) and j.get("job")]
+    if not jobs:
+        return None
+    return {"jobs": len(jobs), "ok": sum(1 for j in jobs if j.get("estado") == "OK"),
+            "con_salida": sum(1 for j in jobs if j.get("filas")),
+            "fecha": str(d.get("fecha") or datetime.fromtimestamp(mt).strftime("%Y-%m-%d"))[:10],
+            "donde": "Linux RHEL 8" if d.get("donde") == "linux" else "Mac",
+            "env": d.get("env"),
+            "detalle": [{"job": j["job"], "estado": j.get("estado"), "seg": j.get("seg"),
+                         "filas": j.get("filas")} for j in jobs]}
 def _ultima_simulacion():
-    """Resumen del REPORTE_DEMO.json mas reciente de las simulaciones (o None si no hay ninguna)."""
+    """Resultado de la ultima simulacion: ULTIMA_SIMULACION.json (estado por job) o, si no hay, el
+    REPORTE_DEMO.json mas reciente (filas escritas por job). None si no hay ninguna."""
     base = os.environ.get("BNX_SIMULAR_DIR")
     if not base:
         try:
@@ -376,6 +405,9 @@ def _ultima_simulacion():
             base = os.path.join(_vc.cache_dir(), "_simular")
         except Exception:  # noqa: BLE001
             return None
+    reg = _ultima_registrada([os.path.abspath(base), os.path.realpath(os.path.abspath(base) + "_linux")])
+    if reg:
+        return reg
     mejor, mt = None, -1.0
     raiz = os.path.abspath(base)
     if not os.path.isdir(raiz):
@@ -634,7 +666,11 @@ def laminas_mlops(m, fecha_corte):
         lib_n = "OK / parcheables / bloqueadas, de %d analizadas (análisis estático)" % len(libs)
     else:
         lib_v, lib_n = SIN_DATO, "Se calcula al armar el paquete"
-    if sim:
+    if sim and sim.get("ok") is not None:
+        sim_v = "%d de %d" % (sim["ok"], sim["jobs"])
+        sim_n = "jobs OK en la última simulación (%s%s, %s)" % (
+            sim.get("donde") or "", (" · env %s" % sim["env"]) if sim.get("env") else "", sim["fecha"])
+    elif sim:
         sim_v, sim_n = "%d de %d" % (sim["con_salida"], sim["jobs"]), "jobs con filas escritas en la última simulación (%s)" % sim["fecha"]
     else:
         sim_v, sim_n = SIN_DATO, "Aún no hay una simulación registrada"
