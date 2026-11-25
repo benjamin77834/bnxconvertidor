@@ -153,6 +153,9 @@ const textoACampo = (f, v) => {
 const RUN_COLOR = {
   corriendo: '#3b82f6', ok: '#22c55e', fallo: '#ef4444', omitido: '#94a3b8', cancelado: '#f59e0b',
 }
+// Panel desplazable dentro de la columna del Orquestador: minHeight:0 evita que el contenido lo
+// agrande (sin scroll) y overflow:'auto' muestra la barra (en Windows es clasica, no overlay).
+const PANEL_SCROLL = { flex: '1 1 0', minHeight: 0, minWidth: 0, overflow: 'auto' }
 const RUN_LABEL = { corriendo: 'corriendo', ok: 'ok', fallo: 'falló', omitido: 'omitido', cancelado: 'cancelado' }
 // Un server arrancado ANTES de existir el ZIP de proyecto no conoce la accion y la trata como un plan
 const SERVER_VIEJO = 'el servidor corre una versión anterior sin "Proyecto ZIP": reinícialo (start_server) para usarlo'
@@ -614,7 +617,7 @@ function GuiaUso({ t, btn, irA, cerrar }) {
   return (
     <section id="orq-ayuda" aria-label="Cómo se usa el Orquestador"
       style={{ margin: '10px 16px 0', padding: 12, borderRadius: 10, background: t.card || '#152a52',
-               border: `1px solid ${t.border || '#1e3a6e'}`, color: t.text || '#e8edf5', maxHeight: '45vh', overflowY: 'auto' }}>
+               border: `1px solid ${t.border || '#1e3a6e'}`, color: t.text || '#e8edf5', maxHeight: '45vh', overflowY: 'auto', flexShrink: 0 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         <h3 style={{ margin: 0, fontSize: 14 }}>❓ Cómo se usa el Orquestador</h3>
         <span style={{ fontSize: 11, color: t.muted || '#8fa3c4' }}>
@@ -1433,8 +1436,8 @@ export default function OrquestadorPage({ theme }) {
   }, [pmap])
 
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: t.bg, color: t.text }}>
-      <div style={{ padding: '10px 16px', display: 'flex', gap: 8, alignItems: 'center', borderBottom: `1px solid ${t.border}` }}>
+    <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: t.bg, color: t.text }}>
+      <div style={{ padding: '10px 16px', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', flexShrink: 0, borderBottom: `1px solid ${t.border}` }}>
         <strong style={{ fontSize: 14 }}>🧭 Orquestador</strong>
         <button style={btn(tab === 'orq')} onClick={() => setTab('orq')}>Orquestación</button>
         <button style={btn(tab === 'map')} onClick={() => setTab('map')}>Mapa pset ↔ grafo</button>
@@ -1808,7 +1811,7 @@ export default function OrquestadorPage({ theme }) {
       )}
 
       {tab === 'map' && (
-        <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+        <div style={{ ...PANEL_SCROLL, padding: 16 }}>
           {!maps.length && <div style={{ color: t.muted }}>
             No hay <code>pset_map.json</code>. Genéralo con <code>python -m src.pset_map abinitio/&lt;carpeta&gt;</code>.
           </div>}
@@ -1842,7 +1845,7 @@ export default function OrquestadorPage({ theme }) {
       )}
 
       {tab === 'zip' && (
-        <div style={{ flex: 1, overflow: 'auto', padding: 16, display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        <div style={{ ...PANEL_SCROLL, padding: 16, display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'flex-start', alignContent: 'flex-start' }}>
           <div style={{ ...card, flex: '1 1 380px', maxWidth: 560 }}>
             <h4 style={{ margin: '0 0 8px' }}>⬇ Exportar proyecto completo</h4>
             <div style={{ fontSize: 12, color: t.muted, marginBottom: 8 }}>
@@ -1881,7 +1884,7 @@ export default function OrquestadorPage({ theme }) {
         </div>
       )}
       {tab === 'imp' && (
-        <div style={{ flex: 1, overflow: 'auto', padding: 16, display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        <div style={{ ...PANEL_SCROLL, padding: 16, display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'flex-start', alignContent: 'flex-start' }}>
           <div style={{ ...card, flex: '1 1 380px', maxWidth: 560 }}>
             <h4 style={{ margin: '0 0 8px' }}>1. Subir archivos</h4>
             <div style={{ fontSize: 12, color: t.muted, marginBottom: 8 }}>
