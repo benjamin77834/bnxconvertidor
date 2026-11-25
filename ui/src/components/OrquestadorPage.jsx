@@ -154,6 +154,9 @@ const RUN_COLOR = {
   corriendo: '#3b82f6', ok: '#22c55e', fallo: '#ef4444', omitido: '#94a3b8', cancelado: '#f59e0b',
 }
 const RUN_LABEL = { corriendo: 'corriendo', ok: 'ok', fallo: 'falló', omitido: 'omitido', cancelado: 'cancelado' }
+// Un server arrancado ANTES de existir el ZIP de proyecto no conoce la accion y la trata como un plan
+const SERVER_VIEJO = 'el servidor corre una versión anterior sin "Proyecto ZIP": reinícialo (start_server) para usarlo'
+const esServerViejo = (m) => /archivo invalido \(debe ser output/.test(m || '')
 const NIVEL = { ok: { icon: '✔', color: '#22c55e' }, warn: { icon: '⚠', color: '#f59e0b' }, error: { icon: '✖', color: '#ef4444' } }
 
 async function post(path, body) {
@@ -1267,7 +1270,7 @@ export default function OrquestadorPage({ theme }) {
       a.href = `${ORQUESTADOR_URL.replace('/api/orquestador', '')}${d.download_url}`
       a.download = d.filename; a.click()
       setZipRes({ ok: true, texto: `ZIP de "${proy}" generado: ${d.archivos} archivo(s), ${(d.size / 1048576).toFixed(1)} MB.`, avisos: [] })
-    } catch (e) { setZipRes({ ok: false, texto: `No se pudo exportar: ${e.message}`, avisos: [] }) }
+    } catch (e) { setZipRes({ ok: false, texto: `No se pudo exportar: ${esServerViejo(e.message) ? SERVER_VIEJO : e.message}`, avisos: [] }) }
     setBusy(false)
   }
   const importarZip = async (f) => {
@@ -1287,7 +1290,7 @@ export default function OrquestadorPage({ theme }) {
       const list = await post('list')
       setFiles(list.plans || []); setMaps(list.maps || [])
       if (d.planes?.length) setFile(d.planes[0])
-    } catch (e) { setZipRes({ ok: false, texto: `No se pudo importar: ${e.message}`, avisos: [] }) }
+    } catch (e) { setZipRes({ ok: false, texto: `No se pudo importar: ${esServerViejo(e.message) ? SERVER_VIEJO : e.message}`, avisos: [] }) }
     setBusy(false)
   }
   const procesar = async (name) => {

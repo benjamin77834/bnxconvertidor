@@ -321,3 +321,22 @@ def test_bloqueo_remoto_nombra_la_variable(monkeypatch):
     h.client_address = ("127.0.0.1", 1)
     monkeypatch.delenv("BNX_PERMITIR_EJECUCION_REMOTA")
     assert serve_ui.BNXHandler._orq_zip_bloqueo(h, "Importar") is None
+def test_http_rutas_exactas_de_la_ui_no_caen_en_validacion_de_plan(srv):
+    """La UI llama a /orquestador/<accion> (ORQUESTADOR_URL sin /api) con JSON; no debe caer en la
+    validacion por plan (orquestacion_*.json) que daba 'archivo invalido'."""
+    _crear_proyecto(srv["raiz"])
+    jsx = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "ui", "src", "components", "OrquestadorPage.jsx"), encoding="utf-8").read()
+    assert "post('proyecto_exportar'" in jsx and "/proyecto_importar?" in jsx
+    st, b = _req(srv["base"] + "/orquestador/proyecto_exportar", json.dumps({"project": "orig"}).encode(),
+                 {"Content-Type": "application/json"})
+    d = json.loads(b)
+    assert st == 200 and d["ok"] and "archivo invalido" not in b.decode()
+    st, zbytes = _req(srv["base"] + d["download_url"], method="GET")
+    assert st == 200 and zipfile.is_zipfile(io.BytesIO(zbytes))
+    st, b = _req(srv["base"] + "/orquestador/proyecto_importar?name=otro.zip&project=nuevo", zbytes,
+                 {"Content-Type": "application/zip"})
+    r = json.loads(b)
+    assert st == 200 and r["proyecto"] == "nuevo" and "archivo invalido" not in b.decode()
+    st, b = _req(srv["base"] + "/orquestador/proyecto_exportar", b"", {"Content-Type": "application/json"})
+    assert st == 400 and "archivo invalido" not in b.decode()
