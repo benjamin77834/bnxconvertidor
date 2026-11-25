@@ -584,8 +584,8 @@ def laminas_grafos(datos, est, p, fecha_corte):
     tabla = {"cols": ["Nivel", "Grafos", "Auto.", "Horas"], "pesos": [1.3, 1, 1, 1],
              "filas": [["Simple", g["Simple"], "%s%%" % _num(p["auto_simple"]), _num(h["Simple"])],
                        ["Medio", g["Medio"], "%s%%" % _num(p["auto_medio"]), _num(h["Medio"])],
-                       ["Alto c/plan·pset", est["alto_plan"], "%s%%" % _num(p["auto_alto"]), _num(est["horas_alto_plan"])],
-                       ["Alto s/plan·pset", est["alto_sin_plan"], "%s%%" % _num(p["auto_alto"]), _num(est["horas_alto_sin_plan"])],
+                       ["Alto con plan", est["alto_plan"], "%s%%" % _num(p["auto_alto"]), _num(est["horas_alto_plan"])],
+                       ["Alto sin plan", est["alto_sin_plan"], "%s%%" % _num(p["auto_alto"]), _num(est["horas_alto_sin_plan"])],
                        ["Total", sum(g.values()), "", _num(est["horas_total"])]]}
     yy = _tabla(P, 330, 108, 300, tabla, 22, 10)
     resumen = ["%s semanas-persona · %s semanas calendario con %s persona(s)." % (
