@@ -415,3 +415,82 @@ def test_bank_libs_carpeta_de_wheels_incluye_pkgcode(tmp_path, monkeypatch):
     est = vc.estado_banco(str(cache))
     assert sorted(est["pkgcode"]) == ["bnmxverse", "toolbox", "utils"]
     assert "mex-libextract" in est["sdists"]
+# ------------------------------------------------------------------ cliente remoto bloqueado: la UI debe ver el motivo
+@pytest.fixture
+def servidor_remoto(tmp_path, monkeypatch):
+    """El handler real, pero con client_address de otra maquina (192.168.1.50): activa el bloqueo de verdad."""
+    serve_ui = pytest.importorskip("serve_ui")
+    monkeypatch.setenv("BNX_VENDOR_CACHE", str(tmp_path / "cache"))
+    monkeypatch.delenv("BNX_PERMITIR_EJECUCION_REMOTA", raising=False)
+    import socketserver
+    class Remoto(serve_ui.BNXHandler):
+        client_address = property(lambda s: ("192.168.1.50", 5555), lambda s, v: None)
+    class S(socketserver.ThreadingMixIn, socketserver.TCPServer):
+        daemon_threads = True
+        allow_reuse_address = True
+    srv = S(("127.0.0.1", 0), Remoto)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    yield "http://127.0.0.1:%d" % srv.server_address[1], serve_ui
+    srv.shutdown()
+    srv.server_close()
+def _motivo_ok(d):
+    assert d["ok"] is False and d.get("bloqueado") is True
+    assert "BNX_PERMITIR_EJECUCION_REMOTA=1" in d["error"] and "preparar_vendor.py --importar" in d["error"]
+    assert "192.168.1.50" in d["error"]
+def test_remoto_subida_grande_recibe_el_motivo_y_no_un_corte(servidor_remoto):
+    base, _ = servidor_remoto
+    # 20 MB de cuerpo: antes el servidor respondia sin leerlo y el navegador veia 'error de red'
+    st, d = _subir(base, "ef" * 8, "grande.zip", b"0" * (20 * 1048576))
+    assert st == 403
+    _motivo_ok(d)
+def test_remoto_sondeo_import_y_cancel_dan_el_motivo(servidor_remoto, tmp_path):
+    base, _ = servidor_remoto
+    st, d = _post(base + "/vendor/upload?check=1", data=b"")
+    assert st == 403
+    _motivo_ok(d)
+    for url, body in (("/vendor/import", {"path": str(tmp_path)}), ("/vendor/upload/import", {"lote": "ef" * 8}),
+                      ("/vendor/upload/cancel", {"lote": "ef" * 8})):
+        st, d = _post(base + url, body)
+        assert st == 403, url
+        _motivo_ok(d)
+    assert not (tmp_path / "cache" / "_subidas").exists()
+def test_remoto_con_variable_permite_subir(servidor_remoto, monkeypatch):
+    base, _ = servidor_remoto
+    monkeypatch.setenv("BNX_PERMITIR_EJECUCION_REMOTA", "1")
+    assert _post(base + "/vendor/upload?check=1", data=b"") == (200, {"ok": True})
+    assert _subir(base, "ef" * 8, "a.zip", b"x")[0] == 200
+# ------------------------------------------------------------------ numpy 2 en la ciencia de Python <= 3.12
+def test_numpy2_detecta_y_avisa_vendor_v3(tmp_path):
+    rel = _release(tmp_path / "rel")                       # numpy 2.4.6 para py3.11
+    logs = []
+    res = vi.importar_ruta(str(rel), str(tmp_path / "cache"), "3.11", ["linux"], False, log=logs.append)
+    assert res == {"ciencia-linux-py3.11.zip": "ok"}       # solo avisa: la pieza se importa
+    av = [l for l in logs if "AVISO" in l and "numpy" in l]
+    assert len(av) == 1
+    for clave in ("numpy.source", "mex-libmissingtreatment", "ciencia-linux-py3.11.zip", "vendor-v4", "1.26.4", "numpy 2.4.6"):
+        assert clave in av[0], clave
+def test_numpy2_zip_suelto_y_bnx_interno(tmp_path):
+    z = _pieza_zip(str(tmp_path / "ciencia-linux-py3.11.zip"),
+                   {"ciencia/3.11/linux/numpy-2.0.0-cp311-cp311-manylinux_2_28_x86_64.whl": b"x"})
+    logs = []
+    assert vi.importar_ruta(z, str(tmp_path / "c1"), "3.11", ["linux"], False, log=logs.append) == {"ciencia-linux-py3.11.zip": "ok"}
+    assert any("mex-libmissingtreatment" in l for l in logs)
+    _release(tmp_path / "BNX_interno_v3" / "3_vendor_py3.11")
+    logs = []
+    vi.importar_ruta(str(tmp_path / "BNX_interno_v3"), str(tmp_path / "c2"), "3.11", ["linux"], False, log=logs.append)
+    assert any("mex-libmissingtreatment" in l for l in logs)
+def test_numpy1_y_py313_no_avisan(tmp_path):
+    ok = _pieza_zip(str(tmp_path / "ciencia-linux-py3.11.zip"),
+                    {"ciencia/3.11/linux/numpy-1.26.4-cp311-cp311-manylinux_2_17_x86_64.whl": b"x"})
+    nuevo = _pieza_zip(str(tmp_path / "ciencia-linux-py3.13.zip"),
+                       {"ciencia/3.13/linux/numpy-2.2.0-cp313-cp313-manylinux_2_28_x86_64.whl": b"x"})
+    assert vi.numpy2_en_zip(ok) == [] and vi.numpy2_en_zip(nuevo) == []
+    assert vi.avisar_numpy2(ok, log=lambda *a: pytest.fail("no debe avisar")) == ""
+def test_numpy2_aviso_llega_al_log_del_endpoint_y_al_final_del_cli(servidor, tmp_path):
+    base, serve_ui = servidor
+    rel = _release(tmp_path / "rel")
+    st, d = _post(base + "/vendor/import", {"path": str(rel), "version": "3.11", "piezas": {"pyspark": False, "ciencia_linux": True}})
+    assert st == 200, d
+    j = _esperar(serve_ui)
+    assert j["returncode"] == 0, j["log"]
+    assert j["log"].count("mex-libmissingtreatment") == 2          # durante la importacion y repetido al final

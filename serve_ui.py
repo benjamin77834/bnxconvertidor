@@ -5430,9 +5430,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         """POST {path, version, piezas}: importa piezas desde una RUTA LOCAL del servidor (el portal corre
         en la misma maquina): carpeta de release, ZIP de pieza, banco.zip / carpeta mex-lib, o la carpeta
         BNX_interno. Solo lectura de la ruta; solo desde localhost."""
-        bloqueo = self._orq_local_only()
-        if bloqueo:
-            self._json_response(403, {"ok": False, "error": bloqueo})
+        if self._vendor_bloqueado():
             return
         try:
             data = self._vendor_leer_json()
@@ -5455,6 +5453,34 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             return
         st, payload = self._vendor_job_lanzar(cmd, versions)
         self._json_response(st, payload)
+    def _vendor_descartar_cuerpo(self, tope=64 << 20):
+        """Lee y descarta el cuerpo de la peticion (hasta `tope`). Si el servidor responde y cierra sin
+        leerlo, el navegador que aun esta subiendo recibe un reset y solo ve 'error de red'."""
+        try:
+            quedan = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            quedan = 0
+        if quedan <= 0 or quedan > tope:
+            return
+        while quedan > 0:
+            ch = self.rfile.read(min(4 << 20, quedan))
+            if not ch:
+                break
+            quedan -= len(ch)
+    def _vendor_bloqueado(self):
+        """True (y ya respondio 403 con el motivo) si el cliente no puede importar piezas: solo localhost
+        o BNX_PERMITIR_EJECUCION_REMOTA=1. Explica la salida por terminal del servidor."""
+        bloqueo = self._orq_local_only()
+        if not bloqueo:
+            return False
+        self._vendor_descartar_cuerpo()
+        self.close_connection = True
+        self._json_response(403, {"ok": False, "bloqueado": True, "error": (
+            "Este servidor no acepta importar piezas desde otra maquina (%s). Opciones: (1) en el servidor, "
+            "arranque el portal con BNX_PERMITIR_EJECUCION_REMOTA=1 (por ejemplo: "
+            "BNX_PERMITIR_EJECUCION_REMOTA=1 python serve_ui.py); o (2) copie las piezas al servidor e "
+            "importelas desde su terminal: python preparar_vendor.py --importar <carpeta|zip>" % bloqueo)})
+        return True
     def _vendor_subidas_dir(self, lote):
         from src import vendor_cache as vc
         if not re.fullmatch(r"[0-9a-f]{8,64}", str(lote or "")):
@@ -5464,13 +5490,14 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         """POST /vendor/upload?lote=<hex>&name=<archivo> con el CUERPO CRUDO del archivo (no multipart):
         se escribe por bloques de 4 MB a <cache>/_subidas/<lote>/<archivo>.part y se renombra al terminar.
         Limite BNX_UPLOAD_MAX_MB (default 2048). Solo desde localhost."""
-        bloqueo = self._orq_local_only()
-        if bloqueo:
-            self._json_response(403, {"ok": False, "error": bloqueo})
+        if self._vendor_bloqueado():
             return
         from urllib.parse import parse_qs as _pq
         from src import vendor_importar as _vi
         q = _pq(urlparse(self.path).query)
+        if (q.get("check") or [""])[0] == "1":      # sondeo previo de la UI: solo confirma que se puede subir
+            self._json_response(200, {"ok": True})
+            return
         nombre = (q.get("name") or [""])[0]
         lote = (q.get("lote") or [""])[0]
         try:
@@ -5534,9 +5561,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
     def _handle_vendor_upload_import(self):
         """POST {lote, version, piezas}: verifica sha256 (SHA256SUMS / manifiesto, si vinieron) e importa lo
         subido con la misma logica que --importar; borra las subidas al terminar."""
-        bloqueo = self._orq_local_only()
-        if bloqueo:
-            self._json_response(403, {"ok": False, "error": bloqueo})
+        if self._vendor_bloqueado():
             return
         try:
             from src import vendor_importar as _vi
@@ -5559,9 +5584,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         st, payload = self._vendor_job_lanzar(cmd, versions)
         self._json_response(st, payload)
     def _handle_vendor_upload_cancel(self):
-        bloqueo = self._orq_local_only()
-        if bloqueo:
-            self._json_response(403, {"ok": False, "error": bloqueo})
+        if self._vendor_bloqueado():
             return
         try:
             d = self._vendor_subidas_dir(self._vendor_leer_json().get("lote"))

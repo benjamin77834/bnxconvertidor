@@ -135,6 +135,33 @@ def _piezas_de_carpeta(carpeta, version, plataformas, con_pyspark):
             (t == "pyspark" and con_pyspark) or (t == "ciencia" and (plataformas is None or pl in plataformas)))
         (elegidas if ok else saltadas).append((t, v, pl))
     return elegidas, saltadas
+_NUMPY_WHL = re.compile(r"(?:^|/)ciencia/(3\.\d+)/[^/]+/numpy-(\d+)\.(\d+)[^/]*\.whl$")
+def numpy2_en_zip(path):
+    """['numpy 2.4.6 (py3.11)', ...] si la pieza de ciencia ZIP trae numpy >= 2 para Python <= 3.12
+    (el rango donde mlops_pkg fija numpy<2); [] si no. Solo lee los nombres del ZIP."""
+    try:
+        with zipfile.ZipFile(path) as z:
+            nombres = z.namelist()
+    except (OSError, zipfile.BadZipFile):
+        return []
+    out = []
+    for n in nombres:
+        m = _NUMPY_WHL.search(n.replace("\\", "/"))
+        if m and int(m.group(2)) >= 2 and tuple(int(x) for x in m.group(1).split(".")) <= (3, 12):
+            out.append("%s (py%s)" % (os.path.basename(n).split("-")[0] + " " + os.path.basename(n).split("-")[1], m.group(1)))
+    return sorted(set(out))
+def avisar_numpy2(path, log=print):
+    """Avisa (no bloquea) si la pieza de ciencia trae numpy 2 para Python <= 3.12. Devuelve el aviso o ''.
+    numpy 2 quito numpy.source y la libreria del banco mex-libmissingtreatment lo necesita."""
+    malas = numpy2_en_zip(path)
+    if not malas:
+        return ""
+    aviso = ("AVISO: %s trae %s. numpy 2 elimino numpy.source, que la libreria del banco "
+             "mex-libmissingtreatment necesita: los paquetes generados con esta pieza fallaran en el servidor. "
+             "La pieza correcta es ciencia-linux-py3.11.zip del release vendor-v4 (numpy 1.26.4); "
+             "reemplacela y vuelva a importar." % (os.path.basename(path), ", ".join(malas)))
+    log("[importar] " + aviso)
+    return aviso
 def importar_carpeta_release(carpeta, cache, version=None, plataformas=None, con_pyspark=True, log=print):
     elegidas, saltadas = _piezas_de_carpeta(carpeta, version, plataformas, con_pyspark)
     for t, v, pl in saltadas:
@@ -143,6 +170,9 @@ def importar_carpeta_release(carpeta, cache, version=None, plataformas=None, con
         log("[importar] %s: no hay piezas elegidas para Python %s (%s%s)"
             % (carpeta, version or "-", ",".join(plataformas or []) or "-", ", pyspark" if con_pyspark else ""))
         return {}
+    for t, v, pl in elegidas:
+        if t == "ciencia":
+            avisar_numpy2(os.path.join(carpeta, vm.archivo_pieza(t, v, pl)), log)
     pedidas = [(t, v, "any" if t == "pyspark" else pl) for t, v, pl in elegidas]
     return vm.bajar_piezas(vm.OrigenDir(carpeta), pedidas, cache, log=log) or {}
 def importar_ruta(ruta, cache=None, version=None, plataformas=None, con_pyspark=True, log=print, _nivel=0):
@@ -218,6 +248,7 @@ def importar_ruta(ruta, cache=None, version=None, plataformas=None, con_pyspark=
         if sums.get(base, "ok") != "ok":
             log("[importar] ERROR: %s: %s; no se importa" % (base, sums[base]))
             return {base: sums[base]}
+        avisar_numpy2(ruta, log)
         vc.importar_zip(ruta, log=log, cache=cache)
         vm.guardar_manifiesto_local(cache)
         return {base: "ok"}

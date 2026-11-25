@@ -161,8 +161,14 @@ def main(argv=None):
             plats_imp = []
         print("Importar desde %s (Python %s; ciencia: %s; pyspark: %s)" % (
             args.importar, v_imp, ",".join(plats_imp) or "no", "si" if args.con_pyspark else "no"))
+        avisos = []
+
+        def _log_imp(msg):
+            print(msg)
+            if "AVISO: " in str(msg) and "numpy" in str(msg):
+                avisos.append(str(msg))
         try:
-            res = vi.importar_ruta(args.importar, cache, v_imp, plats_imp, args.con_pyspark)
+            res = vi.importar_ruta(args.importar, cache, v_imp, plats_imp, args.con_pyspark, log=_log_imp)
         except Exception as e:   # ZIP corrupto, disco lleno, ...
             print("ERROR: %s" % str(e)[:300])
             res = {"importar": str(e)[:300]}
@@ -175,6 +181,9 @@ def main(argv=None):
         malos = {k: m for k, m in res.items() if m != "ok"}
         for k, m in malos.items():
             print("ERROR: %s: %s" % (k, m))
+        for a in dict.fromkeys(avisos):      # repetido al final para que no se pierda entre el log
+            print("")
+            print(a.replace("[importar] ", "", 1))
         print("")
         print(vm.formatear_piezas(vm.estado_piezas(cache, vm.seleccion([v_imp], plats_imp or None,
                                                                        args.con_pyspark, bool(plats_imp)))))

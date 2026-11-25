@@ -45,12 +45,23 @@ export default function VendorLibrariesTab({ theme, apiBase, pyTarget, vendorSta
       else upd(it.name, { estado: 'error', error: d.error || `HTTP ${xhr.status}` })
       resolve()
     }
-    xhr.onerror = () => { upd(it.name, { estado: 'error', error: 'error de red' }); resolve() }
+    xhr.onerror = () => { upd(it.name, { estado: 'error', error: 'error de red: se corto la conexion con el servidor (si el servidor es otra maquina, revise que acepte importar desde clientes remotos: BNX_PERMITIR_EJECUCION_REMOTA=1)' }); resolve() }
     xhr.onabort = () => { upd(it.name, { estado: 'cancelado', error: 'cancelado' }); resolve() }
     upd(it.name, { estado: 'subiendo', pct: 0, error: '' })
     xhr.send(it.file)
   })
   const subirTodo = async (soloFallidos) => {
+    // Sondeo previo: el servidor puede rechazar clientes remotos y cortar la subida grande (se vería como 'error de red').
+    try {
+      const r = await fetch(`${apiBase}/vendor/upload?check=1`, { method: 'POST' })
+      const d = await r.json().catch(() => ({}))
+      if (r.status === 403 || d.ok === false) {
+        const msg = d.error || `HTTP ${r.status}`
+        setErr(msg)
+        setItems(prev => prev.map(p => (p.estado === 'ok' ? p : { ...p, estado: 'error', error: msg })))
+        return
+      }
+    } catch { /* sin servidor: que lo diga la subida */ }
     for (const it of items) {
       if (it.estado === 'ok') continue
       if (soloFallidos && it.estado === 'pendiente') continue
