@@ -860,6 +860,9 @@ export default function OrquestadorPage({ theme }) {
   const [picked, setPicked] = useState([])      // File[] elegidos para subir
   const [upState, setUpState] = useState(null)  // {done,total,current}
   const [procLog, setProcLog] = useState(null)  // {ok, log}
+  const [zipProj, setZipProj] = useState('')    // proyecto de output/ a exportar como ZIP
+  const [zipNombre, setZipNombre] = useState('') // nombre pedido para el proyecto importado (opcional)
+  const [zipRes, setZipRes] = useState(null)    // {ok, texto, avisos} resultado de exportar/importar ZIP
   const [processing, setProcessing] = useState(false)
   const [code, setCode] = useState(null)      // {name,size,truncated,code}
   const [ubic, setUbic] = useState(null)      // {plan, carpeta, dag, dag_existe}: donde esta en disco
@@ -1252,6 +1255,41 @@ export default function OrquestadorPage({ theme }) {
     setUpState(null); setBusy(false)
   }
 
+  const proyectosOut = useMemo(
+    () => [...new Set(files.map(f => (f.match(/^output\/([^/]+)\//) || [])[1]).filter(Boolean))].sort(), [files])
+  const exportarZip = async () => {
+    const proy = zipProj || proyectosOut[0] || ''
+    if (!proy) { flash('err', 'Elige un proyecto.'); return }
+    setBusy(true); setZipRes(null)
+    try {
+      const d = await post('proyecto_exportar', { project: proy })
+      const a = document.createElement('a')
+      a.href = `${ORQUESTADOR_URL.replace('/api/orquestador', '')}${d.download_url}`
+      a.download = d.filename; a.click()
+      setZipRes({ ok: true, texto: `ZIP de "${proy}" generado: ${d.archivos} archivo(s), ${(d.size / 1048576).toFixed(1)} MB.`, avisos: [] })
+    } catch (e) { setZipRes({ ok: false, texto: `No se pudo exportar: ${e.message}`, avisos: [] }) }
+    setBusy(false)
+  }
+  const importarZip = async (f) => {
+    if (!f) return
+    if (!/\.zip$/i.test(f.name)) { flash('err', 'Elige un archivo .zip.'); return }
+    setBusy(true); setZipRes(null)
+    try {
+      const q = new URLSearchParams({ name: f.name })
+      if (zipNombre.trim()) q.set('project', zipNombre.trim())
+      const r = await fetch(`${ORQUESTADOR_URL}/proyecto_importar?${q}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/zip' }, body: f })
+      const txt = await r.text()
+      let d = {}
+      try { d = txt ? JSON.parse(txt) : {} } catch { d = { error: txt.slice(0, 300) } }
+      if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`)
+      setZipRes({ ok: true, texto: `Importado como proyecto NUEVO "${d.proyecto}": ${d.archivos} archivo(s), ${d.planes.length} orquestación(es), ${d.reescritas} ruta(s) reescritas a este equipo.`, avisos: d.avisos || [] })
+      const list = await post('list')
+      setFiles(list.plans || []); setMaps(list.maps || [])
+      if (d.planes?.length) setFile(d.planes[0])
+    } catch (e) { setZipRes({ ok: false, texto: `No se pudo importar: ${e.message}`, avisos: [] }) }
+    setBusy(false)
+  }
   const procesar = async (name) => {
     setProcessing(true); setProcLog(null)
     try {
@@ -1398,6 +1436,7 @@ export default function OrquestadorPage({ theme }) {
         <button style={btn(tab === 'orq')} onClick={() => setTab('orq')}>Orquestación</button>
         <button style={btn(tab === 'map')} onClick={() => setTab('map')}>Mapa pset ↔ grafo</button>
         <button style={btn(tab === 'imp')} onClick={() => setTab('imp')}>⬆ Importar pset / plan</button>
+        <button style={btn(tab === 'zip')} onClick={() => setTab('zip')}>📦 Proyecto ZIP</button>
         <button style={{ ...btn(ayuda), marginLeft: 'auto' }} onClick={() => toggleAyuda()}
           aria-expanded={ayuda} aria-controls="orq-ayuda">❓ Cómo se usa</button>
         {msg && <span style={{ marginLeft: 12, fontSize: 12, color: msg.kind === 'ok' ? '#22c55e' : '#f87171' }}>{msg.text}</span>}
@@ -1799,6 +1838,45 @@ export default function OrquestadorPage({ theme }) {
         </div>
       )}
 
+      {tab === 'zip' && (
+        <div style={{ flex: 1, overflow: 'auto', padding: 16, display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+          <div style={{ ...card, flex: '1 1 380px', maxWidth: 560 }}>
+            <h4 style={{ margin: '0 0 8px' }}>⬇ Exportar proyecto completo</h4>
+            <div style={{ fontSize: 12, color: t.muted, marginBottom: 8 }}>
+              Descarga un ZIP con TODO <code>output/&lt;proyecto&gt;/</code>: todas las orquestaciones (y variantes __pset),
+              los jobs PySpark, shell, SQL, los DAGs de Airflow y los demás archivos. Se abre en otro equipo
+              (Mac, Windows o Linux) con "Importar proyecto ZIP".
+            </div>
+            <select value={zipProj || proyectosOut[0] || ''} onChange={e => setZipProj(e.target.value)}
+              style={{ ...btn(false), width: '100%', boxSizing: 'border-box', marginBottom: 8, textAlign: 'left' }}>
+              {proyectosOut.map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
+            <button style={{ ...btn(true), opacity: proyectosOut.length ? 1 : 0.5 }} onClick={exportarZip}
+              disabled={busy || !proyectosOut.length}>⬇ Exportar ZIP</button>
+          </div>
+          <div style={{ ...card, flex: '1 1 380px', maxWidth: 560 }}>
+            <h4 style={{ margin: '0 0 8px' }}>⬆ Importar proyecto ZIP</h4>
+            <div style={{ fontSize: 12, color: t.muted, marginBottom: 8 }}>
+              Sube un ZIP exportado desde otra máquina, o un ZIP con un JSON de orquestación y sus archivos
+              (PySpark, shell, SQL...). Siempre se crea un proyecto NUEVO (si el nombre existe se agrega _2, _3...);
+              nada existente se pisa. Las rutas del equipo de origen (Windows o Linux) se ajustan a este equipo.
+            </div>
+            <input value={zipNombre} onChange={e => setZipNombre(e.target.value)}
+              placeholder="Nombre del proyecto nuevo (opcional)"
+              style={{ ...btn(false), width: '100%', boxSizing: 'border-box', marginBottom: 8, textAlign: 'left' }} />
+            <label style={{ ...btn(true), display: 'inline-block', cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.5 : 1 }}>
+              ⬆ Elegir ZIP…
+              <input type="file" accept=".zip" disabled={busy} style={{ display: 'none' }}
+                onChange={e => { importarZip(e.target.files[0]); e.target.value = '' }} />
+            </label>
+          </div>
+          {zipRes && (
+            <div style={{ ...card, flex: '1 1 100%', border: `1px solid ${zipRes.ok ? '#22c55e' : '#ef4444'}`, fontSize: 12 }}>
+              <div>{zipRes.texto}</div>
+              {zipRes.avisos.map((a, i) => <div key={i} style={{ color: '#f59e0b' }}>⚠ {a}</div>)}
+            </div>)}
+        </div>
+      )}
       {tab === 'imp' && (
         <div style={{ flex: 1, overflow: 'auto', padding: 16, display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'flex-start' }}>
           <div style={{ ...card, flex: '1 1 380px', maxWidth: 560 }}>

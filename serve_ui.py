@@ -199,6 +199,8 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
 
         if path in ("/orquestador/datos_subir", "/api/orquestador/datos_subir"):
             self._datos_subir_seguro()
+        elif path in ("/orquestador/proyecto_importar", "/api/orquestador/proyecto_importar"):
+            self._proyecto_importar_seguro()
         elif path.startswith("/orquestador/") or path.startswith("/api/orquestador/"):
             self._orquestador_seguro(path)
         elif path.startswith(("/migracion/", "/api/migracion/")):
@@ -3791,11 +3793,21 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
     # (el server tiene CORS abierto), con confirmacion y solo para planes de output/ o abinitio/.
     # Rutas restringidas a output/ (orquestacion_*.json, *_spark.py) y abinitio/.
     # ------------------------------------------------------------------
+    def _orq_raiz(self):
+        """Raiz del repo (los tests la sustituyen por un directorio temporal)."""
+        return os.path.dirname(os.path.abspath(__file__))
+    def _orq_zip_bloqueo(self, que):
+        """Exportar/importar un proyecto ZIP: localhost, o BNX_PERMITIR_EJECUCION_REMOTA=1. Texto de error o None."""
+        if self._orq_local_only() is None:
+            return None
+        return (f"{que} un proyecto solo se permite desde esta misma maquina. Para hacerlo desde otra maquina "
+                "defina la variable de entorno BNX_PERMITIR_EJECUCION_REMOTA=1 en el servidor del portal "
+                "(y reinicielo).")
     def _orq_safe(self, rel, base_dir, name_re):
         """Ruta absoluta segura bajo <proyecto>/<base_dir> o None."""
         if not isinstance(rel, str) or not rel:
             return None
-        root = os.path.dirname(os.path.abspath(__file__))
+        root = self._orq_raiz()
         base = os.path.realpath(os.path.join(root, base_dir))
         p = os.path.realpath(os.path.join(root, rel))
         if not (p == base or p.startswith(base + os.sep)):
@@ -3922,6 +3934,74 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
                 return f"origen no permitido para ejecutar: {origin}"
         return None
 
+    def _proyecto_importar_seguro(self):
+        try:
+            self._handle_proyecto_importar()
+        except (BrokenPipeError, ConnectionResetError):
+            raise
+        except Exception as e:
+            self.close_connection = True
+            try:
+                self._json_response(500, {"ok": False, "error": f"{type(e).__name__}: {str(e)[:500]}"})
+            except Exception:
+                pass
+    def _handle_proyecto_importar(self):
+        """POST /api/orquestador/proyecto_importar?name=<archivo.zip>[&project=<nombre>] con el cuerpo CRUDO
+        del ZIP (streaming a un temporal). Siempre crea un proyecto NUEVO en output/ (si el nombre existe
+        agrega _2, _3...); nunca pisa nada ni ejecuta lo importado (ver src/orq_zip.py)."""
+        from urllib.parse import parse_qs as _pq
+        from src import orq_zip as _oz
+        q = {k: v[0] for k, v in _pq(urlparse(self.path).query).items()}
+        cl = (self.headers.get("Content-Length") or "").strip()
+        total = int(cl) if cl.isdigit() else -1
+        limite = int(os.environ.get("BNX_ZIP_MAX_MB") or 1024) * 1048576
+        error = None
+        bloqueo = self._orq_zip_bloqueo("Importar")
+        if bloqueo:
+            error = (403, bloqueo)
+        elif total < 0:
+            error = (411, "falta Content-Length")
+        elif total == 0:
+            error = (400, "el archivo esta vacio")
+        elif total > limite:
+            error = (413, "el ZIP pesa %.0f MB y el limite es %.0f MB (BNX_ZIP_MAX_MB)" % (total / 1048576.0, limite / 1048576.0))
+        if error:
+            if 0 < total <= 64 << 20:
+                quedan = total
+                while quedan > 0:
+                    ch = self.rfile.read(min(4 << 20, quedan))
+                    if not ch:
+                        break
+                    quedan -= len(ch)
+            self.close_connection = True
+            self._json_response(error[0], {"ok": False, "error": error[1]})
+            return
+        fd, tmp = tempfile.mkstemp(prefix="bnx_import_", suffix=".zip")
+        try:
+            leido = 0
+            with os.fdopen(fd, "wb") as out:
+                while leido < total:
+                    chunk = self.rfile.read(min(4 << 20, total - leido))
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    leido += len(chunk)
+            if leido != total:
+                self.close_connection = True
+                self._json_response(400, {"ok": False, "error": "subida incompleta (%d de %d bytes)" % (leido, total)})
+                return
+            stem = os.path.splitext(os.path.basename((q.get("name") or "").replace("\\", "/")))[0]
+            try:
+                res = _oz.importar(tmp, self._orq_raiz(), q.get("project") or None, stem or None)
+            except _oz.ZipError as e:
+                self._json_response(400, {"ok": False, "error": str(e)})
+                return
+            self._json_response(200, res)
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
     def _datos_subir_seguro(self):
         try:
             self._handle_datos_subir()
@@ -4022,7 +4102,7 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
         if self.command == "GET":
             from urllib.parse import parse_qs as _pqs
             data = {k: v[0] for k, v in _pqs(urlparse(self.path).query).items()}
-        root = os.path.dirname(os.path.abspath(__file__))
+        root = self._orq_raiz()
         action = path.rstrip("/").rsplit("/", 1)[-1]
         orq_re = r"orquestacion_[\w.\-()]+\.json"
 
@@ -4110,6 +4190,38 @@ class BNXHandler(http.server.SimpleHTTPRequestHandler):
             self._json_response(200, {"ok": True, "file": name, "bytes": len(raw), "replaced": existed})
             return
 
+        if action == "proyecto_exportar":
+            # ZIP del proyecto COMPLETO output/<proyecto>/ (planes, __pset, jobs, shell, SQL, DAGs, params...)
+            from src import orq_zip as _oz
+            bloqueo = self._orq_zip_bloqueo("Exportar")
+            if bloqueo:
+                self._json_response(403, {"ok": False, "error": bloqueo})
+                return
+            proj = str(data.get("project") or "")
+            if not re.fullmatch(proj_re, proj):
+                self._json_response(400, {"ok": False, "error": "nombre de proyecto invalido (letras, numeros, . _ -)"})
+                return
+            try:
+                import uuid as _uuid
+                token = _uuid.uuid4().hex
+                tmpdir = os.path.join(tempfile.gettempdir(), "bnx_bundles")
+                os.makedirs(tmpdir, exist_ok=True)
+                zip_path = os.path.join(tmpdir, token + ".zip")
+                try:
+                    res = _oz.exportar(os.path.join(root, "output", proj), proj, zip_path)
+                except Exception:
+                    if os.path.exists(zip_path):
+                        os.remove(zip_path)
+                    raise
+                filename = f"bnx_proyecto_{proj}.zip"
+                with open(os.path.join(tmpdir, token + ".name"), "w", encoding="utf-8") as fh:
+                    fh.write(filename)
+                self._json_response(200, {"ok": True, "token": token, "filename": filename,
+                                          "archivos": res["archivos"], "size": os.path.getsize(zip_path),
+                                          "download_url": f"/export/download?token={token}"})
+            except _oz.ZipError as e:
+                self._json_response(400, {"ok": False, "error": str(e)})
+            return
         if action == "process":
             # Mapa de relaciones + conversion de grafos + orquestaciones de los planes.
             import subprocess as _sp
