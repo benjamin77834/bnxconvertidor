@@ -262,7 +262,7 @@ def normalizar_params(entrada, reales=None):
             p[k] = base.get(nv, 0)
         p[k] = int(round(p[k]))
     if p["n_alto_plan"] is None:
-        p["n_alto_plan"] = reales_t.get("alto_con_plan", 0)
+        p["n_alto_plan"] = min(reales_t.get("alto_con_plan", 0), p["n_alto"])
     p["n_alto_plan"] = int(round(p["n_alto_plan"]))
     if p["n_alto_plan"] > p["n_alto"]:
         raise PresentacionError("'n_alto_plan' no puede superar a los grafos Alto")

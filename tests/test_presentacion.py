@@ -93,6 +93,9 @@ def test_alto_con_y_sin_plan():
     assert e["horas"]["Alto"] == 90.0
     with pytest.raises(pr.PresentacionError):
         pr.normalizar_params({"n_alto": 1, "n_alto_plan": 2})
+    reales = {"niveles": {"Alto": 18}, "alto_con_plan": 16, "alto_sin_dato": 0}
+    assert pr.normalizar_params({"n_alto": 5}, reales)["n_alto_plan"] == 5
+    assert pr.normalizar_params({}, reales)["n_alto_plan"] == 16
 
 
 def test_alto_plan_pset_desde_abinitio(tmp_path, monkeypatch):
