@@ -1552,7 +1552,28 @@ if [ -n "$CLUSTER_SUBMIT" ]; then
   # Solo el DRIVER usa el venv. NO se exporta PYSPARK_PYTHON: PySpark lo manda a los executors y
   # los workers no tienen el venv (no se instala en otros nodos). Con BNX_ENVIAR_VENV=1 si.
   export PYSPARK_DRIVER_PYTHON="$PWD/.venv/bin/python"
-  if [ "${PYSPARK_PYTHON:-}" = "$PWD/.venv/bin/python" ]; then unset PYSPARK_PYTHON; fi
+  # El venv SOLO existe en el edge: ninguna ruta dentro de el puede llegar a los executors
+  # (PYSPARK_PYTHON del entorno, spark.pyspark.python, spark.executorEnv.PYSPARK_PYTHON, ...).
+  bnx_en_venv() {
+    case "$1" in
+      ./*|bnxenv/*) return 1 ;;   # relativas al contenedor YARN (archivo enviado con --archives): validas en los nodos
+    esac
+    _bv1="$PWD/.venv/"; _bv2="$(pwd -P)/.venv/"; _bv3="$(cd .venv && pwd -P)/"
+    case "$1" in "$_bv1"*|"$_bv2"*|"$_bv3"*) return 0 ;; esac
+    # misma carpeta alcanzada por otro camino (symlink al paquete): se compara el directorio resuelto
+    _bd="$(cd "$(dirname "$1")" 2>/dev/null && pwd -P)" || _bd=""
+    case "${_bd:+$_bd/}" in "$_bv2"*|"$_bv3"*) return 0 ;; esac
+    return 1
+  }
+  if [ -n "${PYSPARK_PYTHON:-}" ] && bnx_en_venv "$PYSPARK_PYTHON"; then
+    echo "[run.sh] AVISO: PYSPARK_PYTHON=$PYSPARK_PYTHON apunta al venv del edge (no existe en los nodos): se ignora (unset)." >&2
+    unset PYSPARK_PYTHON
+  fi
+  if [ -n "${BNX_EXECUTOR_PYTHON:-}" ] && bnx_en_venv "$BNX_EXECUTOR_PYTHON"; then
+    echo "[run.sh] ERROR: BNX_EXECUTOR_PYTHON=$BNX_EXECUTOR_PYTHON es el Python del venv, que solo existe en el edge node." >&2
+    echo "[run.sh]   Usa el Python que tienen los NODOS (linea 'BNX_EXECUTOR_PYTHON=...' de: spark3-submit --master yarn --deploy-mode client probe_workers.py). No se lanzo Spark." >&2
+    exit 1
+  fi
   export BNX_CLUSTER_SPARK=1
   # /tmp del servidor suele estar 'noexec': las librerias nativas que Java extrae
   # ahi (zstd-jni, snappy) fallan con "failed to map segment from shared object".
@@ -1748,6 +1769,33 @@ if [ -n "$CLUSTER_SUBMIT" ]; then
     else
       echo "[run.sh] sin Python en workers detectado (udf/rdd/pandas_udf): no se envian librerias a los executors"
     fi
+  fi
+  # Python de los EXECUTORS: se imprime el EXACTO y se aborta si fuera una ruta del venv del edge.
+  _EXPY=""; _EXSRC=""; _EXBAD=""
+  for _a in ${CONF_ARGS[@]+"${CONF_ARGS[@]}"} ${ARCH_ARGS[@]+"${ARCH_ARGS[@]}"} ${DEPS_ARGS[@]+"${DEPS_ARGS[@]}"}; do
+    case "$_a" in
+      spark.pyspark.python=*|spark.executorEnv.PYSPARK_PYTHON=*|spark.yarn.appMasterEnv.PYSPARK_PYTHON=*)
+        _k="${_a%%=*}"; _v="${_a#*=}"
+        if bnx_en_venv "$_v"; then _EXBAD="$_EXBAD $_k=$_v"; fi
+        if [ "$_k" != "spark.yarn.appMasterEnv.PYSPARK_PYTHON" ]; then _EXPY="$_v"; _EXSRC="$_k"; fi ;;
+    esac
+  done
+  if [ -z "$_EXPY" ] && [ -n "${PYSPARK_PYTHON:-}" ]; then _EXPY="$PYSPARK_PYTHON"; _EXSRC="PYSPARK_PYTHON (entorno)"; fi
+  if [ -z "$_EXPY" ] && [ -n "${SPARK_CONF_DIR:-}" ]; then
+    _v="$(grep -hE '^[[:space:]]*spark[.]pyspark[.]python[[:space:]=]' "$SPARK_CONF_DIR/spark-defaults.conf" 2>/dev/null | tail -1 | sed -E 's/^[^[:space:]=]+[[:space:]=]+//')"
+    if [ -n "$_v" ]; then _EXPY="$_v"; _EXSRC="spark.pyspark.python de $SPARK_CONF_DIR/spark-defaults.conf"; fi
+    if [ -n "$_v" ] && bnx_en_venv "$_v"; then _EXBAD="$_EXBAD spark-defaults.conf:spark.pyspark.python=$_v"; fi
+  fi
+  if [ -n "$_EXBAD" ]; then
+    echo "[run.sh] ERROR: los EXECUTORS recibirian el Python del venv del edge, que NO existe en los nodos:$_EXBAD" >&2
+    echo "[run.sh]   (en YARN fallaria con: Cannot run program \\"$PWD/.venv/bin/python\\": error=2). No se lanzo Spark." >&2
+    echo "[run.sh]   Solucion: BNX_EXECUTOR_PYTHON=<python de los nodos> (ver probe_workers.py) y quitar PYSPARK_PYTHON/spark.pyspark.python que apunten al .venv." >&2
+    exit 1
+  fi
+  if [ -n "$_EXPY" ]; then
+    echo "[run.sh] python de los EXECUTORS (YARN): $_EXPY  [origen: $_EXSRC]"
+  else
+    echo "[run.sh] python de los EXECUTORS (YARN): el del cluster/nodo (sin PYSPARK_PYTHON ni spark.pyspark.python; NUNCA el del venv del edge)"
   fi
   exec "$CLUSTER_SUBMIT" --master "${BNX_MASTER:-yarn}" --deploy-mode client \
     --driver-java-options "$JOPTS" \
@@ -3074,8 +3122,10 @@ def _kernel_conector_demo(work):
         def __init__(self, settings):
             self.settings = settings
             # los workers de PySpark usan el MISMO python que este (sin activar el venv no coincidia)
-            os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
-            os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
+            # (en modo CLUSTER NO: PYSPARK_PYTHON viaja a los executors y el venv solo existe en el edge)
+            if os.environ.get("BNX_CLUSTER_SPARK") != "1":
+                os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
+                os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
             b = SparkSession.builder.appName("bnx_kernel_demo")
             b = _demo_builder(b)       # local[N], AQE, shuffle, driver.memory (bnx_demo/sparkcfg.py)
             b = (b.config("spark.sql.warehouse.dir", os.path.join(_demo_out_dir(), "spark-warehouse"))
@@ -3229,8 +3279,22 @@ def _compat_estado():
         if t["estado"] != "OK":
             print("[compat]   %-11s %s %s%s" % (t["estado"], t["libreria"], t["version"],
                                                  "" if t["usada"] else " (el modelo no la usa)"))
+def _python_executors_seguro():
+    """Modo CLUSTER (YARN): PYSPARK_PYTHON viaja a los EXECUTORS y el venv solo existe en el edge. Si apunta al
+    venv del paquete se quita ANTES de crear la SparkContext. No toca el del cluster."""
+    if os.environ.get("BNX_CLUSTER_SPARK") != "1":
+        return
+    py = os.environ.get("PYSPARK_PYTHON") or ""
+    if not py or py.startswith("./"):
+        return
+    venvs = (os.path.join(_here, ".venv") + os.sep, os.path.realpath(os.path.join(_here, ".venv")) + os.sep)
+    if py.startswith(venvs):
+        print("[python] AVISO: PYSPARK_PYTHON=%s es el venv del edge (no existe en los nodos): se quita para que los "
+              "executors usen el Python del cluster (o BNX_EXECUTOR_PYTHON)" % py)
+        os.environ.pop("PYSPARK_PYTHON", None)
 def _info_python():
     """Python del driver y lo que el cluster pudo haber fijado (diagnostico de 'No module named ...')."""
+    _python_executors_seguro()
     print("[python] driver=%s (%s) | PYSPARK_PYTHON=%s | PYSPARK_DRIVER_PYTHON=%s" % (
         sys.executable, sys.version.split()[0], os.environ.get("PYSPARK_PYTHON") or "(sin definir)",
         os.environ.get("PYSPARK_DRIVER_PYTHON") or "(sin definir)"))
@@ -3465,6 +3529,7 @@ def main():
              % (work, work, work))
     cluster = os.environ.get("BNX_CLUSTER_SPARK") == "1"
     base_remota = False
+    _python_executors_seguro()
     builder = SparkSession.builder.appName(scfg_spark.get("app_name", "framework_mlops_v2"))
     if cluster:
         # Lanzado con el spark-submit del cluster: master/conf/metastore vienen de
@@ -3921,6 +3986,9 @@ el job a ciegas**: imprime las opciones y sale (`BNX_PROBE_IGNORAR=1` sigue igua
 1. `spark3-submit --master yarn --deploy-mode client probe_workers.py` (Python por defecto del cluster)
 2. `spark3-submit --master yarn --deploy-mode client --conf spark.pyspark.python=/usr/bin/python3.11 probe_workers.py`
 Resultado y qué hacer:
+`run.sh` imprime `python de los EXECUTORS (YARN): ...` al arrancar y NUNCA les pasa el python del `.venv` (solo existe en el edge): ignora un
+`PYSPARK_PYTHON` que apunte al venv y aborta si `BNX_EXECUTOR_PYTHON`/`spark.pyspark.python` lo apuntan. Si ves `Cannot run program ".../.venv/bin/python": error=2`
+usa `BNX_EXECUTOR_PYTHON=<python de los nodos>` y borra la carpeta de salida a medias en HDFS antes de reintentar.
 - (1) imprime versión `3.11` y `numpy=True pandas=True`: los nodos YA tienen todo. El probe imprime la línea exacta `BNX_EXECUTOR_PYTHON=<ruta>`;
   úsala: `BNX_EXECUTOR_PYTHON=<ruta> BNX_SPARK=cluster bash run.sh --settings <ruta>/bin/settings --env prod --source <job>`.
   `run.sh` fija `spark.pyspark.python` y `PYSPARK_PYTHON` de los executors (el driver sigue con el venv) y **no envía el venv**. Aunque no

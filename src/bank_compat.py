@@ -1220,6 +1220,8 @@ def formatear(info, job=None):
         return "PARCHEADO: %s (no validado)" % info.get("componente", "")
     if info.get("tipo") == "executors":
         return _formatear_executors(info, job)
+    if info.get("tipo") == "python_executor":
+        return _formatear_python_executor(info, job)
     if info.get("tipo") == "datos":
         return _formatear_datos(info, job)
     donde = [d.format(lib=lib) for d in DONDE_CARGARLO]
@@ -1258,14 +1260,30 @@ def _formatear_datos(info, job):
         "  Ruta esperada: %s" % ruta,
         "  Lo necesita: %s (lectura parquet de una salida de un paso anterior del mismo datapull)" % job,
         "  Lo produce: %s" % (info.get("etapa") or "un paso anterior del mismo job (extract/pivot/features/mobs)"),
-        "  Por que: %s. Casi siempre es salida a medias de una corrida anterior que fallo (ej. el error de numpy en los "
-        "executors): la carpeta quedo creada, el job la toma como 'ya hecha' y no la vuelve a generar" % info.get("por_que", ""),
+        "  Por que: %s. Causa probable: una escritura anterior fallo a medias (p.ej. los executors no pudieron arrancar "
+        "Python: 'Cannot run program ... python', o el error de numpy en los executors) y dejo la carpeta creada pero "
+        "sin datos; revisa ese error ANTES en el log. Si ese fallo ya esta corregido, hay que borrar la carpeta y regenerarla" % info.get("por_que", ""),
         "  Donde cargarlo: no hay que cargar datos. Revisar con: hdfs dfs -ls %s ; si no hay .parquet, borrar SOLO esa "
         "carpeta (hdfs dfs -rm -r -skipTrash %s) y volver a correr el job: la regenera" % (ruta, ruta),
         "  Si se repite: borrar la carpeta de salida completa de esa fuente/cohort (base_path + working_path) y correr "
         "desde cero; si la carpeta si tiene .parquet, avisar al equipo (no es este caso)",
         "  Pasos: 1) hdfs dfs -ls de la ruta; 2) borrar la carpeta vacia; 3) volver a correr %s (el mismo paquete sirve: "
         "este error no se arregla regenerandolo)" % job])
+def _formatear_python_executor(info, job):
+    py = info.get("python") or "(ruta no identificada en el error)"
+    return "\n".join([
+        "LOS EXECUTORS NO PUEDEN ARRANCAR PYTHON: %s" % py,
+        "  Lo necesita: %s (un paso que ejecuta Python en los workers: UDF/rdd/escritura parquet con UDF)" % job,
+        "  Por que: Spark mando a los executors lanzar '%s', pero esa ruta solo existe en el DRIVER (edge node); "
+        "los nodos del cluster no tienen ese archivo (error=2, No such file or directory)" % py,
+        "  Donde/como: indicar el Python que SI existe en los nodos: BNX_EXECUTOR_PYTHON=<python de los nodos> "
+        "BNX_SPARK=cluster bash run.sh ...  (ruta exacta: la linea 'BNX_EXECUTOR_PYTHON=...' que imprime "
+        "spark3-submit --master yarn --deploy-mode client --conf spark.pyspark.python=<ruta> probe_workers.py)",
+        "  Revisar: que PYSPARK_PYTHON no este exportado con la ruta del .venv en tu shell (unset PYSPARK_PYTHON) y "
+        "que ningun spark.pyspark.python / spark.executorEnv.PYSPARK_PYTHON apunte al .venv",
+        "  Pasos: 1) regenerar el paquete (run.sh nuevo imprime y valida el Python de los executors); "
+        "2) correr con BNX_EXECUTOR_PYTHON=<python de los nodos>; 3) si quedo una carpeta de salida a medias en HDFS "
+        "(working_path/<periodo>/...), borrarla antes de volver a correr %s" % job])
 def _formatear_executors(info, job):
     n = info.get("necesita") or {}
     lugar = ("%s:%s" % (n["archivo"], n.get("linea", ""))) if n.get("archivo") else "(UDF no identificada en el codigo del paquete)"
@@ -1531,9 +1549,28 @@ def _ruta_parquet_fallida(ex):
                 ruta = c        # se queda con el frame mas profundo
         tb = tb.tb_next
     return ruta
+_RX_PY_EXEC = re.compile(r"Cannot run program \"([^\"]*python[^\"]*)\"[^\n]*?error=2", re.I)
+def traducir_python_executor(ex, job=None):
+    """java.io.IOException 'Cannot run program "<ruta>/python": error=2' en un executor -> info tipo 'python_executor'
+    (el executor intento lanzar un Python que solo existe en el driver). None si el error no es de ese tipo."""
+    if isinstance(ex, str):
+        texto = ex
+    else:
+        partes, vistos, e = [], set(), ex
+        while e is not None and id(e) not in vistos:
+            vistos.add(id(e))
+            partes.append(str(e))
+            e = e.__cause__ or e.__context__
+        texto = "\n".join(partes)
+    m = _RX_PY_EXEC.search(texto)
+    if not m:
+        return None
+    return {"componente": "python de los executors: %s" % m.group(1), "modulo": m.group(1), "libreria": "Python de los executors",
+            "version": None, "necesita": {}, "tipo": "python_executor", "python": m.group(1),
+            "por_que": "los executors intentaron lanzar %s, que no existe en los nodos" % m.group(1)}
 def traducir_parquet_vacio(ex, job=None):
     """AnalysisException UNABLE_TO_INFER_SCHEMA al leer parquet -> info tipo 'datos': la carpeta existe pero no tiene
-    ningun .parquet (salida a medias de una corrida anterior que fallo). None si el error no es de ese tipo."""
+    ningun .parquet (causa probable: una escritura anterior fallo a medias). None si el error no es de ese tipo."""
     partes, vistos, e = [], set(), ex
     while e is not None and id(e) not in vistos:
         vistos.add(id(e))
@@ -1556,6 +1593,9 @@ def traducir_excepcion(ex, job=None):
     _inf_ex = traducir_error_executor(ex, job)
     if _inf_ex is not None:
         return _inf_ex
+    _inf_py = traducir_python_executor(ex, job)
+    if _inf_py is not None:
+        return _inf_py
     _inf_pq = traducir_parquet_vacio(ex, job)
     if _inf_pq is not None:
         return _inf_pq

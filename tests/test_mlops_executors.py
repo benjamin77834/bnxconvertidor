@@ -376,3 +376,146 @@ def test_probe_workers_imprime_la_linea_bnx_executor_python():
     malo = [("/usr/bin/python3", "3.6", "numpy=False", "pandas=True")]
     assert not [l for l in ns["recomendacion"](malo, "3.11") if "BNX_EXECUTOR_PYTHON=/" in l.split("Ejemplo")[0]]
     assert "enviara las librerias del venv" in " ".join(ns["recomendacion"](malo, "3.11"))
+
+
+# ---------------------------------------------------------------- los executors NUNCA reciben el python del venv del edge
+def _valores_python(args):
+    """Todo valor de conf que fija el Python de los executors en los args del spark-submit."""
+    claves = ("spark.pyspark.python=", "spark.executorEnv.PYSPARK_PYTHON=", "spark.yarn.appMasterEnv.PYSPARK_PYTHON=")
+    return [a.split("=", 1)[1] for a in args if a.startswith(claves)]
+
+
+def _sin_venv(pkg, r, args):
+    venv = os.path.join(pkg, ".venv")
+    assert not [v for v in _valores_python(args) if v.startswith(venv)], args
+    assert "ENV:PYSPARK_PYTHON=%s" % venv not in r.stdout
+    assert "python de los EXECUTORS" in r.stdout                  # se imprime SIEMPRE el python de los executors
+
+
+def test_rama_bnx_executor_python_no_pasa_el_venv_aunque_el_entorno_lo_traiga(tmp_path):
+    pkg = _pkg(tmp_path)
+    r, args, _ = _run(tmp_path, pkg, BNX_EXECUTOR_PYTHON="/opt/parcel/bin/python",
+                      PYSPARK_PYTHON=os.path.join(pkg, ".venv", "bin", "python"))
+    assert r.returncode == 0, r.stdout + r.stderr
+    _sin_venv(pkg, r, args)
+    assert "python de los EXECUTORS (YARN): /opt/parcel/bin/python" in r.stdout and "ENV:PYSPARK_PYTHON=/opt/parcel/bin/python" in r.stdout
+
+
+def test_rama_probe_detecta_python_del_nodo_y_no_el_venv(tmp_path):
+    pkg = _pkg(tmp_path)
+    r, args, _ = _run(tmp_path, pkg, FAKE_EXEC="ok", PYSPARK_PYTHON=os.path.join(pkg, ".venv", "bin", "python3"))
+    assert r.returncode == 0, r.stdout + r.stderr
+    _sin_venv(pkg, r, args)
+    assert "python de los EXECUTORS (YARN): /opt/parcel/bin/python" in r.stdout
+
+
+def test_rama_archivo_de_librerias_usa_el_python_del_nodo_nunca_el_binario_del_venv(tmp_path):
+    pkg = _pkg(tmp_path)
+    # PYSPARK_PYTHON heredado del shell (ruta distinta de la que run.sh comparaba antes) y por un symlink al paquete
+    link = tmp_path / "enlace"
+    os.symlink(pkg, link)
+    for sucio in (os.path.join(pkg, ".venv", "bin", "python3"), str(link) + "/.venv/bin/python"):
+        r, args, _ = _run(tmp_path, pkg, PYSPARK_PYTHON=sucio)           # probe sin librerias dice que no -> se envia el archivo
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "--archives" in args and "spark.executorEnv.PYTHONPATH=./bnxdeps" in " ".join(args)
+        _sin_venv(pkg, r, args)
+        assert "ENV:PYSPARK_PYTHON=\n" in r.stdout + "\n" or "ENV:PYSPARK_PYTHON=" in r.stdout
+        assert "ENV:PYSPARK_PYTHON=/" not in r.stdout
+        assert "NUNCA el del venv" in r.stdout
+
+
+def test_rama_udf_nativas_no_pasa_el_venv(tmp_path):
+    import shutil
+    pkg = _pkg(tmp_path, FUENTE_NATIVA)
+    shutil.copy(bc.__file__, os.path.join(pkg, "bank_compat.py"))
+    r, args, _ = _run(tmp_path, pkg, FAKE_PROBE="bad", PYSPARK_PYTHON=os.path.join(pkg, ".venv", "bin", "python"))
+    assert r.returncode == 0, r.stdout + r.stderr
+    _sin_venv(pkg, r, args)
+    assert "ENV:BNX_UDF_NATIVAS=1" in r.stdout and "ENV:PYSPARK_PYTHON=/" not in r.stdout
+
+
+def test_rama_sin_python_en_workers_y_deps_desactivadas_no_pasan_el_venv(tmp_path):
+    pkg = _pkg(tmp_path)
+    r, args, _ = _run(tmp_path, pkg, BNX_DEPS_EXECUTORS="0", PYSPARK_PYTHON=os.path.join(pkg, ".venv", "bin", "python"))
+    assert r.returncode == 0, r.stdout + r.stderr
+    _sin_venv(pkg, r, args)
+    assert "ENV:PYSPARK_PYTHON=/" not in r.stdout
+
+
+def test_run_sh_aborta_si_los_executors_recibirian_el_venv(tmp_path):
+    pkg = _pkg(tmp_path)
+    venv_py = os.path.join(pkg, ".venv", "bin", "python")
+    r, args, _ = _run(tmp_path, pkg, BNX_EXECUTOR_PYTHON=venv_py)
+    assert r.returncode == 1 and not args and "solo existe en el edge" in r.stderr
+    r, args, _ = _run(tmp_path, pkg, BNX_SPARK_CONF="spark.executorEnv.PYSPARK_PYTHON=" + venv_py)
+    assert r.returncode == 1 and not args and "NO existe en los nodos" in r.stderr and "Cannot run program" in r.stderr
+    r, args, _ = _run(tmp_path, pkg, BNX_SPARK_CONF="spark.pyspark.python=" + venv_py)
+    assert r.returncode == 1 and not args
+
+
+def test_run_sh_con_venv_enviado_usa_ruta_relativa_del_contenedor(tmp_path):
+    pkg = _pkg(tmp_path)
+    r, args, _ = _run(tmp_path, pkg, BNX_ENVIAR_VENV="1")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "spark.pyspark.python=./bnxenv/.venv/bin/python" in args
+    assert "python de los EXECUTORS (YARN): ./bnxenv/.venv/bin/python" in r.stdout
+
+
+def _funcion_main(nombre):
+    ns = {"os": os, "sys": sys}
+    i = mp._MAIN_PY.index("def %s(" % nombre)
+    j = mp._MAIN_PY.index("\ndef ", i + 5)
+    exec(mp._MAIN_PY[i:j], ns)
+    return ns
+
+
+def test_main_py_quita_pyspark_python_del_venv_solo_en_cluster(tmp_path, monkeypatch):
+    ns = _funcion_main("_python_executors_seguro")
+    ns["_here"] = str(tmp_path)
+    venv_py = str(tmp_path / ".venv" / "bin" / "python")
+    monkeypatch.setenv("PYSPARK_PYTHON", venv_py)
+    monkeypatch.delenv("BNX_CLUSTER_SPARK", raising=False)
+    ns["_python_executors_seguro"]()
+    assert os.environ["PYSPARK_PYTHON"] == venv_py                      # local: el venv es valido
+    monkeypatch.setenv("BNX_CLUSTER_SPARK", "1")
+    ns["_python_executors_seguro"]()
+    assert "PYSPARK_PYTHON" not in os.environ
+    monkeypatch.setenv("PYSPARK_PYTHON", "/opt/parcel/bin/python")
+    ns["_python_executors_seguro"]()
+    assert os.environ["PYSPARK_PYTHON"] == "/opt/parcel/bin/python"
+
+
+def test_conector_demo_no_fija_pyspark_python_en_cluster():
+    i = mp._MAIN_PY.index('os.environ.setdefault("PYSPARK_PYTHON", sys.executable)')
+    assert 'os.environ.get("BNX_CLUSTER_SPARK") != "1"' in mp._MAIN_PY[i - 200:i]
+
+
+def test_main_py_y_run_sh_parsean_con_python38():
+    ast.parse(mp._MAIN_PY, feature_version=(3, 8))
+    ast.parse(mp._PROBE_WORKERS_PY, feature_version=(3, 8))
+
+
+ERROR_NO_PYTHON = ("py4j.protocol.Py4JJavaError: An error occurred while calling o26737.parquet: "
+                   "org.apache.spark.SparkException: Job aborted due to stage failure: Task 17 in stage 309.0 failed 4 times, "
+                   "most recent failure: Lost task 17.3 in stage 309.0 (TID 1) (worker1 executor 8): "
+                   "java.io.IOException: Cannot run program \"/synthetic/pkg/.venv/bin/python\": error=2, No such file or directory\n"
+                   "\tat java.lang.ProcessBuilder.start(ProcessBuilder.java:1048)")
+
+
+def test_error_cannot_run_program_python_se_traduce_con_la_solucion():
+    info = bc.traducir_excepcion(RuntimeError(ERROR_NO_PYTHON), "rps_datapull")
+    assert info["tipo"] == "python_executor" and info["python"] == "/synthetic/pkg/.venv/bin/python"
+    txt = bc.formatear(info, "rps_datapull")
+    assert "/synthetic/pkg/.venv/bin/python" in txt and "solo existe en el DRIVER" in txt
+    assert "BNX_EXECUTOR_PYTHON=<python de los nodos>" in txt and "probe_workers.py" in txt
+    assert "borrarla antes de volver a correr rps_datapull" in txt
+    assert bc.traducir_python_executor(ValueError("Cannot run program \"ls\": error=2")) is None
+
+
+def test_parquet_vacio_ya_no_culpa_a_una_corrida_anterior_sin_mas():
+    class _AE(Exception):
+        pass
+    info = bc.traducir_parquet_vacio(_AE("[UNABLE_TO_INFER_SCHEMA] Unable to infer schema for Parquet"))
+    txt = bc.formatear(info, "rps_datapull")
+    assert "escritura anterior fallo a medias" in txt and "Cannot run program" in txt
+    assert "Casi siempre es salida a medias" not in txt
