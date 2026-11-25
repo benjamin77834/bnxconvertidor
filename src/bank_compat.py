@@ -1220,6 +1220,8 @@ def formatear(info, job=None):
         return "PARCHEADO: %s (no validado)" % info.get("componente", "")
     if info.get("tipo") == "executors":
         return _formatear_executors(info, job)
+    if info.get("tipo") == "datos":
+        return _formatear_datos(info, job)
     donde = [d.format(lib=lib) for d in DONDE_CARGARLO]
     if info.get("tipo") == "dependencia":
         donde = ["(1) agregar la dependencia al vendor del paquete: python preparar_vendor.py --extra "
@@ -1249,6 +1251,21 @@ def formatear(info, job=None):
     return "\n".join(ls)
 
 
+def _formatear_datos(info, job):
+    ruta = info.get("ruta") or "(ruta no identificada: ver el traceback, funcion valor_previo4_step / read.parquet)"
+    return "\n".join([
+        "FALTAN DATOS PARQUET: la carpeta esta vacia o sin archivos .parquet",
+        "  Ruta esperada: %s" % ruta,
+        "  Lo necesita: %s (lectura parquet de una salida de un paso anterior del mismo datapull)" % job,
+        "  Lo produce: %s" % (info.get("etapa") or "un paso anterior del mismo job (extract/pivot/features/mobs)"),
+        "  Por que: %s. Casi siempre es salida a medias de una corrida anterior que fallo (ej. el error de numpy en los "
+        "executors): la carpeta quedo creada, el job la toma como 'ya hecha' y no la vuelve a generar" % info.get("por_que", ""),
+        "  Donde cargarlo: no hay que cargar datos. Revisar con: hdfs dfs -ls %s ; si no hay .parquet, borrar SOLO esa "
+        "carpeta (hdfs dfs -rm -r -skipTrash %s) y volver a correr el job: la regenera" % (ruta, ruta),
+        "  Si se repite: borrar la carpeta de salida completa de esa fuente/cohort (base_path + working_path) y correr "
+        "desde cero; si la carpeta si tiene .parquet, avisar al equipo (no es este caso)",
+        "  Pasos: 1) hdfs dfs -ls de la ruta; 2) borrar la carpeta vacia; 3) volver a correr %s (el mismo paquete sirve: "
+        "este error no se arregla regenerandolo)" % job])
 def _formatear_executors(info, job):
     n = info.get("necesita") or {}
     lugar = ("%s:%s" % (n["archivo"], n.get("linea", ""))) if n.get("archivo") else "(UDF no identificada en el codigo del paquete)"
@@ -1492,6 +1509,44 @@ def _lib_de_ruta(path, rep):
     return None
 
 
+_RX_SIN_ESQUEMA = re.compile(r"UNABLE_TO_INFER_SCHEMA|Unable to infer schema for Parquet", re.I)
+_ETAPAS_RUTA = (("calculate_mobs", "mobs: calculate_mobs (se escribe en el mismo paso, justo antes de leerlo)"),
+                ("imputate_mobs", "mobs: imputate_mobs (paso previo de la misma imputacion de mobs)"),
+                ("mobs_preparation", "mobs_preparation (_create_mobs_extract del datapull)"),
+                ("raw_features", "feature engineering (raw_features)"),
+                ("/features", "feature engineering (paso 'fe' del mismo datapull)"),
+                ("/ratios", "ratios (paso 'ratios' del mismo datapull)"),
+                ("/pivot", "pivot (paso 'pivot' del mismo datapull)"),
+                ("/extract", "extract (paso 'extract' del mismo datapull)"))
+def _ruta_parquet_fallida(ex):
+    """Ruta que el job intentaba leer como parquet, sacada de los frames del traceback (el mensaje de Spark no la trae)."""
+    tb, ruta = getattr(ex, "__traceback__", None), None
+    while tb is not None:
+        loc = tb.tb_frame.f_locals
+        paths = loc.get("paths")
+        cand = (list(paths) if isinstance(paths, (tuple, list)) else []) + \
+            [loc.get(k) for k in ("features_path", "path_mobs", "path")]
+        for c in cand:
+            if isinstance(c, str) and "/" in c:
+                ruta = c        # se queda con el frame mas profundo
+        tb = tb.tb_next
+    return ruta
+def traducir_parquet_vacio(ex, job=None):
+    """AnalysisException UNABLE_TO_INFER_SCHEMA al leer parquet -> info tipo 'datos': la carpeta existe pero no tiene
+    ningun .parquet (salida a medias de una corrida anterior que fallo). None si el error no es de ese tipo."""
+    partes, vistos, e = [], set(), ex
+    while e is not None and id(e) not in vistos:
+        vistos.add(id(e))
+        partes.append(str(e))
+        e = e.__cause__ or e.__context__
+    if not _RX_SIN_ESQUEMA.search("\n".join(partes)):
+        return None
+    ruta = _ruta_parquet_fallida(ex)
+    etapa = next((t for k, t in _ETAPAS_RUTA if ruta and k in ruta), None)
+    return {"componente": "parquet vacio: %s" % (ruta or "(ruta no identificada en el traceback)"),
+            "modulo": ruta or "", "libreria": "datos del job", "version": None, "necesita": {}, "tipo": "datos",
+            "ruta": ruta, "etapa": etapa,
+            "por_que": "la carpeta existe pero no tiene ningun archivo .parquet (Spark: UNABLE_TO_INFER_SCHEMA)"}
 def traducir_excepcion(ex, job=None):
     """Convierte un error originado en una libreria del banco al dict de mensaje (o None si no aplica).
     Cubre BNXFaltaComponente, ImportError/ModuleNotFoundError, TypeError de firma y NotImplementedError."""
@@ -1501,6 +1556,9 @@ def traducir_excepcion(ex, job=None):
     _inf_ex = traducir_error_executor(ex, job)
     if _inf_ex is not None:
         return _inf_ex
+    _inf_pq = traducir_parquet_vacio(ex, job)
+    if _inf_pq is not None:
+        return _inf_pq
     rep = cargar_reporte()
     try:
         frames = traceback.extract_tb(ex.__traceback__)

@@ -369,3 +369,33 @@ def test_el_endpoint_de_simulacion_expone_los_faltantes(tmp_path):
         {"job": "rps_datapull", "tipo": "falta", "componente": "X", "texto": "FALTA X (...)"}]}), encoding="utf-8")
     d = run.a_dict()
     assert d["faltantes"][0]["job"] == "rps_datapull" and d["faltantes"][0]["texto"].startswith("FALTA X")
+
+
+# ---- parquet vacio (UNABLE_TO_INFER_SCHEMA) en la lectura de mobs ----
+class _AnalysisException(Exception):
+    pass
+
+
+def _lee_parquet(self, *paths):
+    raise _AnalysisException("[UNABLE_TO_INFER_SCHEMA] Unable to infer schema for Parquet. It must be specified manually.")
+
+
+def _valor_previo4_step(features_path):
+    return _lee_parquet(None, features_path)
+
+
+def test_parquet_vacio_en_mobs_dice_ruta_etapa_y_como_arreglarlo():
+    ruta = "/synthetic/base/wp/2024-01-01/rps/features/ratios_a_3m"
+    try:
+        _valor_previo4_step(ruta)
+    except _AnalysisException as ex:
+        info = bc.traducir_excepcion(ex, "rps_datapull")
+    assert info["tipo"] == "datos" and info["ruta"] == ruta
+    txt = bc.formatear(info, "rps_datapull")
+    assert "Ruta esperada: " + ruta in txt
+    assert "feature engineering" in txt and "hdfs dfs -rm -r -skipTrash " + ruta in txt
+    assert "rps_datapull" in txt
+
+
+def test_parquet_vacio_con_otro_error_no_aplica():
+    assert bc.traducir_parquet_vacio(ValueError("[PATH_NOT_FOUND] Path does not exist")) is None
