@@ -2134,6 +2134,10 @@ try:
 except Exception:
     _bc = None
 try:
+    import bank_diag as _bd     # log de diagnostico en cada escritura de los jobs del banco (BNX_DIAG_ESCRITURA)
+except Exception:
+    _bd = None
+try:
     from pyspark.sql import SparkSession
     from pyspark.sql.types import (StructType, StructField, StringType,
                                     DoubleType, IntegerType)
@@ -3350,6 +3354,12 @@ def _kernel_main(args, nombres, correr_agg=False):
             _bc.instalar()      # parches de las librerias del banco (tambien para imports directos de lib_*)
         except Exception as _e_bc:
             print("[compat] aviso: no se pudieron instalar los parches (%s: %s)" % (type(_e_bc).__name__, str(_e_bc)[:120]))
+    if _bd is not None:
+        try:
+            # ANTES de activar el demo: asi el diagnostico queda como capa interna y ve la ruta ya redirigida
+            _bd.instalar()      # log de escritura: columnas nulas, filas de ejemplo, modo UDF y parches (BNX_DIAG_ESCRITURA=0 lo apaga)
+        except Exception as _e_bd:
+            print("[diag-escritura] aviso: no se pudo instalar el log de escritura (%s: %s)" % (type(_e_bd).__name__, str(_e_bd)[:120]))
     env = (args.env or ("uat" if demo else "")).lower()
     if not env:
         raise SystemExit("[kernel] falta --env (prod|uat|sbx): es el ambiente de los settings del banco")
@@ -4038,6 +4048,13 @@ como PARCHEADO (no validado). Se cambian `quita_acentos`, `rmeans`, `rt_mod`, `d
 Python (no usa numpy). Diferencias: `unidecode` translitera todo Unicode (emojis, griego, cirílico, `€`→`EUR`); la versión
 nativa solo quita diacríticos latinos (Latin-1, Latin Extended-A/B, ß/æ/œ/ø/ł...). Errores de Python (índice fuera de rango,
 división entre 0) siguen la regla de Spark (`spark.sql.ansi.enabled`: error o NULL).
+
+### Log de diagnóstico en cada escritura (`BNX_DIAG_ESCRITURA`)
+`bank_diag.py` (junto a `main.py`) engancha `df.write.*` / `saveAsTable` / `insertInto` y, al terminar cada escritura de un job del
+banco, imprime y anexa a `LOG_FILE_PATH` (y a `BNX_DIAG_LOG` si existe) líneas `[diag-escritura]`: columnas 100% NULL (y 100% NaN),
+columnas con más nulos que su entrada, 3 filas de ejemplo, modo de las UDF (original / nativas) y parches de `bank_compat` activos.
+**Activo por defecto** (`BNX_DIAG_ESCRITURA=0` lo apaga): cuesta una agregación sobre una muestra (`BNX_DIAG_FILAS`, 20000), no un
+count/collect de toda la tabla. `BNX_DIAG_MUESTRA=0` oculta los valores de las filas de ejemplo (en el cluster serían datos reales).
 ### Cuándo SÍ hace falta Python en los workers
 Estos patrones ejecutan Python **dentro de los executors** y fallan en YARN si los nodos no tienen
 Python 3.11 con las mismas librerías:
@@ -5579,6 +5596,10 @@ def _bank_compat_fuente():
         return fh.read()
 
 
+def _bank_diag_fuente():
+    """Texto de src/bank_diag.py: viaja en el paquete como bank_diag.py (log de diagnostico en la escritura, solo stdlib)."""
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "bank_diag.py"), "r", encoding="utf-8") as fh:
+        return fh.read()
 def _compat_analizar(files, py_target):
     """Reporte de compatibilidad de TODAS las librerias del banco del cache contra el codigo/config del modelo
     (los archivos bank_src/** que viajan, mas toolbox/bnmxverse/utils de la wheel pkgcode). None si no hay cache."""
@@ -6391,6 +6412,7 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
         if _compat_rep:
             files["bank_compat_report.json"] = _bcm.reporte_a_json(_compat_rep)
             files["bank_compat.py"] = _bank_compat_fuente()
+            files["bank_diag.py"] = _bank_diag_fuente()
             _compat_libs = dict((l["libreria"], l["paquetes"]) for l in _compat_rep["librerias"]
                                 if l["libreria"].startswith("mex-lib"))
             for _m in _compat_rep.get("dependencias_terceros", []):    # deps de terceros de las mex-lib (cytoolz...)

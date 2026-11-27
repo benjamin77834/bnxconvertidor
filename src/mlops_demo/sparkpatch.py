@@ -44,6 +44,21 @@ def _table(self, tableName):
 
 
 # ---------------------------------------------------------------- lecturas por ruta
+_LLAVES = ("numcliente", "vintage")
+def _llaves_del_job(sp):
+    """Llaves (numcliente, vintage) de la ultima lectura del job que las trae (p. ej. el pivot que score lee antes de
+    sus fuentes). None si el job no ha leido ninguna."""
+    for l in reversed(E["lecturas"]):
+        if l.get("job") != E["job"] or not str(l.get("origen", "")).startswith(("producida", "local")):
+            continue
+        nombre = str(l.get("nombre", ""))
+        if nombre.rstrip("/\\").endswith("vector_assembler") or not all(c in (l.get("cols") or []) for c in _LLAVES):
+            continue
+        try:
+            return E["orig"]["r_parquet"](sp.read, rutas.redirigir(nombre)).select(*_LLAVES).distinct()
+        except Exception:
+            continue
+    return None
 def _vector_features(sp, paths, cols):
     """Salida tipo VectorAssembler (numcliente, vintage, features_vector con metadata de nombres)
     para lecturas de 'vector_assembler' que no produjo ningun job (p. ej. el datapull no corrio)."""
@@ -66,6 +81,22 @@ def _vector_features(sp, paths, cols):
     df, _s = datos.generar_df(sp, base + nombres, usos_sql=dict((n.lower(), {"num"}) for n in nombres))
     num = df.select(*[F.col(c) for c in base],
                     *[F.coalesce(F.col(n).cast("double"), F.lit(0.0)).alias(n) for n in nombres])
+    llaves = _llaves_del_job(sp)
+    if llaves is not None:
+        # Las llaves al azar no empatan con las del pivot: el left join del score dejaba TODAS las features en NULL.
+        # Se reparten las filas sinteticas sobre las llaves reales que el job ya leyo.
+        from pyspark.sql import Window
+        w = Window.orderBy(F.monotonically_increasing_id())
+        k = llaves.withColumn("__i", F.row_number().over(w))
+        f = num.drop(*_LLAVES).withColumn("__i", F.row_number().over(w))
+        num = k.join(f, "__i", "left").drop("__i")
+        num = num.select(*base, *[F.coalesce(F.col(n), F.lit(0.0)).alias(n) for n in nombres])
+        log("vector_assembler sintetico: llaves (%s) tomadas de lo que el job ya leyo, para que los joins empaten"
+            % ", ".join(_LLAVES))
+    else:
+        log("AVISO: vector_assembler sintetico con llaves al azar (el job no ha leido antes un parquet con %s): "
+            "un join con otra fuente dejara estas columnas en NULL; corre antes el job que produce esa salida "
+            "(p. ej. el datapull del mismo modelo)" % ", ".join(_LLAVES))
     va = VectorAssembler(inputCols=nombres, outputCol="features_vector")
     return va.transform(num).select(*base, "features_vector")
 

@@ -2859,6 +2859,26 @@ def instalar_udf_nativas(forzar=None):
             return udf
         _p(mod, "udf", _mk_u(o_udf))
     return True
+def estado_diagnostico(job=None):
+    """Que capas nuestras pueden cambiar valores en este job (para el log de escritura, bank_diag.py).
+    Solo lee estado y variables de entorno; no importa nada pesado."""
+    job = job or _job()
+    avisados = list(_ESTADO.get("avisados") or ())
+    parches = sorted(set(str(c[1]) for c in avisados
+                         if isinstance(c, tuple) and len(c) == 2 and c[0] == job))
+    en_python = sorted(set(str(c[1]) for c in avisados
+                           if isinstance(c, tuple) and len(c) == 2 and c[0] == "udf_python"))
+    return {
+        "job": job,
+        "modo": "demo/simulacion" if modo_demo() else "real",
+        "compat_activo": bool(_ESTADO.get("activo")),
+        "bank_compat_env": os.environ.get("BNX_BANK_COMPAT", "").strip() or "(sin definir)",
+        "udf_nativas_activas": bool(_ESTADO.get("udf_hooks")),
+        "udf_nativas": sorted(_NATIVAS.keys()),
+        "udf_en_python": en_python,
+        "parches": parches,
+        "python_executor": os.environ.get("BNX_EXECUTOR_PYTHON", "").strip() or "(automatico)",
+    }
 def desinstalar_udf_nativas():
     """Deshace los enganches de instalar_udf_nativas (tests)."""
     for obj, attr, orig in reversed(_ESTADO.get("udf_orig") or []):
