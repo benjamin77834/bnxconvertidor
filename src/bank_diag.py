@@ -268,22 +268,37 @@ def analizar_escritura(df, destino, fmt=None, modo=None, releer=None):
     try:
         _reiniciar_si_otro_job()
         base = releer if releer is not None else df
-        nota = None if releer is not None else "(muestra tomada del DataFrame escrito: no se pudo/debio releer el destino)"
-        filas, nulos, nans = perfil(base)
-        ent = _perfiles_de_entradas(list(nulos.keys()))
-        hall = evaluar(filas, nulos, nans, ent)
+        nota = None if releer is not None else "(muestra tomada del DataFrame escrito: no se pudo releer el destino; no detecta NULL introducidos por la propia escritura)"
+        cacheado = None
+        if releer is None:
+            # ultimo recurso: materializar la muestra una sola vez (perfil y ejemplo no recalculan el plan del job)
+            try:
+                cacheado = base = base.limit(filas_muestra()).cache()
+            except Exception:
+                cacheado = None
         try:
-            ejemplo = _ejemplo(base, list(base.columns), filas_ejemplo()) if filas else None
-        except Exception:
-            ejemplo = None
-        lineas = formatear(destino, fmt, modo, filas, len(base.columns), hall, _estado_compat(), ejemplo, nota,
-                           len(ent))
-        emitir(lineas)
-        return {"filas": filas, "nulos": nulos, "nans": nans, "hallazgos": hall, "lineas": lineas}
+            return _analizar(base, destino, fmt, modo, nota)
+        finally:
+            if cacheado is not None:
+                try:
+                    cacheado.unpersist()
+                except Exception:
+                    pass
     except Exception as e:
         emitir(["%saviso: no se pudo generar el diagnostico de %s (%s: %s); el job no se afecta"
                 % (PREFIJO, destino, type(e).__name__, str(e)[:200])])
         return None
+def _analizar(base, destino, fmt, modo, nota):
+    filas, nulos, nans = perfil(base)
+    ent = _perfiles_de_entradas(list(nulos.keys()))
+    hall = evaluar(filas, nulos, nans, ent)
+    try:
+        ejemplo = _ejemplo(base, list(base.columns), filas_ejemplo()) if filas else None
+    except Exception:
+        ejemplo = None
+    lineas = formatear(destino, fmt, modo, filas, len(base.columns), hall, _estado_compat(), ejemplo, nota, len(ent))
+    emitir(lineas)
+    return {"filas": filas, "nulos": nulos, "nans": nans, "hallazgos": hall, "lineas": lineas}
 
 
 # ------------------------------------------------------------------ enganches de Spark
@@ -311,18 +326,21 @@ def _mk_lector(nombre, orig):
     return f
 
 
-def _releer(df, fmt, modo, destino, es_ruta):
-    """DataFrame con lo escrito (solo ruta + overwrite/error + parquet/orc); None si no corresponde."""
-    if not es_ruta or (fmt or "parquet").lower() not in ("parquet", "orc"):
-        return None
-    if (modo or "errorifexists").lower() not in ("overwrite", "error", "errorifexists", "default"):
-        return None
+def _releer(df, fmt, modo, destino, es_ruta, tipo="ruta"):
+    """DataFrame con lo ESCRITO (relectura del destino, no el DataFrame en memoria): asi se ve el NULL que mete la
+    escritura misma (cast de insertInto/saveAsTable, esquema de la tabla) y no se recalcula el plan del job.
+    Tablas: spark.table(destino). Rutas parquet/orc en cualquier modo salvo ignore (con append la muestra
+    limit(N) puede venir de lo previo: es una estimacion). None si no corresponde (csv/json/text, ignore)."""
     sp = _spark_de(df)
     if sp is None:
         return None
+    if tipo == "tabla":
+        return _E["orig"]["r_table"](sp, destino)
+    if not es_ruta or (fmt or "parquet").lower() not in ("parquet", "orc"):
+        return None
+    if (modo or "errorifexists").lower() == "ignore":
+        return None
     return _E["orig"]["r_load"](sp.read, destino, format=(fmt or "parquet").lower())
-
-
 def _mk_escritor(nombre, orig, tipo, fmt_fijo=None):
     """tipo: 'ruta' (parquet/orc/csv/json/text: path es el 1er argumento), 'save' o 'tabla'."""
     def f(self, *a, **k):
@@ -361,7 +379,7 @@ def _mk_escritor(nombre, orig, tipo, fmt_fijo=None):
             try:
                 rel = None
                 try:
-                    rel = _releer(df, fmt, modo, destino, es_ruta)
+                    rel = _releer(df, fmt, modo, destino, es_ruta, tipo)
                 except Exception:
                     rel = None
                 analizar_escritura(df, destino, fmt or ("tabla" if tipo == "tabla" else None), modo, rel)
@@ -422,6 +440,8 @@ def instalar():
     for cls, attr, orig in parches:
         if cls is DataFrameReader and attr == "load":
             O["r_load"] = orig
+        if cls is SparkSession and attr == "table":
+            O["r_table"] = orig
     _E["parches"] = parches
     _E["instalado"] = True
     return True

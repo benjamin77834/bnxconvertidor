@@ -134,16 +134,37 @@ def test_enganche_compara_con_la_entrada_y_cubre_tablas(spark, entorno, capsys):
     assert "OK: ninguna" not in out
 
 
-def test_append_y_apagado_no_relee_ni_imprime(spark, entorno, capsys, monkeypatch):
+def test_append_relee_el_destino_y_apagado_no_imprime(spark, entorno, capsys, monkeypatch):
     bd.instalar()
     base = str(entorno / "apend")
     _df_con_nulos(spark).write.mode("append").parquet(base)
-    assert "muestra tomada del DataFrame escrito" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "muestra tomada del DataFrame escrito" not in out and "100% NULL: b" in out
     monkeypatch.setenv("BNX_DIAG_ESCRITURA", "0")
     _df_con_nulos(spark).write.mode("overwrite").parquet(base)
     assert capsys.readouterr().out == ""
-
-
+def test_formato_no_releible_perfila_la_muestra_con_aviso(spark, entorno, capsys):
+    bd.instalar()
+    _df_con_nulos(spark).write.mode("overwrite").csv(str(entorno / "c"))
+    out = capsys.readouterr().out
+    assert "muestra tomada del DataFrame escrito" in out and "100% NULL: b" in out
+def test_insertinto_con_cast_que_produce_null_alerta(spark, entorno, capsys):
+    """El DataFrame tiene valores, pero la tabla destino los guarda como NULL (cast): hay que verlo en la tabla."""
+    spark.conf.set("spark.sql.storeAssignmentPolicy", "LEGACY")
+    try:
+        spark.sql("DROP TABLE IF EXISTS t_diag_cast")
+        spark.sql("CREATE TABLE t_diag_cast (k INT, v INT) USING parquet")
+        bd.instalar()
+        df = spark.createDataFrame([(1, "abc"), (2, "xyz")], "k int, v string")
+        capsys.readouterr()
+        df.write.insertInto("t_diag_cast")
+        out = capsys.readouterr().out
+        assert spark.table("t_diag_cast").filter("v is not null").count() == 0
+        assert "100% NULL: v" in out
+        assert "muestra tomada del DataFrame escrito" not in out
+    finally:
+        spark.conf.set("spark.sql.storeAssignmentPolicy", "ANSI")
+        spark.sql("DROP TABLE IF EXISTS t_diag_cast")
 def test_un_fallo_del_diagnostico_no_rompe_el_job(spark, entorno, capsys, monkeypatch):
     bd.instalar()
     monkeypatch.setattr(bd, "perfil", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
