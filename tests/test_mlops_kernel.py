@@ -315,3 +315,9 @@ def test_check_env_prueba_el_import_de_toolbox_kernel_y_de_los_jobs(tmp_path):
     r2 = subprocess.run([sys.executable, "check_env.py"], cwd=root2, capture_output=True, text=True, timeout=120,
                         env={k: v for k, v in os.environ.items() if k != "JAVA_TOOL_OPTIONS"})
     assert r2.returncode == 0, r2.stdout + r2.stderr
+def test_bank_diag_viaja_en_el_paquete_sin_cache_de_wheels(tmp_path, monkeypatch):
+    # Regresion: el log de diagnostico de escritura no debe depender de la cache de wheels del banco.
+    monkeypatch.setattr(mp, "_BANK_LIBS_CACHE", str(tmp_path / "no_existe"))
+    z, files, _rep, _root = _build(tmp_path, _fuentes())
+    assert "bank_diag.py" in files
+    assert "def " in _read(z, files, "bank_diag.py")

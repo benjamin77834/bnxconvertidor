@@ -6398,6 +6398,9 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
     files["check_env.py"] = _CHECK_ENV   # verificador de deps (que no falte nada)
     if kernel_jobs:
         files.update(_demo_files())   # bnx_demo/: DEMO de los jobs del banco sin cluster
+        # Log de diagnostico de escritura: viaja SIEMPRE con los jobs del banco, exista o no la cache de wheels
+        # (no depende de bank_compat; sin el archivo main.py lo omitiria en silencio).
+        files["bank_diag.py"] = _bank_diag_fuente()
     # Detectar librerias INTERNAS del banco (toolbox, mex_lib_cs, ...) en el
     # codigo original. Van en requirements.txt (dadas de alta) para visibilidad,
     # y ADEMAS en requirements-bank.txt para que el montaje offline del core
@@ -6412,7 +6415,6 @@ def build_package_from_sources(sources, convert_fn, optimize_fn=None,
         if _compat_rep:
             files["bank_compat_report.json"] = _bcm.reporte_a_json(_compat_rep)
             files["bank_compat.py"] = _bank_compat_fuente()
-            files["bank_diag.py"] = _bank_diag_fuente()
             _compat_libs = dict((l["libreria"], l["paquetes"]) for l in _compat_rep["librerias"]
                                 if l["libreria"].startswith("mex-lib"))
             for _m in _compat_rep.get("dependencias_terceros", []):    # deps de terceros de las mex-lib (cytoolz...)
